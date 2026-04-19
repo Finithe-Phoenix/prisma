@@ -1,0 +1,14 @@
+// markdownlint rules for Prisma.
+// Philosophy: permissive. We care about real problems (broken links,
+// malformed frontmatter), not about line length or duplicate headings
+// in living documents.
+{
+  "default": true,
+  "MD013": false,         // line length — long lines are fine in prose
+  "MD024": false,         // duplicate headings — research notes repeat sections by design
+  "MD033": false,         // inline HTML — we use none, but not worth blocking
+  "MD041": false,         // first line h1 — frontmatter triggers this in RFCs
+  "MD046": false,         // code block style — both fenced and indented are fine
+  "MD007": { "indent": 2 },
+  "MD029": false          // ordered list prefix — we don't care about 1.1.1 vs 1.2.3
+}

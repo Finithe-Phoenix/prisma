@@ -1,0 +1,55 @@
+name: ir-spec (Lean 4)
+
+# Verifies that the formal IR specification still builds and all proofs
+# type-check. This is the guardrail on Pillar 2: if this fails, a proposed
+# change to the IR broke semantics or a soundness proof.
+
+on:
+  push:
+    paths:
+      - 'ir-spec/**'
+      - '.github/workflows/ir-spec.yml'
+  pull_request:
+    paths:
+      - 'ir-spec/**'
+      - '.github/workflows/ir-spec.yml'
+
+concurrency:
+  group: ir-spec-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ir-spec
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read toolchain version
+        id: toolchain
+        run: echo "version=$(cat lean-toolchain)" >> "$GITHUB_OUTPUT"
+
+      - name: Install elan + Lean 4
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ir-spec/.lake
+            ~/.elan/toolchains
+          key: lean-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('ir-spec/lakefile.toml', 'ir-spec/lean-toolchain') }}
+          restore-keys: |
+            lean-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-
+
+      - name: Build PrismaIR
+        run: lake build
+
+      - name: Verify toolchain pinned
+        run: |
+          test -f lean-toolchain || (echo "lean-toolchain missing" && exit 1)

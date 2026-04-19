@@ -1,0 +1,11 @@
+name = "PrismaIR"
+defaultTargets = ["PrismaIR"]
+
+[[lean_lib]]
+name = "PrismaIR"
+
+# mathlib will be added later when we need classical logic / big_operators / etc.
+# [[require]]
+# name = "mathlib"
+# scope = "leanprover-community"
+# version = "git#master"

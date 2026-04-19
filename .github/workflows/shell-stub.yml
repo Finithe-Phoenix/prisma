@@ -1,0 +1,38 @@
+name: shell (Rust) — stub
+
+# Stub workflow for the Rust shell/orchestrator. Activates once
+# shell/Cargo.toml exists (Fase 3, semana 93+).
+
+on:
+  push:
+    paths:
+      - 'shell/**'
+      - '.github/workflows/shell-stub.yml'
+  pull_request:
+    paths:
+      - 'shell/**'
+      - '.github/workflows/shell-stub.yml'
+
+concurrency:
+  group: shell-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scaffolding-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify shell/ scaffolding
+        run: |
+          set -euo pipefail
+          test -f shell/README.md || { echo "shell/README.md missing"; exit 1; }
+          if [ -f shell/Cargo.toml ]; then
+            echo "shell/Cargo.toml detected — running real build"
+            rustup toolchain install stable --profile minimal --component clippy rustfmt
+            cargo fmt --manifest-path shell/Cargo.toml -- --check
+            cargo clippy --manifest-path shell/Cargo.toml -- -D warnings
+            cargo test --manifest-path shell/Cargo.toml
+          else
+            echo "shell/Cargo.toml not yet present (Fase 3 not started). Scaffolding check only."
+          fi

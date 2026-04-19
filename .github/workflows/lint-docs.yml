@@ -1,0 +1,50 @@
+name: lint-docs
+
+# Sanity checks on docs: markdown link validity, no trailing whitespace,
+# no obviously-broken internal references.
+
+on:
+  push:
+    paths:
+      - '**.md'
+      - '.github/workflows/lint-docs.yml'
+  pull_request:
+    paths:
+      - '**.md'
+      - '.github/workflows/lint-docs.yml'
+
+concurrency:
+  group: lint-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: |
+            **/*.md
+            !third_party/**
+            !**/node_modules/**
+
+  check-rfc-frontmatter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate RFC frontmatter
+        run: |
+          set -euo pipefail
+          for rfc in docs/rfc/[0-9]*.md; do
+            [ -f "$rfc" ] || continue
+            echo "checking $rfc"
+            grep -q '^id:' "$rfc" || { echo "missing id in $rfc"; exit 1; }
+            grep -q '^title:' "$rfc" || { echo "missing title in $rfc"; exit 1; }
+            grep -q '^status:' "$rfc" || { echo "missing status in $rfc"; exit 1; }
+            grep -qE '^status: (draft|proposed|accepted|superseded|rejected)$' "$rfc" \
+              || { echo "invalid status in $rfc"; exit 1; }
+          done
