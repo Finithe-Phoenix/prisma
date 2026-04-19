@@ -1,0 +1,101 @@
+# Build outputs
+build/
+out/
+target/
+dist/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# C++ / CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+.cache/
+
+# Rust
+Cargo.lock
+!**/Cargo.lock
+
+# Android / Gradle
+.gradle/
+local.properties
+*.apk
+*.aab
+*.iml
+.idea/
+
+# Kotlin
+*.class
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+*.egg-info/
+
+# Lean 4
+.lake/
+build/
+lakefile.olean
+
+# ML / models
+*.onnx
+*.pt
+*.ckpt
+npu-models/training/data/
+npu-models/training/runs/
+
+# IDE
+.vscode/
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Papers (LaTeX)
+papers/**/*.aux
+papers/**/*.log
+papers/**/*.out
+papers/**/*.pdf
+papers/**/*.toc
+papers/**/*.bbl
+papers/**/*.blg
+papers/**/*.synctex.gz
+
+# Secrets (NEVER commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Third-party sources (managed as submodules later)
+third_party/*/
+!third_party/README.md
+
+# Profiling / telemetry artifacts
+*.prof
+*.trace
+perf.data*
+
+# Coverage
+coverage/
+*.gcov
+*.gcda
+*.gcno
