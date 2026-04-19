@@ -16,7 +16,7 @@ Este directorio contiene **submódulos git** (cuando se añadan en Fase 1) de pr
 - `dxvk/` — https://github.com/doitsujin/dxvk (zlib) — usado como dependencia en Fase 4.
 - `vkd3d-proton/` — https://github.com/HansKristian-Work/vkd3d-proton (LGPL) — dependencia en Fase 4.
 - `mesa/` — https://gitlab.freedesktop.org/mesa/mesa (MIT) — para Turnip, dependencia en Fase 4.
-- `vixl/` — https://github.com/Linaro/vixl (Apache 2.0) — ARM64 emitter library, dependencia en Fase 1.
+- `vixl/` — https://github.com/Linaro/vixl (BSD-3-Clause) — ARM64 emitter library, dependencia en Fase 1.
 
 ## Nota de licencias
 

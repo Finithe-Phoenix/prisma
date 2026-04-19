@@ -30,7 +30,7 @@ Fase 0 en progreso. Primer código real en Fase 1 (semana 9+).
 
 ## Dependencias externas (futuro)
 
-- **vixl** (ARM, Apache 2.0) — ARM64 emitter library.
+- **vixl** (ARM/Linaro, BSD-3-Clause) — ARM64 emitter library.
 - **ONNX Runtime** (MIT) — NPU delegation.
 - **Catch2** (BSL-1.0) — testing.
 - **xxHash** (BSD) — translation cache keys.

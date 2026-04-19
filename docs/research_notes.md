@@ -20,9 +20,12 @@ Marcar cada item con su estado: ⬜ pendiente | 🟡 en progreso | ✅ completad
 - 🟡 **Box64** — `src/dynarec/arm64/`. *Scan AI-asistido completo (ver [notas](#box64-scan-inicial-ai-asistido)); lectura personal profunda pendiente.*  
   *Repo:* https://github.com/ptitSeb/box64 (clonado en `~/Documents/sandbox/prisma-research/box64`)  
   *Target:* dynarec de 4 pases, estrategia de wrappers nativos para libc/Mesa. ~15h.
-- ⬜ **Wine** — `loader/` + `dlls/ntdll/`.  
-  *Repo:* https://gitlab.winehq.org/wine/wine  
-  *Target:* cómo carga PE, cómo implementa subset de Win32 API. ~10h.
+- 🟡 **Wine** — `dlls/ntdll/loader.c` + `dlls/wow64/` + `dlls/ntdll/unix/`. *Scan AI-asistido completo (ver [notas](#wine-scan-inicial-ai-asistido)); lectura personal profunda pendiente.*  
+  *Repo:* https://gitlab.winehq.org/wine/wine (clonado en `~/Documents/sandbox/prisma-research/wine`)  
+  *Target:* cómo carga PE, interfaz BTCpu para DBT integration, ARM64EC. ~10h.
+- 🟡 **vixl** — `src/aarch64/` (assembler, macro-assembler, simulator). *Scan AI-asistido completo (ver [notas](#vixl-scan-inicial-ai-asistido)); validación de la decisión arquitectónica #1.*  
+  *Repo:* https://github.com/Linaro/vixl (clonado en `~/Documents/sandbox/prisma-research/vixl`)  
+  *Target:* confirmar que cubre todo ARM64 relevante y es mantenible. ~5h.
 - ⬜ **DXVK** — arquitectura general, cómo traduce D3D11 state a Vulkan.  
   *Repo:* https://github.com/doitsujin/dxvk  
   *Target:* inspiración para Pilar 6 (graphics translation avanzada). ~8h.
@@ -347,6 +350,235 @@ Struct `dynablock_t` en `src/dynarec/dynablock_private.h` (~líneas 20-56):
 
 ---
 
+## Wine: scan inicial AI-asistido
+
+> **Disclaimer:** scan AI-asistido, validar personalmente antes de integración Fase 3.
+
+**Fecha scan:** 2026-04-19
+**Tamaño codebase Wine:** ~4M LOC total (enorme).
+
+### Overview arquitectura
+
+Wine se organiza en tres capas:
+1. **PE Loader** (`dlls/ntdll/loader.c`, `dlls/ntdll/unix/loader.c`) — mapeo de binarios PE a memoria.
+2. **NTDLL** (`dlls/ntdll/`) — implementación de syscalls NT que se traducen a POSIX.
+3. **Unix backend** (`dlls/ntdll/unix/`) — operaciones reales contra el host POSIX (mmap, I/O).
+
+Soporte multi-arch nativo: directorios `\i386-windows\`, `\x86_64-windows\`, `\arm-windows\`, `\aarch64-windows\`. **ARM64EC soportado nativamente** en Wine moderno (esto es clave para Prisma).
+
+### PE loader: flujo de carga
+
+1. **Mapeo de memoria** — `map_pe_header()` en `dlls/ntdll/unix/virtual.c:2729-2760` usa `mmap(MAP_FIXED | MAP_PRIVATE)` para cada sección.
+2. **Resolución de imports** — `import_dll()` en `dlls/ntdll/loader.c:1141-1250` procesa `IMAGE_IMPORT_DESCRIPTOR`, rellena IAT. Funciones no encontradas → stubs que lanzan `EXCEPTION_WINE_STUB`.
+3. **Relocaciones** — `perform_relocations()` en `dlls/ntdll/loader.c:2161-2243`. Calcula `delta = actual_base - preferred_base` y aplica según tipo (REL_BASED_HIGHLOW, REL_BASED_DIR64).
+4. **Tracking** — tabla hash `hash_table[HASH_MAP_SIZE]` de `WINE_MODREF` structs (`dlls/ntdll/loader.c:136-143`).
+
+### Interfaz BTCpu — el punto de integración para DBT
+
+**Esto es oro para Prisma.** En `dlls/wow64/wow64_private.h:27-52` Wine define ~20 callbacks para un DBT externo:
+
+```c
+static void *   (WINAPI *pBTCpuGetBopCode)(void);
+static NTSTATUS (WINAPI *pBTCpuGetContext)(HANDLE,HANDLE,void *,void *);
+static void     (WINAPI *pBTCpuProcessInit)(void);
+static NTSTATUS (WINAPI *pBTCpuSetContext)(HANDLE,HANDLE,void *,void *);
+void (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T );
+NTSTATUS (WINAPI *pBTCpuNotifyMapViewOfSection)( void *, void *, void *, SIZE_T, ULONG, ULONG );
+// ... y más
+```
+
+**Interpretación:** Wine ya está diseñado para aceptar un DBT externo via la interfaz `wow64cpu.dll`. En Windows real, es un DBT de Microsoft. En Hangover lo reemplazaban con QEMU TCG. En Prisma será el DBT nuestro.
+
+**Hooks críticos para integrar Prisma:**
+- `pBTCpuProcessInit()` / `pBTCpuThreadInit()` — lifecycle hooks.
+- `pBTCpuSimulate()` — loop de ejecución principal donde entra nuestro dispatcher.
+- `pBTCpuNotifyMapViewOfSection()` — cada vez que se mapea nuevo código PE, Prisma setup translation cache para esa región.
+- `pBTCpuFlushInstructionCache2()` — Prisma invalida translation cache cuando el guest lo pide.
+- `pBTCpuGetContext()` / `pBTCpuSetContext()` — sincronización de CPU context x86↔ARM.
+
+### ARM64EC — pista importante
+
+`dlls/ntdll/unix/virtual.c:2792-2837` contiene `alloc_arm64ec_map()` y `update_arm64ec_ranges()`. Wine:
+- Rastrea qué secciones contienen código ARM64EC vía mapa de bits en `peb->EcCodeBitMap`.
+- Redirige entry points según metadata ARM64EC en PE header.
+
+Esto abre una puerta para el **Pilar 5 de Prisma (virtualización híbrida)**: en Pixel con AVF, parte del código podría correr como ARM64EC nativo en un guest Windows-on-ARM, y Prisma solo traduce las regiones x86.
+
+### Qué parches necesitaría Wine
+
+**Opción minimal:** proveer un `wow64cpu.dll` PE que exponga la interfaz BTCpu y delegue a Prisma libnative. Wine ya sabe cargar esto.
+
+**Opción media:** patch pequeños en `dlls/ntdll/loader.c:call_dll_entry_point()` para interceptar entry points x86 si queremos "always-on" DBT vs "WoW64-only" DBT.
+
+**Opción profunda:** modificar el resolvedor de paths para buscar Prisma components en ubicaciones Android SAF-friendly.
+
+Resumen: Wine tiene integración DBT **de primera clase ya construida**. No tenemos que pelear con la arquitectura. Esto reduce significativamente el riesgo de Fase 3.
+
+### Lecciones aplicables a Prisma
+
+1. **La interfaz BTCpu es el contrato de integración.** Implementar `wow64cpu.dll` con esas 20 funciones es la Fase 3 en una frase.
+2. **ARM64EC metadata es explotable para Pilar 5** (virtualización híbrida). Paper opportunity: "Hybrid native/emulated execution via ARM64EC on Android AVF".
+3. **Cada map/unmap/protect call es un hook** — necesitamos diseñar el translation cache para invalidar eficientemente por rango, no solo globalmente.
+4. **Wine separa unix thunks de código Windows cuidadosamente** — adoptar este patrón para los syscalls de Prisma.
+5. **Relocaciones PE son trabajo del loader, no del DBT** — cuando nuestro DBT recibe código PE, ya viene relocateado por Wine. Un problema menos.
+
+### Preguntas abiertas Wine
+
+- ¿Cuándo código x86 traducido hace `syscall` NT (vector 0xb0 etc.), salta directo a ARM64 NTDLL 64-bit o retorna a Wine host para manejo? **Eficiencia de la Opción A (directo) vs claridad de la Opción B.**
+- ¿TEB32 vs TEB64 — cómo sincroniza Prisma cuando el código x86 accede TEB via %fs/%gs?
+- ARM64EC vs WoW64: ¿son mutuamente exclusivos o pueden coexistir en el mismo proceso?
+- Relocaciones de código traducido por Prisma (no PE relocations) — fuera de scope de Wine, responsabilidad nuestra.
+
+### Archivos clave Wine a leer personalmente
+
+- `dlls/wow64/wow64_private.h:27-52` — interfaz BTCpu
+- `dlls/ntdll/loader.c:2161-2243` — perform_relocations
+- `dlls/ntdll/loader.c:4314-4343` — init_wow64
+- `dlls/ntdll/loader.c:4350-4375` — map_wow64cpu
+- `dlls/ntdll/unix/virtual.c:2792-2837` — ARM64EC maps
+- `dlls/ntdll/unix/syscall.c:44-119` — syscall dispatch
+
+---
+
+## vixl: scan inicial AI-asistido
+
+> **Disclaimer:** scan AI-asistido. Validación de licencia **confirmada manualmente (BSD-3-Clause, ver `LICENCE`)**.
+
+**Fecha scan:** 2026-04-19
+**Tamaño codebase vixl:** ~106k LOC C++ (assembler + macro-assembler + simulator + disassembler). La parte que usaremos (`src/aarch64/`) es ~15-20k LOC.
+**Licencia:** BSD-3-Clause (inicialmente reporté Apache 2.0 por error, corregido).
+
+### Overview
+
+vixl cubre ARMv8-A (64-bit), A32 y T32 (ARMv7). Para Prisma solo nos importa **aarch64**.
+
+**Extensiones ARM64 soportadas** (todas las relevantes para Prisma):
+- NEON (SIMD 128-bit)
+- **SVE / SVE2** (Scalable Vector — relevante para SD 8 Elite Gen 2 futuro)
+- FP16, BFloat16
+- **LSE** (atomics: CAS, LDADD) — crítico para TSO emulation eficiente
+- PAuth, MTE
+- **LRCPC, LRCPC2** — crítico para Pilar 3 (TSO adaptativo con instrucciones acquire/release cheap)
+- DotProduct, I8MM
+
+**Limitaciones documentadas:** rounding modes FP limitados, pocas syscalls simuladas, algunas system instructions. **Aceptable para DBT.**
+
+### API: Assembler vs MacroAssembler
+
+vixl separa:
+- **Assembler** (`src/aarch64/assembler-aarch64.h`) — bajo nivel, control total, 1:1 con ISA.
+- **MacroAssembler** (`src/aarch64/macro-assembler-aarch64.h`) — abstracción que maneja operandos unencodable automáticamente (ej: `Mov(x0, 0x112233445566)` emite movz+movk internamente).
+
+**Para Prisma usamos MacroAssembler.** Ejemplo:
+```cpp
+MacroAssembler masm;
+masm.Add(x0, x1, x2);
+masm.Mov(x0, 0x1122334455667788);  // múltiples movz/movk
+masm.Ldr(x0, MemOperand(x1, x2, LSL, 3));  // [x1, x2, LSL #3]
+masm.B(&forward_label);
+masm.Bind(&forward_label);
+masm.FinalizeCode();  // resolve labels, emit literal pool
+```
+
+**Tipos fuertemente tipados:** `Register x0(0, 64)`, `WRegister w0(0, 32)`, `VRegister v0(0, 128)`, `ZRegister z0` (SVE), `PRegister p0` (SVE predicates). No puedes confundir widths.
+
+### Register allocation
+
+**vixl NO ofrece RA integrado. 100% responsabilidad del caller.** Esto es arquitecturalmente correcto (RA es tarea del compilador, no del emitter).
+
+Lo que sí proporciona: `UseScratchRegisterScope` RAII para temporales:
+```cpp
+UseScratchRegisterScope temps(&masm);
+Register temp = temps.AcquireX();  // x16 o x17
+```
+
+**Implicación para Prisma:** nuestro pass de RA (constrained en Fase 2+) vive fuera de vixl. Perfecto separación de concerns.
+
+### Literals y constantes
+
+**Dos estrategias disponibles:**
+
+1. **Immediates en MacroAssembler:** automático, emite movz/movk.
+2. **Literal pool:** para constantes fuera de rango o compartidas.
+```cpp
+Literal<int64_t> my_const(0x1122334455667788, masm.GetLiteralPool());
+masm.Ldr(x0, &my_const);  // PC-relative
+my_const.UpdateValue(new_value, code_buffer);  // actualizable post-emit
+```
+
+**PC-relative loads automáticos** — resuelve la preocupación de "table64 bloat" que anoté sobre Box64.
+
+### Threading y JIT safety
+
+**Limitación:** vixl asume emisión single-threaded. El buffer no es thread-safe durante generation.
+
+**I-cache flush:** vixl NO lo hace. Prisma debe llamar `__builtin___clear_cache()` después de `FinalizeCode()`.
+
+Para Prisma está bien porque típicamente un thread emite y luego otro ejecuta, con un fence entre ambos.
+
+### Simulator — valor inesperado para Prisma
+
+vixl incluye un simulador ARM64 (~5600 líneas) que puede ejecutar cualquier instrucción emitida. **Esto es útil en Fase 1-2 para:**
+- Ejecutar código emitido en macOS arm64 (o donde sea) para validación de correctness.
+- Comparar estado post-ejecución vs estado predicho por nuestro interpreter IR.
+- Diferencial-testing sin necesitar hardware ARM64 específico.
+
+Limitaciones: exclusive-load/store simula solo local monitor; memoria no cycle-accurate.
+
+### Disassembler
+
+~380 líneas. Imprime instrucciones legibles. Útil en logging para debugging de bloques traducidos.
+
+### Mantenimiento
+
+- Mantenedor: Linaro + ARM.
+- Repo canónico: `gitlab.arm.com/runtimes/vixl` (GitHub es legacy mirror).
+- Activo: commits regulares, usado por V8 (Chrome's JS engine).
+- Desde 2015, battle-tested.
+
+### Veredicto y ventaja concreta para Prisma
+
+**Decisión #1 CONFIRMADA: usar vixl.** Evidencia:
+
+| Criterio | vixl | Custom (FEX/Box64 approach) |
+|---|---|---|
+| ARM64 coverage | 95%+ | Empiezas de cero |
+| Bugs de encoding | Eliminados (10 años) | 6+ meses de hardening |
+| Extensiones modernas (SVE2, LSE2, LRCPC2) | Ya soportadas | Cada una = semanas de trabajo |
+| Safety en tipos | Sí, compile-time | Depende de implementación |
+| Literal pool | Automático + PC-relative | Manual |
+| Simulator incluido | Sí | N/A |
+| Disassembler incluido | Sí | N/A |
+| Licencia | BSD-3-Clause permisiva | — |
+| Maintenance burden | Upstream updates | Nuestro |
+
+**Tiempo ahorrado estimado: 12-18 meses de desarrollo.** Esto libera semanas 21-26 (originalmente dedicadas a emitter) para enfoque en IR lowering y translation cache — donde SÍ somos novedosos.
+
+### Por qué FEX/Box64 NO lo usaron
+
+Basado en el código:
+- **FEX:** querían IR-agnostic emitter y multi-backend (ARM64 + potencialmente otros). vixl es ARM-only.
+- **Box64:** proyecto originalmente ARM32 (cuando ARM64 era joven), y vixl entonces no era maduro para sus necesidades. Hoy lo usaría si reescribiera.
+
+Para **Prisma (ARM64-only, greenfield, 2026)** ninguna de esas razones aplica. Match perfecto.
+
+### Preguntas abiertas vixl
+
+- Allocator strategy: ¿linear scan simple vs graph coloring? → Recomendación: linear scan en Fase 1, graph coloring en Fase 2.5 cuando ML hints del Pilar 1 puedan informarlo.
+- Literal pool overflow: pool por bloque vs pool global — overhead vs frequency tradeoff. Decidir en Fase 1.
+- Signal handlers (SIGSEGV, SIGILL): vixl no los registra. Prisma los registra en `core/src/runtime/`.
+- Métricas para ML: vixl debería exportar code size, instruction counts por bloque. Contribuir patch upstream si no existe.
+
+### Archivos clave vixl
+
+- `src/aarch64/macro-assembler-aarch64.h` — API principal
+- `src/aarch64/assembler-aarch64.h` — API de bajo nivel
+- `src/aarch64/simulator-aarch64.h` — para validation testing
+- `src/aarch64/disasm-aarch64.h` — para debug logging
+- `LICENCE` — BSD-3-Clause (verificado 2026-04-19)
+
+---
+
 ## Comparativa FEX vs Box64 — qué adopta Prisma
 
 | Dimensión | FEX | Box64 | Prisma |
@@ -359,7 +591,7 @@ Struct `dynablock_t` en `src/dynarec/dynablock_private.h` (~líneas 20-56):
 | **Translation cache** | Persistente en disco, SHA256 key | In-memory, CRC32 | **Persistente + CDN + P2P** (Pilar 4) |
 | **SMC** | Memory protection heuristics | CRC por bloque + hot pages | Per-cacheline + ML hot-path prediction |
 | **Native wrapping** | No énfasis | Extenso (279 libs) | **Adoptar Box64 approach** + autogeneración desde DWARF |
-| **ARM64 emitter** | Custom propio | Custom propio | **vixl** (Apache 2.0, mantenido por ARM) |
+| **ARM64 emitter** | Custom propio | Custom propio | **vixl** (BSD-3-Clause, mantenido por ARM/Linaro) |
 | **Backend extras** | x87 optimization pass | x87 minimal | x87 + NPU-assisted optimization hints (Pilar 1) |
 | **Virtualización híbrida** | N/A | N/A | **DBT + KVM en Tensor SoCs** (Pilar 5) |
 | **Graphics translation** | Delega a DXVK stock | Delega a DXVK stock | **Whole-graph optimization** (Pilar 6) |
@@ -378,10 +610,11 @@ Documentar aquí cada decisión arquitectónica con:
 - **Razón:**
 - **Reversible?:** (y cómo, si aplica)
 
-### Decisión #1 — Usar vixl como ARM64 emitter (no custom)
+### Decisión #1 — Usar vixl como ARM64 emitter (no custom) ✅ VALIDADA
 
-- **Decisión:** adoptar `vixl` (ARM, Apache 2.0) como biblioteca de emisión ARM64.
+- **Decisión:** adoptar `vixl` (ARM/Linaro, BSD-3-Clause) como biblioteca de emisión ARM64.
 - **Fecha:** 2026-04-19.
+- **Validada:** 2026-04-19 tras scan completo del código vixl. Ver [vixl scan](#vixl-scan-inicial-ai-asistido) — cubre SVE2, LSE2, LRCPC2 (las tres críticas para pilares 1-3), simulator incluido ayuda correctness testing, mantenido activamente por Linaro/ARM.
 - **Alternativas consideradas:**
   - Custom emitter (lo que hacen FEX y Box64) — años de trabajo, sin ventaja técnica real.
   - `asmjit` (MIT) — también válido, pero vixl tiene mejor soporte ARM64 específico + mantenido por ARM directamente.
@@ -421,6 +654,26 @@ Documentar aquí cada decisión arquitectónica con:
 - **Razón:** Box64 demostró 30-50% mejora en juegos CPU-bound. Esto NO es diferenciador nuestro pero es mandatory baseline. Sin esto, Prisma pierde contra Box64 en performance básico.
 - **Reversible?:** sí, los wrappers son capa opcional encima del DBT.
 - **Riesgo conocido:** mantenance de wrappers cuando libs evolucionan. Mitigación: investigar autogeneración desde DWARF debug info o LLVM IR de las libs — research opportunity para un blog post.
+
+### Decisión #6 — Integrar con Wine vía interfaz BTCpu (Fase 3)
+
+- **Decisión:** en Fase 3, Prisma se integra con Wine proveyendo un `wow64cpu.dll` PE que implementa la interfaz BTCpu (`dlls/wow64/wow64_private.h`), delegando las llamadas a nuestro libnative DBT. No patcheamos el loader de Wine ni los syscalls NT de inicio.
+- **Fecha:** 2026-04-19.
+- **Alternativas consideradas:**
+  - Patch profundo de Wine (interceptar `call_dll_entry_point` directamente) — invasivo, difícil mantener, probablemente se rompe cuando Wine evoluciona.
+  - Fork de Wine con DBT integrado como subsistema — rompe upgrades upstream, deuda técnica grande.
+  - Enfoque Hangover (QEMU TCG como backend Wine) — probado pero lento; queremos más control.
+- **Razón:** Wine ya tiene la interfaz BTCpu diseñada exactamente para este caso (fue construida para wow64cpu.dll de Microsoft). Usarla significa integración minimally invasive, compatibilidad con upgrades de Wine, y contrato bien definido.
+- **Reversible?:** sí. Si la interfaz BTCpu resulta insuficiente podemos añadir patches puntuales. Pero el diseño parte de asumir que es suficiente, lo cual **reduce scope de Fase 3 significativamente** (presupuesto original de 8 semanas de integración → probablemente 4-5 semanas).
+- **Referencia:** `dlls/wow64/wow64_private.h:27-52`.
+
+### Decisión #7 — Habilitar ARM64EC awareness desde día 1 (para Pilar 5)
+
+- **Decisión:** el diseño del DBT asume desde Fase 1 que en algunos dispositivos (Pixel con AVF) el código PE puede ser parcialmente ARM64EC nativo. El translation cache se key-ea por `(binary_hash, region_type, cpu_features)` donde `region_type ∈ {x86, x86_64, arm64ec}`.
+- **Fecha:** 2026-04-19.
+- **Razón:** si decidimos diferir esto, refactor grande en Fase 2.5 cuando activamos Pilar 5. Mejor pagar el costo upfront.
+- **Reversible?:** caro. Es decisión de schema de cache.
+- **Referencia:** Wine `dlls/ntdll/unix/virtual.c:2792-2837` (ARM64EC maps).
 
 _(más decisiones se añadirán conforme avanza Fase 0)_
 

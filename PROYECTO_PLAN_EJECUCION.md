@@ -177,7 +177,7 @@ Meta: Decoder x86_64 completo + IR formal con semántica en Lean 4 + interpreter
 
 ### Semanas 21-26: Backend ARM64 emitter + interpreter + JIT baseline
 
-- **Usar vixl** (ARM, Apache 2.0) como biblioteca de emisión ARM64. Reescribirla no es épico, es tonto.
+- **Usar vixl** (ARM/Linaro, BSD-3-Clause) como biblioteca de emisión ARM64. Reescribirla no es épico, es tonto.
 - Interpreter que ejecuta el IR directamente. Valida correctness sin JIT.
 - Signal handler para SIGSEGV/SIGILL.
 - Template-based JIT: una función por IR opcode → bloque ARM64. Sin optimizaciones. Solo correctness.
