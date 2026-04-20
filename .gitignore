@@ -99,3 +99,9 @@ coverage/
 *.gcov
 *.gcda
 *.gcno
+
+# tools/benchmarks uv venv
+tools/benchmarks/.venv/
+tools/benchmarks/uv.lock
+tools/benchmarks/.pytest_cache/
+tools/benchmarks/src/*.egg-info/
