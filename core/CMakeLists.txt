@@ -54,6 +54,7 @@ endif()
 add_library(prisma_ir STATIC
     src/ir/operation.cpp
     src/ir/pretty_print.cpp
+    src/ir/validate.cpp
 )
 
 target_include_directories(prisma_ir
@@ -256,6 +257,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes_advanced.cpp
         tests/test_passes_more.cpp
         tests/test_passes_mem.cpp
+        tests/test_ir_validate.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE

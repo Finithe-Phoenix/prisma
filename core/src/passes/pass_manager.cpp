@@ -12,6 +12,11 @@ PassManager& PassManager::add(std::string name, PassFn fn) {
     return *this;
 }
 
+PassManager& PassManager::on_pass_run(DumpHook hook) {
+    hooks_.push_back(std::move(hook));
+    return *this;
+}
+
 std::pair<std::vector<ir::Stmt>, PassRunStats>
 PassManager::run(const std::vector<ir::Stmt>& input) const {
     PassRunStats stats;
@@ -30,6 +35,7 @@ PassManager::run(const std::vector<ir::Stmt>& input) const {
             current.size(),
             static_cast<std::uint64_t>(ns),
         });
+        for (const auto& hook : hooks_) hook(entry.name, current);
     }
     return {std::move(current), std::move(stats)};
 }

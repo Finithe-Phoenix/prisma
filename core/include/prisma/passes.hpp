@@ -215,10 +215,27 @@ class PassManager {
 public:
     using PassFn = std::function<std::vector<ir::Stmt>(const std::vector<ir::Stmt>&)>;
 
+    // Dump hook — invoked once per pass inside `run()` with the pass's
+    // name and the statement list AFTER the pass has run. Multiple hooks
+    // can be registered; they fire in registration order.
+    //
+    // Intended uses:
+    //   * Tests inspecting intermediate IR between passes.
+    //   * Debug-build dumps gated on a `--debug-pass=<name>` filter
+    //     (the filtering is the caller's responsibility — the hook
+    //     fires unconditionally so the caller sees every pass).
+    //   * Future NPU-classifier feature extraction (Pillar 1).
+    using DumpHook = std::function<void(
+        const std::string& pass_name,
+        const std::vector<ir::Stmt>& after)>;
+
     // Register a pass to be run in order. Insertion order == run order.
     // `name` should be unique within a manager — duplicates are legal but
     // make stats harder to read.
     PassManager& add(std::string name, PassFn fn);
+
+    // Register a dump hook. Returns *this for fluent chaining.
+    PassManager& on_pass_run(DumpHook hook);
 
     // Number of registered passes.
     [[nodiscard]] std::size_t size() const noexcept { return passes_.size(); }
@@ -233,7 +250,8 @@ private:
         std::string name;
         PassFn fn;
     };
-    std::vector<Entry> passes_;
+    std::vector<Entry>    passes_;
+    std::vector<DumpHook> hooks_;
 };
 
 // Returns the default pipeline used by the rest of the codebase:

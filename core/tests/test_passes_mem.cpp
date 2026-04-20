@@ -209,6 +209,65 @@ TEST_CASE("PassManager: default_pipeline now has 10 passes") {
 }
 
 // ---------------------------------------------------------------------
+// PassManager dump hooks (F1-PS-017)
+// ---------------------------------------------------------------------
+
+TEST_CASE("PassManager: dump hook fires once per pass, in order") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    auto pm = passes::default_pipeline();
+    std::vector<std::string> seen_names;
+    pm.on_pass_run([&](const std::string& name,
+                       const std::vector<ir::Stmt>& /*after*/) {
+        seen_names.push_back(name);
+    });
+    auto [_out, stats] = pm.run(s);
+    REQUIRE(seen_names.size() == pm.size());
+    // Order should match the stats order.
+    for (std::size_t i = 0; i < seen_names.size(); ++i) {
+        REQUIRE(seen_names[i] == stats.passes[i].name);
+    }
+}
+
+TEST_CASE("PassManager: dump hook sees each pass's POST-state") {
+    // The hook's `after` argument should equal the stmt count the stats
+    // report (which is also post-state).
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+    };
+    auto pm = passes::default_pipeline();
+    std::vector<std::size_t> seen_sizes;
+    pm.on_pass_run([&](const std::string&,
+                       const std::vector<ir::Stmt>& after) {
+        seen_sizes.push_back(after.size());
+    });
+    auto [_out, stats] = pm.run(s);
+    REQUIRE(seen_sizes.size() == stats.passes.size());
+    for (std::size_t i = 0; i < seen_sizes.size(); ++i) {
+        REQUIRE(seen_sizes[i] == stats.passes[i].stmts_after);
+    }
+}
+
+TEST_CASE("PassManager: multiple dump hooks all fire") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    auto pm = passes::default_pipeline();
+    int count_a = 0, count_b = 0;
+    pm.on_pass_run([&](auto&&, auto&&) { ++count_a; });
+    pm.on_pass_run([&](auto&&, auto&&) { ++count_b; });
+    (void)pm.run(s);
+    REQUIRE(count_a == static_cast<int>(pm.size()));
+    REQUIRE(count_b == static_cast<int>(pm.size()));
+}
+
+// ---------------------------------------------------------------------
 // End-to-end: redundant-load + dead-store interact correctly with DCE
 // ---------------------------------------------------------------------
 

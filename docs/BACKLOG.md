@@ -254,7 +254,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
 - [ ] F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [ ] F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
-- [~|claude] F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
+- [x] (pending commit) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
 - [ ] F1-IR-017: IR serialization to a compact binary form for cache storage.
 - [ ] F1-IR-018: IR deserialization + round-trip tests.
 - [ ] F1-IR-019: Memoise pretty-printed form for test stability.
@@ -310,7 +310,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
 - [ ] F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
 - [x] (pending commit) F1-PS-016: Pass timing instrumentation.
-- [~|claude] F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
+- [x] (pending commit) F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
 
 ### F1-RT — Runtime
 
