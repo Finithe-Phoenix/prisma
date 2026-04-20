@@ -59,6 +59,12 @@ public:
     void lsl (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shl
     void lsr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shr
     void asr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sar
+    void ror (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Ror (ARM64 native)
+    // Rol is not a native ARM64 op. Callers that want it must either:
+    //   * lower via `neg tmp, count; ror rd, rn, tmp` at a higher layer, or
+    //   * use constant folding when the count is known at compile time.
+    // The Lowerer currently rejects Rol with UnsupportedOp for MVP.
+    void neg (arm64::Reg rd, arm64::Reg rn);                 // neg xd, xn (alias of sub xd, xzr, xn)
 
     // Compare (SUBS with discard) + materialise 0/1 from flags.
     //   cmp(xn, xm)                — sets NZCV.

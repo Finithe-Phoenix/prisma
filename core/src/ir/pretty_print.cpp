@@ -43,6 +43,7 @@ constexpr std::string_view binop_name(BinOpKind k) noexcept {
         case BinOpKind::And: return "and"; case BinOpKind::Or:  return "or";
         case BinOpKind::Xor: return "xor"; case BinOpKind::Shl: return "shl";
         case BinOpKind::Shr: return "shr"; case BinOpKind::Sar: return "sar";
+        case BinOpKind::Rol: return "rol"; case BinOpKind::Ror: return "ror";
     }
     return "?";
 }

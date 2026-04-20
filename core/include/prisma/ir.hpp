@@ -63,6 +63,8 @@ enum class BinOpKind : std::uint8_t {
     Add = 0, Sub, Mul,
     And,     Or,  Xor,
     Shl,     Shr, Sar,
+    Rol,     Ror,
+    Rcl,     Rcr,
 };
 
 enum class CondCode : std::uint8_t {

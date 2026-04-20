@@ -82,6 +82,12 @@ void Emitter::lsr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
 void Emitter::asr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Asr(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }
+void Emitter::ror(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Ror(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::neg(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Neg(to_vixl_x(rd), to_vixl_x(rn));
+}
 
 void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Cmp(to_vixl_x(rn), to_vixl_x(rm));

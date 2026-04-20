@@ -38,6 +38,12 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
   | .shl => lhs <<< (rhs &&& 0x3F)
   | .shr => lhs >>> (rhs &&& 0x3F)
   | .sar => lhs >>> (rhs &&& 0x3F)  -- TODO: proper signed shift
+  | .rol =>
+      let n := rhs &&& 0x3F
+      if n == 0 then lhs else (lhs <<< n) ||| (lhs >>> (64 - n))
+  | .ror =>
+      let n := rhs &&& 0x3F
+      if n == 0 then lhs else (lhs >>> n) ||| (lhs <<< (64 - n))
 
 /-- Mask a 64-bit value down to `size` bits. -/
 def maskToSize (v : UInt64) : OpSize → UInt64

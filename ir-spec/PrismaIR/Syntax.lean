@@ -48,6 +48,7 @@ inductive BinOp where
   | add | sub
   | and | or | xor
   | shl | shr | sar
+  | rol | ror
   deriving DecidableEq, Repr, BEq
 
 /-- x86 condition codes used by conditional branches and SETcc-like compare. -/

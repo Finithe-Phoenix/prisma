@@ -36,6 +36,15 @@ LowerResult emit_binop(Emitter& em,
         case ir::BinOpKind::Shl: em.lsl(rd, rn, rm);  return {};
         case ir::BinOpKind::Shr: em.lsr(rd, rn, rm);  return {};
         case ir::BinOpKind::Sar: em.asr(rd, rn, rm);  return {};
+        case ir::BinOpKind::Ror: em.ror(rd, rn, rm);  return {};
+        case ir::BinOpKind::Rol:
+            // ARM64 has no native rotate-left. Lowering to `neg tmp, rm;
+            // ror rd, rn, tmp` requires an extra scratch; that lands when
+            // the decoder starts producing Rol (post MVP) and the
+            // Lowerer has a scratch-pool helper. Until then we fail
+            // explicitly so callers see the gap.
+            return {false, LowerError::UnsupportedOp,
+                    "Rol not yet lowered (use Ror or wait for scratch-aware path)"};
     }
     return {false, LowerError::UnsupportedOp, "unknown BinOpKind"};
 }
