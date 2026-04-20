@@ -21,18 +21,25 @@
 //   the host register directly, and LoadReg reads from it.
 //
 //   SSA values produced by Constant / LoadReg / BinOp live in a pool of
-//   scratch registers x0..x9 (10 registers). Each new Ref allocates the
-//   next scratch; we don't yet free scratches (short basic blocks only).
-//   If a block needs more than 10 scratches, lowering fails with
-//   LowerError::OutOfScratchRegs. Constrained register allocation lands
-//   in Fase 2.
+//   scratch registers x0..x9 (10 registers). Allocation is linear-scan
+//   (F1-BK-007):
+//     1. A pre-pass computes each Ref's last-use statement index.
+//     2. Lowering proceeds forward; after each statement any Ref whose
+//        last_use has passed returns its scratch to a free-list pool.
+//     3. New allocations pop from the free-list (prefer lowest-numbered
+//        reg for reproducible encodings).
+//   If a block's simultaneously-live set exceeds 10 registers, lowering
+//   fails with LowerError::OutOfScratchRegs. Spilling to the stack frame
+//   lands next in F1-BK-008.
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "prisma/arm64_encoding.hpp"  // for arm64::Reg
 #include "prisma/emitter.hpp"
@@ -75,30 +82,60 @@ public:
     // an error the Emitter state is undefined — throw it away.
     [[nodiscard]] LowerResult lower(std::span<const ir::Stmt> stmts);
 
-    // For tests: how many scratch registers have been allocated so far.
-    [[nodiscard]] unsigned scratch_used() const noexcept { return next_scratch_; }
+    // For tests: the peak number of scratch registers that were
+    // simultaneously live during the last call to lower(). A value of 10
+    // means the pool was saturated.
+    [[nodiscard]] unsigned scratch_used() const noexcept { return peak_live_; }
 
 private:
     Emitter& emitter_;
     LowerOptions options_;
 
-    // Map IR Ref → host scratch register.
+    // Map IR Ref → host scratch register (active assignments only — entries
+    // are erased on expiry).
     std::unordered_map<ir::Ref, arm64::Reg> ref_to_scratch_;
 
-    // Next scratch register to hand out (x0..x9).
-    unsigned next_scratch_{0};
+    // Liveness info: last_use_[r] == max statement index that reads r, or
+    // the def index if r is never used. Populated once by compute_liveness
+    // at the start of lower().
+    std::unordered_map<ir::Ref, std::size_t> last_use_;
+
+    // Free-list of scratch registers. Used as a stack: back is popped
+    // first. Initialised with x9..x0 so x0 comes out first.
+    std::vector<arm64::Reg> free_regs_;
+
+    // Scratch regs allocated as single-statement temporaries (e.g. the
+    // Rol/Rcl `neg` helper). Returned to the free list after lower_stmt.
+    std::vector<arm64::Reg> stmt_temporaries_;
+
+    // Monotonically increasing during lower(): the index of the stmt we
+    // are about to emit. Used both for post-stmt expiry and for debug.
+    std::size_t stmt_index_{0};
+
+    // Peak occupancy of ref_to_scratch_ + stmt_temporaries_ observed
+    // during the last lower() call. Exposed by scratch_used().
+    unsigned peak_live_{0};
 
     [[nodiscard]] LowerResult lower_stmt(const ir::Stmt& s);
 
-    // Allocate the next scratch register. Returns false on exhaustion.
+    // Walk `stmts` once to populate last_use_ for every def'd Ref.
+    void compute_liveness(std::span<const ir::Stmt> stmts);
+
+    // Called after each lower_stmt: free any Ref whose last_use_ has
+    // passed, plus return this stmt's temporaries to the free list.
+    void expire_intervals();
+
+    // Allocate a scratch register bound to `ref`. Returns false on
+    // exhaustion.
     [[nodiscard]] bool allocate_scratch(ir::Ref ref, arm64::Reg& out);
 
-    // Allocate one extra scratch register for temporary use by lowering patterns
-    // that need a helper register (e.g. emulated rotate-left).
+    // Allocate one extra scratch register for temporary use within a
+    // single stmt (e.g. emulated rotate-left). Auto-freed at stmt end.
     [[nodiscard]] bool allocate_temporary(arm64::Reg& out);
 
     // Look up the host register that currently holds an SSA Ref's value.
-    // Returns false if the Ref was never bound.
+    // Returns false if the Ref was never bound, or if its interval has
+    // already expired.
     [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out) const;
 };
 

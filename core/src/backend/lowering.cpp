@@ -1,11 +1,21 @@
 // core/src/backend/lowering.cpp — implementation of the Lowerer.
 //
-// One-pass forward traversal of the IR. The implementation relies on the
-// invariant (from RFC 0001) that every Ref has a unique def preceding its
-// uses, so a simple linear allocator is correct for a single basic block.
+// Two-pass algorithm:
+//   1. compute_liveness scans the IR once to record each Ref's last-use
+//      statement index.
+//   2. The main forward scan lowers stmt by stmt; after each stmt we
+//      return the host regs of any Ref whose interval has ended to a
+//      free-list pool (the "linear-scan" expire step), and free any
+//      single-stmt temporaries.
+//
+// The SSA property (every Ref has a unique def preceding its uses —
+// RFC 0001) makes this sound for a single basic block: no phi handling
+// required, live intervals are contiguous, and forward-only expiry
+// never releases a register that will be read again.
 
 #include "prisma/lowering.hpp"
 
+#include <algorithm>
 #include <variant>
 
 namespace prisma::backend {
@@ -50,15 +60,24 @@ LowerResult emit_binop(Emitter& em,
 }  // namespace
 
 bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
-    if (next_scratch_ >= kScratchPoolSize) return false;
-    out = scratch_reg(next_scratch_++);
+    if (free_regs_.empty()) return false;
+    out = free_regs_.back();
+    free_regs_.pop_back();
     ref_to_scratch_[ref] = out;
+    const unsigned live = static_cast<unsigned>(
+        ref_to_scratch_.size() + stmt_temporaries_.size());
+    peak_live_ = std::max(peak_live_, live);
     return true;
 }
 
 bool Lowerer::allocate_temporary(arm64::Reg& out) {
-    if (next_scratch_ >= kScratchPoolSize) return false;
-    out = scratch_reg(next_scratch_++);
+    if (free_regs_.empty()) return false;
+    out = free_regs_.back();
+    free_regs_.pop_back();
+    stmt_temporaries_.push_back(out);
+    const unsigned live = static_cast<unsigned>(
+        ref_to_scratch_.size() + stmt_temporaries_.size());
+    peak_live_ = std::max(peak_live_, live);
     return true;
 }
 
@@ -69,10 +88,83 @@ bool Lowerer::reg_of(ir::Ref ref, arm64::Reg& out) const {
     return true;
 }
 
+void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
+    last_use_.clear();
+    auto bump = [&](ir::Ref r, std::size_t i) {
+        auto it = last_use_.find(r);
+        if (it == last_use_.end() || it->second < i) last_use_[r] = i;
+    };
+    for (std::size_t i = 0; i < stmts.size(); ++i) {
+        const auto& s = stmts[i];
+        if (s.result) {
+            // Seed last_use with the def index; reads below may extend it.
+            // This also ensures a never-used def is freed after its own
+            // statement instead of being pinned forever.
+            auto& entry = last_use_[*s.result];
+            if (entry < i) entry = i;
+        }
+        std::visit([&](const auto& op) {
+            using T = std::decay_t<decltype(op)>;
+            if      constexpr (std::is_same_v<T, ir::BinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::Compare>)     { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::Select>)      { bump(op.true_value, i); bump(op.false_value, i); }
+            else if constexpr (std::is_same_v<T, ir::LoadMem>)     { bump(op.addr, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreMem>)    { bump(op.addr, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::LoadMemTSO>)  { bump(op.addr, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) { bump(op.addr, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreReg>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::CmpFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
+            else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
+            // Constant, LoadReg, Jump, JumpRel, CondJumpRel, Return have
+            // no operand refs — nothing to bump.
+        }, s.op);
+    }
+}
+
+void Lowerer::expire_intervals() {
+    // Return any single-stmt temporaries to the pool.
+    for (arm64::Reg r : stmt_temporaries_) free_regs_.push_back(r);
+    stmt_temporaries_.clear();
+
+    // Expire SSA refs whose last_use is behind us.
+    for (auto it = ref_to_scratch_.begin(); it != ref_to_scratch_.end();) {
+        auto lu_it = last_use_.find(it->first);
+        // If for some reason the ref is missing from last_use_, keep it
+        // alive — better to OOM later than to free a live reg.
+        const bool expired = lu_it != last_use_.end()
+                             && lu_it->second <= stmt_index_;
+        if (expired) {
+            free_regs_.push_back(it->second);
+            it = ref_to_scratch_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
-    for (const auto& s : stmts) {
-        LowerResult r = lower_stmt(s);
+    // Reset per-call state. `last_use_` and friends may carry stale data
+    // from a prior lower() invocation on the same Lowerer instance.
+    ref_to_scratch_.clear();
+    stmt_temporaries_.clear();
+    free_regs_.clear();
+    peak_live_ = 0;
+
+    // Seed the free-list so that allocate_scratch hands out x0 first, x1
+    // second, etc. — matches the old bump-pointer ordering, which keeps
+    // existing emitter tests happy.
+    free_regs_.reserve(kScratchPoolSize);
+    for (unsigned i = kScratchPoolSize; i-- > 0;) {
+        free_regs_.push_back(scratch_reg(i));
+    }
+
+    compute_liveness(stmts);
+
+    for (stmt_index_ = 0; stmt_index_ < stmts.size(); ++stmt_index_) {
+        LowerResult r = lower_stmt(stmts[stmt_index_]);
         if (!r.success) return r;
+        expire_intervals();
     }
     return {};
 }

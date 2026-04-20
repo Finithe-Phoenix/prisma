@@ -375,8 +375,76 @@ TEST_CASE("Lowerer: JumpReg can be lowered without auto-ret for translator mode"
     REQUIRE(d.find("ret") == std::string::npos);
 }
 
-TEST_CASE("Lowerer: OutOfScratchRegs when exceeding the 10-reg pool") {
-    // 11 consecutive Constants → 11 scratch allocations → overflow.
+TEST_CASE("Lowerer: OutOfScratchRegs when 11 refs are simultaneously live") {
+    // With the linear-scan allocator, dead defs free their register
+    // immediately, so 11 consecutive never-used Constants now fit. To
+    // force overflow we need 11 refs that ARE all live at the same
+    // point — load 11 guest GPRs and keep each alive until a later
+    // StoreReg reads it. By the 11th LoadReg, the pool is exhausted.
+    const ir::Gpr srcs[11] = {
+        ir::Gpr::Rax, ir::Gpr::Rcx, ir::Gpr::Rdx, ir::Gpr::Rbx,
+        ir::Gpr::Rsi, ir::Gpr::Rdi, ir::Gpr::R8,  ir::Gpr::R9,
+        ir::Gpr::R10, ir::Gpr::R11, ir::Gpr::R12,
+    };
+    const ir::Gpr dsts[11] = {
+        ir::Gpr::R13, ir::Gpr::R14, ir::Gpr::R15, ir::Gpr::Rbp,
+        ir::Gpr::Rsp, ir::Gpr::Rax, ir::Gpr::Rcx, ir::Gpr::Rdx,
+        ir::Gpr::Rbx, ir::Gpr::Rsi, ir::Gpr::Rdi,
+    };
+    std::vector<ir::Stmt> stmts;
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({i, ir::LoadReg{srcs[i], ir::OpSize::I64}});
+    }
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({std::nullopt,
+                         ir::StoreReg{dsts[i], i, ir::OpSize::I64}});
+    }
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    auto r = lw.lower(stmts);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::OutOfScratchRegs);
+}
+
+TEST_CASE("Lowerer: linear-scan reuses a reg after its Ref's last use") {
+    // Two disjoint live intervals should share one scratch reg.
+    //   %0 = const 1          pool: [x0]
+    //   storereg rax, %0      %0 dies, x0 returns to pool
+    //   %1 = const 2          reuses x0
+    //   storereg rbx, %1      %1 dies
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I64}},
+    };
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    auto r = lw.lower(stmts);
+    REQUIRE(r.success);
+    REQUIRE(lw.scratch_used() == 1u);
+}
+
+TEST_CASE("Lowerer: linear-scan extends an interval through a later BinOp") {
+    // %0 lives from stmt 0 to stmt 2 (read by Add). %1 lives 1..2.
+    // Peak live at stmt 2 is {%0, %1, %2} = 3 simultaneous scratches.
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{20, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+    };
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    auto r = lw.lower(stmts);
+    REQUIRE(r.success);
+    REQUIRE(lw.scratch_used() == 3u);
+}
+
+TEST_CASE("Lowerer: linear-scan frees dead Constants, 11 in a row succeed") {
+    // 11 never-used Constants each have live interval = [def, def] so
+    // they all reuse the same scratch. This used to overflow under the
+    // bump-pointer allocator but now succeeds.
     std::vector<ir::Stmt> stmts;
     for (unsigned i = 0; i < 11; ++i) {
         stmts.push_back({i, ir::Constant{i, ir::OpSize::I64}});
@@ -384,6 +452,6 @@ TEST_CASE("Lowerer: OutOfScratchRegs when exceeding the 10-reg pool") {
     backend::Emitter em;
     backend::Lowerer lw(em);
     auto r = lw.lower(stmts);
-    REQUIRE_FALSE(r.success);
-    REQUIRE(r.error == backend::LowerError::OutOfScratchRegs);
+    REQUIRE(r.success);
+    REQUIRE(lw.scratch_used() == 1u);  // peak: only one live at any time
 }
