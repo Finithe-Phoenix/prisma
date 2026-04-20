@@ -103,7 +103,7 @@ involvement or calendar time.
 - [ ] F0-DC-024: Read Danny Lin's Windows on Pixel 6 writeup.
 - [ ] F0-DC-025: Publish `docs/research_notes.md` as public blog post at `/blog/designing-prisma-part-1`.
 - [ ] F0-DC-026: Write blog post "Why we're writing a new DBT from scratch".
-- [~|claude] F0-DC-027: Write `docs/ARCHITECTURE.md` — one-page tour of the monorepo.
+- [x] (pending commit) F0-DC-027: Write `docs/ARCHITECTURE.md` — one-page tour of the monorepo.
 - [ ] F0-DC-028: Write `docs/CONTRIBUTING.md` (placeholder for future OSS).
 
 ### F0-CM — Community outreach
@@ -395,7 +395,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
 - [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
 - [x] (pending commit) F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
-- [~|claude] F1-DC-007: Blog post: "Designing an IR you can prove correct".
+- [x] (pending commit) F1-DC-007: Blog post: "Designing an IR you can prove correct".
 - [x] (pending commit) F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
 - [x] (pending commit) F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
 
