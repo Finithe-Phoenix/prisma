@@ -385,6 +385,41 @@ std::variant<Decoded, DecodeError> decode_imul_r64_r_rm(
     return d;
 }
 
+// IMUL r64, r/m64, imm32 (69 /r) — MVP register-direct only.
+// Encodes:
+//   dest = reg field, operation: dest = signext(imm32) * r/m64 (implemented as mul).
+// The immediate is sign-extended to 64-bit and then multiplied as a placeholder.
+std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm32(
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    ir::Ref& next_ref) {
+    auto modrm = parse_modrm(bytes, cursor);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    auto imm = read_le<4>(bytes, cursor);
+    if (!imm) return DecodeError::TruncatedInput;
+    cursor += 4;
+    const std::int32_t imm_i32 = sign_extend_i32<4>(*imm);
+    const std::uint64_t imm_u64 = static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i32));
+
+    Decoded d;
+    const ir::Ref ref_rhs = next_ref++;
+    const ir::Ref ref_imm = next_ref++;
+    const ir::Ref ref_product = next_ref++;
+    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_imm, ir::Constant{imm_u64, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_product, ir::BinOp{ir::BinOpKind::Mul, ref_rhs, ref_imm, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_product, ir::OpSize::I64}});
+    d.bytes_consumed = cursor;
+    return d;
+}
+
 }  // namespace
 
 std::variant<Decoded, DecodeError> decode_one(
@@ -645,6 +680,10 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- ALU r/m64, r64 (shared shape, register-direct only for MVP) ----
     switch (opcode) {
+        case 0x69u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+            return decode_imul_r64_rm_imm32(bytes, cursor, next_ref);
         case 0x01u:
             if (!rex.w) return DecodeError::UnsupportedEncoding;
             return decode_alu_rm_r(bytes, cursor, ir::BinOpKind::Add, next_ref);
