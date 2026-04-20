@@ -103,6 +103,138 @@ TEST_CASE("const_prop: idempotent — folding again is a no-op") {
     REQUIRE(once == twice);
 }
 
+// ---------------------------------------------------------------------------
+// DCE pass.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("dce: removes unused Constant") {
+    // %0 = const 10
+    // %1 = const 20   ← never read → dead
+    // %2 = const 30
+    //      storereg rax, %2
+    //      ret
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{20, ir::OpSize::I64}},
+        {2u, ir::Constant{30, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+
+    // %0 also dead (never read); only %2, StoreReg, Return survive.
+    REQUIRE(out.size() == 3);
+    REQUIRE(out[0].op == ir::Op{ir::Constant{30, ir::OpSize::I64}});
+    REQUIRE(out[1].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(out[2].op == ir::Op{ir::Return{}});
+}
+
+TEST_CASE("dce: preserves live chain through BinOp") {
+    // %0 = const 10
+    // %1 = const 32
+    // %2 = add %0, %1
+    //      storereg rax, %2
+    //      ret
+    // All live.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{32, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == s.size());
+}
+
+TEST_CASE("dce: const_prop leaves residue, dce cleans it up") {
+    // Mirrors what the pipeline would do in Fase 1: after const_prop
+    // replaces the BinOp with a Constant, the two original Constants
+    // remain but become unused. DCE must remove them.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{32, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    auto after_cp  = passes::constant_propagate(s);
+    auto after_dce = passes::dead_code_eliminate(after_cp);
+
+    // after_cp: original %0, %1 survive (const_prop never deletes);
+    //           %2 becomes `const 42`; store + return intact.
+    REQUIRE(after_cp.size() == s.size());
+
+    // after_dce: %0 and %1 are dead; only `const 42`, store, return remain.
+    REQUIRE(after_dce.size() == 3);
+    REQUIRE(after_dce[0].op == ir::Op{ir::Constant{42, ir::OpSize::I64}});
+    REQUIRE(after_dce[1].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(after_dce[2].op == ir::Op{ir::Return{}});
+}
+
+TEST_CASE("dce: LoadReg is removed when its value is unused") {
+    // %0 = loadreg rbx     ← dead
+    // %1 = const 7
+    //      storereg rax, %1
+    //      ret
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::Constant{7, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[0].op));
+}
+
+TEST_CASE("dce: StoreReg with dead Constant keeps the Constant (store is live)") {
+    // %0 = const 99
+    //      storereg rax, %0     ← impure, keeps %0 alive
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{99, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 2);
+}
+
+TEST_CASE("dce: LoadMemTSO is impure (conservatively kept)") {
+    // %0 = loadreg rbx
+    // %1 = load.tso [%0]   ← dead result, but TSO loads are observable
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadMemTSO{0u, ir::OpSize::I64}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 2);  // both preserved
+}
+
+TEST_CASE("dce: plain LoadMem (non-TSO) IS removable when its result is dead") {
+    // Contrast with the TSO test above: plain LoadMem is considered pure
+    // for DCE, so an unused result deletes it.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadMem{0u, ir::OpSize::I64}},  // dead
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("dce: idempotent") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{99, ir::OpSize::I64}},
+        {1u, ir::Constant{55, ir::OpSize::I64}},  // dead
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    auto once  = passes::dead_code_eliminate(s);
+    auto twice = passes::dead_code_eliminate(once);
+    REQUIRE(once == twice);
+}
+
 TEST_CASE("const_prop: transitive folding through a chain") {
     // %0 = 2
     // %1 = 3

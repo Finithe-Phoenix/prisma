@@ -102,6 +102,7 @@ target_link_libraries(prisma_runtime PRIVATE prisma_warnings)
 
 add_library(prisma_passes STATIC
     src/passes/const_prop.cpp
+    src/passes/dce.cpp
 )
 
 target_include_directories(prisma_passes

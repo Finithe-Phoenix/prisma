@@ -34,4 +34,25 @@ namespace prisma::passes {
 [[nodiscard]] std::vector<ir::Stmt>
 constant_propagate(const std::vector<ir::Stmt>& stmts);
 
+// Dead Code Elimination.
+//
+// Removes pure statements whose bound Ref is never read by any subsequent
+// statement. "Pure" here means: Constant, LoadReg, BinOp, Compare, LoadMem
+// (non-TSO), LoadMemTSO (see note below). Side-effecting statements
+// (StoreReg, StoreMem*, Jump, CondJump, Return) are never removed.
+//
+// Note on LoadMemTSO: strictly speaking a TSO load is observable under a
+// weak memory model (it synchronises), so removing it when its value is
+// dead changes the observable behaviour. For now we do keep LoadMemTSO
+// alive even if the result ref is dead — it is not in the "pure" set for
+// DCE. When the TSO-adaptive pass (Pillar 3) proves a region is
+// single-threaded, those loads downgrade to plain LoadMem, and then
+// become eligible for DCE.
+//
+// Algorithm: one backward pass that seeds `live_refs` from every side-
+// effecting op's operands, plus one forward pass that filters. Correct-
+// ness follows from the invariant that every Ref has a unique def.
+[[nodiscard]] std::vector<ir::Stmt>
+dead_code_eliminate(const std::vector<ir::Stmt>& stmts);
+
 }  // namespace prisma::passes
