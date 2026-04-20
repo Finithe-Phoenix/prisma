@@ -328,7 +328,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
 - [ ] F1-RT-013: Guest stack pointer management (rsp).
 - [x] F1-RT-014: Guest segment registers fs / gs (TLS).
-- [ ] F1-RT-015: Helper calls from generated code to C++ runtime (printf-style).
+- [x] F1-RT-015: Helper calls from generated code to C++ runtime (printf-style).
 - [x] (pending commit) F1-RT-016: CPU feature detection: FEAT_LSE2, LRCPC2, FlagM.
 - [x] (pending commit) F1-RT-017: HostFeatures struct + runtime initialisation.
 
@@ -394,9 +394,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-DC-003: RFC 0005 — basic block representation + CFG construction.
 - [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
 - [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
-- [ ] F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
+- [~|claude] F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
 - [ ] F1-DC-007: Blog post: "Designing an IR you can prove correct".
-- [ ] F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
+- [~|claude] F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
 - [x] (pending commit) F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
 
 ---
