@@ -87,6 +87,7 @@ target_link_libraries(prisma_decoder
 
 add_library(prisma_runtime STATIC
     src/runtime/jit_memory.cpp
+    src/runtime/signal_handler.cpp
 )
 
 target_include_directories(prisma_runtime
@@ -103,6 +104,7 @@ target_link_libraries(prisma_runtime PRIVATE prisma_warnings)
 add_library(prisma_passes STATIC
     src/passes/const_prop.cpp
     src/passes/dce.cpp
+    src/passes/pass_manager.cpp
 )
 
 target_include_directories(prisma_passes
@@ -197,6 +199,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes.cpp
         tests/test_translation_cache.cpp
         tests/test_lowering.cpp
+        tests/test_signal_handler.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE

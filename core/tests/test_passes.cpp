@@ -235,6 +235,89 @@ TEST_CASE("dce: idempotent") {
     REQUIRE(once == twice);
 }
 
+// ---------------------------------------------------------------------------
+// PassManager.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("PassManager: default_pipeline runs const_prop then dce") {
+    // Classic 10 + 32 → 42 flow.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{32, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    auto pm = passes::default_pipeline();
+    REQUIRE(pm.size() == 2);
+
+    auto [out, stats] = pm.run(s);
+
+    // After the full pipeline: one Constant (the folded 42), one StoreReg,
+    // one Return — the two source Constants are gone.
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::get<ir::Constant>(out[0].op).value == 42u);
+
+    REQUIRE(stats.initial_stmt_count == 5);
+    REQUIRE(stats.passes.size() == 2);
+    REQUIRE(stats.passes[0].name == "constant_propagate");
+    REQUIRE(stats.passes[0].stmts_after == 5);  // const_prop keeps count
+    REQUIRE(stats.passes[1].name == "dead_code_eliminate");
+    REQUIRE(stats.passes[1].stmts_after == 3);  // DCE drops 2 dead defs
+}
+
+TEST_CASE("PassManager: empty pipeline is the identity") {
+    passes::PassManager pm;
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{7, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    auto [out, stats] = pm.run(s);
+    REQUIRE(out == s);
+    REQUIRE(stats.initial_stmt_count == s.size());
+    REQUIRE(stats.passes.empty());
+}
+
+TEST_CASE("PassManager: order is insertion order") {
+    // Register dce first (no-op on our input) then const_prop second.
+    // The reverse of the default. Verifies ordering is respected.
+    passes::PassManager pm;
+    pm.add("dead_code_eliminate", passes::dead_code_eliminate)
+      .add("constant_propagate",  passes::constant_propagate);
+
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{6, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+    };
+
+    auto [out, stats] = pm.run(s);
+
+    // With DCE first (before folding), %0 and %1 are live because %2
+    // still uses them. Nothing is removed. Then const_prop folds %2.
+    REQUIRE(stats.passes[0].name == "dead_code_eliminate");
+    REQUIRE(stats.passes[0].stmts_after == 4);
+    REQUIRE(stats.passes[1].name == "constant_propagate");
+    REQUIRE(stats.passes[1].stmts_after == 4);
+    REQUIRE(std::get<ir::Constant>(out[2].op).value == 11u);
+}
+
+TEST_CASE("PassManager: never mutates its input") {
+    std::vector<ir::Stmt> s_original = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{32, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto s_copy_for_compare = s_original;
+
+    auto pm = passes::default_pipeline();
+    [[maybe_unused]] auto [_out, _stats] = pm.run(s_original);
+
+    REQUIRE(s_original == s_copy_for_compare);
+}
+
 TEST_CASE("const_prop: transitive folding through a chain") {
     // %0 = 2
     // %1 = 3

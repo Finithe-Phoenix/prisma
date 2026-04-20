@@ -10,6 +10,10 @@
 
 #pragma once
 
+#include <cstddef>
+#include <functional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "prisma/ir.hpp"
@@ -54,5 +58,58 @@ constant_propagate(const std::vector<ir::Stmt>& stmts);
 // ness follows from the invariant that every Ref has a unique def.
 [[nodiscard]] std::vector<ir::Stmt>
 dead_code_eliminate(const std::vector<ir::Stmt>& stmts);
+
+// ---------------------------------------------------------------------------
+// PassManager — ordered pipeline of named passes, with run statistics.
+// ---------------------------------------------------------------------------
+//
+// Why a manager at all: once we have more than a couple of passes, we
+// want control over ordering, the ability to skip passes for debugging,
+// and a place to hang telemetry for the Pillar 1 (NPU) classifier. The
+// manager is intentionally simple today — no fixed-point iteration, no
+// dependency declarations — so we can evolve it alongside actual needs.
+
+struct PassRunStats {
+    // Statement count after each pass (in order). The first entry is the
+    // count AFTER the first pass ran; `initial_stmt_count` carries the
+    // count BEFORE any pass. This makes it trivial to compute per-pass
+    // deltas.
+    struct PassEntry {
+        std::string name;
+        std::size_t stmts_after;
+    };
+    std::size_t initial_stmt_count{0};
+    std::vector<PassEntry> passes;
+};
+
+class PassManager {
+public:
+    using PassFn = std::function<std::vector<ir::Stmt>(const std::vector<ir::Stmt>&)>;
+
+    // Register a pass to be run in order. Insertion order == run order.
+    // `name` should be unique within a manager — duplicates are legal but
+    // make stats harder to read.
+    PassManager& add(std::string name, PassFn fn);
+
+    // Number of registered passes.
+    [[nodiscard]] std::size_t size() const noexcept { return passes_.size(); }
+
+    // Run all passes in order and return the final statements plus
+    // per-pass statistics. Never mutates its argument.
+    [[nodiscard]] std::pair<std::vector<ir::Stmt>, PassRunStats>
+    run(const std::vector<ir::Stmt>& input) const;
+
+private:
+    struct Entry {
+        std::string name;
+        PassFn fn;
+    };
+    std::vector<Entry> passes_;
+};
+
+// Returns the default pipeline used by the rest of the codebase:
+//   constant_propagate → dead_code_eliminate
+// Fase 1+ will grow this; for now these two passes are the whole story.
+[[nodiscard]] PassManager default_pipeline();
 
 }  // namespace prisma::passes
