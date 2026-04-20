@@ -51,6 +51,35 @@ void Emitter::mov_imm64(arm64::Reg rd, std::uint64_t imm) {
     impl_->masm.Mov(to_vixl_x(rd), imm);
 }
 
+void Emitter::mov_reg_reg(arm64::Reg rd, arm64::Reg rs) {
+    impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rs));
+}
+
+void Emitter::add(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Add(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::sub(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Sub(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::and_(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.And(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::orr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Orr(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::eor(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Eor(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::lsl(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Lsl(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::lsr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Lsr(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::asr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Asr(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+
 void Emitter::ret(arm64::Reg rn) {
     impl_->masm.Ret(to_vixl_x(rn));
 }

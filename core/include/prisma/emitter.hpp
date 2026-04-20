@@ -41,6 +41,23 @@ public:
     // mov Xd, #imm64 (may emit up to 4 instructions: movz + movk*)
     void mov_imm64(arm64::Reg rd, std::uint64_t imm);
 
+    // mov Xd, Xs  (register-to-register copy)
+    void mov_reg_reg(arm64::Reg rd, arm64::Reg rs);
+
+    // --- 64-bit ALU, 3-register form (AArch64 canonical for BinOp lowering) ---
+    // Each maps 1-1 to our IR BinOpKind on OpSize::I64.
+    void add (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Add
+    void sub (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sub
+    void and_(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // And  (trailing _: `and` is a keyword)
+    void orr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Or   (AArch64 spells it `orr`)
+    void eor (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Xor  (AArch64 spells it `eor`)
+
+    // Shifts: shift amount comes from low 6 bits of rm (matches x86 behaviour
+    // for 64-bit shifts after we mask in the IR/lowerer).
+    void lsl (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shl
+    void lsr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shr
+    void asr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sar
+
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
 
