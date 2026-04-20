@@ -9,10 +9,15 @@
 //
 //   Register / register, 64-bit, mod=11
 //     * ADD r/m64, r64   (48 01 /r)                  3 bytes
+//     * ADC r/m64, r64   (48 11 /r)                  3 bytes
 //     * OR  r/m64, r64   (48 09 /r)                  3 bytes
 //     * AND r/m64, r64   (48 21 /r)                  3 bytes
 //     * SUB r/m64, r64   (48 29 /r)                  3 bytes
+//     * SBB r/m64, r64   (48 19 /r)                  3 bytes
 //     * XOR r/m64, r64   (48 31 /r)                  3 bytes
+//     * TEST r/m64, r64  (48 85 /r)                  3 bytes
+//     * INC r/m64        (48 FF /0)                  3 bytes
+//     * DEC r/m64        (48 FF /1)                  3 bytes
 //
 //   MOV, both register and simple memory forms
 //     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes
