@@ -68,6 +68,34 @@ public:
     void cmp  (arm64::Reg rn, arm64::Reg rm);
     void cset (arm64::Reg rd, ir::CondCode cc);
 
+    // --- Memory access -----------------------------------------------------
+    //
+    // Plain load / store (no barriers):
+    //   load(xd, [xaddr], size)            — LoadMem
+    //   store(xv, [xaddr], size)           — StoreMem
+    //
+    // TSO (x86 memory model) load / store:
+    //   load_acquire(xd, [xaddr], size)    — LoadMemTSO
+    //   store_release(xv, [xaddr], size)   — StoreMemTSO
+    //
+    // Size dispatch matches the IR:
+    //   I8  → ldrb / strb  (byte, zero-extended result for loads)
+    //   I16 → ldrh / strh  (halfword)
+    //   I32 → ldr w / str w (word; zero-extends to 64-bit)
+    //   I64 → ldr x / str x
+    // Acquire/release variants use ldar*/stlr* which ARM ARM B2 documents
+    // as equivalent to the cheap LRCPC path on capable CPUs and to a
+    // post-DMB fence otherwise.
+    //
+    // The address is assumed to be a full 64-bit register holding the
+    // effective address; we do not yet emit [base + offset] forms from
+    // the Emitter API (callers compute the address in a scratch first,
+    // matching what the decoder already does).
+    void load          (arm64::Reg rd, arm64::Reg raddr, ir::OpSize size);
+    void store         (arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
+    void load_acquire  (arm64::Reg rd, arm64::Reg raddr, ir::OpSize size);
+    void store_release (arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
+
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
 

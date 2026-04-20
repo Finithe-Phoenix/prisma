@@ -84,6 +84,55 @@ void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Cmp(to_vixl_x(rn), to_vixl_x(rm));
 }
 
+namespace {
+
+// Build a vixl WRegister from our Reg enum (for 32-bit form loads/stores).
+vixl_aa::WRegister to_vixl_w(arm64::Reg r) noexcept {
+    return vixl_aa::WRegister(static_cast<int>(r));
+}
+
+}  // namespace
+
+void Emitter::load(arm64::Reg rd, arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:  impl_->masm.Ldrb(to_vixl_x(rd), mo); return;
+        case ir::OpSize::I16: impl_->masm.Ldrh(to_vixl_x(rd), mo); return;
+        case ir::OpSize::I32: impl_->masm.Ldr (to_vixl_w(rd), mo); return;
+        case ir::OpSize::I64: impl_->masm.Ldr (to_vixl_x(rd), mo); return;
+    }
+}
+
+void Emitter::store(arm64::Reg rv, arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:  impl_->masm.Strb(to_vixl_x(rv), mo); return;
+        case ir::OpSize::I16: impl_->masm.Strh(to_vixl_x(rv), mo); return;
+        case ir::OpSize::I32: impl_->masm.Str (to_vixl_w(rv), mo); return;
+        case ir::OpSize::I64: impl_->masm.Str (to_vixl_x(rv), mo); return;
+    }
+}
+
+void Emitter::load_acquire(arm64::Reg rd, arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:  impl_->masm.Ldarb(to_vixl_x(rd), mo); return;
+        case ir::OpSize::I16: impl_->masm.Ldarh(to_vixl_x(rd), mo); return;
+        case ir::OpSize::I32: impl_->masm.Ldar (to_vixl_w(rd), mo); return;
+        case ir::OpSize::I64: impl_->masm.Ldar (to_vixl_x(rd), mo); return;
+    }
+}
+
+void Emitter::store_release(arm64::Reg rv, arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:  impl_->masm.Stlrb(to_vixl_x(rv), mo); return;
+        case ir::OpSize::I16: impl_->masm.Stlrh(to_vixl_x(rv), mo); return;
+        case ir::OpSize::I32: impl_->masm.Stlr (to_vixl_w(rv), mo); return;
+        case ir::OpSize::I64: impl_->masm.Stlr (to_vixl_x(rv), mo); return;
+    }
+}
+
 void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
     // Map Prisma's CondCode to vixl's Condition. ARM64 / x86 signed vs
     // unsigned mnemonics line up cleanly once you know the mapping.

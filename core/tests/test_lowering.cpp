@@ -172,6 +172,78 @@ TEST_CASE("Lowerer: Compare → cmp + cset emits the right ARM64") {
     REQUIRE(d.find("lo")         != std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Memory ops lowering.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Lowerer: LoadMemTSO (i64) emits ldar") {
+    // %0 = loadreg rbx        ; the base address
+    // %1 = load.tso.i64 [%0]
+    //      storereg rax, %1
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadMemTSO{0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Expected: mov x0, x13 ; ldar x1, [x0] ; mov x10, x1
+    REQUIRE(d.find("ldar x1, [x0]") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: LoadMem (non-TSO, i64) emits ldr") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadMem{0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldr x1, [x0]") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: StoreMemTSO emits stlr") {
+    // %0 = loadreg rbx  ; address
+    // %1 = loadreg rax  ; value
+    //      storemem.tso.i64 [%0], %1
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreMemTSO{0u, 1u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("stlr x1, [x0]") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: each OpSize picks the matching ARM size suffix") {
+    auto try_size = [](ir::OpSize sz) {
+        std::vector<ir::Stmt> s = {
+            {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+            {1u, ir::LoadMem{0u, sz}},
+        };
+        bool ok;
+        return std::pair{ok, lower_to_disasm(s, ok)};
+    };
+
+    auto [ok8,  d8 ] = try_size(ir::OpSize::I8);
+    REQUIRE(ok8);  REQUIRE(d8 .find("ldrb") != std::string::npos);
+
+    auto [ok16, d16] = try_size(ir::OpSize::I16);
+    REQUIRE(ok16); REQUIRE(d16.find("ldrh") != std::string::npos);
+
+    auto [ok32, d32] = try_size(ir::OpSize::I32);
+    REQUIRE(ok32);
+    // 32-bit ldr uses a W register; vixl prints `ldr w<n>, [x<m>]`.
+    REQUIRE(d32.find("ldr w") != std::string::npos);
+
+    auto [ok64, d64] = try_size(ir::OpSize::I64);
+    REQUIRE(ok64); REQUIRE(d64.find("ldr x") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: Compare picks the correct ARM condition for each CondCode") {
     auto try_cc = [](ir::CondCode cc) {
         std::vector<ir::Stmt> s = {

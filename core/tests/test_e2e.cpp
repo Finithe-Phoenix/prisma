@@ -177,6 +177,199 @@ TEST_CASE("e2e executing: translate and run `MOV rax, 100 ; MOV rbx, 42 ; XOR ra
     REQUIRE(fn() == (100u ^ 42u));  // 78
 }
 
+// ---------------------------------------------------------------------------
+// Memory round-trips (ARM64 only).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("e2e executing: load from guest memory returns stored value",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    // IR: %0 = loadreg rbx        ; rbx holds the address
+    //     %1 = load.tso.i64 [%0]
+    //          storereg rax, %1
+    //          ret
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadMemTSO{0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    backend::Emitter em;
+
+    // Thunk prologue: AAPCS64 passes the first arg in x0. Copy it into
+    // rbx's pinned host register (x13) so LoadReg rbx reads the right
+    // value.
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rbx), arm64::Reg::X0);
+
+    // Lower everything except the Return; we'll emit our own epilogue.
+    backend::Lowerer lw(em);
+    auto r = lw.lower({stmts.data(), stmts.size() - 1});
+    REQUIRE(r.success);
+
+    // Epilogue: return guest rax through AAPCS64 x0.
+    em.mov_reg_reg(arm64::Reg::X0, arm64::host_reg_for(ir::Gpr::Rax));
+    em.ret();
+    em.finalize();
+
+    // Host-side backing memory the JIT'd code will read.
+    alignas(8) std::uint64_t backing = 0xBADC0FFEE0DDF00DULL;
+
+    runtime::JitBuffer jit(em.code_bytes().size());
+    REQUIRE(jit.write(em.code_bytes()));
+    jit.make_executable();
+
+    using Fn = std::uint64_t (*)(std::uint64_t*);
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+    REQUIRE(fn(&backing) == 0xBADC0FFEE0DDF00DULL);
+}
+
+TEST_CASE("e2e executing: store then re-load round-trips through guest memory",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    // Three-step IR:
+    //   %0 = loadreg rbx          ; address passed in rbx
+    //   %1 = loadreg rax          ; value passed in rax
+    //        storemem.tso.i64 [%0], %1
+    //   %2 = load.tso.i64 [%0]    ; read back
+    //        storereg rcx, %2     ; stash into rcx; thunk will return rcx
+    //        ret
+    //
+    // The thunk uses two AAPCS64 args (x0 → rbx, x1 → rax) and returns
+    // rcx so we can verify the whole round-trip.
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreMemTSO{0u, 1u, ir::OpSize::I64}},
+        {2u, ir::LoadMemTSO{0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    backend::Emitter em;
+
+    // Prologue: x13 ← x0 (rbx = addr), x10 ← x1 (rax = value).
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rbx), arm64::Reg::X0);
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rax), arm64::Reg::X1);
+
+    backend::Lowerer lw(em);
+    auto r = lw.lower({stmts.data(), stmts.size() - 1});
+    REQUIRE(r.success);
+
+    // Epilogue: return rcx via x0.
+    em.mov_reg_reg(arm64::Reg::X0, arm64::host_reg_for(ir::Gpr::Rcx));
+    em.ret();
+    em.finalize();
+
+    alignas(8) std::uint64_t backing = 0;
+
+    runtime::JitBuffer jit(em.code_bytes().size());
+    REQUIRE(jit.write(em.code_bytes()));
+    jit.make_executable();
+
+    using Fn = std::uint64_t (*)(std::uint64_t*, std::uint64_t);
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+
+    constexpr std::uint64_t payload = 0xCAFEF00DDEADBEEFULL;
+    REQUIRE(fn(&backing, payload) == payload);
+    REQUIRE(backing == payload);  // the store also landed in host memory.
+}
+
+TEST_CASE("e2e executing: decoded x86 `mov rax, [rbx]` JITs and runs",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    // This is the full pipeline: x86 bytes, decoded via the memory-operand
+    // path of the decoder, optimised, lowered, JIT'd, executed.
+    //
+    //   48 8B 03   →   mov rax, qword ptr [rbx]
+    //   C3         →   ret
+    const std::vector<std::uint8_t> guest_bytes = {
+        0x48, 0x8B, 0x03,
+        0xC3,
+    };
+    auto stmts = decode_all(guest_bytes);
+
+    // Run the default pass pipeline — correctness must be invariant.
+    auto [opt, _stats] = passes::default_pipeline().run(stmts);
+
+    backend::Emitter em;
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rbx), arm64::Reg::X0);
+
+    backend::Lowerer lw(em);
+    // Drop the trailing Return so we can emit our own epilogue.
+    REQUIRE_FALSE(opt.empty());
+    REQUIRE(std::holds_alternative<ir::Return>(opt.back().op));
+    auto r = lw.lower({opt.data(), opt.size() - 1});
+    REQUIRE(r.success);
+
+    em.mov_reg_reg(arm64::Reg::X0, arm64::host_reg_for(ir::Gpr::Rax));
+    em.ret();
+    em.finalize();
+
+    alignas(8) std::uint64_t backing = 0x1234'5678'9ABC'DEF0ULL;
+    runtime::JitBuffer jit(em.code_bytes().size());
+    REQUIRE(jit.write(em.code_bytes()));
+    jit.make_executable();
+
+    using Fn = std::uint64_t (*)(std::uint64_t*);
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+    REQUIRE(fn(&backing) == 0x1234'5678'9ABC'DEF0ULL);
+}
+
+TEST_CASE("e2e executing: i8/i16/i32/i64 loads each see the right width",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    // The payload is carefully chosen so that the result of each width
+    // differs. Little-endian: the low 8 bits are 0x11, low 16 are 0x2211,
+    // low 32 are 0x44332211, full 64 are the whole thing.
+    alignas(8) std::uint64_t backing = 0x8877665544332211ULL;
+
+    auto translate_and_run = [&](ir::OpSize sz) -> std::uint64_t {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+            {1u, ir::LoadMem{0u, sz}},            // non-TSO so we exercise ldr*
+            {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        };
+
+        backend::Emitter em;
+        em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rbx), arm64::Reg::X0);
+        backend::Lowerer lw(em);
+        REQUIRE(lw.lower(stmts).success);
+        em.mov_reg_reg(arm64::Reg::X0, arm64::host_reg_for(ir::Gpr::Rax));
+        em.ret();
+        em.finalize();
+
+        runtime::JitBuffer jit(em.code_bytes().size());
+        REQUIRE(jit.write(em.code_bytes()));
+        jit.make_executable();
+
+        using Fn = std::uint64_t (*)(std::uint64_t*);
+        Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+        return fn(&backing);
+    };
+
+    REQUIRE(translate_and_run(ir::OpSize::I8)  == 0x11u);
+    REQUIRE(translate_and_run(ir::OpSize::I16) == 0x2211u);
+    REQUIRE(translate_and_run(ir::OpSize::I32) == 0x44332211ULL);
+    REQUIRE(translate_and_run(ir::OpSize::I64) == 0x8877665544332211ULL);
+}
+
 TEST_CASE("e2e executing: passes fold constants — output matches unoptimised",
           "[arm64-only]") {
     // This test establishes a property we'll want to keep as passes grow:

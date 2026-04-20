@@ -122,6 +122,42 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.cset(rd, op.cc);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::LoadMem>) {
+            if (!s.result) return {false, LowerError::DanglingRef, "LoadMem without result ref"};
+            arm64::Reg raddr;
+            if (!reg_of(op.addr, raddr)) return {false, LowerError::DanglingRef, "LoadMem.addr"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadMem"};
+            }
+            emitter_.load(rd, raddr, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreMem>) {
+            arm64::Reg raddr, rv;
+            if (!reg_of(op.addr, raddr)) return {false, LowerError::DanglingRef, "StoreMem.addr"};
+            if (!reg_of(op.value, rv))   return {false, LowerError::DanglingRef, "StoreMem.value"};
+            emitter_.store(rv, raddr, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadMemTSO>) {
+            if (!s.result) return {false, LowerError::DanglingRef, "LoadMemTSO without result ref"};
+            arm64::Reg raddr;
+            if (!reg_of(op.addr, raddr)) return {false, LowerError::DanglingRef, "LoadMemTSO.addr"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadMemTSO"};
+            }
+            emitter_.load_acquire(rd, raddr, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) {
+            arm64::Reg raddr, rv;
+            if (!reg_of(op.addr, raddr)) return {false, LowerError::DanglingRef, "StoreMemTSO.addr"};
+            if (!reg_of(op.value, rv))   return {false, LowerError::DanglingRef, "StoreMemTSO.value"};
+            emitter_.store_release(rv, raddr, op.size);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Return>) {
             // MVP: lower to a bare ARM64 ret. The caller (thunk builder)
             // is responsible for any calling-convention marshalling — the
