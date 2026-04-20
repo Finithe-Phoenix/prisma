@@ -343,7 +343,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
 - [x] (pending commit) F1-CA-009: Cache writer thread (offload serialization).
-- [ ] F1-CA-010: zstd compression for on-disk entries.
+- [~|claude] F1-CA-010: zstd compression for on-disk entries.
 
 ### F1-LN — Lean spec expansion
 
