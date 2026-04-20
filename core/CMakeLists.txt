@@ -133,6 +133,32 @@ target_include_directories(prisma_cache
 target_link_libraries(prisma_cache PRIVATE prisma_warnings)
 
 # ---------------------------------------------------------------------------
+# Translator — top-level facade that combines decoder + passes + lowerer
+# + cache + runtime into one public API.
+# ---------------------------------------------------------------------------
+
+add_library(prisma_translator STATIC
+    src/translator/translator.cpp
+)
+
+target_include_directories(prisma_translator
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_translator
+    PUBLIC
+        prisma_ir
+        prisma_decoder
+        prisma_passes
+        prisma_emitter
+        prisma_runtime
+        prisma_cache
+    PRIVATE
+        prisma_warnings
+)
+
+# ---------------------------------------------------------------------------
 # vixl — ARM64 assembler library (BSD-3-Clause). See RFC 0002.
 # ---------------------------------------------------------------------------
 
@@ -200,6 +226,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_translation_cache.cpp
         tests/test_lowering.cpp
         tests/test_signal_handler.cpp
+        tests/test_translator.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
@@ -209,6 +236,7 @@ if(PRISMA_BUILD_TESTS)
             prisma_runtime
             prisma_passes
             prisma_cache
+            prisma_translator
             prisma_warnings
             Catch2::Catch2WithMain
     )
