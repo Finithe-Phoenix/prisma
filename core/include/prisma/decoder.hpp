@@ -22,6 +22,8 @@
 //     * NEG r/m64        (48 F7 /3)                  3 bytes
 //     * MUL r/m64        (48 F7 /4)                  3 bytes
 //     * IMUL r/m64       (48 F7 /5)                  3 bytes
+//     * IMUL r64, r/m64  (48 0F AF /r)              4 bytes
+//     * IMUL r64, r/m64, imm32 (48 69 /r)           7 bytes
 // 
 //   MOV, both register and simple memory forms
 //     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes

@@ -288,7 +288,27 @@ TEST_CASE("decode IMUL rax, rbx placeholder → RAX*RBX, 3 bytes") {
             ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
-    REQUIRE(r == 4);
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode IMUL rax, rbx, -1 placeholder → RBX*-1, sign-extended imm32") {
+    // Encoding: 48 69 C3 FF FF FF FF
+    //   48 REX.W
+    //   69 opcode IMUL r64, r/m64, imm32
+    //   C3 mod=11, reg=000 (rax, destination), rm=011 (rbx)
+    //   FF FF FF FF = -1 sign-extended to 0xFFFFFFFFFFFFFFFF
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x69, 0xC3, 0xFF, 0xFF, 0xFF, 0xFF}, r);
+    REQUIRE(d.bytes_consumed == 7);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op ==
+            ir::Op{ir::Constant{0xFFFF'FFFF'FFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
 }
 
 TEST_CASE("next_ref is threaded across multiple decodes") {
