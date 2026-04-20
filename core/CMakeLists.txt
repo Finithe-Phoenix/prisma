@@ -97,6 +97,24 @@ target_include_directories(prisma_runtime
 target_link_libraries(prisma_runtime PRIVATE prisma_warnings)
 
 # ---------------------------------------------------------------------------
+# IR optimization passes
+# ---------------------------------------------------------------------------
+
+add_library(prisma_passes STATIC
+    src/passes/const_prop.cpp
+)
+
+target_include_directories(prisma_passes
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_passes
+    PUBLIC  prisma_ir
+    PRIVATE prisma_warnings
+)
+
+# ---------------------------------------------------------------------------
 # vixl — ARM64 assembler library (BSD-3-Clause). See RFC 0002.
 # ---------------------------------------------------------------------------
 
@@ -159,6 +177,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_decoder.cpp
         tests/test_e2e.cpp
         tests/test_jit_execution.cpp
+        tests/test_passes.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
@@ -166,6 +185,7 @@ if(PRISMA_BUILD_TESTS)
             prisma_decoder
             prisma_emitter
             prisma_runtime
+            prisma_passes
             prisma_warnings
             Catch2::Catch2WithMain
     )
