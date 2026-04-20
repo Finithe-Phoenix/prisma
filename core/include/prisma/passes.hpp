@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <utility>
@@ -137,6 +138,49 @@ strength_reduce(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 branch_fold(const std::vector<ir::Stmt>& stmts);
 
+// Redundant-Load Elimination — drop a LoadMem whose `(addr_ref, size)`
+// pair was just read without any intervening memory write.
+//
+// Typical pattern after aggressive decoding:
+//   %a = LoadReg rax
+//   %v1 = LoadMem %a, I64
+//   ...pure ops...
+//   %v2 = LoadMem %a, I64        ← redundant; rewrite to a copy of %v1
+//
+// Rewrite: `%v2 = Or %v1, %v1` (our "move" idiom, dedup-friendly for
+// copy_propagate and DCE).
+//
+// MVP scope:
+//   * Plain LoadMem only. LoadMemTSO is intentionally NOT deduplicated
+//     — it has acquire semantics that a second load observes
+//     independently; removing one changes observable behaviour.
+//   * Any store (StoreMem/StoreMemTSO) invalidates the whole table
+//     conservatively (no alias analysis yet).
+//   * CmpFlags, CondJumpRel, JumpRel etc. don't touch memory — left
+//     alone.
+[[nodiscard]] std::vector<ir::Stmt>
+redundant_load_eliminate(const std::vector<ir::Stmt>& stmts);
+
+// Dead-Store Elimination — drop a StoreMem whose result is provably
+// overwritten by a later StoreMem before any read. Conservative MVP
+// treats only the "same addr ref, same size, no intervening memory op"
+// case as an overwrite.
+//
+// Example:
+//   StoreMem %a, %v1, I64       ← dead
+//   StoreMem %a, %v2, I64       ← kept
+// Anything between the two (LoadMem / StoreMem to any addr / TSO ops
+// / fences / calls) disables the rewrite — we can't prove the first
+// write went unobserved.
+//
+// MVP scope:
+//   * Plain StoreMem only. StoreMemTSO is release-ordered and
+//     observable by other cores; removing one changes behaviour.
+//   * LoadMem*, any other StoreMem, JumpReg, Return, Call flush the
+//     pending-store table.
+[[nodiscard]] std::vector<ir::Stmt>
+dead_store_eliminate(const std::vector<ir::Stmt>& stmts);
+
 // ---------------------------------------------------------------------------
 // PassManager — ordered pipeline of named passes, with run statistics.
 // ---------------------------------------------------------------------------
@@ -152,9 +196,16 @@ struct PassRunStats {
     // count AFTER the first pass ran; `initial_stmt_count` carries the
     // count BEFORE any pass. This makes it trivial to compute per-pass
     // deltas.
+    //
+    // `duration_ns` is the wall-clock cost of running that pass on its
+    // input (steady_clock, one sample per invocation). It is useful for
+    // the Pillar 1 NPU feature extractor and for "which pass is hot"
+    // debugging; treat it as noisy — single-sample timings at microsecond
+    // scale jitter a lot.
     struct PassEntry {
-        std::string name;
-        std::size_t stmts_after;
+        std::string   name;
+        std::size_t   stmts_after;
+        std::uint64_t duration_ns{0};
     };
     std::size_t initial_stmt_count{0};
     std::vector<PassEntry> passes;

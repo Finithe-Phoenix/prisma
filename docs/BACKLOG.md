@@ -300,8 +300,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
 - [x] (pending commit) F1-PS-005: Common Subexpression Elimination (CSE) within a block.
 - [x] (pending commit) F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
-- [~|claude] F1-PS-007: Redundant-load elimination across a block.
-- [~|claude] F1-PS-008: Dead-store elimination within a block.
+- [x] (pending commit) F1-PS-007: Redundant-load elimination across a block.
+- [x] (pending commit) F1-PS-008: Dead-store elimination within a block.
 - [ ] F1-PS-009: Peephole pattern matcher (IR-level patterns).
 - [ ] F1-PS-010: Constant folding on Extend / Truncate.
 - [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
@@ -309,7 +309,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-PS-013: CFG simplification (remove empty blocks).
 - [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
 - [ ] F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
-- [~|claude] F1-PS-016: Pass timing instrumentation.
+- [x] (pending commit) F1-PS-016: Pass timing instrumentation.
 - [ ] F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
 
 ### F1-RT — Runtime
