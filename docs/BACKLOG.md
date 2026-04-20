@@ -233,7 +233,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
 - [x] F1-DC-083: HLT (F4) — reject (privileged).
 - [ ] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
-- [ ] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
+- [x] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
 - [ ] F1-DC-086: SYSCALL (0F 05).
 - [ ] F1-DC-087: Zydis-free migration: our decoder is the canonical source (target ≥99% matching on coreutils).
 
@@ -339,7 +339,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (PENDING) F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
 - [ ] F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
 - [x] (PENDING) F1-CA-005: Cache eviction policy (LRU).
-- [ ] F1-CA-006: Size-bounded cache with eviction trigger.
+- [~|claude] F1-CA-006: Size-bounded cache with eviction trigger.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
 - [ ] F1-CA-009: Cache writer thread (offload serialization).
