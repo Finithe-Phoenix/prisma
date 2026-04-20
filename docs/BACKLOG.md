@@ -271,7 +271,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
 - [ ] F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
 - [ ] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
-- [~|claude] F1-BK-005: Emitter label management (vixl Label class).
+- [x] (pending commit) F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
 - [ ] F1-BK-008: Register spill / reload to stack frame slots.
@@ -377,7 +377,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-TC-009: Lean proof check added as a blocking CI step.
 - [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
 - [ ] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
-- [ ] F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
+- [x] (pending commit) F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
 
 ### F1-AC — Academic (Fase 1 concern)
 

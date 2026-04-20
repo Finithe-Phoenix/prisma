@@ -7,8 +7,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 // vixl headers. They reside under `aarch64/...` relative to the include root.
 #include "aarch64/macro-assembler-aarch64.h"
@@ -32,6 +34,10 @@ vixl_aa::XRegister to_vixl_x(arm64::Reg r) noexcept {
 struct Emitter::Impl {
     vixl_aa::MacroAssembler masm;
     bool finalized{false};
+
+    // Label store. Entry 0 is the sentinel "not a label", so valid
+    // label IDs start at 1 and index into `labels[id - 1]`.
+    std::vector<std::unique_ptr<vixl_aa::Label>> labels;
 
     Impl() : masm() {}
 };
@@ -318,6 +324,30 @@ void Emitter::csel(arm64::Reg rd, arm64::Reg rn_true, arm64::Reg rn_false,
 
 void Emitter::ret(arm64::Reg rn) {
     impl_->masm.Ret(to_vixl_x(rn));
+}
+
+// --- Label management ------------------------------------------------------
+
+Emitter::Label Emitter::create_label() {
+    impl_->labels.push_back(std::make_unique<vixl_aa::Label>());
+    return Label{impl_->labels.size()};  // 1-based: id 0 is the sentinel
+}
+
+void Emitter::bind(Label label) {
+    // Precondition: valid id. Out-of-range or 0 is a programming bug;
+    // we silently drop rather than throw to keep the API exception-free.
+    if (label.id == 0 || label.id > impl_->labels.size()) return;
+    impl_->masm.Bind(impl_->labels[label.id - 1].get());
+}
+
+void Emitter::branch(Label label) {
+    if (label.id == 0 || label.id > impl_->labels.size()) return;
+    impl_->masm.B(impl_->labels[label.id - 1].get());
+}
+
+void Emitter::branch_cc(Label label, ir::CondCode cc) {
+    if (label.id == 0 || label.id > impl_->labels.size()) return;
+    impl_->masm.B(impl_->labels[label.id - 1].get(), to_vixl_cond(cc));
 }
 
 void Emitter::finalize() {

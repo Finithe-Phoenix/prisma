@@ -260,6 +260,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes_mem.cpp
         tests/test_ir_validate.cpp
         tests/test_host_features.cpp
+        tests/test_cache_stress.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE

@@ -227,3 +227,66 @@ TEST_CASE("Emitter: casal byte variant emits casalb") {
     em.finalize();
     REQUIRE(em.disassemble().find("casalb") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// F1-BK-005 label management
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emitter: forward branch to a later-bound label resolves") {
+    backend::Emitter em;
+    auto skip = em.create_label();
+    em.movz(arm64::Reg::X0, 1, 0);
+    em.branch(skip);                  // forward branch — vixl fixes up on bind
+    em.movz(arm64::Reg::X0, 2, 0);    // dead code — skipped at runtime
+    em.bind(skip);
+    em.ret();
+    em.finalize();
+
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("b ") != std::string::npos);  // unconditional branch
+}
+
+TEST_CASE("Emitter: conditional branch uses the right cond suffix") {
+    backend::Emitter em;
+    auto target = em.create_label();
+    em.cmp(arm64::Reg::X0, arm64::Reg::X1);
+    em.branch_cc(target, ir::CondCode::Eq);
+    em.ret();
+    em.bind(target);
+    em.ret();
+    em.finalize();
+
+    const std::string text = em.disassemble();
+    // vixl disassembles b.eq as `b.eq` (with the cond suffix).
+    REQUIRE(text.find("b.eq") != std::string::npos);
+}
+
+TEST_CASE("Emitter: backward branch to an already-bound label works") {
+    backend::Emitter em;
+    auto loop_top = em.create_label();
+    em.bind(loop_top);
+    em.sub(arm64::Reg::X0, arm64::Reg::X0, arm64::Reg::X1);
+    em.branch(loop_top);
+    em.finalize();
+
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("b ") != std::string::npos);
+    REQUIRE(text.find("sub") != std::string::npos);
+}
+
+TEST_CASE("Emitter: multiple labels are independent") {
+    backend::Emitter em;
+    auto a = em.create_label();
+    auto b = em.create_label();
+    REQUIRE(a.id != b.id);
+    em.branch(a);
+    em.branch(b);
+    em.bind(a);
+    em.movz(arm64::Reg::X0, 0xA, 0);
+    em.bind(b);
+    em.movz(arm64::Reg::X0, 0xB, 0);
+    em.ret();
+    em.finalize();
+    // Finalize should not throw / assert — both labels bound.
+    SUCCEED("two labels bound cleanly");
+}

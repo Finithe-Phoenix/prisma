@@ -196,6 +196,41 @@ public:
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
 
+    // --- Label management (F1-BK-005) --------------------------------------
+    //
+    // Opaque handle to a vixl label. A Label is:
+    //   1. created via `create_label()`,
+    //   2. referenced by zero or more branches (forward or backward),
+    //   3. bound exactly once via `bind()` to set its target PC to the
+    //      current emit position.
+    //
+    // Emit unresolved forward branches before `bind()`; the vixl
+    // MacroAssembler records them as fix-ups and rewrites the
+    // instructions when the label is bound. `finalize()` asserts that
+    // every label has been bound.
+    //
+    // Labels outlive the statement list being lowered — one Label per
+    // basic block is the expected usage pattern for CFG lowering
+    // (F1-BK-006).
+    struct Label {
+        std::size_t id{0};  // 0 is the sentinel "not a label"
+    };
+
+    [[nodiscard]] Label create_label();
+
+    // Place `label` at the current emit position. Must be called exactly
+    // once per label, before finalize().
+    void bind(Label label);
+
+    // Unconditional branch to `label`. The vixl MacroAssembler picks
+    // between a direct `b` and a longer veneer depending on the
+    // expected distance.
+    void branch(Label label);
+
+    // Conditional branch: `b.<cc> label`. Reads the NZCV set by the
+    // most-recent flag-producing instruction (CmpFlags in our IR).
+    void branch_cc(Label label, ir::CondCode cc);
+
     // --- lifecycle ---
 
     // Finalize the buffer: resolve labels, emit any literal pool, flush
