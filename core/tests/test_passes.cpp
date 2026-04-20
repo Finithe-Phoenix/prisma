@@ -191,6 +191,36 @@ TEST_CASE("dce: LoadReg is removed when its value is unused") {
     REQUIRE(std::holds_alternative<ir::Constant>(out[0].op));
 }
 
+TEST_CASE("dce: CmpFlags keeps its LoadReg operands alive") {
+    // %0 = const 42
+    //      storereg rax, %0
+    // %1 = const 42
+    //      storereg rbx, %1
+    // %2 = loadreg rax
+    // %3 = loadreg rbx
+    //      cmpflags.i64 %2, %3
+    //      condjmprel.eq ...
+    //
+    // This is important because `CmpFlags` has no SSA result, so DCE must
+    // explicitly preserve the operand-producing statements it reads.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{42, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {1u, ir::Constant{42, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I64}},
+        {2u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {3u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{2u, 3u, ir::OpSize::I64}},
+        {std::nullopt, ir::CondJumpRel{ir::CondCode::Eq, 0x1234, 0x5678}},
+    };
+
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 8);
+    REQUIRE(std::get<ir::LoadReg>(out[4].op) == ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64});
+    REQUIRE(std::get<ir::LoadReg>(out[5].op) == ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64});
+    REQUIRE(std::holds_alternative<ir::CmpFlags>(out[6].op));
+}
+
 TEST_CASE("dce: StoreReg with dead Constant keeps the Constant (store is live)") {
     // %0 = const 99
     //      storereg rax, %0     ← impure, keeps %0 alive
