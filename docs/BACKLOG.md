@@ -168,10 +168,10 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-017: SBB r/m64, r64 (48 19 /r).
 - [x] F1-DC-018: CMP r/m64, r64 (48 39 /r).
 - [ ] F1-DC-019: TEST r/m64, r64 (48 85 /r).
-- [ ] F1-DC-020: INC r/m64 (48 FF /0).
-- [ ] F1-DC-021: DEC r/m64 (48 FF /1).
-- [ ] F1-DC-022: NEG r/m64 (48 F7 /3).
-- [ ] F1-DC-023: NOT r/m64 (48 F7 /2).
+- [~|claude] F1-DC-020: INC r/m64 (48 FF /0).
+- [~|claude] F1-DC-021: DEC r/m64 (48 FF /1).
+- [~|claude] F1-DC-022: NEG r/m64 (48 F7 /3).
+- [~|claude] F1-DC-023: NOT r/m64 (48 F7 /2).
 - [ ] F1-DC-024: MUL r/m64 (48 F7 /4).
 - [ ] F1-DC-025: IMUL r/m64 (48 F7 /5).
 - [ ] F1-DC-026: IMUL r64, r/m64 (48 0F AF /r).
