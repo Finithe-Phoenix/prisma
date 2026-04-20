@@ -42,9 +42,9 @@ constant_propagate(const std::vector<ir::Stmt>& stmts);
 // Dead Code Elimination.
 //
 // Removes pure statements whose bound Ref is never read by any subsequent
-// statement. "Pure" here means: Constant, LoadReg, BinOp, Compare, LoadMem
-// (non-TSO), LoadMemTSO (see note below). Side-effecting statements
-// (StoreReg, StoreMem*, Jump, CondJump, Return) are never removed.
+// statement. "Pure" here means: Constant, LoadReg, LoadSegBase, BinOp,
+// Compare, LoadMem (non-TSO), LoadMemTSO (see note below). Side-effecting
+// statements (StoreReg, StoreMem*, Jump, CondJump, Return) are never removed.
 //
 // Note on LoadMemTSO: strictly speaking a TSO load is observable under a
 // weak memory model (it synchronises), so removing it when its value is
@@ -138,6 +138,19 @@ strength_reduce(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 branch_fold(const std::vector<ir::Stmt>& stmts);
 
+// Flag-write elimination — drop `CmpFlags` whose implicit flags are
+// never read later.
+//
+// In this MVP, `CondJumpRel` is the consumer of implicit flags and
+// `Compare` / `CmpFlags` are the known writers.
+//
+// We keep the nearest `CmpFlags` before each surviving flag reader.
+// This pass intentionally runs after branch folding, so when
+// `branch_fold` rewrites a conditional branch to `JumpRel`, the
+// orphaned `CmpFlags` becomes removable.
+[[nodiscard]] std::vector<ir::Stmt>
+flag_write_elimination(const std::vector<ir::Stmt>& stmts);
+
 // Redundant-Load Elimination — drop a LoadMem whose `(addr_ref, size)`
 // pair was just read without any intervening memory write.
 //
@@ -160,6 +173,33 @@ branch_fold(const std::vector<ir::Stmt>& stmts);
 //     alone.
 [[nodiscard]] std::vector<ir::Stmt>
 redundant_load_eliminate(const std::vector<ir::Stmt>& stmts);
+
+// Tail-call optimisation (F1-PS-015).
+//
+// Folds the canonical `CallRel{T, R}; RetAdjusted{0};` pair into a
+// single `JumpRel{T}`. Sound under x86 calling conventions:
+//
+//   CallRel pushes R onto the stack and jumps to T. T eventually
+//   executes its own RetAdjusted, popping R and returning to R —
+//   which, in this pattern, is the byte after our CallRel and
+//   therefore points at our RetAdjusted{0}. RetAdjusted{0} pops the
+//   caller's return address (the one we inherited on entry) and
+//   returns to it.
+//
+//   Net: T runs, then control returns to OUR caller after popping
+//   one return address. JumpRel{T} achieves the same: T runs (with
+//   our caller's return address still on top of the stack), then
+//   T's RetAdjusted pops that and returns to our caller.
+//
+// MVP scope:
+//   * Only `RetAdjusted{0}` qualifies. Non-zero pop_bytes would
+//     require a stack adjustment before the jump; not in scope.
+//   * Only the immediately-adjacent CallRel + RetAdjusted pair.
+//   * CallReg (indirect) is not folded — same idea applies but its
+//     interaction with the dispatcher's indirect-call path needs
+//     more thought.
+[[nodiscard]] std::vector<ir::Stmt>
+tail_call_optimise(const std::vector<ir::Stmt>& stmts);
 
 // Dead-Store Elimination — drop a StoreMem whose result is provably
 // overwritten by a later StoreMem before any read. Conservative MVP

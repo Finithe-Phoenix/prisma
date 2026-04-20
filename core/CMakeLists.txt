@@ -217,8 +217,10 @@ add_library(prisma_passes STATIC
     src/passes/copy_prop.cpp
     src/passes/strength_reduce.cpp
     src/passes/branch_fold.cpp
+    src/passes/flag_write_elim.cpp
     src/passes/redundant_load.cpp
     src/passes/dead_store.cpp
+    src/passes/tail_call.cpp
     src/passes/pass_manager.cpp
 )
 

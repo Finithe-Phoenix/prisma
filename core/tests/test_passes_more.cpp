@@ -288,6 +288,87 @@ TEST_CASE("branch_fold: flag-direct cc (Cc) is conservatively untouched") {
 }
 
 // ---------------------------------------------------------------------
+// flag_write_elimination
+// ---------------------------------------------------------------------
+
+TEST_CASE("flag_write_elimination: removes unused CmpFlags") {
+    // cmpflags written here has no later CondJumpRel, so it can be dropped.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x42, ir::OpSize::I64}},
+        {1u, ir::Constant{0x43, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    REQUIRE(out.size() == 3);
+    for (const auto& st : out) {
+        REQUIRE_FALSE(std::holds_alternative<ir::CmpFlags>(st.op));
+    }
+}
+
+TEST_CASE("flag_write_elimination: keeps CmpFlags required by CondJumpRel") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{9, ir::OpSize::I64}},
+        {1u, ir::Constant{9, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Eq, 0x100, 0x200}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    int kept_cmp = 0;
+    int kept_cond = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CmpFlags>(st.op)) ++kept_cmp;
+        if (std::holds_alternative<ir::CondJumpRel>(st.op)) ++kept_cond;
+    }
+    REQUIRE(kept_cmp == 1);
+    REQUIRE(kept_cond == 1);
+}
+
+TEST_CASE("flag_write_elimination: drops older CmpFlags when a newer one appears first") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1111, ir::OpSize::I64}},
+        {1u, ir::Constant{0x2222, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {2u, ir::Constant{0xAAAA, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{2u, 1u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Eq, 0x100, 0x200}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    int kept_cmp = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CmpFlags>(st.op)) {
+            ++kept_cmp;
+            REQUIRE(std::get<ir::CmpFlags>(st.op).lhs == 2u);
+        }
+    }
+    REQUIRE(kept_cmp == 1);
+}
+
+TEST_CASE("flag_write_elimination: clears stale writes on Compare") {
+    // Compare writes flags; it can satisfy CondJumpRel, so the previous
+    // CmpFlags becomes stale and should be removed.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{6, ir::OpSize::I64}},
+        {2u, ir::Constant{7, ir::OpSize::I64}},
+        {3u, ir::Constant{8, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {4u, ir::LoadSegBase{ir::SegmentReg::Fs}},
+        {std::nullopt, ir::Compare{ir::CondCode::Eq, 2u, 3u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Eq, 0x100, 0x200}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    int kept_cmp = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CmpFlags>(st.op)) ++kept_cmp;
+    }
+    REQUIRE(kept_cmp == 0);
+}
+
+// ---------------------------------------------------------------------
 // Interaction with default_pipeline
 // ---------------------------------------------------------------------
 
@@ -320,4 +401,109 @@ TEST_CASE("pipeline: `x * 4` through default pipeline becomes x << 2") {
     REQUIRE(std::holds_alternative<ir::BinOp>(feeder->op));
     const auto& b = std::get<ir::BinOp>(feeder->op);
     REQUIRE(b.op == ir::BinOpKind::Shl);
+}
+
+TEST_CASE("pipeline: flag-write elimination removes dead CmpFlags after branch_fold") {
+    // cmpflags before a const-foldable CondJumpRel should disappear from
+    // the default pipeline.
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Eq, /*target=*/0x100, /*ft=*/0x200}},
+    };
+
+    auto pm = passes::default_pipeline();
+    auto [out, _stats] = pm.run(s);
+
+    REQUIRE(out.size() == 1);
+    REQUIRE(std::holds_alternative<ir::JumpRel>(out[0].op));
+    REQUIRE(std::get<ir::JumpRel>(out[0].op).target_guest_pc == 0x100u);
+    REQUIRE_FALSE(std::holds_alternative<ir::CmpFlags>(out[0].op));
+}
+
+// ---------------------------------------------------------------------
+// F1-PS-015 tail-call optimisation
+// ---------------------------------------------------------------------
+
+TEST_CASE("tco: CallRel + RetAdjusted{0} folds to JumpRel") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::CallRel{/*target=*/0x1000, /*ret=*/0x1005}},
+        {std::nullopt, ir::RetAdjusted{0}},
+    };
+    auto out = passes::tail_call_optimise(s);
+    REQUIRE(out.size() == 1);
+    REQUIRE(std::holds_alternative<ir::JumpRel>(out[0].op));
+    REQUIRE(std::get<ir::JumpRel>(out[0].op).target_guest_pc == 0x1000u);
+}
+
+TEST_CASE("tco: RetAdjusted with non-zero pop_bytes is left alone") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::CallRel{0x1000, 0x1005}},
+        {std::nullopt, ir::RetAdjusted{8}},
+    };
+    auto out = passes::tail_call_optimise(s);
+    REQUIRE(out.size() == 2);
+    REQUIRE(std::holds_alternative<ir::CallRel>(out[0].op));
+    REQUIRE(std::holds_alternative<ir::RetAdjusted>(out[1].op));
+}
+
+TEST_CASE("tco: CallReg (indirect) is NOT folded under MVP scope") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {std::nullopt, ir::CallReg{0u, 0x1005}},
+        {std::nullopt, ir::RetAdjusted{0}},
+    };
+    auto out = passes::tail_call_optimise(s);
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::CallReg>(out[1].op));
+}
+
+TEST_CASE("tco: CallRel without an immediately-following RetAdjusted is left alone") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::CallRel{0x1000, 0x1005}},
+        {std::nullopt, ir::Jump{42u}},
+    };
+    auto out = passes::tail_call_optimise(s);
+    REQUIRE(out.size() == 2);
+    REQUIRE(std::holds_alternative<ir::CallRel>(out[0].op));
+    REQUIRE(std::holds_alternative<ir::Jump>(out[1].op));
+}
+
+TEST_CASE("tco: two adjacent CallRel + RetAdjusted{0} pairs both fold") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::CallRel{0x100, 0x105}},
+        {std::nullopt, ir::RetAdjusted{0}},
+        {std::nullopt, ir::CallRel{0x200, 0x205}},
+        {std::nullopt, ir::RetAdjusted{0}},
+    };
+    auto out = passes::tail_call_optimise(s);
+    REQUIRE(out.size() == 2);
+    REQUIRE(std::get<ir::JumpRel>(out[0].op).target_guest_pc == 0x100u);
+    REQUIRE(std::get<ir::JumpRel>(out[1].op).target_guest_pc == 0x200u);
+}
+
+TEST_CASE("tco: surrounding stmts pass through unchanged") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::CallRel{0x1000, 0x1005}},
+        {std::nullopt, ir::RetAdjusted{0}},
+    };
+    auto out = passes::tail_call_optimise(s);
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[0].op));
+    REQUIRE(std::holds_alternative<ir::StoreReg>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::JumpRel>(out[2].op));
+}
+
+TEST_CASE("tco: idempotent (no changes on a folded program)") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::CallRel{0x100, 0x105}},
+        {std::nullopt, ir::RetAdjusted{0}},
+    };
+    auto once  = passes::tail_call_optimise(s);
+    auto twice = passes::tail_call_optimise(once);
+    REQUIRE(once == twice);
 }
