@@ -1277,7 +1277,7 @@ TEST_CASE("Error: MOV r64 imm64 truncated mid-immediate") {
 
 TEST_CASE("Error: unknown opcode") {
     ir::Ref r = 0;
-    auto res = decode_any({0xAA}, r);
+    auto res = decode_any({0x62}, r);
     REQUIRE(std::holds_alternative<DecodeError>(res));
     REQUIRE(std::get<DecodeError>(res) == DecodeError::UnknownOpcode);
 }
@@ -1588,6 +1588,290 @@ TEST_CASE("decode XCHG rax, qword ptr [rbx + 0x10] via 48 87 43 10") {
     REQUIRE(d.stmts[4].op == ir::Op{ir::LoadMemTSO{3u, ir::OpSize::I64}});
     REQUIRE(d.stmts[5].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 4u, ir::OpSize::I64}});
     REQUIRE(d.stmts[6].op == ir::Op{ir::StoreMemTSO{3u, 0u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode CMPXCHG rbx, rcx via 48 0F B1 CB as compare-exchange sequence") {
+    // 48 0F B1 CB
+    //   B1 opcode CMPXCHG r/m64, r64
+    //   CB mod=11, reg=001 (rcx), rm=011 (rbx)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0xB1, 0xCB}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 8);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 1u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 0u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 4u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode CMPXCHG [rbx + 0x10], rcx via 48 0F B1 4B 10") {
+    // 48 0F B1 4B 10
+    //   B1 opcode CMPXCHG r/m64, r64
+    //   4B mod=01, reg=001 (rcx), rm=011 (rbx), disp8=0x10
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0xB1, 0x4B, 0x10}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 11);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::Constant{0x10u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 2u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::LoadMemTSO{4u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::CmpFlags{0u, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 1u, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 0u, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[9].op == ir::Op{ir::StoreMemTSO{4u, 6u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[10].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 7u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode CMPXCHG16B [rsi] via 48 0F C7 0E as 128-bit compare-exchange placeholder") {
+    // 48 0F C7 0E
+    //   C7 /1 opcode CMPXCHG16B m128
+    //   0E mod=00, reg=001 (/1), rm=110 ([rsi])
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0xC7, 0x0E}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 22);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::Constant{8u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 7u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[9].op == ir::Op{ir::LoadMemTSO{8u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[10].op ==
+            ir::Op{ir::Compare{ir::CondCode::Eq, 6u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[11].op ==
+            ir::Op{ir::Compare{ir::CondCode::Eq, 9u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[12].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 10u, 11u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[13].op == ir::Op{ir::CmpFlags{12u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[14].op ==
+            ir::Op{ir::Select{ir::CondCode::Ne, 4u, 6u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[15].op ==
+            ir::Op{ir::Select{ir::CondCode::Ne, 5u, 9u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[16].op == ir::Op{ir::StoreMemTSO{0u, 13u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[17].op == ir::Op{ir::StoreMemTSO{8u, 14u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[18].op ==
+            ir::Op{ir::Select{ir::CondCode::Ne, 2u, 6u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[19].op ==
+            ir::Op{ir::Select{ir::CondCode::Ne, 3u, 9u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[20].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 15u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[21].op == ir::Op{ir::StoreReg{ir::Gpr::Rdx, 16u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode XADD rbx, rcx via 48 0F C1 CB as exchange-add sequence") {
+    // 48 0F C1 CB
+    //   C1 opcode XADD r/m64, r64
+    //   CB mod=11, reg=001 (rcx), rm=011 (rbx)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0xC1, 0xCB}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode XADD [rbx + 0x10], rcx via 48 0F C1 4B 10") {
+    // 48 0F C1 4B 10
+    //   C1 opcode XADD r/m64, r64
+    //   4B mod=01, reg=001 (rcx), rm=011 (rbx), disp8=0x10
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0xC1, 0x4B, 0x10}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 8);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0x10u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 2u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::LoadMemTSO{4u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreMemTSO{4u, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode LOCK CMPXCHG [rbx + 0x10], rcx reuses the same IR") {
+    ir::Ref plain_ref = 0;
+    ir::Ref lock_ref = 0;
+    auto plain = decode_ok({0x48, 0x0F, 0xB1, 0x4B, 0x10}, plain_ref);
+    auto locked = decode_ok({0xF0, 0x48, 0x0F, 0xB1, 0x4B, 0x10}, lock_ref);
+    REQUIRE(locked.bytes_consumed == 6);
+    REQUIRE(locked.stmts == plain.stmts);
+    REQUIRE(lock_ref == plain_ref);
+}
+
+TEST_CASE("decode XACQUIRE LOCK CMPXCHG [rbx + 0x10], rcx ignores the HLE hint") {
+    ir::Ref plain_ref = 0;
+    ir::Ref hinted_ref = 0;
+    auto plain = decode_ok({0xF0, 0x48, 0x0F, 0xB1, 0x4B, 0x10}, plain_ref);
+    auto hinted = decode_ok({0xF2, 0xF0, 0x48, 0x0F, 0xB1, 0x4B, 0x10}, hinted_ref);
+    REQUIRE(hinted.bytes_consumed == 7);
+    REQUIRE(hinted.stmts == plain.stmts);
+    REQUIRE(hinted_ref == plain_ref);
+}
+
+TEST_CASE("decode XRELEASE LOCK XADD [rbx + 0x10], rcx ignores the HLE hint") {
+    ir::Ref plain_ref = 0;
+    ir::Ref hinted_ref = 0;
+    auto plain = decode_ok({0xF0, 0x48, 0x0F, 0xC1, 0x4B, 0x10}, plain_ref);
+    auto hinted = decode_ok({0xF3, 0xF0, 0x48, 0x0F, 0xC1, 0x4B, 0x10}, hinted_ref);
+    REQUIRE(hinted.bytes_consumed == 7);
+    REQUIRE(hinted.stmts == plain.stmts);
+    REQUIRE(hinted_ref == plain_ref);
+}
+
+TEST_CASE("Error: XACQUIRE without LOCK on XADD is rejected") {
+    ir::Ref r = 0;
+    auto res = decode_any({0xF2, 0x48, 0x0F, 0xC1, 0x4B, 0x10}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("decode STOSB via AA stores AL and advances RDI by 1") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xAA}, r);
+    REQUIRE(d.bytes_consumed == 1);
+    REQUIRE(d.stmts.size() == 6);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I8}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::Constant{1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::StoreReg{ir::Gpr::Rdi, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode STOSW via 66 AB stores AX and advances RDI by 2") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0xAB}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I16}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::Constant{2u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode STOSD via AB stores EAX and advances RDI by 4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xAB}, r);
+    REQUIRE(d.bytes_consumed == 1);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I32}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::Constant{4u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode STOSQ via 48 AB stores RAX and advances RDI by 8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xAB}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::Constant{8u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOVSB via A4 copies byte [RSI] to [RDI] and advances both pointers") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xA4}, r);
+    REQUIRE(d.bytes_consumed == 1);
+    REQUIRE(d.stmts.size() == 9);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::StoreMemTSO{2u, 1u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 2u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rsi, 4u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op == ir::Op{ir::StoreReg{ir::Gpr::Rdi, 5u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOVSQ via 48 A5 copies qword [RSI] to [RDI] and advances by 8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xA5}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::StoreMemTSO{2u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{8u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode CMPSB via A6 compares [RSI] and [RDI] then advances both pointers") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xA6}, r);
+    REQUIRE(d.bytes_consumed == 1);
+    REQUIRE(d.stmts.size() == 10);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::CmpFlags{1u, 3u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::Constant{1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode CMPSQ via 48 A7 compares qwords [RSI] and [RDI] then advances by 8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xA7}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::CmpFlags{1u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::Constant{8u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode SCASB via AE compares AL with [RDI] and advances RDI by 1") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xAE}, r);
+    REQUIRE(d.bytes_consumed == 1);
+    REQUIRE(d.stmts.size() == 7);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I8}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadMemTSO{1u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 2u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode SCASQ via 48 AF compares RAX with [RDI] and advances RDI by 8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xAF}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadMemTSO{1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{8u, ir::OpSize::I64}});
+}
+
+TEST_CASE("Error: REP STOSB remains unsupported until REP loop lowering exists") {
+    ir::Ref r = 0;
+    auto res = decode_any({0xF3, 0xAA}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("Error: HLT (F4) is rejected as UnsupportedEncoding") {
+    ir::Ref r = 0;
+    auto res = decode_any({0xF4}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
 }
 
 TEST_CASE("Error: memory form MOV with SIB byte (rm=100) is rejected") {

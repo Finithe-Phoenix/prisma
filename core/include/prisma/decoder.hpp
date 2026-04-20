@@ -68,6 +68,13 @@
 //         - mod=10: [base + disp32]   (signed 32-bit disp)
 //         - mod=11: register direct
 //     * XCHG r64, r/m64   (48 87 /r)                  3..7 bytes
+//     * CMPXCHG r/m64, r64 (48 0F B1 /r)              4..8 bytes
+//     * XADD r/m64, r64   (48 0F C1 /r)               4..8 bytes
+//     * CMPXCHG16B m128   (48 0F C7 /1)               4..8 bytes
+//     * STOSB/STOSW/STOSD/STOSQ (AA / AB)             1..2 bytes
+//     * MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5)             1..2 bytes
+//     * CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7)             1..2 bytes
+//     * SCASB/SCASW/SCASD/SCASQ (AE / AF)             1..2 bytes
 //     * MOVZX r64, r/m8   (0F B6 /r)                 4 bytes
 //     * MOVZX r64, r/m16  (0F B7 /r)                 4 bytes
 //         Memory forms always emit *_TSO variants of load/store. The
@@ -85,6 +92,10 @@
 // The decoder is deliberately minimal but now supports a small subset of
 // prefixes:
 //   * 0x66 for selected size-sensitive MOV forms (I16),
+//   * 0xF0 (LOCK) for CMPXCHG / CMPXCHG16B / XADD,
+//   * 0xF2 / 0xF3 as ignored HLE hints when paired with LOCK on that same
+//     exchange-family atomic subset,
+//   * no REP string-loop semantics yet; string ops decode as single-step only,
 //   * 0xF3 for LZCNT/TZCNT/POPCNT family placeholder support,
 //   * REX.W for the 64-bit MOV/ALU variants.
 // No SIB / RIP-relative / R8..R15 yet (REX.R / REX.B / REX.X must be
