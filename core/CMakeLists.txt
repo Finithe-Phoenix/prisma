@@ -64,6 +64,24 @@ target_include_directories(prisma_ir
 target_link_libraries(prisma_ir PRIVATE prisma_warnings)
 
 # ---------------------------------------------------------------------------
+# Decoder library (x86_64 → Prisma IR)
+# ---------------------------------------------------------------------------
+
+add_library(prisma_decoder STATIC
+    src/decoder/x86_decoder.cpp
+)
+
+target_include_directories(prisma_decoder
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_decoder
+    PUBLIC  prisma_ir
+    PRIVATE prisma_warnings
+)
+
+# ---------------------------------------------------------------------------
 # vixl — ARM64 assembler library (BSD-3-Clause). See RFC 0002.
 # ---------------------------------------------------------------------------
 
@@ -123,10 +141,13 @@ if(PRISMA_BUILD_TESTS)
         tests/test_ir.cpp
         tests/test_arm64_encoding.cpp
         tests/test_emitter.cpp
+        tests/test_decoder.cpp
+        tests/test_e2e.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
             prisma_ir
+            prisma_decoder
             prisma_emitter
             prisma_warnings
             Catch2::Catch2WithMain
