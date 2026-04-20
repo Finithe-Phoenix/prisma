@@ -183,10 +183,10 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-032: SHL/SHR/SAR r/m64, CL (48 D3 /4|/5|/7).
 - [x] F1-DC-033: ROL/ROR r/m64 (48 C1 /0|/1, 48 D3 /0|/1).
 - [x] F1-DC-034: RCL/RCR r/m64 (48 C1 /2|/3, 48 D3 /2|/3).
-- [ ] F1-DC-035: BT / BTS / BTR / BTC r/m64, imm8 (48 0F BA).
-- [ ] F1-DC-036: BSF / BSR r64, r/m64 (48 0F BC / BD).
-- [ ] F1-DC-037: LZCNT r64, r/m64 (F3 48 0F BD).
-- [ ] F1-DC-038: TZCNT r64, r/m64 (F3 48 0F BC).
+- [x] F1-DC-035: BT / BTS / BTR / BTC r/m64, imm8 (48 0F BA).
+- [x] F1-DC-036: BSF / BSR r64, r/m64 (48 0F BC / BD).
+- [x] F1-DC-037: LZCNT r64, r/m64 (F3 48 0F BD).
+- [x] F1-DC-038: TZCNT r64, r/m64 (F3 48 0F BC).
 - [ ] F1-DC-039: POPCNT r64, r/m64 (F3 48 0F B8).
 - [ ] F1-DC-040: PUSH r64 (50+rd).
 - [ ] F1-DC-041: POP r64 (58+rd).
@@ -317,9 +317,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-RT-001: JitBuffer with MAP_JIT and pthread_jit_write_protect_np.
 - [x] F1-RT-002: Signal handler for SIGSEGV / SIGILL / SIGBUS.
 - [x] F1-RT-003: ScopedProtected RAII scope.
-- [ ] F1-RT-004: CpuStateFrame layout (16 GPRs + flags + SIMD + x87).
+- [x] (pending commit) F1-RT-004: CpuStateFrame layout (16 GPRs + flags + SIMD + x87).
 - [ ] F1-RT-005: TLS storage for per-thread guest state.
-- [ ] F1-RT-006: Dispatcher loop (find-translation-and-jump).
+- [x] (pending commit) F1-RT-006: Dispatcher loop (find-translation-and-jump).
 - [ ] F1-RT-007: Trampoline between translator and compiled blocks.
 - [ ] F1-RT-008: Return-address stack for guest CALL / RET tracking.
 - [ ] F1-RT-009: Thread-safe JitBuffer pool (many blocks).

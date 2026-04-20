@@ -494,7 +494,7 @@ enum class BtSubOpcode : std::uint8_t {
 // BT/BTS/BTR/BTC r/m64, imm8 (0F BA /4,/5,/6,/7) — MVP register-direct only.
 //
 // These are decoded as:
-//   BT:  src >>= imm; if (src & 1) then CF=1 else CF=0
+//   BT:  CF = (src & (1 << imm)) ? 1 : 0
 //   BTS: src = src | (1 << imm), CF = old bit
 //   BTR: src = src & ~(1 << imm), CF = old bit
 //   BTC: src = src ^ (1 << imm), CF = old bit
@@ -538,9 +538,10 @@ std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
             }
             case BtSubOpcode::Btr: {
                 const ir::Ref ref_inv_mask = next_ref++;
+                d.stmts.push_back(
+                    {ref_inv_mask, ir::Constant{~0ULL, ir::OpSize::I64}});
                 d.stmts.push_back({ref_inv_mask,
-                                   ir::BinOp{ir::BinOpKind::Xor, ref_mask,
-                                             ir::Constant{~0ULL, ir::OpSize::I64}, ir::OpSize::I64}});
+                                   ir::BinOp{ir::BinOpKind::Xor, ref_mask, ref_inv_mask, ir::OpSize::I64}});
                 ref_newval = next_ref++;
                 d.stmts.push_back({ref_newval,
                                    ir::BinOp{ir::BinOpKind::And, ref_src, ref_inv_mask, ir::OpSize::I64}});
@@ -561,6 +562,77 @@ std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
     d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
     d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_oldbit, ref_zero, ir::OpSize::I64}});
     d.bytes_consumed = cursor;
+    return d;
+}
+
+// BSF / BSR r64, r/m64 (0F BC /r, 0F BD /r) — MVP register-direct only.
+//
+// This is a placeholder decode for now:
+//   * result register receives 0
+//   * flags are computed as (src == 0) to preserve a flag-like effect
+// A future lowering pass will replace this with a real bit-scan lowering.
+std::variant<Decoded, DecodeError> decode_bsf_bsr_r64_r_rm(
+    const ModRmOperand& m,
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_src = next_ref++;
+    const ir::Ref ref_zero = next_ref++;
+    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
+    return d;
+}
+
+// LZCNT r64, r/m64 (F3 48 0F BD /r) — MVP register-direct only.
+//
+// This is a placeholder decode for now:
+//   * result register receives 0
+//   * flags are computed as (src == 0) to preserve a flag-like effect
+//   * source and destination are both 64-bit GPRs
+// A future lowering pass will replace this with a real leading-zero count lowering.
+std::variant<Decoded, DecodeError> decode_lzcnt_r64_r_rm(
+    const ModRmOperand& m,
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_src = next_ref++;
+    const ir::Ref ref_zero = next_ref++;
+    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
+    return d;
+}
+
+// TZCNT r64, r/m64 (F3 48 0F BC /r) — MVP register-direct only.
+//
+// This is a placeholder decode for now:
+//   * result register receives 0
+//   * flags are computed as (src == 0) to preserve a flag-like effect
+//   * source and destination are both 64-bit GPRs
+// A future lowering pass will replace this with a real trailing-zero count lowering.
+std::variant<Decoded, DecodeError> decode_tzcnt_r64_r_rm(
+    const ModRmOperand& m,
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_src = next_ref++;
+    const ir::Ref ref_zero = next_ref++;
+    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
     return d;
 }
 
@@ -632,12 +704,15 @@ std::variant<Decoded, DecodeError> decode_one(
     //
     // We currently only support:
     //   * 0x66 (operand-size override),
+    //   * 0xF3 (LZCNT/TZCNT group prefix),
     //   * one REX prefix.
     // More prefix combinations can be added later.
     bool has_operand_size_override = false;
+    bool has_f3 = false;
     RexPrefix rex;
     bool seen_rex = false;
     bool seen_66 = false;
+    bool seen_f3 = false;
     while (cursor < bytes.size()) {
         const Byte b = bytes[cursor];
         if (b == 0x66u) {
@@ -659,6 +734,15 @@ std::variant<Decoded, DecodeError> decode_one(
             ++cursor;
             continue;
         }
+
+        if (b == 0xF3u) {
+            if (seen_f3) return DecodeError::UnsupportedEncoding;
+            has_f3 = true;
+            seen_f3 = true;
+            ++cursor;
+            continue;
+        }
+
         break;
     }
     if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
@@ -894,6 +978,26 @@ std::variant<Decoded, DecodeError> decode_one(
                 return decode_bt_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, BtSubOpcode::Btc);
             }
             return DecodeError::UnsupportedEncoding;
+        }
+        if (subop == 0xBCu || subop == 0xBDu) {
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+
+            auto modrm = parse_modrm(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (has_f3) {
+                if (subop == 0xBDu) {
+                    return decode_lzcnt_r64_r_rm(m, cursor, next_ref);
+                }
+                if (subop == 0xBCu) {
+                    return decode_tzcnt_r64_r_rm(m, cursor, next_ref);
+                }
+                return DecodeError::UnsupportedEncoding;
+            }
+            return decode_bsf_bsr_r64_r_rm(m, cursor, next_ref);
         }
         return DecodeError::UnknownOpcode;
     }

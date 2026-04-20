@@ -72,20 +72,23 @@ TEST_CASE("e2e structural: MOV rax, 42 ; RET lowered to specific ARM64 bytes") {
     em.finalize();
 
     const auto bytes = em.code_bytes();
-    // Lowering produces:
+    // Lowering produces (post-F1-RT-004 halt-sentinel convention):
     //   mov x0, #0x2a     ; %0 = const 42 (scratch x0)
     //   mov x10, x0       ; storereg rax (rax → x10)
-    //   ret               ; Return
-    // That's 3 * 4 = 12 bytes.
-    REQUIRE(bytes.size() == 12);
+    //   mov x0, #0        ; IR::Return emits halt sentinel in x0
+    //   ret
+    // That's 4 * 4 = 16 bytes.
+    REQUIRE(bytes.size() == 16);
 
-    std::uint32_t w[3];
-    std::memcpy(w, bytes.data(), 12);
+    std::uint32_t w[4];
+    std::memcpy(w, bytes.data(), 16);
 
-    // First word: movz x0, #42 (vixl picks movz for a 16-bit-fitting const).
+    // First word: movz x0, #42.
     REQUIRE(w[0] == arm64::movz_x(arm64::Reg::X0, 42, 0).raw);
-    // Last word: ret x30.
-    REQUIRE(w[2] == arm64::ret().raw);
+    // Third word: movz x0, #0 (halt sentinel).
+    REQUIRE(w[2] == arm64::movz_x(arm64::Reg::X0, 0, 0).raw);
+    // Fourth word: ret x30.
+    REQUIRE(w[3] == arm64::ret().raw);
 }
 
 // ---------------------------------------------------------------------------

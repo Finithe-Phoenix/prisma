@@ -41,10 +41,14 @@
 //     * IMUL r64, r/m64  (48 0F AF /r)              4 bytes
 //     * IMUL r64, r/m64, imm32 (48 69 /r)           7 bytes
 //     * IMUL r64, r/m64, imm8  (48 6B /r)           4 bytes
-//     * BT r/m64, imm8    (0F BA /4)                  3?4? bytes
-//     * BTS r/m64, imm8   (0F BA /5)                  3?4? bytes
-//     * BTR r/m64, imm8   (0F BA /6)                  3?4? bytes
-//     * BTC r/m64, imm8   (0F BA /7)                  3?4? bytes
+//     * BT r/m64, imm8    (0F BA /4)                  4 bytes
+//     * BTS r/m64, imm8   (0F BA /5)                  4 bytes
+//     * BTR r/m64, imm8   (0F BA /6)                  4 bytes
+//     * BTC r/m64, imm8   (0F BA /7)                  4 bytes
+//     * BSF r64, r/m64    (0F BC /r)                  4 bytes
+//     * BSR r64, r/m64    (0F BD /r)                  4 bytes
+//     * LZCNT r64, r/m64  (F3 48 0F BD)              5 bytes
+//     * TZCNT r64, r/m64  (F3 48 0F BC)              5 bytes
 // 
 //   MOV, both register and simple memory forms
 //     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes
@@ -68,6 +72,7 @@
 // The decoder is deliberately minimal but now supports a small subset of
 // prefixes:
 //   * 0x66 for selected size-sensitive MOV forms (I16),
+//   * 0xF3 for LZCNT/TZCNT family placeholder support,
 //   * REX.W for the 64-bit MOV/ALU variants.
 // No SIB / RIP-relative / R8..R15 yet (REX.R / REX.B / REX.X must be
 // zero). All of these constraints remain future-work items; the API stays

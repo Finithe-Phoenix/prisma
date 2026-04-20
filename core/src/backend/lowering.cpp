@@ -218,9 +218,12 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Return>) {
-            // MVP: lower to a bare ARM64 ret. The caller (thunk builder)
-            // is responsible for any calling-convention marshalling — the
-            // Lowerer just emits the body as the IR describes it.
+            // Guest RET in MVP: set x0 = 0 (the dispatcher halt sentinel,
+            // `CpuStateFrame::kHaltSentinel`) and ret. A real x86 RET pops
+            // the return address from the guest stack; that requires a
+            // stack and CALL-side pushing. Until F1-RT-008 lands (return-
+            // address stack), "guest returned" means "end of execution".
+            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             emitter_.ret();
             return {};
         }

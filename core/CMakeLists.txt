@@ -88,6 +88,7 @@ target_link_libraries(prisma_decoder
 add_library(prisma_runtime STATIC
     src/runtime/jit_memory.cpp
     src/runtime/signal_handler.cpp
+    src/runtime/dispatcher.cpp
 )
 
 target_include_directories(prisma_runtime
@@ -95,7 +96,13 @@ target_include_directories(prisma_runtime
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(prisma_runtime PRIVATE prisma_warnings)
+target_link_libraries(prisma_runtime
+    PUBLIC
+        prisma_ir
+        prisma_translator
+    PRIVATE
+        prisma_warnings
+)
 
 # ---------------------------------------------------------------------------
 # IR optimization passes
@@ -227,6 +234,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_lowering.cpp
         tests/test_signal_handler.cpp
         tests/test_translator.cpp
+        tests/test_dispatcher.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
