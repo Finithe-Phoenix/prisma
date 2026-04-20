@@ -369,7 +369,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-TC-001: Catch2 test executable builds and runs.
 - [ ] F1-TC-002: Integration test: translate + cache + execute + re-execute (hit).
 - [ ] F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode.
-- [ ] F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
+- [~|claude] F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
 - [ ] F1-TC-005: Coverage instrumentation (llvm-cov).
 - [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
 - [ ] F1-TC-007: Performance regression harness (simple microbenchmarks).
