@@ -6,11 +6,14 @@
 
 **Legend:**
 
-- `[ ]` TODO — not started.
-- `[x]` DONE — completed and committed.
-- `[~]` IN PROGRESS — partial work exists.
-- `[!]` BLOCKED — waiting on an external dependency (noted in item).
+- `[ ]` TODO — unclaimed, either agent may take.
+- `[~|<agent>]` IN PROGRESS — claimed by the named agent (`claude` / `codex`).
+- `[x] (<sha>)` DONE — `<sha>` is the first commit that landed it.
+- `[!] <reason>` BLOCKED — waiting on an external dependency.
 - `[?]` DEFERRED — descoped from current phase; may return later.
+
+See [`COORDINATION.md`](COORDINATION.md) for the full multi-agent
+protocol (claim, complete, abandon, conflict resolution).
 
 **ID scheme:** `F<phase>-<component>-<num>`.
 
@@ -161,9 +164,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-013: MOV r/m8, r8 (88 /r) + memory.
 - [x] F1-DC-014: MOV r/m16, r16 (66 89 /r) + memory.
 - [x] F1-DC-015: MOV r/m32, r32 (89 /r) + memory.
-- [ ] F1-DC-016: ADC r/m64, r64 (48 11 /r).
-- [ ] F1-DC-017: SBB r/m64, r64 (48 19 /r).
-- [ ] F1-DC-018: CMP r/m64, r64 (48 39 /r).
+- [x] F1-DC-016: ADC r/m64, r64 (48 11 /r).
+- [x] F1-DC-017: SBB r/m64, r64 (48 19 /r).
+- [x] F1-DC-018: CMP r/m64, r64 (48 39 /r).
 - [ ] F1-DC-019: TEST r/m64, r64 (48 85 /r).
 - [ ] F1-DC-020: INC r/m64 (48 FF /0).
 - [ ] F1-DC-021: DEC r/m64 (48 FF /1).
@@ -194,8 +197,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-DC-046: MOVZX r64, r/m8/16 (0F B6 / B7).
 - [ ] F1-DC-047: CBW/CWDE/CDQE (98 with prefix sizes).
 - [ ] F1-DC-048: CWD/CDQ/CQO (48 99).
-- [ ] F1-DC-049: JMP rel8 (EB cb).
-- [ ] F1-DC-050: JMP rel32 (E9 cd).
+- [x] F1-DC-049: JMP rel8 (EB cb).
+- [x] F1-DC-050: JMP rel32 (E9 cd).
 - [ ] F1-DC-051: JMP r/m64 (FF /4).
 - [ ] F1-DC-052: Jcc rel8 for all 16 condition codes (70-7F).
 - [ ] F1-DC-053: Jcc rel32 for all 16 condition codes (0F 80-8F).
