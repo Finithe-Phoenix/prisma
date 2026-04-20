@@ -113,6 +113,9 @@ add_library(prisma_passes STATIC
     src/passes/dce.cpp
     src/passes/algebraic.cpp
     src/passes/cse.cpp
+    src/passes/copy_prop.cpp
+    src/passes/strength_reduce.cpp
+    src/passes/branch_fold.cpp
     src/passes/pass_manager.cpp
 )
 
@@ -249,6 +252,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_translator.cpp
         tests/test_dispatcher.cpp
         tests/test_passes_advanced.cpp
+        tests/test_passes_more.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE

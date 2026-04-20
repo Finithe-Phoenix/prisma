@@ -94,6 +94,49 @@ algebraic_simplify(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 common_subexpression_eliminate(const std::vector<ir::Stmt>& stmts);
 
+// Copy propagation — chase "move" chains produced by CSE.
+//
+// When CSE dedupes a duplicate BinOp, it emits `%b = Or %a, %a` (our
+// IR idiom for "copy ref %a into ref %b"). Later uses of %b read an
+// identical value through an extra scratch. Copy propagation rewrites
+// every subsequent use of %b to reference %a directly, making the
+// copy's result dead so DCE can remove it.
+//
+// MVP scope:
+//   * Detects the `Or x, x` shape only. More general (Add x, 0) moves
+//     are handled by algebraic_simplify.
+//   * Intra-block only. No CFG reasoning.
+[[nodiscard]] std::vector<ir::Stmt>
+copy_propagate(const std::vector<ir::Stmt>& stmts);
+
+// Strength reduction — cheaper primitive for the same value.
+//
+// For integer constants:
+//   x * (1 << k)  →  x << k       (for k in 1..63)
+//   x / (1 << k)  →  x >> k       NOT fired: rounding semantics differ
+//                                  for signed division; wait for a
+//                                  proper signed/unsigned split.
+//
+// The pass replaces `BinOp Mul, x, const_pow2` with
+// `BinOp Shl, x, const_k`. It adds a new Constant for `k` and leaves
+// the old one in place; DCE handles the cleanup.
+[[nodiscard]] std::vector<ir::Stmt>
+strength_reduce(const std::vector<ir::Stmt>& stmts);
+
+// Branch folding — collapse a CondJumpRel whose condition is always
+// taken or always not-taken to an unconditional JumpRel / fallthrough.
+//
+// Currently fires when the immediately-preceding CmpFlags compares
+// two Constants whose concrete values make the condition statically
+// knowable. The CmpFlags is retained (conservative) in case a future
+// ReadFlag uses it; DCE prunes it if not.
+//
+// MVP scope:
+//   * Only the (CmpFlags constA, constB) pattern.
+//   * Not yet following bool-producing Compare → Select chains.
+[[nodiscard]] std::vector<ir::Stmt>
+branch_fold(const std::vector<ir::Stmt>& stmts);
+
 // ---------------------------------------------------------------------------
 // PassManager — ordered pipeline of named passes, with run statistics.
 // ---------------------------------------------------------------------------

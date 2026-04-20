@@ -31,21 +31,31 @@ PassManager default_pipeline() {
     //                           Enables further simplification.
     //   2. algebraic_simplify — handles one-side identities that
     //                           const_prop can't see (x*0, x&0, |-1…).
-    //   3. constant_propagate (again) — pick up new Constants the
-    //                                   algebraic pass just created.
-    //   4. common_subexpression_eliminate — kill duplicated BinOps
-    //                                        post-simplification.
-    //   5. dead_code_eliminate — sweep the defs that the earlier
-    //                             passes made unreachable.
+    //   3. strength_reduce — turns `x * (1<<k)` into shifts. Runs after
+    //                        algebraic so obvious x*0 / x*1 are already gone.
+    //   4. constant_propagate (again) — pick up new Constants the
+    //                                   earlier passes just created.
+    //   5. common_subexpression_eliminate — kill duplicated BinOps
+    //                                        post-simplification. Emits
+    //                                        `Or x, x` copy idioms.
+    //   6. copy_propagate — chase the copy idioms CSE just emitted so
+    //                        downstream refs see the canonical source.
+    //   7. branch_fold — statically-resolve CondJumpRel whose CmpFlags
+    //                     compares two now-Constant operands.
+    //   8. dead_code_eliminate — sweep defs that the earlier passes
+    //                             made unreachable (including the
+    //                             post-CSE/copy-prop copies).
     //
     // This stays monotonic (each pass is purely refining) so a single
-    // forward fixed-point iteration is enough for the current
-    // optimisation set.
+    // forward iteration is enough for the current optimisation set.
     PassManager pm;
     pm.add("constant_propagate",             constant_propagate);
     pm.add("algebraic_simplify",             algebraic_simplify);
+    pm.add("strength_reduce",                strength_reduce);
     pm.add("constant_propagate_2",           constant_propagate);
     pm.add("common_subexpression_eliminate", common_subexpression_eliminate);
+    pm.add("copy_propagate",                 copy_propagate);
+    pm.add("branch_fold",                    branch_fold);
     pm.add("dead_code_eliminate",            dead_code_eliminate);
     return pm;
 }

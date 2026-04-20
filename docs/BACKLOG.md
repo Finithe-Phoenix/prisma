@@ -220,14 +220,14 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-069: CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7).
 - [x] F1-DC-070: SCASB/SCASW/SCASD/SCASQ (AE / AF).
 - [ ] F1-DC-071: Operand size prefix 0x66 (16-bit operands).
-- [ ] F1-DC-072: Address size prefix 0x67.
-- [ ] F1-DC-073: Segment override prefixes (documented; SS/DS are no-ops in 64-bit).
+- [x] F1-DC-072: Address size prefix 0x67.
+- [x] F1-DC-073: Segment override prefixes (documented; ES/CS/SS/DS are no-ops in 64-bit).
 - [ ] F1-DC-074: %fs / %gs segment base accesses (TLS / TEB).
-- [ ] F1-DC-075: RIP-relative addressing (mod=00 rm=101).
-- [ ] F1-DC-076: SIB byte decoding (rm=100 in ModR/M).
-- [ ] F1-DC-077: REX.R / REX.X / REX.B — reject no longer; handle.
+- [x] F1-DC-075: RIP-relative addressing (mod=00 rm=101).
+- [x] F1-DC-076: SIB byte decoding (rm=100 in ModR/M).
+- [x] F1-DC-077: REX.R / REX.X / REX.B — reject no longer; handle.
 - [ ] F1-DC-078: Use a table-driven decoder for opcode dispatch.
-- [ ] F1-DC-079: Instruction length validator (reject 16+ byte oversized encodings).
+- [x] F1-DC-079: Instruction length validator (reject 16+ byte oversized encodings).
 - [ ] F1-DC-080: Decoder fuzz harness (AFL++) seeded with coreutils disassembly.
 - [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
 - [ ] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
@@ -299,15 +299,15 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-PS-003: PassManager + default_pipeline.
 - [x] (pending commit) F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
 - [x] (pending commit) F1-PS-005: Common Subexpression Elimination (CSE) within a block.
-- [ ] F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
+- [x] (pending commit) F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
 - [ ] F1-PS-007: Redundant-load elimination across a block.
 - [ ] F1-PS-008: Dead-store elimination within a block.
 - [ ] F1-PS-009: Peephole pattern matcher (IR-level patterns).
 - [ ] F1-PS-010: Constant folding on Extend / Truncate.
-- [ ] F1-PS-011: Strength reduction (shift for power-of-two multiply).
+- [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
 - [ ] F1-PS-012: Flag-write elimination when no reader exists.
 - [ ] F1-PS-013: CFG simplification (remove empty blocks).
-- [ ] F1-PS-014: Branch folding (collapse `if const_true`).
+- [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
 - [ ] F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
 - [ ] F1-PS-016: Pass timing instrumentation.
 - [ ] F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
