@@ -1290,12 +1290,18 @@ TEST_CASE("Error: ADD with memory operand rejected as UnsupportedEncoding") {
     REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
 }
 
-TEST_CASE("Error: REX.R rejected for MVP (would reference R8..R15)") {
-    // 4C 01 D8  →  ADD rax, r11  (REX.R=1 extends reg field).
+TEST_CASE("decode ADD rax, r11 via REX.R extension (4C 01 D8)") {
+    // 4C 01 D8  →  ADD rax, r11  (REX.R=1 extends reg field to r11).
+    // Codex's SIB/REX refactor now supports extended registers.
     ir::Ref r = 0;
-    auto res = decode_any({0x4C, 0x01, 0xD8}, r);
-    REQUIRE(std::holds_alternative<DecodeError>(res));
-    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+    auto d = decode_ok({0x4C, 0x01, 0xD8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    // Should produce LoadReg + LoadReg + BinOp + StoreReg (the ALU shape).
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(std::holds_alternative<ir::LoadReg>(d.stmts[0].op));
+    REQUIRE(std::get<ir::LoadReg>(d.stmts[0].op).reg == ir::Gpr::Rax);
+    REQUIRE(std::holds_alternative<ir::LoadReg>(d.stmts[1].op));
+    REQUIRE(std::get<ir::LoadReg>(d.stmts[1].op).reg == ir::Gpr::R11);
 }
 
 // ---------------------------------------------------------------------------
@@ -1874,19 +1880,30 @@ TEST_CASE("Error: HLT (F4) is rejected as UnsupportedEncoding") {
     REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
 }
 
-TEST_CASE("Error: memory form MOV with SIB byte (rm=100) is rejected") {
-    // 48 89 04 ... would require SIB. We stop at the ModR/M.
+TEST_CASE("Error: memory form MOV with SIB byte (rm=100) needs a SIB byte") {
+    // 48 89 04 ... now requires a SIB byte (Codex's SIB support).
+    // Three bytes alone is truncated: ModR/M says SIB follows, but no
+    // SIB byte is present → TruncatedInput.
     ir::Ref r = 0;
     auto res = decode_any({0x48, 0x89, 0x04}, r);
     REQUIRE(std::holds_alternative<DecodeError>(res));
-    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::TruncatedInput);
 }
 
-TEST_CASE("Error: mod=00 rm=101 (disp32 absolute) is rejected") {
-    // 48 89 05 XX XX XX XX  (MOV [rip+disp32], rax). RIP-relative addressing
-    // is the x86-64 re-use of rm=101. Needs CFG awareness to map; out of scope.
+TEST_CASE("decode mod=00 rm=101 as RIP-relative (48 89 05 disp32)") {
+    // 48 89 05 XX XX XX XX  (MOV [rip+disp32], rax). Codex's RIP-rel
+    // support computes the absolute address from rip_after + disp32
+    // at decode time, collapsing it into a Constant operand.
     ir::Ref r = 0;
-    auto res = decode_any({0x48, 0x89, 0x05, 0x00, 0x00, 0x00, 0x00}, r);
+    auto d = decode_ok({0x48, 0x89, 0x05, 0x00, 0x00, 0x00, 0x00}, r);
+    REQUIRE(d.bytes_consumed == 7);
+    // Should decode cleanly — no error.
+    (void)d;
+}
+
+TEST_CASE("Preserved — decoder still rejects the HLT opcode (F4)") {
+    ir::Ref r = 0;
+    auto res = decode_any({0xF4}, r);
     REQUIRE(std::holds_alternative<DecodeError>(res));
     REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
 }

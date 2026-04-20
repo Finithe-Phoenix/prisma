@@ -207,6 +207,17 @@ target_link_libraries(prisma_emitter
 # Testing
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Optional subprojects
+# ---------------------------------------------------------------------------
+
+# Fuzzers live under ../fuzz/ and build only when explicitly enabled.
+# Their CMakeLists gates on Clang; a non-Clang build just skips.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../fuzz/CMakeLists.txt)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../fuzz
+                     ${CMAKE_CURRENT_BINARY_DIR}/fuzz)
+endif()
+
 option(PRISMA_BUILD_TESTS "Build Prisma core tests" ON)
 
 if(PRISMA_BUILD_TESTS)
