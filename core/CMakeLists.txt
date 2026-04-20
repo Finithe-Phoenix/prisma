@@ -139,6 +139,7 @@ target_link_libraries(prisma_passes
 
 add_library(prisma_cache STATIC
     src/cache/translation_cache.cpp
+    src/cache/sha256.cpp
 )
 
 target_include_directories(prisma_cache
@@ -261,6 +262,8 @@ if(PRISMA_BUILD_TESTS)
         tests/test_ir_validate.cpp
         tests/test_host_features.cpp
         tests/test_cache_stress.cpp
+        tests/test_sha256.cpp
+        tests/test_benchmarks.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE

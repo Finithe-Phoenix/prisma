@@ -337,7 +337,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-CA-001: In-memory cache with FNV-1a SMC detection.
 - [x] F1-CA-002: Page-level invalidation.
 - [x] (PENDING) F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
-- [~|claude] F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
+- [x] (pending commit) F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
 - [x] (PENDING) F1-CA-005: Cache eviction policy (LRU).
 - [x] (pending commit) F1-CA-006: Size-bounded cache with eviction trigger.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
@@ -372,7 +372,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
 - [ ] F1-TC-005: Coverage instrumentation (llvm-cov).
 - [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
-- [~|claude] F1-TC-007: Performance regression harness (simple microbenchmarks).
+- [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
 - [ ] F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
 - [ ] F1-TC-009: Lean proof check added as a blocking CI step.
 - [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
