@@ -176,10 +176,10 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-025: IMUL r/m64 (48 F7 /5).
 - [x] F1-DC-026: IMUL r64, r/m64 (48 0F AF /r).
 - [x] F1-DC-027: IMUL r64, r/m64, imm32 (48 69 /r).
-- [ ] F1-DC-028: IMUL r64, r/m64, imm8 (48 6B /r).
-- [ ] F1-DC-029: DIV r/m64 (48 F7 /6).
-- [ ] F1-DC-030: IDIV r/m64 (48 F7 /7).
-- [ ] F1-DC-031: SHL/SHR/SAR r/m64, imm8 (48 C1 /4|/5|/7).
+- [x] F1-DC-028: IMUL r64, r/m64, imm8 (48 6B /r).
+- [x] F1-DC-029: DIV r/m64 (48 F7 /6).
+- [x] F1-DC-030: IDIV r/m64 (48 F7 /7).
+- [x] F1-DC-031: SHL/SHR/SAR r/m64, imm8 (48 C1 /4|/5|/7).
 - [ ] F1-DC-032: SHL/SHR/SAR r/m64, CL (48 D3 /4|/5|/7).
 - [ ] F1-DC-033: ROL/ROR r/m64 (48 C1 /0|/1, 48 D3 /0|/1).
 - [ ] F1-DC-034: RCL/RCR r/m64 (48 C1 /2|/3, 48 D3 /2|/3).
@@ -336,9 +336,9 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [x] F1-CA-001: In-memory cache with FNV-1a SMC detection.
 - [x] F1-CA-002: Page-level invalidation.
-- [ ] F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
+- [x] (PENDING) F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
 - [ ] F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
-- [ ] F1-CA-005: Cache eviction policy (LRU).
+- [x] (PENDING) F1-CA-005: Cache eviction policy (LRU).
 - [ ] F1-CA-006: Size-bounded cache with eviction trigger.
 - [ ] F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).

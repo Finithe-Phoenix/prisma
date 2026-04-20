@@ -3,6 +3,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <variant>
 #include <vector>
 
@@ -142,4 +144,168 @@ TEST_CASE("TranslationCache: insert is idempotent on exact-key duplicate") {
     // First entry still present.
     const Entry* e = std::get<const Entry*>(cache.lookup(0x1000, bytes));
     REQUIRE(e->code_bytes[0] == 0x01);
+}
+
+// ---------------------------------------------------------------------------
+// F1-CA-005: LRU eviction.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: set_max_entries(0) keeps cache unbounded") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> b{0xC3};
+    const std::uint64_t h = fnv1a_64(b);
+
+    // Default is 0 = unlimited; insert many entries.
+    for (std::uint64_t i = 0; i < 50; ++i) {
+        cache.insert(Key{0x10000 + i, h}, make_entry({static_cast<std::uint8_t>(i)}, 1, h));
+    }
+    REQUIRE(cache.entry_count() == 50);
+}
+
+TEST_CASE("TranslationCache: bounded cache evicts the least-recently-used entry") {
+    TranslationCache cache;
+    cache.set_max_entries(3);
+    REQUIRE(cache.max_entries() == 3);
+
+    const std::vector<std::uint8_t> b{0xC3};
+    const std::uint64_t h = fnv1a_64(b);
+
+    cache.insert(Key{0x1000, h}, make_entry({0x01}, 1, h));
+    cache.insert(Key{0x2000, h}, make_entry({0x02}, 1, h));
+    cache.insert(Key{0x3000, h}, make_entry({0x03}, 1, h));
+    REQUIRE(cache.entry_count() == 3);
+
+    // Touch 0x1000 so it becomes MRU. The LRU is now 0x2000.
+    (void)cache.lookup(0x1000, b);
+
+    // Insert a fourth → must evict 0x2000.
+    cache.insert(Key{0x4000, h}, make_entry({0x04}, 1, h));
+    REQUIRE(cache.entry_count() == 3);
+
+    REQUIRE(std::holds_alternative<const Entry*>(cache.lookup(0x1000, b)));
+    REQUIRE(std::holds_alternative<MissReason>(cache.lookup(0x2000, b)));
+    REQUIRE(std::get<MissReason>(cache.lookup(0x2000, b)) == MissReason::UnknownAddress);
+    REQUIRE(std::holds_alternative<const Entry*>(cache.lookup(0x3000, b)));
+    REQUIRE(std::holds_alternative<const Entry*>(cache.lookup(0x4000, b)));
+}
+
+TEST_CASE("TranslationCache: lookup hit bumps LRU age") {
+    TranslationCache cache;
+    cache.set_max_entries(2);
+    const std::vector<std::uint8_t> b{0xC3};
+    const std::uint64_t h = fnv1a_64(b);
+
+    cache.insert(Key{0x1000, h}, make_entry({0x01}, 1, h));
+    cache.insert(Key{0x2000, h}, make_entry({0x02}, 1, h));
+    // Access 0x1000 repeatedly; it should survive evictions over 0x2000.
+    for (int i = 0; i < 5; ++i) (void)cache.lookup(0x1000, b);
+
+    cache.insert(Key{0x3000, h}, make_entry({0x03}, 1, h));
+    REQUIRE(std::holds_alternative<const Entry*>(cache.lookup(0x1000, b)));
+    REQUIRE(std::holds_alternative<MissReason>(cache.lookup(0x2000, b)));
+}
+
+// ---------------------------------------------------------------------------
+// F1-CA-003: persistent on-disk format round-trip.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: save / load round-trips a populated cache") {
+    // Populate a reference cache.
+    TranslationCache original;
+    const std::vector<std::uint8_t> guest_a{0x48, 0xC3};
+    const std::vector<std::uint8_t> guest_b{0xC3};
+    const std::uint64_t ha = fnv1a_64(guest_a);
+    const std::uint64_t hb = fnv1a_64(guest_b);
+
+    original.insert(Key{0x1000, ha},
+                    make_entry({0xAA, 0xBB, 0xCC, 0xDD}, guest_a.size(), ha));
+    original.insert(Key{0x2000, hb},
+                    make_entry({0x11, 0x22}, guest_b.size(), hb));
+
+    // Write to a temp file.
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_cache_roundtrip.bin";
+    {
+        auto err = original.save_to_file(tmp);
+        REQUIRE_FALSE(err.has_value());
+    }
+
+    // Load into a fresh cache; must reproduce original entries.
+    TranslationCache loaded;
+    {
+        auto err = loaded.load_from_file(tmp);
+        REQUIRE_FALSE(err.has_value());
+    }
+    REQUIRE(loaded.entry_count() == 2);
+
+    auto r1 = loaded.lookup(0x1000, guest_a);
+    REQUIRE(std::holds_alternative<const Entry*>(r1));
+    const Entry* e1 = std::get<const Entry*>(r1);
+    REQUIRE(e1->code_bytes == std::vector<std::uint8_t>{0xAA, 0xBB, 0xCC, 0xDD});
+    REQUIRE(e1->guest_size == guest_a.size());
+
+    auto r2 = loaded.lookup(0x2000, guest_b);
+    REQUIRE(std::holds_alternative<const Entry*>(r2));
+    const Entry* e2 = std::get<const Entry*>(r2);
+    REQUIRE(e2->code_bytes == std::vector<std::uint8_t>{0x11, 0x22});
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: save on empty cache writes only the header") {
+    TranslationCache empty_cache;
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_cache_empty.bin";
+    auto err = empty_cache.save_to_file(tmp);
+    REQUIRE_FALSE(err.has_value());
+
+    // Exactly 32 bytes of header, no entries.
+    REQUIRE(std::filesystem::file_size(tmp) == 32u);
+
+    TranslationCache loaded;
+    REQUIRE_FALSE(loaded.load_from_file(tmp).has_value());
+    REQUIRE(loaded.entry_count() == 0);
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: load on missing file returns OpenFailed") {
+    TranslationCache cache;
+    auto err = cache.load_from_file("/tmp/definitely_does_not_exist_prisma_cache.xyz");
+    REQUIRE(err.has_value());
+    REQUIRE(*err == TranslationCache::IoError::OpenFailed);
+}
+
+TEST_CASE("TranslationCache: load rejects a file with wrong magic") {
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_cache_badmagic.bin";
+    {
+        std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
+        // Write 64 bytes of garbage with the wrong magic.
+        const char bad[8] = {'N', 'O', 'P', 'E', '\0', '\0', '\0', '\0'};
+        os.write(bad, 8);
+        char padding[56]{};
+        os.write(padding, 56);
+    }
+
+    TranslationCache cache;
+    auto err = cache.load_from_file(tmp);
+    REQUIRE(err.has_value());
+    REQUIRE(*err == TranslationCache::IoError::BadMagic);
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: load leaves cache unchanged on error") {
+    // Populate, save valid, then corrupt and load again; the cache should
+    // retain its original state.
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0xC3};
+    const std::uint64_t h = fnv1a_64(g);
+    cache.insert(Key{0x1000, h}, make_entry({0x42}, 1, h));
+    REQUIRE(cache.entry_count() == 1);
+
+    // Attempt to load a missing file.
+    auto err = cache.load_from_file("/tmp/no_such_prisma_cache.bin");
+    REQUIRE(err.has_value());
+    REQUIRE(cache.entry_count() == 1);  // still 1 — untouched.
 }

@@ -4,7 +4,7 @@
 // process-lifetime cache keyed by guest code identity so that repeated
 // executions of the same basic block skip decode + lower + emit.
 //
-// What's here now (Fase 0):
+// What's here now:
 //   * Key = (guest_addr, content_hash). Content hash gives us SMC
 //     detection: if the guest code at `guest_addr` changes (self-modify),
 //     the hash changes and the cache miss forces retranslation.
@@ -13,8 +13,15 @@
 //   * Page-level invalidate(page_addr): drops every entry whose
 //     guest_addr falls inside the page. Used by the runtime when it
 //     observes a write to executable memory.
-//   * No disk persistence. No LRU eviction yet — size grows unbounded
-//     until invalidate() is called. Those land with RFC 0003 (tentative).
+//   * Persistent file format: save_to_file / load_from_file round-trips
+//     the entire cache through a deterministic binary layout (F1-CA-003).
+//     The on-disk format carries a version + reserved CPU fingerprint
+//     so a future Fase 2.5 agent can reject caches built for a
+//     different host.
+//   * LRU eviction: set_max_entries(N) bounds the cache. Exceeding N
+//     evicts the least-recently-used entry (tracked by an internal
+//     access counter bumped on every lookup hit and insert). 0 = no
+//     bound (default).
 //
 // Threading: NOT thread-safe. One cache per translation thread, or wrap
 // externally. A lock-free redesign arrives with the P2P cache work.
@@ -23,10 +30,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace prisma::cache {
@@ -100,6 +110,65 @@ public:
     // Returns the number of distinct translations (address * hash pairs).
     [[nodiscard]] std::size_t entry_count() const noexcept { return entries_.size(); }
 
+    // ------------------------------------------------------------------
+    // LRU eviction (F1-CA-005).
+    //
+    // When a cap is set, insert / upsert that would exceed it first evict
+    // the least-recently-used entry. Lookup hits and insertions both bump
+    // an entry's "last used" timestamp. A cap of 0 disables bounds (the
+    // default) — the cache then grows until invalidate_page is called.
+    void set_max_entries(std::size_t n) noexcept { max_entries_ = n; }
+    [[nodiscard]] std::size_t max_entries() const noexcept { return max_entries_; }
+
+    // ------------------------------------------------------------------
+    // Persistent on-disk format (F1-CA-003).
+    //
+    // Layout (all little-endian, no padding beyond what the struct
+    // sequence implies):
+    //
+    //   Header (32 bytes)
+    //     u64 magic               = 0x50'52'53'4D'43'41'43'48  "PRSMCACH"
+    //     u32 version             = kFileVersion
+    //     u32 reserved            = 0
+    //     u64 cpu_fingerprint     = 0 (reserved for Fase 2.5 host match)
+    //     u64 entry_count
+    //
+    //   For each entry:
+    //     u64 guest_addr
+    //     u64 content_hash
+    //     u64 guest_size
+    //     u64 code_size
+    //     u8  code_bytes[code_size]
+    //
+    // Access pattern: whole-file snapshot. No delta format. Snapshots are
+    // meant to be written at shutdown and loaded at startup; the P2P
+    // distribution protocol (Pilar 4) will define its own signed chunk
+    // format on top of this.
+
+    static constexpr std::uint64_t kFileMagic   = 0x4843'4143'4D53'5250ULL;
+    static constexpr std::uint32_t kFileVersion = 1u;
+
+    enum class IoError {
+        OpenFailed,        // fopen / ofstream failed.
+        WriteFailed,       // any short / failed write.
+        ReadFailed,        // short read mid-file.
+        BadMagic,          // header magic mismatch.
+        UnsupportedVersion,
+        Truncated,         // entry_count claims more data than the file has.
+    };
+
+    // Serialise all entries to `path`. Returns std::nullopt on success
+    // or an IoError on failure. The target file is overwritten.
+    [[nodiscard]] std::optional<IoError>
+    save_to_file(const std::filesystem::path& path) const;
+
+    // Replace the current cache with the contents of `path`. On error
+    // the cache is left unchanged; the method returns the IoError. The
+    // access counter and LRU state are reset; on-disk caches are assumed
+    // to carry no temporal information.
+    [[nodiscard]] std::optional<IoError>
+    load_from_file(const std::filesystem::path& path);
+
 private:
     // Primary store: full key → entry. Keyed by the composite so SMC
     // doesn't lose the old entry until it's explicitly evicted.
@@ -113,6 +182,27 @@ private:
     // Secondary index: guest_addr → latest content_hash we have seen.
     // Lets lookup() tell the difference between "never seen" and "stale".
     std::unordered_map<std::uint64_t, std::uint64_t> addr_to_hash_;
+
+    // LRU tracking. access_times_[key] is the monotonic counter value at
+    // this entry's last touch. 0 = never recorded (should not happen
+    // after insert). next_tick_ increments on every use.
+    std::unordered_map<Key, std::uint64_t, KeyHash> access_times_;
+    std::uint64_t next_tick_{1};
+
+    // 0 = unlimited (default).
+    std::size_t max_entries_{0};
+
+    // Pick the LRU key (smallest access_times_ value) from the current
+    // map. Undefined result on empty cache; callers must guard.
+    [[nodiscard]] Key pick_lru_key() const;
+
+    // Erase a specific Key from every internal structure. Idempotent on
+    // keys that are absent.
+    void erase_key(const Key& k);
+
+    // After adding a new entry, evict until we are back under max_entries_.
+    // Called from insert / upsert.
+    void maybe_evict();
 };
 
 }  // namespace prisma::cache
