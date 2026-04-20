@@ -273,7 +273,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
 - [ ] F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
-- [ ] F1-BK-007: Linear-scan register allocator over scratch pool.
+- [~|claude] F1-BK-007: Linear-scan register allocator over scratch pool.
 - [ ] F1-BK-008: Register spill / reload to stack frame slots.
 - [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
