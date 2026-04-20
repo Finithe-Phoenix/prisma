@@ -111,6 +111,8 @@ target_link_libraries(prisma_runtime
 add_library(prisma_passes STATIC
     src/passes/const_prop.cpp
     src/passes/dce.cpp
+    src/passes/algebraic.cpp
+    src/passes/cse.cpp
     src/passes/pass_manager.cpp
 )
 
@@ -235,6 +237,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_signal_handler.cpp
         tests/test_translator.cpp
         tests/test_dispatcher.cpp
+        tests/test_passes_advanced.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE

@@ -287,8 +287,11 @@ TEST_CASE("dce: idempotent") {
 // PassManager.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("PassManager: default_pipeline runs const_prop then dce") {
-    // Classic 10 + 32 → 42 flow.
+TEST_CASE("PassManager: default_pipeline folds 10+32 to 42 and DCE's the rest") {
+    // Classic 10 + 32 → 42 flow. The pipeline is now 5 passes
+    // (const_prop → algebraic → const_prop_2 → CSE → DCE); this test
+    // checks the observable outcome rather than pinning the internal
+    // pass order.
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{10, ir::OpSize::I64}},
         {1u, ir::Constant{32, ir::OpSize::I64}},
@@ -298,21 +301,22 @@ TEST_CASE("PassManager: default_pipeline runs const_prop then dce") {
     };
 
     auto pm = passes::default_pipeline();
-    REQUIRE(pm.size() == 2);
+    REQUIRE(pm.size() >= 2);  // at least const_prop + dce; currently 5.
 
     auto [out, stats] = pm.run(s);
 
-    // After the full pipeline: one Constant (the folded 42), one StoreReg,
-    // one Return — the two source Constants are gone.
+    // Expected surviving stmts: const 42 (bound to ref 2), StoreReg rax %2,
+    // Return. The two source Constants were folded and then DCE'd.
     REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[0].op));
     REQUIRE(std::get<ir::Constant>(out[0].op).value == 42u);
+    REQUIRE(std::holds_alternative<ir::StoreReg>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::Return>(out[2].op));
 
     REQUIRE(stats.initial_stmt_count == 5);
-    REQUIRE(stats.passes.size() == 2);
-    REQUIRE(stats.passes[0].name == "constant_propagate");
-    REQUIRE(stats.passes[0].stmts_after == 5);  // const_prop keeps count
-    REQUIRE(stats.passes[1].name == "dead_code_eliminate");
-    REQUIRE(stats.passes[1].stmts_after == 3);  // DCE drops 2 dead defs
+    REQUIRE_FALSE(stats.passes.empty());
+    // The last pass runs DCE, leaving 3 stmts.
+    REQUIRE(stats.passes.back().stmts_after == 3);
 }
 
 TEST_CASE("PassManager: empty pipeline is the identity") {

@@ -187,38 +187,38 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-036: BSF / BSR r64, r/m64 (48 0F BC / BD).
 - [x] F1-DC-037: LZCNT r64, r/m64 (F3 48 0F BD).
 - [x] F1-DC-038: TZCNT r64, r/m64 (F3 48 0F BC).
-- [ ] F1-DC-039: POPCNT r64, r/m64 (F3 48 0F B8).
-- [ ] F1-DC-040: PUSH r64 (50+rd).
-- [ ] F1-DC-041: POP r64 (58+rd).
-- [ ] F1-DC-042: PUSH imm8 / imm32 (6A / 68).
-- [ ] F1-DC-043: PUSHFQ / POPFQ (9C / 9D).
-- [ ] F1-DC-044: LEA r64, [mem] (48 8D /r).
-- [ ] F1-DC-045: MOVSX r64, r/m8/16/32 (0F BE / BF, 63).
-- [ ] F1-DC-046: MOVZX r64, r/m8/16 (0F B6 / B7).
-- [ ] F1-DC-047: CBW/CWDE/CDQE (98 with prefix sizes).
-- [ ] F1-DC-048: CWD/CDQ/CQO (48 99).
+- [x] F1-DC-039: POPCNT r64, r/m64 (F3 48 0F B8).
+- [x] F1-DC-040: PUSH r64 (50+rd).
+- [x] F1-DC-041: POP r64 (58+rd).
+- [x] F1-DC-042: PUSH imm8 / imm32 (6A / 68).
+- [x] F1-DC-043: PUSHFQ / POPFQ (9C / 9D).
+- [x] F1-DC-044: LEA r64, [mem] (48 8D /r).
+- [x] F1-DC-045: MOVSX r64, r/m8/16/32 (0F BE / BF, 63).
+- [x] F1-DC-046: MOVZX r64, r/m8/16 (0F B6 / B7).
+- [x] F1-DC-047: CBW/CWDE/CDQE (98 with prefix sizes).
+- [x] F1-DC-048: CWD/CDQ/CQO (48 99).
 - [x] F1-DC-049: JMP rel8 (EB cb).
 - [x] F1-DC-050: JMP rel32 (E9 cd).
-- [ ] F1-DC-051: JMP r/m64 (FF /4).
-- [ ] F1-DC-052: Jcc rel8 for all 16 condition codes (70-7F).
-- [ ] F1-DC-053: Jcc rel32 for all 16 condition codes (0F 80-8F).
-- [ ] F1-DC-054: CALL rel32 (E8 cd).
-- [ ] F1-DC-055: CALL r/m64 (FF /2).
-- [ ] F1-DC-056: LEAVE (C9).
-- [ ] F1-DC-057: RET imm16 (C2 iw).
-- [ ] F1-DC-058: CMOVcc r64, r/m64 for all 16 condition codes (0F 40-4F).
-- [ ] F1-DC-059: SETcc r/m8 for all 16 condition codes (0F 90-9F).
-- [ ] F1-DC-060: XCHG r64, r/m64 (48 87 /r).
-- [ ] F1-DC-061: CMPXCHG r/m64, r64 (48 0F B1 /r).
-- [ ] F1-DC-062: CMPXCHG16B m128 (48 0F C7 /1).
-- [ ] F1-DC-063: XADD r/m64, r64 (48 0F C1 /r).
-- [ ] F1-DC-064: LOCK prefix handling (emits atomics via TSO variants).
-- [ ] F1-DC-065: XACQUIRE / XRELEASE HLE prefixes (ignored; documented).
+- [x] F1-DC-051: JMP r/m64 (FF /4).
+- [x] F1-DC-052: Jcc rel8 for all 16 condition codes (70-7F).
+- [x] F1-DC-053: Jcc rel32 for all 16 condition codes (0F 80-8F).
+- [x] F1-DC-054: CALL rel32 (E8 cd).
+- [x] F1-DC-055: CALL r/m64 (FF /2).
+- [x] F1-DC-056: LEAVE (C9).
+- [x] F1-DC-057: RET imm16 (C2 iw).
+- [x] F1-DC-058: CMOVcc r64, r/m64 for all 16 condition codes (0F 40-4F).
+- [x] F1-DC-059: SETcc r/m8 for all 16 condition codes (0F 90-9F).
+- [x] F1-DC-060: XCHG r64, r/m64 (48 87 /r).
+- [x] F1-DC-061: CMPXCHG r/m64, r64 (48 0F B1 /r).
+- [x] F1-DC-062: CMPXCHG16B m128 (48 0F C7 /1).
+- [x] F1-DC-063: XADD r/m64, r64 (48 0F C1 /r).
+- [x] F1-DC-064: LOCK prefix handling (emits atomics via TSO variants).
+- [x] F1-DC-065: XACQUIRE / XRELEASE HLE prefixes (ignored; documented).
 - [ ] F1-DC-066: REP / REPE / REPNE prefixes (STOS/MOVS/CMPS/SCAS).
-- [ ] F1-DC-067: STOSB/STOSW/STOSD/STOSQ (AA / AB with size).
-- [ ] F1-DC-068: MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5).
-- [ ] F1-DC-069: CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7).
-- [ ] F1-DC-070: SCASB/SCASW/SCASD/SCASQ (AE / AF).
+- [x] F1-DC-067: STOSB/STOSW/STOSD/STOSQ (AA / AB with size).
+- [x] F1-DC-068: MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5).
+- [x] F1-DC-069: CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7).
+- [x] F1-DC-070: SCASB/SCASW/SCASD/SCASQ (AE / AF).
 - [ ] F1-DC-071: Operand size prefix 0x66 (16-bit operands).
 - [ ] F1-DC-072: Address size prefix 0x67.
 - [ ] F1-DC-073: Segment override prefixes (documented; SS/DS are no-ops in 64-bit).
@@ -231,7 +231,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-DC-080: Decoder fuzz harness (AFL++) seeded with coreutils disassembly.
 - [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
 - [ ] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
-- [ ] F1-DC-083: HLT (F4) — reject (privileged).
+- [x] F1-DC-083: HLT (F4) — reject (privileged).
 - [ ] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
 - [ ] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
 - [ ] F1-DC-086: SYSCALL (0F 05).
@@ -247,7 +247,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
 - [ ] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
 - [ ] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
-- [ ] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
+- [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
 - [ ] F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
 - [ ] F1-IR-011: Add `Truncate{value, to_size}`.
 - [ ] F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
@@ -297,8 +297,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-PS-001: constant_propagate.
 - [x] F1-PS-002: dead_code_eliminate.
 - [x] F1-PS-003: PassManager + default_pipeline.
-- [ ] F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
-- [ ] F1-PS-005: Common Subexpression Elimination (CSE) within a block.
+- [x] (pending commit) F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
+- [x] (pending commit) F1-PS-005: Common Subexpression Elimination (CSE) within a block.
 - [ ] F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
 - [ ] F1-PS-007: Redundant-load elimination across a block.
 - [ ] F1-PS-008: Dead-store elimination within a block.

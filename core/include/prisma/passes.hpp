@@ -59,6 +59,41 @@ constant_propagate(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 dead_code_eliminate(const std::vector<ir::Stmt>& stmts);
 
+// Algebraic simplification — identities that hold for any value of the
+// non-constant operand. Unlike constant_propagate, this fires when ONE
+// side is a known constant with a special value, not both. Patterns:
+//
+//   x + 0    → x       x * 0 → 0
+//   x - 0    → x       x * 1 → x
+//   x - x    → 0       x << 0, x >> 0, x >>> 0 → x
+//   x & 0    → 0       x | 0 → x
+//   x & -1   → x       x | -1 → -1
+//   x ^ x    → 0       x ^ 0 → x
+//
+// The transformation rewrites the Stmt's op in place (same result ref)
+// so downstream uses see the simplified form. A later dead_code_eliminate
+// removes any newly-unreferenced defs.
+//
+// All identities are sound without additional flag modelling — the
+// semantics match x86 pure-value semantics. When flag-setting variants
+// arrive (F1-IR-003), the pass will learn to skip rewrites that would
+// change NZCV observability.
+[[nodiscard]] std::vector<ir::Stmt>
+algebraic_simplify(const std::vector<ir::Stmt>& stmts);
+
+// Common Subexpression Elimination — within a single statement list,
+// if two pure BinOps compute the same `(op, lhs, rhs, size)` with refs
+// whose values have not been invalidated between the two statements,
+// replace the second with a copy of the first's result (modeled as a
+// trivial `or` with zero-aliasing — we use BinOp Or with the first
+// result and itself, which the emitter lowers to a single `mov`).
+//
+// MVP scope: only considers BinOp. Does not track register aliasing
+// through LoadReg → StoreReg chains — that's a harder pass (copy
+// propagation, F1-PS-006).
+[[nodiscard]] std::vector<ir::Stmt>
+common_subexpression_eliminate(const std::vector<ir::Stmt>& stmts);
+
 // ---------------------------------------------------------------------------
 // PassManager — ordered pipeline of named passes, with run statistics.
 // ---------------------------------------------------------------------------
