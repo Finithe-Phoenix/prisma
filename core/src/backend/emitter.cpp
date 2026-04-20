@@ -85,8 +85,23 @@ void Emitter::asr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
 void Emitter::ror(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Ror(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }
+void Emitter::rol(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm, arm64::Reg tmp) {
+    // `rol rn, count` = `ror rn, (-count)` on ARM64. neg lowers to
+    // `sub tmp, xzr, rm`, a single fast instruction.
+    impl_->masm.Neg(to_vixl_x(tmp), to_vixl_x(rm));
+    impl_->masm.Ror(to_vixl_x(rd),  to_vixl_x(rn), to_vixl_x(tmp));
+}
 void Emitter::neg(arm64::Reg rd, arm64::Reg rn) {
     impl_->masm.Neg(to_vixl_x(rd), to_vixl_x(rn));
+}
+void Emitter::clz(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Clz(to_vixl_x(rd), to_vixl_x(rn));
+}
+void Emitter::cls(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Cls(to_vixl_x(rd), to_vixl_x(rn));
+}
+void Emitter::rbit(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Rbit(to_vixl_x(rd), to_vixl_x(rn));
 }
 
 void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {

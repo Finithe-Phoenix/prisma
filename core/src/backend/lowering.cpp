@@ -210,17 +210,17 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!allocate_scratch(*s.result, rd)) {
                 return {false, LowerError::OutOfScratchRegs, "BinOp"};
             }
-            // Rotate-left and rotate-left-with-carry are emulated as:
-            //   neg tmp, rm; ror rd, rn, tmp
-            // This keeps us progressing with minimal IR extensions while preserving
-            // the current register-only backend.
+            // Rotate-left and rotate-left-with-carry lower via the
+            // dedicated emitter op that encapsulates `neg tmp, rm; ror
+            // rd, rn, tmp`. The temporary comes from the scratch pool
+            // and is released at end-of-stmt by the linear-scan
+            // allocator.
             if (op.op == ir::BinOpKind::Rol || op.op == ir::BinOpKind::Rcl) {
                 arm64::Reg tmp;
                 if (!allocate_temporary(tmp)) {
                     return {false, LowerError::OutOfScratchRegs, "BinOp temporary"};
                 }
-                emitter_.neg(tmp, rm);
-                emitter_.ror(rd, rn, tmp);
+                emitter_.rol(rd, rn, rm, tmp);
                 return {};
             }
             return emit_binop(emitter_, op.op, rd, rn, rm);

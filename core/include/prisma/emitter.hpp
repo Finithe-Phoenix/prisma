@@ -60,10 +60,20 @@ public:
     void lsr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shr
     void asr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sar
     void ror (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Ror (ARM64 native)
-    // Rotate-left is not a native ARM64 op. The Lowerer lowers both Rol and
-    // Rcl through `neg tmp, count; ror rd, rn, tmp` using an extra temporary
-    // scratch register.
+    // Rotate-left is not a native ARM64 op. `rol(rd, rn, rm, tmp)`
+    // implements it as `neg tmp, rm; ror rd, rn, tmp` — the caller
+    // supplies the scratch register so the Lowerer keeps its
+    // register allocation explicit. F1-BK-014.
+    void rol (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm, arm64::Reg tmp);
     void neg (arm64::Reg rd, arm64::Reg rn);                 // neg xd, xn (alias of sub xd, xzr, xn)
+
+    // Bit-manipulation ops (F1-BK-015). All are 2-register ARM64 primitives.
+    //   clz — count leading zeros
+    //   cls — count leading sign bits (one fewer than clz for signed ints)
+    //   rbit — bit-reverse (useful when building a 64-bit clz-of-trailing-zeros)
+    void clz  (arm64::Reg rd, arm64::Reg rn);
+    void cls  (arm64::Reg rd, arm64::Reg rn);
+    void rbit (arm64::Reg rd, arm64::Reg rn);
 
     // Compare (SUBS with discard) + materialise 0/1 from flags.
     //   cmp(xn, xm)                — sets NZCV.

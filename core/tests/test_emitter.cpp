@@ -90,3 +90,43 @@ TEST_CASE("Emitter: disassemble produces readable output") {
     REQUIRE(text.find("x0") != std::string::npos);
     REQUIRE(text.find("0x2a") != std::string::npos);  // 42 in hex
 }
+
+// ---------------------------------------------------------------------------
+// F1-BK-014 rol, F1-BK-015 clz/cls/rbit
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emitter: rol disassembles as neg + ror") {
+    backend::Emitter em;
+    em.rol(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2, arm64::Reg::X3);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("neg") != std::string::npos);
+    REQUIRE(text.find("ror") != std::string::npos);
+    REQUIRE(text.find("x3") != std::string::npos);  // tmp reg
+}
+
+TEST_CASE("Emitter: clz emits a clz instruction") {
+    backend::Emitter em;
+    em.clz(arm64::Reg::X0, arm64::Reg::X1);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("clz") != std::string::npos);
+    REQUIRE(text.find("x0") != std::string::npos);
+    REQUIRE(text.find("x1") != std::string::npos);
+}
+
+TEST_CASE("Emitter: cls emits a cls instruction") {
+    backend::Emitter em;
+    em.cls(arm64::Reg::X5, arm64::Reg::X6);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("cls") != std::string::npos);
+}
+
+TEST_CASE("Emitter: rbit emits an rbit instruction") {
+    backend::Emitter em;
+    em.rbit(arm64::Reg::X7, arm64::Reg::X8);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("rbit") != std::string::npos);
+}
