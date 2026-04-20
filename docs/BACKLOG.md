@@ -219,7 +219,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-068: MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5).
 - [x] F1-DC-069: CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7).
 - [x] F1-DC-070: SCASB/SCASW/SCASD/SCASQ (AE / AF).
-- [ ] F1-DC-071: Operand size prefix 0x66 (16-bit operands).
+- [x] F1-DC-071: Operand size prefix 0x66 (16-bit operands).
 - [x] F1-DC-072: Address size prefix 0x67.
 - [x] F1-DC-073: Segment override prefixes (documented; ES/CS/SS/DS are no-ops in 64-bit).
 - [ ] F1-DC-074: %fs / %gs segment base accesses (TLS / TEB).
@@ -300,8 +300,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
 - [x] (pending commit) F1-PS-005: Common Subexpression Elimination (CSE) within a block.
 - [x] (pending commit) F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
-- [ ] F1-PS-007: Redundant-load elimination across a block.
-- [ ] F1-PS-008: Dead-store elimination within a block.
+- [~|claude] F1-PS-007: Redundant-load elimination across a block.
+- [~|claude] F1-PS-008: Dead-store elimination within a block.
 - [ ] F1-PS-009: Peephole pattern matcher (IR-level patterns).
 - [ ] F1-PS-010: Constant folding on Extend / Truncate.
 - [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
@@ -309,7 +309,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-PS-013: CFG simplification (remove empty blocks).
 - [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
 - [ ] F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
-- [ ] F1-PS-016: Pass timing instrumentation.
+- [~|claude] F1-PS-016: Pass timing instrumentation.
 - [ ] F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
 
 ### F1-RT — Runtime
