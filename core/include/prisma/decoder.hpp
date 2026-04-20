@@ -63,9 +63,9 @@
 //     * MOV r64, r/m64   (48 8B /r)                  3..7 bytes
 //         - This form also supports MOVSXD with opcode 63 /r when REX.W is 1:
 //           sign-extend r/m32 to 64-bit and write r64.
-//         - mod=00: [base]            (no disp)
-//         - mod=01: [base + disp8]    (signed 8-bit disp)
-//         - mod=10: [base + disp32]   (signed 32-bit disp)
+//         - mod=00: [base], [base + index*scale], or [rip + disp32]
+//         - mod=01: [base + disp8] or SIB equivalent
+//         - mod=10: [base + disp32] or SIB equivalent
 //         - mod=11: register direct
 //     * XCHG r64, r/m64   (48 87 /r)                  3..7 bytes
 //     * CMPXCHG r/m64, r64 (48 0F B1 /r)              4..8 bytes
@@ -79,8 +79,9 @@
 //     * MOVZX r64, r/m16  (0F B7 /r)                 4 bytes
 //         Memory forms always emit *_TSO variants of load/store. The
 //         TSO-adaptive pass (Pillar 3, later) may rewrite to non-TSO.
-//         Rejected for MVP: rm=100 (SIB required), mod=00 rm=101
-//         (disp32 absolute).
+//         Supported: SIB addressing, RIP-relative addressing, and extended
+//         GPR selection through REX.R / REX.X / REX.B where the opcode form
+//         allows it.
 //
 //   Control flow (produce absolute-PC ir ops)
 //     * CMP r/m64, r64   (48 39 /r, mod=11)          3 bytes  → CmpFlags
@@ -91,16 +92,21 @@
 //
 // The decoder is deliberately minimal but now supports a small subset of
 // prefixes:
+//   * 0x26 / 0x2E / 0x36 / 0x3E legacy segment overrides as ignored no-ops
+//     in long mode,
 //   * 0x66 for selected size-sensitive MOV forms (I16),
+//   * 0x67 for selected memory and string forms using 32-bit address
+//     semantics with zero-extended final addresses,
 //   * 0xF0 (LOCK) for CMPXCHG / CMPXCHG16B / XADD,
 //   * 0xF2 / 0xF3 as ignored HLE hints when paired with LOCK on that same
 //     exchange-family atomic subset,
 //   * no REP string-loop semantics yet; string ops decode as single-step only,
 //   * 0xF3 for LZCNT/TZCNT/POPCNT family placeholder support,
-//   * REX.W for the 64-bit MOV/ALU variants.
-// No SIB / RIP-relative / R8..R15 yet (REX.R / REX.B / REX.X must be
-// zero). All of these constraints remain future-work items; the API stays
-// stable.
+//   * REX.W for the 64-bit MOV/ALU variants,
+//   * REX.R / REX.X / REX.B for extended register and SIB fields.
+// It also rejects any encoding that would exceed the architectural 15-byte
+// instruction-length limit.
+// Still pending: FS/GS base semantics.
 //
 // The decoder is pure: it does not mmap, execute, or touch global state.
 // Given the same input + `next_ref`, it produces the same output.
@@ -123,7 +129,7 @@ namespace prisma::decoder {
 enum class DecodeError {
     TruncatedInput,        // ran out of bytes before the instruction ended.
     UnknownOpcode,         // first opcode byte not in our MVP set.
-    UnsupportedEncoding,   // ModR/M with memory operand, REX.R/B set, etc.
+    UnsupportedEncoding,   // unsupported form, including 16+ byte encodings.
 };
 
 [[nodiscard]] constexpr std::string_view describe(DecodeError e) noexcept {

@@ -1929,6 +1929,31 @@ TEST_CASE("decode mod=00 rm=101 as RIP-relative (48 89 05 disp32)") {
     REQUIRE(d.stmts[2].op == ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I64}});
 }
 
+TEST_CASE("decode 67 48 8B 05 disp32 as absolute addr32, not RIP-relative") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0x48, 0x8B, 0x05, 0x34, 0x12, 0x00, 0x00}, r, 0x1000);
+    REQUIRE(d.bytes_consumed == 8);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::Constant{0x1234ULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode 67 48 8B 05 FC FF FF FF zero-extends negative disp32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0x48, 0x8B, 0x05, 0xFC, 0xFF, 0xFF, 0xFF}, r);
+    REQUIRE(d.bytes_consumed == 8);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op ==
+            ir::Op{ir::Constant{0xFFFF'FFFF'FFFF'FFFCULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
+}
+
 TEST_CASE("Preserved — decoder still rejects the HLT opcode (F4)") {
     ir::Ref r = 0;
     auto res = decode_any({0xF4}, r);
@@ -1955,6 +1980,46 @@ TEST_CASE("decode MOV rax, [rbx + rcx*2 + 0x20] via SIB byte") {
     REQUIRE(d.stmts[8].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 7u, ir::OpSize::I64}});
 }
 
+TEST_CASE("decode 67 48 8B 03 masks EBX for addr32 base-only memory") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0x48, 0x8B, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode 67 49 8B 00 keeps REX.B base extension under addr32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0x49, 0x8B, 0x00}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::R8, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode 67 48 8B 44 4B 20 masks the final SIB address to 32 bits") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0x48, 0x8B, 0x44, 0x4B, 0x20}, r);
+    REQUIRE(d.bytes_consumed == 6);
+    REQUIRE(d.stmts.size() == 11);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 6u, 7u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[9].op == ir::Op{ir::LoadMemTSO{8u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[10].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 9u, ir::OpSize::I64}});
+}
+
 TEST_CASE("decode MOV rcx, [rax + r12] via REX.X SIB index extension") {
     ir::Ref r = 0;
     auto d = decode_ok({0x4A, 0x8B, 0x0C, 0x20}, r);
@@ -1966,6 +2031,38 @@ TEST_CASE("decode MOV rcx, [rax + r12] via REX.X SIB index extension") {
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
     REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode 67 4A 8B 0C 20 keeps REX.X index extension under addr32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0x4A, 0x8B, 0x0C, 0x20}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 7);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::R12, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 2u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::LoadMemTSO{4u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 5u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode 67 AA uses EDI semantics for STOSB") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x67, 0xAA}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 10);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I8}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0xFFFF'FFFFULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 1u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreMemTSO{3u, 0u, ir::OpSize::I8}});
+    REQUIRE(d.stmts[8].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 5u, 6u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[9].op == ir::Op{ir::StoreReg{ir::Gpr::Rdi, 7u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode CS override as a no-op on MOV rax, [rbx]") {
