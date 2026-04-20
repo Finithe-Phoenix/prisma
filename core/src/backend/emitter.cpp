@@ -80,6 +80,29 @@ void Emitter::asr(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Asr(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }
 
+void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Cmp(to_vixl_x(rn), to_vixl_x(rm));
+}
+
+void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
+    // Map Prisma's CondCode to vixl's Condition. ARM64 / x86 signed vs
+    // unsigned mnemonics line up cleanly once you know the mapping.
+    vixl_aa::Condition c{};
+    switch (cc) {
+        case ir::CondCode::Eq:  c = vixl_aa::eq; break;
+        case ir::CondCode::Ne:  c = vixl_aa::ne; break;
+        case ir::CondCode::Ult: c = vixl_aa::lo; break;  // unsigned <
+        case ir::CondCode::Ule: c = vixl_aa::ls; break;  // unsigned <=
+        case ir::CondCode::Ugt: c = vixl_aa::hi; break;  // unsigned >
+        case ir::CondCode::Uge: c = vixl_aa::hs; break;  // unsigned >=
+        case ir::CondCode::Slt: c = vixl_aa::lt; break;
+        case ir::CondCode::Sle: c = vixl_aa::le; break;
+        case ir::CondCode::Sgt: c = vixl_aa::gt; break;
+        case ir::CondCode::Sge: c = vixl_aa::ge; break;
+    }
+    impl_->masm.Cset(to_vixl_x(rd), c);
+}
+
 void Emitter::ret(arm64::Reg rn) {
     impl_->masm.Ret(to_vixl_x(rn));
 }

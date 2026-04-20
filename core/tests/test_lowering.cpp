@@ -141,17 +141,54 @@ TEST_CASE("Lowerer: DanglingRef error on StoreReg that references unknown Ref") 
 }
 
 TEST_CASE("Lowerer: UnsupportedOp for ops not yet implemented") {
-    // Compare is in the IR but the Lowerer does not emit it yet.
+    // Jump is in the IR but the Lowerer does not emit it yet.
     std::vector<ir::Stmt> stmts = {
-        {0u, ir::Constant{1, ir::OpSize::I64}},
-        {1u, ir::Constant{2, ir::OpSize::I64}},
-        {2u, ir::Compare{ir::CondCode::Eq, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Jump{0u}},
     };
     backend::Emitter em;
     backend::Lowerer lw(em);
     auto r = lw.lower(stmts);
     REQUIRE_FALSE(r.success);
     REQUIRE(r.error == backend::LowerError::UnsupportedOp);
+}
+
+TEST_CASE("Lowerer: Compare → cmp + cset emits the right ARM64") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{20, ir::OpSize::I64}},
+        {2u, ir::Compare{ir::CondCode::Ult, 0u, 1u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Expected:
+    //   mov x0, #10
+    //   mov x1, #20
+    //   cmp x0, x1
+    //   cset x2, lo      (ARM mnemonic for unsigned-less-than)
+    REQUIRE(d.find("cmp x0, x1") != std::string::npos);
+    REQUIRE(d.find("cset")       != std::string::npos);
+    // The condition suffix for Ult is "lo" on AArch64.
+    REQUIRE(d.find("lo")         != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Compare picks the correct ARM condition for each CondCode") {
+    auto try_cc = [](ir::CondCode cc) {
+        std::vector<ir::Stmt> s = {
+            {0u, ir::Constant{1, ir::OpSize::I64}},
+            {1u, ir::Constant{2, ir::OpSize::I64}},
+            {2u, ir::Compare{cc, 0u, 1u, ir::OpSize::I64}},
+        };
+        bool ok;
+        return std::pair{ok, lower_to_disasm(s, ok)};
+    };
+
+    // Spot-check the four most semantically different cases. The full
+    // mapping lives in emitter.cpp::cset.
+    auto [ok_eq,  d_eq ] = try_cc(ir::CondCode::Eq ); REQUIRE(ok_eq ); REQUIRE(d_eq .find(" eq") != std::string::npos);
+    auto [ok_ne,  d_ne ] = try_cc(ir::CondCode::Ne ); REQUIRE(ok_ne ); REQUIRE(d_ne .find(" ne") != std::string::npos);
+    auto [ok_slt, d_slt] = try_cc(ir::CondCode::Slt); REQUIRE(ok_slt); REQUIRE(d_slt.find(" lt") != std::string::npos);
+    auto [ok_ugt, d_ugt] = try_cc(ir::CondCode::Ugt); REQUIRE(ok_ugt); REQUIRE(d_ugt.find(" hi") != std::string::npos);
 }
 
 TEST_CASE("Lowerer: OutOfScratchRegs when exceeding the 10-reg pool") {

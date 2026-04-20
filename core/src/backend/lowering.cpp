@@ -106,6 +106,22 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             return emit_binop(emitter_, op.op, rd, rn, rm);
         }
+        else if constexpr (std::is_same_v<T, ir::Compare>) {
+            // Compare produces a 0/1 value in an SSA ref. Lower to
+            // cmp + cset. Size-specific comparison is a future concern
+            // (we currently do 64-bit comparison regardless of op.size).
+            if (!s.result) return {false, LowerError::DanglingRef, "Compare without result ref"};
+            arm64::Reg rn, rm;
+            if (!reg_of(op.lhs, rn)) return {false, LowerError::DanglingRef, "Compare.lhs"};
+            if (!reg_of(op.rhs, rm)) return {false, LowerError::DanglingRef, "Compare.rhs"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Compare"};
+            }
+            emitter_.cmp(rn, rm);
+            emitter_.cset(rd, op.cc);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Return>) {
             // MVP: lower to a bare ARM64 ret. The caller (thunk builder)
             // is responsible for any calling-convention marshalling — the

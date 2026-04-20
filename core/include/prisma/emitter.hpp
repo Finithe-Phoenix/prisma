@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "prisma/arm64_encoding.hpp"  // for Reg enum & host_reg_for
+#include "prisma/ir.hpp"              // for ir::CondCode
 
 namespace prisma::backend {
 
@@ -57,6 +58,15 @@ public:
     void lsl (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shl
     void lsr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shr
     void asr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sar
+
+    // Compare (SUBS with discard) + materialise 0/1 from flags.
+    //   cmp(xn, xm)                — sets NZCV.
+    //   cset(rd, CondCode)         — rd = 1 if condition holds, else 0.
+    // Together these lower IR `Compare{cc, lhs, rhs, size}` to
+    //   cmp xlhs, xrhs
+    //   cset xresult, <arm-cond(cc)>
+    void cmp  (arm64::Reg rn, arm64::Reg rm);
+    void cset (arm64::Reg rd, ir::CondCode cc);
 
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
