@@ -111,6 +111,26 @@ public:
     [[nodiscard]] std::size_t entry_count() const noexcept { return entries_.size(); }
 
     // ------------------------------------------------------------------
+    // Per-entry stats (F1-CA-007).
+    //
+    // `hit_count` is incremented on every successful lookup that returns
+    // the entry; `last_used_tick` is the monotonic counter value at that
+    // last use (same tick source as LRU). Stats are runtime-only and
+    // are NOT persisted through save_to_file.
+    struct EntryStats {
+        std::uint64_t hit_count{0};
+        std::uint64_t last_used_tick{0};
+    };
+
+    // Returns stats for `k`, or nullopt if no entry with that key exists.
+    [[nodiscard]] std::optional<EntryStats> stats_for(const Key& k) const;
+
+    // Reset all per-entry stats (hit counts zeroed; last-used ticks left
+    // alone — they still drive LRU). Useful for tests and for resetting
+    // telemetry at measurement boundaries.
+    void reset_hit_counts() noexcept;
+
+    // ------------------------------------------------------------------
     // LRU eviction (F1-CA-005).
     //
     // When a cap is set, insert / upsert that would exceed it first evict
@@ -188,6 +208,11 @@ private:
     // after insert). next_tick_ increments on every use.
     std::unordered_map<Key, std::uint64_t, KeyHash> access_times_;
     std::uint64_t next_tick_{1};
+
+    // Hit-count tracking for F1-CA-007. Bumped on every successful
+    // lookup; zeroed by reset_hit_counts. Insert / upsert initialise the
+    // count to zero.
+    std::unordered_map<Key, std::uint64_t, KeyHash> hit_counts_;
 
     // 0 = unlimited (default).
     std::size_t max_entries_{0};

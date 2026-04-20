@@ -309,3 +309,90 @@ TEST_CASE("TranslationCache: load leaves cache unchanged on error") {
     REQUIRE(err.has_value());
     REQUIRE(cache.entry_count() == 1);  // still 1 — untouched.
 }
+
+// ---------------------------------------------------------------------------
+// Per-entry stats (F1-CA-007)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: stats_for reports 0 hits on a fresh insert") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0x90};
+    const std::uint64_t h = fnv1a_64(g);
+    const Key key{0x1000, h};
+    cache.insert(key, make_entry({0xAA}, 1, h));
+
+    auto s = cache.stats_for(key);
+    REQUIRE(s.has_value());
+    REQUIRE(s->hit_count == 0);
+    REQUIRE(s->last_used_tick > 0);
+}
+
+TEST_CASE("TranslationCache: lookup hits bump hit_count") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0x90};
+    const std::uint64_t h = fnv1a_64(g);
+    const Key key{0x1000, h};
+    cache.insert(key, make_entry({0xAA}, 1, h));
+
+    (void)cache.lookup(0x1000, g);
+    (void)cache.lookup(0x1000, g);
+    (void)cache.lookup(0x1000, g);
+
+    auto s = cache.stats_for(key);
+    REQUIRE(s.has_value());
+    REQUIRE(s->hit_count == 3);
+}
+
+TEST_CASE("TranslationCache: stale-content miss does NOT bump hit_count") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0x90};
+    const std::uint64_t h = fnv1a_64(g);
+    const Key key{0x1000, h};
+    cache.insert(key, make_entry({0xAA}, 1, h));
+
+    // Lookup with modified content — should miss with StaleContent.
+    const std::vector<std::uint8_t> modified{0x91};
+    auto r = cache.lookup(0x1000, modified);
+    REQUIRE(std::holds_alternative<MissReason>(r));
+
+    auto s = cache.stats_for(key);
+    REQUIRE(s.has_value());
+    REQUIRE(s->hit_count == 0);
+}
+
+TEST_CASE("TranslationCache: reset_hit_counts zeroes the tally") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0x90};
+    const std::uint64_t h = fnv1a_64(g);
+    const Key key{0x1000, h};
+    cache.insert(key, make_entry({0xAA}, 1, h));
+    (void)cache.lookup(0x1000, g);
+    (void)cache.lookup(0x1000, g);
+
+    cache.reset_hit_counts();
+    auto s = cache.stats_for(key);
+    REQUIRE(s.has_value());
+    REQUIRE(s->hit_count == 0);
+}
+
+TEST_CASE("TranslationCache: stats_for returns nullopt for unknown key") {
+    TranslationCache cache;
+    auto s = cache.stats_for(Key{0xDEAD, 0xBEEF});
+    REQUIRE_FALSE(s.has_value());
+}
+
+TEST_CASE("TranslationCache: upsert resets hit_count to 0 (fresh entry)") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g1{0x90};
+    const std::uint64_t h1 = fnv1a_64(g1);
+    const Key key1{0x1000, h1};
+    cache.insert(key1, make_entry({0xAA}, 1, h1));
+    (void)cache.lookup(0x1000, g1);
+    (void)cache.lookup(0x1000, g1);
+
+    // Upsert with the SAME hash — semantically overwrites the entry.
+    cache.upsert(key1, make_entry({0xBB}, 1, h1));
+    auto s = cache.stats_for(key1);
+    REQUIRE(s.has_value());
+    REQUIRE(s->hit_count == 0);
+}

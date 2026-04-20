@@ -49,6 +49,7 @@ void TranslationCache::erase_key(const Key& k) {
         addr_to_hash_.erase(it_addr);
     }
     access_times_.erase(k);
+    hit_counts_.erase(k);
 }
 
 void TranslationCache::maybe_evict() {
@@ -83,12 +84,12 @@ LookupResult TranslationCache::lookup(
         return MissReason::StaleContent;
     }
 
-    // Update LRU. `lookup` is const-facing; we treat access tracking as
-    // internal bookkeeping. The map is mutable-conceptually only; we keep
-    // it strict-const by stripping const inline. Alternative would be a
-    // mutable member, which is more fragile across refactors.
-    const_cast<TranslationCache*>(this)->access_times_[k]
-        = const_cast<TranslationCache*>(this)->next_tick_++;
+    // Update LRU + hit count. `lookup` is const-facing; we treat access
+    // tracking as internal bookkeeping. Alternative would be a mutable
+    // member, which is more fragile across refactors.
+    auto& self = *const_cast<TranslationCache*>(this);
+    self.access_times_[k] = self.next_tick_++;
+    self.hit_counts_[k] += 1;
 
     return &it_entry->second;
 }
@@ -98,6 +99,7 @@ bool TranslationCache::insert(Key key, Entry entry) {
     if (!inserted) return false;
     addr_to_hash_[key.guest_addr] = key.content_hash;
     access_times_[key] = next_tick_++;
+    hit_counts_[key] = 0;
     maybe_evict();
     return true;
 }
@@ -113,7 +115,25 @@ void TranslationCache::upsert(Key key, Entry entry) {
     entries_[key] = std::move(entry);
     addr_to_hash_[key.guest_addr] = key.content_hash;
     access_times_[key] = next_tick_++;
+    hit_counts_[key] = 0;
     maybe_evict();
+}
+
+std::optional<TranslationCache::EntryStats>
+TranslationCache::stats_for(const Key& k) const {
+    if (entries_.find(k) == entries_.end()) return std::nullopt;
+    EntryStats s;
+    if (auto it = hit_counts_.find(k); it != hit_counts_.end()) {
+        s.hit_count = it->second;
+    }
+    if (auto it = access_times_.find(k); it != access_times_.end()) {
+        s.last_used_tick = it->second;
+    }
+    return s;
+}
+
+void TranslationCache::reset_hit_counts() noexcept {
+    for (auto& [_k, c] : hit_counts_) c = 0;
 }
 
 void TranslationCache::invalidate_page(std::uint64_t page_addr,
@@ -132,6 +152,7 @@ void TranslationCache::invalidate_page(std::uint64_t page_addr,
             const Key k{addr, it_h->second};
             entries_.erase(k);
             access_times_.erase(k);
+            hit_counts_.erase(k);
             addr_to_hash_.erase(it_h);
         }
     }
@@ -265,10 +286,13 @@ TranslationCache::load_from_file(const std::filesystem::path& path) {
     entries_        = std::move(tmp_entries);
     addr_to_hash_   = std::move(tmp_addr);
     access_times_.clear();
+    hit_counts_.clear();
     next_tick_      = 1;
     // Re-stamp access times so a loaded cache has a consistent LRU order.
+    // Hit counts start at 0 — they're runtime-only telemetry.
     for (const auto& [k, _e] : entries_) {
         access_times_[k] = next_tick_++;
+        hit_counts_[k]   = 0;
     }
     return std::nullopt;
 }

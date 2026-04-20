@@ -90,6 +90,7 @@ add_library(prisma_runtime STATIC
     src/runtime/jit_memory.cpp
     src/runtime/signal_handler.cpp
     src/runtime/dispatcher.cpp
+    src/runtime/host_features.cpp
 )
 
 target_include_directories(prisma_runtime
@@ -258,6 +259,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes_more.cpp
         tests/test_passes_mem.cpp
         tests/test_ir_validate.cpp
+        tests/test_host_features.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
