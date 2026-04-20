@@ -26,6 +26,12 @@ Decoded decode_ok(std::vector<std::uint8_t> bytes, ir::Ref& ref) {
     return std::get<Decoded>(r);
 }
 
+Decoded decode_ok(std::vector<std::uint8_t> bytes, ir::Ref& ref, std::uint64_t instruction_guest_pc) {
+    auto r = decode_one(std::span<const std::uint8_t>{bytes}, ref, instruction_guest_pc);
+    REQUIRE(std::holds_alternative<Decoded>(r));
+    return std::get<Decoded>(r);
+}
+
 // Same idea for tests that expect a DecodeError.
 auto decode_any(std::vector<std::uint8_t> bytes, ir::Ref& ref) {
     return decode_one(std::span<const std::uint8_t>{bytes}, ref);
@@ -1304,6 +1310,26 @@ TEST_CASE("decode ADD rax, r11 via REX.R extension (4C 01 D8)") {
     REQUIRE(std::get<ir::LoadReg>(d.stmts[1].op).reg == ir::Gpr::R11);
 }
 
+TEST_CASE("decode MOV r8, rbx via REX.B extension (49 89 D8)") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x49, 0x89, 0xD8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::StoreReg{ir::Gpr::R8, 0u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV r8, imm64 via REX.B opcode-register extension") {
+    ir::Ref r = 0;
+    auto d = decode_ok(
+        {0x49, 0xB8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11}, r);
+    REQUIRE(d.bytes_consumed == 10);
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(d.stmts[0].op ==
+            ir::Op{ir::Constant{0x1122'3344'5566'7788ULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::StoreReg{ir::Gpr::R8, 0u, ir::OpSize::I64}});
+}
+
 // ---------------------------------------------------------------------------
 // G1: additional register-register ops and NOP.
 // ---------------------------------------------------------------------------
@@ -1895,15 +1921,66 @@ TEST_CASE("decode mod=00 rm=101 as RIP-relative (48 89 05 disp32)") {
     // support computes the absolute address from rip_after + disp32
     // at decode time, collapsing it into a Constant operand.
     ir::Ref r = 0;
-    auto d = decode_ok({0x48, 0x89, 0x05, 0x00, 0x00, 0x00, 0x00}, r);
+    auto d = decode_ok({0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00}, r, 0x1000);
     REQUIRE(d.bytes_consumed == 7);
-    // Should decode cleanly — no error.
-    (void)d;
+    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0x223BULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I64}});
 }
 
 TEST_CASE("Preserved — decoder still rejects the HLT opcode (F4)") {
     ir::Ref r = 0;
     auto res = decode_any({0xF4}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("decode MOV rax, [rbx + rcx*2 + 0x20] via SIB byte") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x8B, 0x44, 0x4B, 0x20}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 9);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Shl, 1u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::Constant{0x20u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 4u, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::LoadMemTSO{6u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 7u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV rcx, [rax + r12] via REX.X SIB index extension") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x4A, 0x8B, 0x0C, 0x20}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::R12, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode CS override as a no-op on MOV rax, [rbx]") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x2E, 0x48, 0x8B, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("Error: FS/GS segment base accesses remain unsupported") {
+    ir::Ref r = 0;
+    auto res = decode_any({0x65, 0x48, 0x8B, 0x03}, r);
     REQUIRE(std::holds_alternative<DecodeError>(res));
     REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
 }
