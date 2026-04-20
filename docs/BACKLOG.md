@@ -271,7 +271,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
 - [ ] F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
 - [ ] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
-- [ ] F1-BK-005: Emitter label management (vixl Label class).
+- [~|claude] F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
 - [ ] F1-BK-008: Register spill / reload to stack frame slots.
