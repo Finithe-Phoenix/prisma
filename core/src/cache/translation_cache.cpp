@@ -180,6 +180,8 @@ void TranslationCache::invalidate_page(std::uint64_t page_addr,
 
 namespace {
 
+using EntrySnapshot = std::vector<std::pair<Key, Entry>>;
+
 void write_u32(std::ostream& os, std::uint32_t v) {
     unsigned char b[4];
     b[0] = static_cast<unsigned char>(v);
@@ -217,20 +219,24 @@ bool read_u64(std::istream& is, std::uint64_t& v) {
     return true;
 }
 
-}  // namespace
-
+// Shared save path. Works on any range whose iterator value is a pair
+// with `.first == Key` and `.second == Entry` — both the live map and
+// an owned snapshot vector satisfy that.
+template <typename Range>
 std::optional<TranslationCache::IoError>
-TranslationCache::save_to_file(const std::filesystem::path& path) const {
+write_range_to_file(const std::filesystem::path& path,
+                    std::size_t                  count,
+                    const Range&                 entries) {
     std::ofstream os(path, std::ios::binary | std::ios::trunc);
-    if (!os) return IoError::OpenFailed;
+    if (!os) return TranslationCache::IoError::OpenFailed;
 
-    write_u64(os, kFileMagic);
-    write_u32(os, kFileVersion);
+    write_u64(os, TranslationCache::kFileMagic);
+    write_u32(os, TranslationCache::kFileVersion);
     write_u32(os, 0u);                              // reserved
     write_u64(os, 0ull);                            // cpu fingerprint (future)
-    write_u64(os, static_cast<std::uint64_t>(entries_.size()));
+    write_u64(os, static_cast<std::uint64_t>(count));
 
-    for (const auto& [key, entry] : entries_) {
+    for (const auto& [key, entry] : entries) {
         write_u64(os, key.guest_addr);
         write_u64(os, key.content_hash);
         write_u64(os, static_cast<std::uint64_t>(entry.guest_size));
@@ -239,12 +245,55 @@ TranslationCache::save_to_file(const std::filesystem::path& path) const {
             os.write(reinterpret_cast<const char*>(entry.code_bytes.data()),
                      static_cast<std::streamsize>(entry.code_bytes.size()));
         }
-        if (!os) return IoError::WriteFailed;
+        if (!os) return TranslationCache::IoError::WriteFailed;
     }
 
     os.flush();
-    if (!os) return IoError::WriteFailed;
+    if (!os) return TranslationCache::IoError::WriteFailed;
     return std::nullopt;
+}
+
+}  // namespace
+
+std::optional<TranslationCache::IoError>
+TranslationCache::save_to_file(const std::filesystem::path& path) const {
+    return write_range_to_file(path, entries_.size(), entries_);
+}
+
+void TranslationCache::save_to_file_async(std::filesystem::path path) {
+    // Flush any in-flight save first — we only allow one at a time so
+    // errors can be returned deterministically.
+    (void)wait_for_async_save();
+
+    // Snapshot entries by value. Taking the deep copy on the caller
+    // thread means the worker never touches the live cache, and the
+    // live cache is free to evolve immediately after this returns.
+    EntrySnapshot snap;
+    snap.reserve(entries_.size());
+    for (const auto& kv : entries_) snap.push_back(kv);
+
+    writer_error_.reset();
+    writer_in_flight_.store(true, std::memory_order_release);
+    writer_ = std::thread(
+        [this, path = std::move(path), snap = std::move(snap)]() mutable {
+            auto err = write_range_to_file(path, snap.size(), snap);
+            writer_error_ = err;
+            writer_in_flight_.store(false, std::memory_order_release);
+        });
+}
+
+std::optional<TranslationCache::IoError>
+TranslationCache::wait_for_async_save() {
+    if (writer_.joinable()) writer_.join();
+    auto err = writer_error_;
+    writer_error_.reset();
+    return err;
+}
+
+TranslationCache::~TranslationCache() {
+    // Defensive: a user-forgotten async save shouldn't leak a thread
+    // into the destructor's teardown. Block until any worker finishes.
+    if (writer_.joinable()) writer_.join();
 }
 
 std::optional<TranslationCache::IoError>

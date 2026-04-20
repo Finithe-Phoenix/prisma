@@ -467,3 +467,102 @@ TEST_CASE("TranslationCache: upsert resets hit_count to 0 (fresh entry)") {
     REQUIRE(s.has_value());
     REQUIRE(s->hit_count == 0);
 }
+
+// ---------------------------------------------------------------------------
+// F1-CA-009 async save
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: async save produces an on-disk file the sync loader can read") {
+    TranslationCache src;
+    const std::vector<std::uint8_t> g1{0x01, 0x02};
+    const std::vector<std::uint8_t> g2{0x03, 0x04};
+    const std::uint64_t h1 = fnv1a_64(g1);
+    const std::uint64_t h2 = fnv1a_64(g2);
+    src.insert(Key{0x1000, h1}, make_entry({0xAA, 0xBB}, g1.size(), h1));
+    src.insert(Key{0x2000, h2}, make_entry({0xCC}, g2.size(), h2));
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_async_save.bin";
+    src.save_to_file_async(tmp);
+    auto err = src.wait_for_async_save();
+    REQUIRE_FALSE(err.has_value());
+
+    // Load into a fresh cache and verify both entries survive.
+    TranslationCache dst;
+    auto load_err = dst.load_from_file(tmp);
+    REQUIRE_FALSE(load_err.has_value());
+    REQUIRE(dst.entry_count() == 2);
+    auto r = dst.lookup(0x1000, g1);
+    REQUIRE(std::holds_alternative<const Entry*>(r));
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: async save snapshot is isolated from post-call mutations") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g1{0x01};
+    const std::uint64_t h1 = fnv1a_64(g1);
+    cache.insert(Key{0x1000, h1}, make_entry({0xAA}, 1, h1));
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_async_snap.bin";
+    cache.save_to_file_async(tmp);
+
+    // Insert an entry AFTER the async call but (ideally) before the
+    // worker finishes writing. The snapshot captured before we changed
+    // the cache should NOT include this one.
+    const std::vector<std::uint8_t> g2{0x02};
+    const std::uint64_t h2 = fnv1a_64(g2);
+    cache.insert(Key{0x2000, h2}, make_entry({0xBB}, 1, h2));
+
+    auto err = cache.wait_for_async_save();
+    REQUIRE_FALSE(err.has_value());
+
+    TranslationCache loaded;
+    auto load_err = loaded.load_from_file(tmp);
+    REQUIRE_FALSE(load_err.has_value());
+    // Only the first entry was in the snapshot.
+    REQUIRE(loaded.entry_count() == 1);
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: wait_for_async_save is idempotent when no save pending") {
+    TranslationCache cache;
+    auto err = cache.wait_for_async_save();
+    REQUIRE_FALSE(err.has_value());
+    // Call twice — still fine.
+    err = cache.wait_for_async_save();
+    REQUIRE_FALSE(err.has_value());
+}
+
+TEST_CASE("TranslationCache: destructor joins an in-flight async save") {
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_async_dtor.bin";
+    {
+        TranslationCache cache;
+        const std::vector<std::uint8_t> g{0x42};
+        const std::uint64_t h = fnv1a_64(g);
+        cache.insert(Key{0x1000, h}, make_entry({0x11}, 1, h));
+        cache.save_to_file_async(tmp);
+        // Deliberately DON'T wait — the destructor should join.
+    }
+    // File exists and is loadable.
+    TranslationCache loaded;
+    auto err = loaded.load_from_file(tmp);
+    REQUIRE_FALSE(err.has_value());
+    REQUIRE(loaded.entry_count() == 1);
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: async save to an invalid path returns OpenFailed") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0x01};
+    const std::uint64_t h = fnv1a_64(g);
+    cache.insert(Key{0x1000, h}, make_entry({0xAA}, 1, h));
+
+    cache.save_to_file_async("/definitely/not/a/writable/path/prisma.bin");
+    auto err = cache.wait_for_async_save();
+    REQUIRE(err.has_value());
+    REQUIRE(*err == TranslationCache::IoError::OpenFailed);
+}

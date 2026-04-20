@@ -112,6 +112,38 @@ endif()
 target_link_libraries(prisma_warnings INTERFACE prisma_sanitizers)
 
 # ---------------------------------------------------------------------------
+# Coverage instrumentation (F1-TC-005).
+#
+# Clang source-based coverage: pass `-fprofile-instr-generate
+# -fcoverage-mapping` at compile + link time. After running the test
+# binary, `llvm-profdata merge` + `llvm-cov show` produces per-file
+# reports.
+#
+# Usage:
+#   cmake -B build-cov -DPRISMA_ENABLE_COVERAGE=ON -DCMAKE_CXX_COMPILER=clang++
+#   cmake --build build-cov
+#   LLVM_PROFILE_FILE="prisma-%p.profraw" build-cov/prisma_core_tests
+#   llvm-profdata merge -sparse prisma-*.profraw -o prisma.profdata
+#   llvm-cov show build-cov/prisma_core_tests -instr-profile=prisma.profdata
+# ---------------------------------------------------------------------------
+
+option(PRISMA_ENABLE_COVERAGE "Build with clang source-based coverage" OFF)
+
+add_library(prisma_coverage INTERFACE)
+if(PRISMA_ENABLE_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "PRISMA_ENABLE_COVERAGE requires Clang (the llvm-cov ecosystem).")
+    endif()
+    target_compile_options(prisma_coverage INTERFACE
+        -fprofile-instr-generate -fcoverage-mapping)
+    target_link_options(prisma_coverage INTERFACE
+        -fprofile-instr-generate -fcoverage-mapping)
+    message(STATUS "Prisma: coverage instrumentation enabled")
+endif()
+target_link_libraries(prisma_warnings INTERFACE prisma_coverage)
+
+# ---------------------------------------------------------------------------
 # Library target: prisma_ir
 # ---------------------------------------------------------------------------
 #

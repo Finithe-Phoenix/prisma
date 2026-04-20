@@ -342,7 +342,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-CA-006: Size-bounded cache with eviction trigger.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
-- [~|claude] F1-CA-009: Cache writer thread (offload serialization).
+- [x] (pending commit) F1-CA-009: Cache writer thread (offload serialization).
 - [ ] F1-CA-010: zstd compression for on-disk entries.
 
 ### F1-LN — Lean spec expansion
@@ -367,16 +367,16 @@ grinding through x86_64 ISA + maturing the lowering.
 ### F1-TC — Testing
 
 - [x] F1-TC-001: Catch2 test executable builds and runs.
-- [ ] F1-TC-002: Integration test: translate + cache + execute + re-execute (hit).
+- [x] F1-TC-002: Integration test: translate + cache + execute + re-execute (hit).
 - [ ] F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode.
 - [x] (pending commit) F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
-- [~|claude] F1-TC-005: Coverage instrumentation (llvm-cov).
+- [x] (pending commit) F1-TC-005: Coverage instrumentation (llvm-cov).
 - [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
 - [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
 - [x] (pending commit) F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
 - [ ] F1-TC-009: Lean proof check added as a blocking CI step.
 - [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
-- [ ] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
+- [x] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
 - [x] (pending commit) F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
 
 ### F1-AC — Academic (Fase 1 concern)

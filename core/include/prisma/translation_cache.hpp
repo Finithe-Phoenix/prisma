@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -35,6 +36,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -81,6 +83,13 @@ using LookupResult = std::variant<const Entry*, MissReason>;
 class TranslationCache {
 public:
     TranslationCache() = default;
+    ~TranslationCache();
+
+    // Cache is not copyable (the writer thread holds a reference to
+    // internal state that does not survive a copy). Move is safe via
+    // default — per-thread ownership transfer.
+    TranslationCache(const TranslationCache&)            = delete;
+    TranslationCache& operator=(const TranslationCache&) = delete;
 
     // Look up a translation for `guest_addr` with content hashed from
     // the `guest_bytes` slice. If the address is known but the hash
@@ -199,6 +208,27 @@ public:
     [[nodiscard]] std::optional<IoError>
     save_to_file(const std::filesystem::path& path) const;
 
+    // F1-CA-009: offload serialisation to a worker thread.
+    //
+    // Snapshots the current entries synchronously (deep copy), then
+    // spawns a std::thread that writes the snapshot to `path` at the
+    // disk's pace. Returns immediately.
+    //
+    // Threading contract:
+    //   * Only one async save may be in flight per cache instance. A
+    //     second call joins the in-flight worker before starting a new
+    //     snapshot.
+    //   * The snapshot is taken at call time — mutations to the live
+    //     cache after the call do not appear in the saved file.
+    //   * `wait_for_async_save()` must be called before destroying the
+    //     cache (the destructor also joins defensively).
+    void save_to_file_async(std::filesystem::path path);
+
+    // Block until any in-flight async save finishes. Returns the error
+    // from that save (if any), or nullopt when no save was pending or
+    // the save succeeded.
+    [[nodiscard]] std::optional<IoError> wait_for_async_save();
+
     // Replace the current cache with the contents of `path`. On error
     // the cache is left unchanged; the method returns the IoError. The
     // access counter and LRU state are reset; on-disk caches are assumed
@@ -234,6 +264,13 @@ private:
     // 0 = unlimited (default). Both caps are checked in maybe_evict.
     std::size_t max_entries_{0};
     std::size_t max_bytes_{0};
+
+    // Async save state (F1-CA-009). `writer_` runs a single worker
+    // thread; `writer_error_` stores the result of the last completed
+    // save (reset each time a new save is spawned).
+    std::thread                    writer_;
+    std::optional<IoError>         writer_error_;
+    std::atomic<bool>              writer_in_flight_{false};
 
     // Pick the LRU key (smallest access_times_ value) from the current
     // map. Undefined result on empty cache; callers must guard.
