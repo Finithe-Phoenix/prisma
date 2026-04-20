@@ -82,6 +82,21 @@ target_link_libraries(prisma_decoder
 )
 
 # ---------------------------------------------------------------------------
+# Runtime library (JIT memory, signal handlers — growing incrementally)
+# ---------------------------------------------------------------------------
+
+add_library(prisma_runtime STATIC
+    src/runtime/jit_memory.cpp
+)
+
+target_include_directories(prisma_runtime
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_runtime PRIVATE prisma_warnings)
+
+# ---------------------------------------------------------------------------
 # vixl — ARM64 assembler library (BSD-3-Clause). See RFC 0002.
 # ---------------------------------------------------------------------------
 
@@ -143,12 +158,14 @@ if(PRISMA_BUILD_TESTS)
         tests/test_emitter.cpp
         tests/test_decoder.cpp
         tests/test_e2e.cpp
+        tests/test_jit_execution.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
             prisma_ir
             prisma_decoder
             prisma_emitter
+            prisma_runtime
             prisma_warnings
             Catch2::Catch2WithMain
     )
