@@ -374,7 +374,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
 - [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
 - [x] (pending commit) F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
-- [~|claude] F1-TC-009: Lean proof check added as a blocking CI step.
+- [x] (pending commit) F1-TC-009: Lean proof check added as a blocking CI step.
 - [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
 - [x] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
 - [x] (pending commit) F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
@@ -392,8 +392,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
 - [ ] F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
 - [ ] F1-DC-003: RFC 0005 — basic block representation + CFG construction.
-- [~|claude] F1-DC-004: RFC 0006 — register allocator design.
-- [~|claude] F1-DC-005: RFC 0007 — cache file format.
+- [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
+- [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
 - [ ] F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
 - [ ] F1-DC-007: Blog post: "Designing an IR you can prove correct".
 - [ ] F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".

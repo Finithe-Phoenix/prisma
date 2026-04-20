@@ -53,3 +53,32 @@ jobs:
       - name: Verify toolchain pinned
         run: |
           test -f lean-toolchain || (echo "lean-toolchain missing" && exit 1)
+
+      # F1-TC-009 — Lean proof check is a blocking step.
+      #
+      # Two safeguards:
+      #   1. `lake build` above must succeed. Compile failure aborts CI.
+      #   2. Track the `sorry` admission count so regressions surface in
+      #      CI instead of silently accumulating. The baseline is
+      #      recorded in ir-spec/.sorry-budget; exceeding it fails the
+      #      job. A reduction must update the budget in the same PR.
+      - name: Sorry budget check
+        run: |
+          set -euo pipefail
+          budget_file=".sorry-budget"
+          if [ ! -f "$budget_file" ]; then
+            echo "::error::missing $budget_file — run 'grep -rc sorry PrismaIR' and commit the expected count."
+            exit 1
+          fi
+          budget=$(tr -d '[:space:]' < "$budget_file")
+          # Count sorry usages in .lean files only (exclude .lake/).
+          actual=$(grep -rn --include='*.lean' '^[[:space:]]*sorry\b' PrismaIR | wc -l | tr -d ' ')
+          echo "sorry budget: $budget"
+          echo "sorry actual: $actual"
+          if [ "$actual" -gt "$budget" ]; then
+            echo "::error::sorry count $actual exceeds budget $budget. Either finish the proof or update .sorry-budget."
+            exit 1
+          fi
+          if [ "$actual" -lt "$budget" ]; then
+            echo "::warning::sorry count $actual is below budget $budget. Consider lowering the budget in .sorry-budget to lock in the win."
+          fi
