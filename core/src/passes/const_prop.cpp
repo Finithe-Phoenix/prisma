@@ -51,6 +51,16 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
             if (n == 0) return a;
             return (a >> n) | (a << (64 - n));
         }
+        case ir::BinOpKind::Rcl: {
+            const std::uint64_t n = b & 0x3Fu;
+            if (n == 0) return a;
+            return (a << n) | (a >> (64 - n));
+        }
+        case ir::BinOpKind::Rcr: {
+            const std::uint64_t n = b & 0x3Fu;
+            if (n == 0) return a;
+            return (a >> n) | (a << (64 - n));
+        }
     }
     return 0;  // unreachable
 }

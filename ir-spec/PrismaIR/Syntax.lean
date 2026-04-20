@@ -45,10 +45,11 @@ abbrev Ref := Nat
 /-- Pure binary arithmetic/logical ops. Flag-producing variants are separate
     ops to keep side-effects explicit (see `compare`). -/
 inductive BinOp where
-  | add | sub
+  | add | sub | mul
   | and | or | xor
   | shl | shr | sar
   | rol | ror
+  | rcl | rcr
   deriving DecidableEq, Repr, BEq
 
 /-- x86 condition codes used by conditional branches and SETcc-like compare. -/

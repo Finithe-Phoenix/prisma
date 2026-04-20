@@ -52,6 +52,10 @@ TEST_CASE("const_prop: Sub / And / Or / Xor all fold correctly") {
     REQUIRE(fold_one(ir::BinOpKind::And, 0xFF, 0x0F) == 0x0F);
     REQUIRE(fold_one(ir::BinOpKind::Or,  0xF0, 0x0F) == 0xFF);
     REQUIRE(fold_one(ir::BinOpKind::Xor, 0xFF, 0x0F) == 0xF0);
+    REQUIRE(fold_one(ir::BinOpKind::Rol, 0x1234'5678'9ABCULL, 4) == 0x1234'5678'9ABC'0ULL);
+    REQUIRE(fold_one(ir::BinOpKind::Ror, 0x1234'5678'9ABCULL, 4) == 0xC000'0123'4567'89ABULL);
+    REQUIRE(fold_one(ir::BinOpKind::Rcl, 0x1234'5678'9ABCULL, 4) == 0x1234'5678'9ABC'0ULL);
+    REQUIRE(fold_one(ir::BinOpKind::Rcr, 0x1234'5678'9ABCULL, 4) == 0xC000'0123'4567'89ABULL);
 }
 
 TEST_CASE("const_prop: result is size-masked (i32 addition overflow)") {

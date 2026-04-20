@@ -386,6 +386,78 @@ TEST_CASE("decode SHL rax, 3 placeholder via 48 C1 E0 03") {
     REQUIRE(r == 3);
 }
 
+TEST_CASE("decode ROL rax, 3 placeholder via 48 C1 C0 03") {
+    // Encoding: 48 C1 C0 03
+    //   48 REX.W
+    //   C1 opcode ROL r/m64, imm8
+    //   C0 mod=11, reg=000 (/0), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xC0, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Rol, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode ROR rax, 3 placeholder via 48 C1 C8 03") {
+    // Encoding: 48 C1 C8 03
+    //   48 REX.W
+    //   C1 opcode ROR r/m64, imm8
+    //   C8 mod=11, reg=001 (/1), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xC8, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Ror, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode RCL rax, 3 placeholder via 48 C1 D0 03") {
+    // Encoding: 48 C1 D0 03
+    //   48 REX.W
+    //   C1 opcode RCL r/m64, imm8
+    //   D0 mod=11, reg=010 (/2), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xD0, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Rcl, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode RCR rax, 3 placeholder via 48 C1 D8 03") {
+    // Encoding: 48 C1 D8 03
+    //   48 REX.W
+    //   C1 opcode RCR r/m64, imm8
+    //   D8 mod=11, reg=011 (/3), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xD8, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Rcr, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
 TEST_CASE("decode SHR rax, 3 placeholder via 48 C1 E8 03") {
     // Encoding: 48 C1 E8 03
     //   48 REX.W
@@ -435,6 +507,78 @@ TEST_CASE("decode SHL rax, cl placeholder via 48 D3 E0") {
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Shl, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode ROL rax, cl placeholder via 48 D3 C0") {
+    // Encoding: 48 D3 C0
+    //   48 REX.W
+    //   D3 opcode ROL r/m64, CL
+    //   C0 mod=11, reg=000 (/0), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xC0}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Rol, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode ROR rax, cl placeholder via 48 D3 C8") {
+    // Encoding: 48 D3 C8
+    //   48 REX.W
+    //   D3 opcode ROR r/m64, CL
+    //   C8 mod=11, reg=001 (/1), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xC8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Ror, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode RCL rax, cl placeholder vía 48 D3 D0") {
+    // Encoding: 48 D3 D0
+    //   48 REX.W
+    //   D3 opcode RCL r/m64, CL
+    //   D0 mod=11, reg=010 (/2), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xD0}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Rcl, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode RCR rax, cl placeholder via 48 D3 D8") {
+    // Encoding: 48 D3 D8
+    //   48 REX.W
+    //   D3 opcode RCR r/m64, CL
+    //   D8 mod=11, reg=011 (/3), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xD8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Rcr, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
     REQUIRE(r == 3);

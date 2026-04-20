@@ -32,6 +32,7 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
   match op with
   | .add => lhs + rhs
   | .sub => lhs - rhs
+  | .mul => lhs * rhs
   | .and => lhs &&& rhs
   | .or  => lhs ||| rhs
   | .xor => lhs ^^^ rhs
@@ -42,6 +43,12 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
       let n := rhs &&& 0x3F
       if n == 0 then lhs else (lhs <<< n) ||| (lhs >>> (64 - n))
   | .ror =>
+      let n := rhs &&& 0x3F
+      if n == 0 then lhs else (lhs >>> n) ||| (lhs <<< (64 - n))
+  | .rcl =>
+      let n := rhs &&& 0x3F
+      if n == 0 then lhs else (lhs <<< n) ||| (lhs >>> (64 - n))
+  | .rcr =>
       let n := rhs &&& 0x3F
       if n == 0 then lhs else (lhs >>> n) ||| (lhs <<< (64 - n))
 

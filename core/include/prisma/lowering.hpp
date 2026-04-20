@@ -78,6 +78,10 @@ private:
     // Allocate the next scratch register. Returns false on exhaustion.
     [[nodiscard]] bool allocate_scratch(ir::Ref ref, arm64::Reg& out);
 
+    // Allocate one extra scratch register for temporary use by lowering patterns
+    // that need a helper register (e.g. emulated rotate-left).
+    [[nodiscard]] bool allocate_temporary(arm64::Reg& out);
+
     // Look up the host register that currently holds an SSA Ref's value.
     // Returns false if the Ref was never bound.
     [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out) const;

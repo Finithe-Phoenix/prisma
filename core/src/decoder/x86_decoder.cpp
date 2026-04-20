@@ -484,7 +484,87 @@ std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm8(
     return d;
 }
 
-// SHL/SHR/SAR r/m64, imm8 (48 C1 /4|/5|/7) — MVP register-direct only.
+enum class BtSubOpcode : std::uint8_t {
+    Bt  = 0u,
+    Bts = 1u,
+    Btr = 2u,
+    Btc = 3u,
+};
+
+// BT/BTS/BTR/BTC r/m64, imm8 (0F BA /4,/5,/6,/7) — MVP register-direct only.
+//
+// These are decoded as:
+//   BT:  src >>= imm; if (src & 1) then CF=1 else CF=0
+//   BTS: src = src | (1 << imm), CF = old bit
+//   BTR: src = src & ~(1 << imm), CF = old bit
+//   BTC: src = src ^ (1 << imm), CF = old bit
+// Carry/flag materialization is represented via CmpFlags(old_bit, 0), where
+// `old_bit` is either 0 or a single-bit mask.
+std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
+    std::span<const Byte> bytes,
+    const ModRmOperand& m,
+    std::size_t& cursor,
+    ir::Ref& next_ref,
+    BtSubOpcode op) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    auto imm = read_le<1>(bytes, cursor);
+    if (!imm) return DecodeError::TruncatedInput;
+    cursor += 1;
+    const std::uint64_t imm_u64 = *imm;
+
+    Decoded d;
+    const ir::Ref ref_src = next_ref++;
+    const ir::Ref ref_shift = next_ref++;
+    const ir::Ref ref_mask = next_ref++;
+    const ir::Ref ref_one = next_ref++;
+    const ir::Ref ref_oldbit = next_ref++;
+    const ir::Ref ref_zero = next_ref++;
+
+    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_shift, ir::Constant{imm_u64, ir::OpSize::I64}});
+    d.stmts.push_back({ref_one, ir::Constant{1u, ir::OpSize::I64}});
+    d.stmts.push_back({ref_mask, ir::BinOp{ir::BinOpKind::Shl, ref_one, ref_shift, ir::OpSize::I64}});
+    d.stmts.push_back({ref_oldbit, ir::BinOp{ir::BinOpKind::And, ref_src, ref_mask, ir::OpSize::I64}});
+
+    if (op != BtSubOpcode::Bt) {
+        ir::Ref ref_newval;
+        switch (op) {
+            case BtSubOpcode::Bts: {
+                ref_newval = next_ref++;
+                d.stmts.push_back({ref_newval,
+                                   ir::BinOp{ir::BinOpKind::Or, ref_src, ref_mask, ir::OpSize::I64}});
+                break;
+            }
+            case BtSubOpcode::Btr: {
+                const ir::Ref ref_inv_mask = next_ref++;
+                d.stmts.push_back({ref_inv_mask,
+                                   ir::BinOp{ir::BinOpKind::Xor, ref_mask,
+                                             ir::Constant{~0ULL, ir::OpSize::I64}, ir::OpSize::I64}});
+                ref_newval = next_ref++;
+                d.stmts.push_back({ref_newval,
+                                   ir::BinOp{ir::BinOpKind::And, ref_src, ref_inv_mask, ir::OpSize::I64}});
+                break;
+            }
+            case BtSubOpcode::Btc: {
+                ref_newval = next_ref++;
+                d.stmts.push_back({ref_newval,
+                                   ir::BinOp{ir::BinOpKind::Xor, ref_src, ref_mask, ir::OpSize::I64}});
+                break;
+            }
+            default:
+                return {DecodeError::UnsupportedEncoding};
+        }
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_newval, ir::OpSize::I64}});
+    }
+
+    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_oldbit, ref_zero, ir::OpSize::I64}});
+    d.bytes_consumed = cursor;
+    return d;
+}
+
+// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m64, imm8 (48 C1 /4|/5|/7|/0|/1|/2|/3) — MVP register-direct only.
 // Encodes:
 //   r/m64 <- reg-shift-operation(r/m64, imm8).
 // The immediate is loaded as a zero-extended u64; lowering handles shift count
@@ -514,7 +594,7 @@ std::variant<Decoded, DecodeError> decode_shift_r64_rm_imm8_from_rm(
     return d;
 }
 
-// SHL/SHR/SAR r/m64, CL (48 D3 /4|/5|/7) — MVP register-direct only.
+// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m64, CL (48 D3 /4|/5|/7|/0|/1|/2|/3) — MVP register-direct only.
 // Encodes:
 //   r/m64 <- reg-shift-operation(r/m64, cl).
 // The shift amount is loaded from CL as I64.
@@ -793,6 +873,28 @@ std::variant<Decoded, DecodeError> decode_one(
             if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
             return decode_imul_r64_r_rm(bytes, cursor, next_ref);
         }
+        if (subop == 0xBAu) {
+            auto modrm = parse_modrm(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+            if (m.reg == 4u) {
+                return decode_bt_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, BtSubOpcode::Bt);
+            }
+            if (m.reg == 5u) {
+                return decode_bt_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, BtSubOpcode::Bts);
+            }
+            if (m.reg == 6u) {
+                return decode_bt_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, BtSubOpcode::Btr);
+            }
+            if (m.reg == 7u) {
+                return decode_bt_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, BtSubOpcode::Btc);
+            }
+            return DecodeError::UnsupportedEncoding;
+        }
         return DecodeError::UnknownOpcode;
     }
 
@@ -811,6 +913,18 @@ std::variant<Decoded, DecodeError> decode_one(
                     return std::get<DecodeError>(modrm);
                 }
                 const auto& m = std::get<ModRmOperand>(modrm);
+                if (m.reg == 0u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Rol);
+                }
+                if (m.reg == 1u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Ror);
+                }
+                if (m.reg == 2u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Rcl);
+                }
+                if (m.reg == 3u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Rcr);
+                }
                 if (m.reg == 4u) {
                     return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Shl);
                 }
@@ -832,6 +946,18 @@ std::variant<Decoded, DecodeError> decode_one(
                 }
                 const auto& m = std::get<ModRmOperand>(modrm);
                 if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+                if (m.reg == 0u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Rol);
+                }
+                if (m.reg == 1u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Ror);
+                }
+                if (m.reg == 2u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Rcl);
+                }
+                if (m.reg == 3u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Rcr);
+                }
                 if (m.reg == 4u) {
                     return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Shl);
                 }

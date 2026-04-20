@@ -130,6 +130,19 @@ TEST_CASE("Lowerer: each BinOpKind emits the right ARM64 mnemonic") {
         auto [ok, d] = try_op(ir::BinOpKind::Sar);
         REQUIRE(ok); REQUIRE(d.find("asr") != std::string::npos);
     }
+    {
+        auto [ok, d] = try_op(ir::BinOpKind::Ror);
+        REQUIRE(ok); REQUIRE(d.find("ror") != std::string::npos);
+    }
+    {
+        auto [ok, d] = try_op(ir::BinOpKind::Rcl);
+        REQUIRE(ok); REQUIRE(d.find("neg") != std::string::npos);
+        REQUIRE(d.find("ror") != std::string::npos);
+    }
+    {
+        auto [ok, d] = try_op(ir::BinOpKind::Rcr);
+        REQUIRE(ok); REQUIRE(d.find("ror") != std::string::npos);
+    }
 }
 
 TEST_CASE("Lowerer: DanglingRef error on StoreReg that references unknown Ref") {

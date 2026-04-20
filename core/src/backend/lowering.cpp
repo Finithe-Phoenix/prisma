@@ -37,14 +37,12 @@ LowerResult emit_binop(Emitter& em,
         case ir::BinOpKind::Shr: em.lsr(rd, rn, rm);  return {};
         case ir::BinOpKind::Sar: em.asr(rd, rn, rm);  return {};
         case ir::BinOpKind::Ror: em.ror(rd, rn, rm);  return {};
+        case ir::BinOpKind::Rcr: em.ror(rd, rn, rm);  return {};
         case ir::BinOpKind::Rol:
-            // ARM64 has no native rotate-left. Lowering to `neg tmp, rm;
-            // ror rd, rn, tmp` requires an extra scratch; that lands when
-            // the decoder starts producing Rol (post MVP) and the
-            // Lowerer has a scratch-pool helper. Until then we fail
-            // explicitly so callers see the gap.
+        case ir::BinOpKind::Rcl:
+            // Rol/Rcl are lowered via a neg+ror helper register in lower_stmt.
             return {false, LowerError::UnsupportedOp,
-                    "Rol not yet lowered (use Ror or wait for scratch-aware path)"};
+                    "rotate-left emulation requires a temporary scratch register"};
     }
     return {false, LowerError::UnsupportedOp, "unknown BinOpKind"};
 }
@@ -55,6 +53,12 @@ bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
     if (next_scratch_ >= kScratchPoolSize) return false;
     out = scratch_reg(next_scratch_++);
     ref_to_scratch_[ref] = out;
+    return true;
+}
+
+bool Lowerer::allocate_temporary(arm64::Reg& out) {
+    if (next_scratch_ >= kScratchPoolSize) return false;
+    out = scratch_reg(next_scratch_++);
     return true;
 }
 
@@ -113,6 +117,19 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             arm64::Reg rd;
             if (!allocate_scratch(*s.result, rd)) {
                 return {false, LowerError::OutOfScratchRegs, "BinOp"};
+            }
+            // Rotate-left and rotate-left-with-carry are emulated as:
+            //   neg tmp, rm; ror rd, rn, tmp
+            // This keeps us progressing with minimal IR extensions while preserving
+            // the current register-only backend.
+            if (op.op == ir::BinOpKind::Rol || op.op == ir::BinOpKind::Rcl) {
+                arm64::Reg tmp;
+                if (!allocate_temporary(tmp)) {
+                    return {false, LowerError::OutOfScratchRegs, "BinOp temporary"};
+                }
+                emitter_.neg(tmp, rm);
+                emitter_.ror(rd, rn, tmp);
+                return {};
             }
             return emit_binop(emitter_, op.op, rd, rn, rm);
         }

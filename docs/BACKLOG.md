@@ -180,9 +180,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-029: DIV r/m64 (48 F7 /6).
 - [x] F1-DC-030: IDIV r/m64 (48 F7 /7).
 - [x] F1-DC-031: SHL/SHR/SAR r/m64, imm8 (48 C1 /4|/5|/7).
-- [ ] F1-DC-032: SHL/SHR/SAR r/m64, CL (48 D3 /4|/5|/7).
-- [ ] F1-DC-033: ROL/ROR r/m64 (48 C1 /0|/1, 48 D3 /0|/1).
-- [ ] F1-DC-034: RCL/RCR r/m64 (48 C1 /2|/3, 48 D3 /2|/3).
+- [x] F1-DC-032: SHL/SHR/SAR r/m64, CL (48 D3 /4|/5|/7).
+- [x] F1-DC-033: ROL/ROR r/m64 (48 C1 /0|/1, 48 D3 /0|/1).
+- [x] F1-DC-034: RCL/RCR r/m64 (48 C1 /2|/3, 48 D3 /2|/3).
 - [ ] F1-DC-035: BT / BTS / BTR / BTC r/m64, imm8 (48 0F BA).
 - [ ] F1-DC-036: BSF / BSR r64, r/m64 (48 0F BC / BD).
 - [ ] F1-DC-037: LZCNT r64, r/m64 (F3 48 0F BD).
