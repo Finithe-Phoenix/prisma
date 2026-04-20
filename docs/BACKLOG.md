@@ -339,7 +339,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (PENDING) F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
 - [ ] F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
 - [x] (PENDING) F1-CA-005: Cache eviction policy (LRU).
-- [~|claude] F1-CA-006: Size-bounded cache with eviction trigger.
+- [x] (pending commit) F1-CA-006: Size-bounded cache with eviction trigger.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
 - [ ] F1-CA-009: Cache writer thread (offload serialization).

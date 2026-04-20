@@ -52,9 +52,24 @@ void TranslationCache::erase_key(const Key& k) {
     hit_counts_.erase(k);
 }
 
+std::size_t TranslationCache::total_code_bytes() const noexcept {
+    std::size_t total = 0;
+    for (const auto& [_k, e] : entries_) total += e.code_bytes.size();
+    return total;
+}
+
 void TranslationCache::maybe_evict() {
-    if (max_entries_ == 0) return;
-    while (entries_.size() > max_entries_) {
+    // Loop until BOTH caps are satisfied (or either is disabled). An
+    // insertion that itself exceeds max_bytes_ on its own will leave the
+    // cache with just that one entry — the oldest-then-smallest spiral
+    // is a concern only if caller inserts progressively larger entries;
+    // real usage has bounded entry size.
+    auto over_cap = [&]() {
+        if (max_entries_ != 0 && entries_.size() > max_entries_) return true;
+        if (max_bytes_   != 0 && total_code_bytes() > max_bytes_) return true;
+        return false;
+    };
+    while (!entries_.empty() && over_cap()) {
         erase_key(pick_lru_key());
     }
 }

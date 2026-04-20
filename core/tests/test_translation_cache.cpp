@@ -381,6 +381,77 @@ TEST_CASE("TranslationCache: stats_for returns nullopt for unknown key") {
     REQUIRE_FALSE(s.has_value());
 }
 
+// ---------------------------------------------------------------------------
+// Byte-budget eviction (F1-CA-006)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: total_code_bytes sums entry code sizes") {
+    TranslationCache cache;
+    const std::vector<std::uint8_t> g{0x01};
+    const std::uint64_t h = fnv1a_64(g);
+    cache.insert(Key{0x1, h}, make_entry({0xAA, 0xBB, 0xCC}, 1, h));
+    cache.insert(Key{0x2, h}, make_entry({0xDD, 0xEE}, 1, h));
+    REQUIRE(cache.total_code_bytes() == 5u);
+}
+
+TEST_CASE("TranslationCache: max_bytes bound evicts LRU entries") {
+    TranslationCache cache;
+    cache.set_max_bytes(10);
+
+    const std::vector<std::uint8_t> g1{0x01};
+    const std::uint64_t h1 = fnv1a_64(g1);
+    const std::vector<std::uint8_t> g2{0x02};
+    const std::uint64_t h2 = fnv1a_64(g2);
+    const std::vector<std::uint8_t> g3{0x03};
+    const std::uint64_t h3 = fnv1a_64(g3);
+
+    cache.insert(Key{0x1, h1}, make_entry(std::vector<std::uint8_t>(6, 0xAA), 1, h1));
+    cache.insert(Key{0x2, h2}, make_entry(std::vector<std::uint8_t>(3, 0xBB), 1, h2));
+    REQUIRE(cache.total_code_bytes() == 9u);
+    REQUIRE(cache.entry_count() == 2);
+
+    // Inserting 5 more bytes would push to 14; LRU (entry 1) is evicted.
+    cache.insert(Key{0x3, h3}, make_entry(std::vector<std::uint8_t>(5, 0xCC), 1, h3));
+    REQUIRE(cache.total_code_bytes() <= 10u);
+    // Entry 1 (the LRU when we inserted 3) is gone; entries 2 and 3 survive.
+    auto r = cache.lookup(0x1, g1);
+    REQUIRE(std::holds_alternative<MissReason>(r));
+}
+
+TEST_CASE("TranslationCache: max_bytes and max_entries combine") {
+    // Set both caps: entries <= 2, bytes <= 100. Either triggers.
+    TranslationCache cache;
+    cache.set_max_entries(2);
+    cache.set_max_bytes(100);
+
+    const std::vector<std::uint8_t> g1{0x01};
+    const std::uint64_t h1 = fnv1a_64(g1);
+    const std::vector<std::uint8_t> g2{0x02};
+    const std::uint64_t h2 = fnv1a_64(g2);
+    const std::vector<std::uint8_t> g3{0x03};
+    const std::uint64_t h3 = fnv1a_64(g3);
+
+    cache.insert(Key{0x1, h1}, make_entry({0xAA}, 1, h1));
+    cache.insert(Key{0x2, h2}, make_entry({0xBB}, 1, h2));
+    cache.insert(Key{0x3, h3}, make_entry({0xCC}, 1, h3));
+    // max_entries trips first (3 > 2), LRU (key1) is evicted.
+    REQUIRE(cache.entry_count() == 2);
+    auto r = cache.lookup(0x1, g1);
+    REQUIRE(std::holds_alternative<MissReason>(r));
+}
+
+TEST_CASE("TranslationCache: 0 max_bytes = unlimited") {
+    TranslationCache cache;
+    REQUIRE(cache.max_bytes() == 0);
+    // Inserting lots of entries stays fine.
+    for (std::uint64_t i = 0; i < 20; ++i) {
+        const std::vector<std::uint8_t> g{static_cast<std::uint8_t>(i)};
+        const std::uint64_t h = fnv1a_64(g);
+        cache.insert(Key{i, h}, make_entry(std::vector<std::uint8_t>(8, 0xFF), 1, h));
+    }
+    REQUIRE(cache.entry_count() == 20);
+}
+
 TEST_CASE("TranslationCache: upsert resets hit_count to 0 (fresh entry)") {
     TranslationCache cache;
     const std::vector<std::uint8_t> g1{0x90};

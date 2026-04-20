@@ -131,14 +131,31 @@ public:
     void reset_hit_counts() noexcept;
 
     // ------------------------------------------------------------------
-    // LRU eviction (F1-CA-005).
+    // LRU eviction (F1-CA-005 / F1-CA-006).
     //
-    // When a cap is set, insert / upsert that would exceed it first evict
-    // the least-recently-used entry. Lookup hits and insertions both bump
-    // an entry's "last used" timestamp. A cap of 0 disables bounds (the
-    // default) — the cache then grows until invalidate_page is called.
+    // Two independent caps can be set:
+    //   * `max_entries` — hard ceiling on the count of cached entries.
+    //   * `max_bytes`   — hard ceiling on the sum of `code_bytes.size()`
+    //                     across all entries. Useful when a fixed code
+    //                     buffer size drives the cache capacity.
+    //
+    // Either cap (or both) can be active. On insert / upsert the cache
+    // evicts the least-recently-used entry until BOTH caps are
+    // satisfied. A cap of 0 disables that dimension (the default).
+    //
+    // Lookup hits and insertions both bump an entry's "last used"
+    // timestamp, so a cache with mixed entry sizes still picks the
+    // oldest-touched entry first rather than the largest one.
     void set_max_entries(std::size_t n) noexcept { max_entries_ = n; }
     [[nodiscard]] std::size_t max_entries() const noexcept { return max_entries_; }
+
+    // F1-CA-006: byte-budget bound. `n == 0` disables (default).
+    void set_max_bytes(std::size_t n) noexcept { max_bytes_ = n; }
+    [[nodiscard]] std::size_t max_bytes() const noexcept { return max_bytes_; }
+
+    // Sum of `code_bytes.size()` across all live entries. Recomputed on
+    // demand; cheap enough for caches at Prisma's current scale.
+    [[nodiscard]] std::size_t total_code_bytes() const noexcept;
 
     // ------------------------------------------------------------------
     // Persistent on-disk format (F1-CA-003).
@@ -214,8 +231,9 @@ private:
     // count to zero.
     std::unordered_map<Key, std::uint64_t, KeyHash> hit_counts_;
 
-    // 0 = unlimited (default).
+    // 0 = unlimited (default). Both caps are checked in maybe_evict.
     std::size_t max_entries_{0};
+    std::size_t max_bytes_{0};
 
     // Pick the LRU key (smallest access_times_ value) from the current
     // map. Undefined result on empty cache; callers must guard.
