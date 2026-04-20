@@ -230,7 +230,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-079: Instruction length validator (reject 16+ byte oversized encodings).
 - [ ] F1-DC-080: Decoder fuzz harness (AFL++) seeded with coreutils disassembly.
 - [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
-- [ ] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
+- [x] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
 - [x] F1-DC-083: HLT (F4) — reject (privileged).
 - [x] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
 - [x] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
@@ -284,7 +284,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
 - [x] (pending commit) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
 - [x] (pending commit) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
-- [ ] F1-BK-018: Literal pool management.
+- [~|claude] F1-BK-018: Literal pool management.
 - [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
@@ -373,7 +373,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-TC-005: Coverage instrumentation (llvm-cov).
 - [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
 - [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
-- [ ] F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
+- [~|claude] F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
 - [ ] F1-TC-009: Lean proof check added as a blocking CI step.
 - [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
 - [ ] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
