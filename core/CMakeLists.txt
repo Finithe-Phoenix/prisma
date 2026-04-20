@@ -64,6 +64,41 @@ target_include_directories(prisma_ir
 target_link_libraries(prisma_ir PRIVATE prisma_warnings)
 
 # ---------------------------------------------------------------------------
+# vixl — ARM64 assembler library (BSD-3-Clause). See RFC 0002.
+# ---------------------------------------------------------------------------
+
+include(FetchContent)
+
+FetchContent_Declare(
+    vixl_src
+    GIT_REPOSITORY https://github.com/Linaro/vixl.git
+    GIT_TAG        59921852720418d0c27d443167af0df387f78f4e  # HEAD of main, 2026-04
+    # GIT_SHALLOW TRUE disabled: specific-commit fetches need full clone.
+)
+FetchContent_MakeAvailable(vixl_src)
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/BuildVixl.cmake)
+prisma_add_vixl(prisma_vixl SOURCE_DIR ${vixl_src_SOURCE_DIR})
+
+# ---------------------------------------------------------------------------
+# Emitter library (uses vixl)
+# ---------------------------------------------------------------------------
+
+add_library(prisma_emitter STATIC
+    src/backend/emitter.cpp
+)
+
+target_include_directories(prisma_emitter
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_emitter
+    PUBLIC  prisma_ir prisma_vixl
+    PRIVATE prisma_warnings
+)
+
+# ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------
 
@@ -87,10 +122,12 @@ if(PRISMA_BUILD_TESTS)
     add_executable(prisma_core_tests
         tests/test_ir.cpp
         tests/test_arm64_encoding.cpp
+        tests/test_emitter.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
             prisma_ir
+            prisma_emitter
             prisma_warnings
             Catch2::Catch2WithMain
     )
