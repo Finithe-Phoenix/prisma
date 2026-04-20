@@ -391,13 +391,13 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [ ] F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
 - [ ] F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
-- [ ] F1-DC-003: RFC 0005 — basic block representation + CFG construction.
+- [~|claude] F1-DC-003: RFC 0005 — basic block representation + CFG construction.
 - [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
 - [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
 - [ ] F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
 - [ ] F1-DC-007: Blog post: "Designing an IR you can prove correct".
 - [ ] F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
-- [ ] F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
+- [~|claude] F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
 
 ---
 
