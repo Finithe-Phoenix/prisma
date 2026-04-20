@@ -104,6 +104,23 @@ void Emitter::rbit(arm64::Reg rd, arm64::Reg rn) {
     impl_->masm.Rbit(to_vixl_x(rd), to_vixl_x(rn));
 }
 
+void Emitter::umulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Umulh(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::smulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Smulh(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::udiv(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Udiv(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::sdiv(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Sdiv(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::msub(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm, arm64::Reg ra) {
+    impl_->masm.Msub(to_vixl_x(rd), to_vixl_x(rn),
+                     to_vixl_x(rm), to_vixl_x(ra));
+}
+
 void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Cmp(to_vixl_x(rn), to_vixl_x(rm));
 }
@@ -154,6 +171,86 @@ void Emitter::store_release(arm64::Reg rv, arm64::Reg raddr, ir::OpSize size) {
         case ir::OpSize::I16: impl_->masm.Stlrh(to_vixl_x(rv), mo); return;
         case ir::OpSize::I32: impl_->masm.Stlr (to_vixl_w(rv), mo); return;
         case ir::OpSize::I64: impl_->masm.Stlr (to_vixl_x(rv), mo); return;
+    }
+}
+
+void Emitter::ldxr(arm64::Reg rd, arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:  impl_->masm.Ldxrb(to_vixl_w(rd), mo); return;
+        case ir::OpSize::I16: impl_->masm.Ldxrh(to_vixl_w(rd), mo); return;
+        case ir::OpSize::I32: impl_->masm.Ldxr (to_vixl_w(rd), mo); return;
+        case ir::OpSize::I64: impl_->masm.Ldxr (to_vixl_x(rd), mo); return;
+    }
+}
+
+void Emitter::stxr(arm64::Reg rs, arm64::Reg rv,
+                   arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Stxrb(to_vixl_w(rs), to_vixl_w(rv), mo); return;
+        case ir::OpSize::I16:
+            impl_->masm.Stxrh(to_vixl_w(rs), to_vixl_w(rv), mo); return;
+        case ir::OpSize::I32:
+            impl_->masm.Stxr (to_vixl_w(rs), to_vixl_w(rv), mo); return;
+        case ir::OpSize::I64:
+            impl_->masm.Stxr (to_vixl_w(rs), to_vixl_x(rv), mo); return;
+    }
+}
+
+void Emitter::ldaxr(arm64::Reg rd, arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:  impl_->masm.Ldaxrb(to_vixl_w(rd), mo); return;
+        case ir::OpSize::I16: impl_->masm.Ldaxrh(to_vixl_w(rd), mo); return;
+        case ir::OpSize::I32: impl_->masm.Ldaxr (to_vixl_w(rd), mo); return;
+        case ir::OpSize::I64: impl_->masm.Ldaxr (to_vixl_x(rd), mo); return;
+    }
+}
+
+void Emitter::stlxr(arm64::Reg rs, arm64::Reg rv,
+                    arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Stlxrb(to_vixl_w(rs), to_vixl_w(rv), mo); return;
+        case ir::OpSize::I16:
+            impl_->masm.Stlxrh(to_vixl_w(rs), to_vixl_w(rv), mo); return;
+        case ir::OpSize::I32:
+            impl_->masm.Stlxr (to_vixl_w(rs), to_vixl_w(rv), mo); return;
+        case ir::OpSize::I64:
+            impl_->masm.Stlxr (to_vixl_w(rs), to_vixl_x(rv), mo); return;
+    }
+}
+
+void Emitter::casal(arm64::Reg rs, arm64::Reg rt,
+                    arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Casalb(to_vixl_w(rs), to_vixl_w(rt), mo); return;
+        case ir::OpSize::I16:
+            impl_->masm.Casalh(to_vixl_w(rs), to_vixl_w(rt), mo); return;
+        case ir::OpSize::I32:
+            impl_->masm.Casal (to_vixl_w(rs), to_vixl_w(rt), mo); return;
+        case ir::OpSize::I64:
+            impl_->masm.Casal (to_vixl_x(rs), to_vixl_x(rt), mo); return;
+    }
+}
+
+void Emitter::ldaddal(arm64::Reg rs, arm64::Reg rt,
+                      arm64::Reg raddr, ir::OpSize size) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Ldaddalb(to_vixl_w(rs), to_vixl_w(rt), mo); return;
+        case ir::OpSize::I16:
+            impl_->masm.Ldaddalh(to_vixl_w(rs), to_vixl_w(rt), mo); return;
+        case ir::OpSize::I32:
+            impl_->masm.Ldaddal (to_vixl_w(rs), to_vixl_w(rt), mo); return;
+        case ir::OpSize::I64:
+            impl_->masm.Ldaddal (to_vixl_x(rs), to_vixl_x(rt), mo); return;
     }
 }
 

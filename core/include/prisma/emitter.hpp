@@ -75,6 +75,61 @@ public:
     void cls  (arm64::Reg rd, arm64::Reg rn);
     void rbit (arm64::Reg rd, arm64::Reg rn);
 
+    // Multi-output mul/div (F1-BK-011).
+    //
+    // x86 IMUL / MUL write a 128-bit result split across RDX:RAX. On ARM64
+    // we compute that in two steps: the low 64 bits via `mul`, the high
+    // 64 bits via `umulh` (unsigned) or `smulh` (signed).
+    //
+    // x86 DIV / IDIV read RDX:RAX and write quotient to RAX, remainder to
+    // RDX. On ARM64 there is no 128/64 divide; our lowering will narrow
+    // to 64/64 for MVP and emit the pair `udiv rq, rn, rm` + `msub rr,
+    // rq, rm, rn` (remainder = n - q*m). `msub(rd, rn, rm, ra)` gives
+    // `rd = ra - rn*rm` which is the canonical AArch64 idiom.
+    void umulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // unsigned high 64
+    void smulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // signed   high 64
+    void udiv (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // unsigned 64/64
+    void sdiv (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // signed   64/64
+    void msub (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm,
+               arm64::Reg ra);                                 // ra - rn*rm
+
+    // Atomic RMW via exclusive-monitor pair (F1-BK-016).
+    //
+    // `ldxr(rd, raddr, size)` is a load-exclusive: grabs the value and
+    // reserves the cache line. `stxr(rs, rv, raddr, size)` is a
+    // store-exclusive: writes `rv` to `[raddr]` iff the reservation
+    // still holds, storing 0 (success) or 1 (failure) into `rs`. The
+    // acquire / release variants (`ldaxr` / `stlxr`) add C++11-style
+    // memory ordering for TSO-safe use.
+    //
+    // Typical atomic CAS loop emitted by the lowerer:
+    //   retry:
+    //     ldaxr  r_current, [r_addr]        (size)
+    //     cmp    r_current, r_expected
+    //     b.ne   fail
+    //     stlxr  r_status, r_new, [r_addr]  (size)
+    //     cbnz   r_status, retry
+    //   fail:
+    void ldxr  (arm64::Reg rd, arm64::Reg raddr, ir::OpSize size);
+    void stxr  (arm64::Reg rs, arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
+    void ldaxr (arm64::Reg rd, arm64::Reg raddr, ir::OpSize size);
+    void stlxr (arm64::Reg rs, arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
+
+    // LSE atomics (F1-BK-017). One-instruction CAS + fetch-add.
+    // Requires `host_features().feat_lse`; the lowerer should check
+    // before emitting. `casal` is the sequentially-consistent variant
+    // (acquire+release). `ldaddal` is LSE fetch-add with the same
+    // ordering.
+    //
+    //   casal(rs, rt, raddr, size):
+    //     if *raddr == rs: *raddr = rt
+    //     rs = *raddr (old value, always)
+    //
+    //   ldaddal(rs, rt, raddr, size):
+    //     rt = *raddr; *raddr += rs
+    void casal   (arm64::Reg rs, arm64::Reg rt, arm64::Reg raddr, ir::OpSize size);
+    void ldaddal (arm64::Reg rs, arm64::Reg rt, arm64::Reg raddr, ir::OpSize size);
+
     // Compare (SUBS with discard) + materialise 0/1 from flags.
     //   cmp(xn, xm)                — sets NZCV.
     //   cset(rd, CondCode)         — rd = 1 if condition holds, else 0.

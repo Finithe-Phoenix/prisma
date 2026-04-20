@@ -232,7 +232,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
 - [ ] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
 - [x] F1-DC-083: HLT (F4) — reject (privileged).
-- [ ] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
+- [x] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
 - [x] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
 - [ ] F1-DC-086: SYSCALL (0F 05).
 - [ ] F1-DC-087: Zydis-free migration: our decoder is the canonical source (target ≥99% matching on coreutils).
@@ -277,13 +277,13 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-008: Register spill / reload to stack frame slots.
 - [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
-- [~|claude] F1-BK-011: Emitter for MUL/DIV multi-register output.
+- [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.
 - [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
 - [ ] F1-BK-013: Emitter for floating-point (fadd, fmul, fdiv).
 - [x] (pending commit) F1-BK-014: Emitter for rotates (ror / rol).
 - [x] (pending commit) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
-- [~|claude] F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
-- [~|claude] F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
+- [x] (pending commit) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
+- [x] (pending commit) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
 - [ ] F1-BK-018: Literal pool management.
 - [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.

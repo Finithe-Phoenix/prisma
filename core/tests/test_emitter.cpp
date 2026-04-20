@@ -130,3 +130,100 @@ TEST_CASE("Emitter: rbit emits an rbit instruction") {
     const std::string text = em.disassemble();
     REQUIRE(text.find("rbit") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// F1-BK-011 mul/div multi-output
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emitter: umulh + mul pair covers 128-bit unsigned product") {
+    backend::Emitter em;
+    em.mul  (arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);  // low 64
+    em.umulh(arm64::Reg::X3, arm64::Reg::X1, arm64::Reg::X2);  // high 64
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("mul")   != std::string::npos);
+    REQUIRE(text.find("umulh") != std::string::npos);
+}
+
+TEST_CASE("Emitter: smulh covers 128-bit signed high word") {
+    backend::Emitter em;
+    em.smulh(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.finalize();
+    REQUIRE(em.disassemble().find("smulh") != std::string::npos);
+}
+
+TEST_CASE("Emitter: udiv + msub computes quotient and remainder") {
+    // q = n / m ; r = n - q*m
+    backend::Emitter em;
+    em.udiv(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);   // x0 = x1 / x2
+    em.msub(arm64::Reg::X3, arm64::Reg::X0, arm64::Reg::X2,    // x3 = x1 - x0*x2
+            arm64::Reg::X1);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("udiv") != std::string::npos);
+    REQUIRE(text.find("msub") != std::string::npos);
+}
+
+TEST_CASE("Emitter: sdiv emits sdiv") {
+    backend::Emitter em;
+    em.sdiv(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.finalize();
+    REQUIRE(em.disassemble().find("sdiv") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// F1-BK-016 atomic RMW via ldxr / stxr
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emitter: ldxr + stxr pair for a 64-bit RMW") {
+    backend::Emitter em;
+    em.ldxr (arm64::Reg::X0, arm64::Reg::X1, ir::OpSize::I64);
+    em.stxr (arm64::Reg::X2, arm64::Reg::X3, arm64::Reg::X1, ir::OpSize::I64);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("ldxr") != std::string::npos);
+    REQUIRE(text.find("stxr") != std::string::npos);
+}
+
+TEST_CASE("Emitter: ldaxr + stlxr pair is the acquire-release variant") {
+    backend::Emitter em;
+    em.ldaxr(arm64::Reg::X0, arm64::Reg::X1, ir::OpSize::I64);
+    em.stlxr(arm64::Reg::X2, arm64::Reg::X3, arm64::Reg::X1, ir::OpSize::I64);
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("ldaxr") != std::string::npos);
+    REQUIRE(text.find("stlxr") != std::string::npos);
+}
+
+TEST_CASE("Emitter: ldxr on byte size emits ldxrb") {
+    backend::Emitter em;
+    em.ldxr(arm64::Reg::X0, arm64::Reg::X1, ir::OpSize::I8);
+    em.finalize();
+    REQUIRE(em.disassemble().find("ldxrb") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// F1-BK-017 LSE atomics
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emitter: casal emits cas with acquire-release ordering") {
+    backend::Emitter em;
+    em.casal(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2, ir::OpSize::I64);
+    em.finalize();
+    // vixl spells it `casal` in disassembly (sequential-consistent CAS).
+    REQUIRE(em.disassemble().find("casal") != std::string::npos);
+}
+
+TEST_CASE("Emitter: ldaddal emits the LSE fetch-and-add") {
+    backend::Emitter em;
+    em.ldaddal(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2, ir::OpSize::I64);
+    em.finalize();
+    REQUIRE(em.disassemble().find("ldaddal") != std::string::npos);
+}
+
+TEST_CASE("Emitter: casal byte variant emits casalb") {
+    backend::Emitter em;
+    em.casal(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2, ir::OpSize::I8);
+    em.finalize();
+    REQUIRE(em.disassemble().find("casalb") != std::string::npos);
+}
