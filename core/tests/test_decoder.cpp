@@ -162,3 +162,103 @@ TEST_CASE("Error: REX.R rejected for MVP (would reference R8..R15)") {
     REQUIRE(std::holds_alternative<DecodeError>(res));
     REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
 }
+
+// ---------------------------------------------------------------------------
+// G1: additional register-register ops and NOP.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("decode NOP (90) → empty stmts, 1 byte consumed") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x90}, r);
+    REQUIRE(d.bytes_consumed == 1);
+    REQUIRE(d.stmts.empty());
+    REQUIRE(r == 0);  // no SSA values produced
+}
+
+TEST_CASE("decode MOV rax, rbx → loadreg + storereg, 3 bytes") {
+    // 48 89 D8
+    //   48 REX.W
+    //   89 opcode MOV r/m64, r64
+    //   D8 mod=11, reg=011 (rbx, source), rm=000 (rax, destination)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x89, 0xD8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 2);
+
+    // %0 = loadreg.i64 rbx
+    REQUIRE(d.stmts[0].result == std::optional<ir::Ref>(0));
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    // storereg.i64 rax, %0
+    REQUIRE(d.stmts[1].result == std::nullopt);
+    REQUIRE(d.stmts[1].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}});
+
+    REQUIRE(r == 1);
+}
+
+TEST_CASE("decode XOR rax, rax → the zero idiom") {
+    // 48 31 C0
+    //   31 XOR r/m64, r64
+    //   C0 mod=11, reg=000 (rax), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x31, 0xC0}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Xor, 0u, 1u, ir::OpSize::I64}});
+    // Later: a simple constant-folding pass will turn XOR(x, x) into a zero
+    // constant + StoreReg. Tracked as a test fixture for passes/const_prop.
+}
+
+TEST_CASE("decode AND rsi, rdi → BinOpKind::And") {
+    // 48 21 FE
+    //   21 AND r/m64, r64
+    //   FE mod=11, reg=111 (rdi), rm=110 (rsi)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x21, 0xFE}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rsi, 2u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode OR rbp, rsp → BinOpKind::Or") {
+    // 48 09 E5
+    //   09 OR r/m64, r64
+    //   E5 mod=11, reg=100 (rsp), rm=101 (rbp)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x09, 0xE5}, r);
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Or, 0u, 1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("NOP + MOV imm64 + RET sequence decodes cleanly one at a time") {
+    // 90                                              ; nop
+    // 48 B8 07 00 00 00 00 00 00 00                   ; mov rax, 7
+    // C3                                              ; ret
+    const std::vector<std::uint8_t> bytes = {
+        0x90,
+        0x48, 0xB8, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xC3,
+    };
+    ir::Ref r = 0;
+    std::size_t cursor = 0;
+    std::size_t decoded_count = 0;
+
+    while (cursor < bytes.size()) {
+        std::span<const std::uint8_t> remaining(
+            bytes.data() + cursor, bytes.size() - cursor);
+        auto res = decode_one(remaining, r);
+        REQUIRE(std::holds_alternative<Decoded>(res));
+        auto& d = std::get<Decoded>(res);
+        cursor += d.bytes_consumed;
+        ++decoded_count;
+    }
+
+    REQUIRE(decoded_count == 3);
+    REQUIRE(cursor == bytes.size());
+    REQUIRE(r == 1);  // only the MOV contributed an SSA ref
+}

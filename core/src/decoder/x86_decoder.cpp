@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <variant>
 
 namespace prisma::decoder {
@@ -47,6 +48,64 @@ std::optional<std::uint64_t> read_le(std::span<const Byte> bytes, std::size_t of
     return v;
 }
 
+// Common shape for ALU register-register ops of the form
+//   REX.W <opcode> <ModR/M mod=11, reg=src, rm=dst>
+// that we lower to:
+//   %dst0 = loadreg rm
+//   %src  = loadreg reg
+//   %res  = binop <op> %dst0, %src
+//          storereg rm, %res
+//
+// `bytes` is the full stream. `cursor_in_out` points AFTER the opcode byte
+// on entry and is advanced past the ModR/M byte on success.
+std::variant<Decoded, DecodeError> decode_alu_rm_r(
+    std::span<const Byte> bytes,
+    std::size_t& cursor_in_out,
+    ir::BinOpKind op,
+    ir::Ref& next_ref) {
+    if (cursor_in_out >= bytes.size()) return DecodeError::TruncatedInput;
+    const Byte modrm = bytes[cursor_in_out++];
+    const unsigned mod = (modrm >> 6) & 0x3u;
+    const unsigned reg = (modrm >> 3) & 0x7u;   // src
+    const unsigned rm  =  modrm       & 0x7u;   // dst
+
+    if (mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_dst = next_ref++;
+    const ir::Ref ref_src = next_ref++;
+    const ir::Ref ref_res = next_ref++;
+    d.stmts.push_back({ref_dst, ir::LoadReg{gpr_from_index(rm), ir::OpSize::I64}});
+    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(reg), ir::OpSize::I64}});
+    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_src, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+                       ir::StoreReg{gpr_from_index(rm), ref_res, ir::OpSize::I64}});
+    d.bytes_consumed = cursor_in_out;
+    return d;
+}
+
+// MOV r/m64, r64 (mod=11): no arithmetic, just StoreReg(dst, LoadReg(src)).
+std::variant<Decoded, DecodeError> decode_mov_rm_r(
+    std::span<const Byte> bytes,
+    std::size_t& cursor_in_out,
+    ir::Ref& next_ref) {
+    if (cursor_in_out >= bytes.size()) return DecodeError::TruncatedInput;
+    const Byte modrm = bytes[cursor_in_out++];
+    const unsigned mod = (modrm >> 6) & 0x3u;
+    const unsigned reg = (modrm >> 3) & 0x7u;   // src
+    const unsigned rm  =  modrm       & 0x7u;   // dst
+
+    if (mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_src = next_ref++;
+    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(reg), ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+                       ir::StoreReg{gpr_from_index(rm), ref_src, ir::OpSize::I64}});
+    d.bytes_consumed = cursor_in_out;
+    return d;
+}
+
 }  // namespace
 
 std::variant<Decoded, DecodeError> decode_one(
@@ -68,15 +127,24 @@ std::variant<Decoded, DecodeError> decode_one(
         if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
     }
 
-    // Reject extended registers for the MVP. When supported, reg_from_modrm()
-    // will OR REX.R / REX.B into the index.
+    // Reject extended registers for the MVP.
     if (rex.r || rex.x || rex.b) return DecodeError::UnsupportedEncoding;
 
     // 2. Opcode byte.
     const Byte opcode = bytes[cursor];
     ++cursor;
 
-    // --- RET (C3) ----------------------------------------------------------
+    // --- NOP (0x90) --------------------------------------------------------
+    // Strictly speaking NOP is an alias of XCHG EAX, EAX, but in the MVP we
+    // consume it as a no-op. It is legal to have REX.W before NOP; we accept
+    // that too (treating 48 90 as a 64-bit no-op).
+    if (opcode == 0x90u) {
+        Decoded d;
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    // --- RET (0xC3) --------------------------------------------------------
     if (opcode == 0xC3u) {
         if (rex.present) return DecodeError::UnsupportedEncoding;  // no REX on RET in MVP
         Decoded d;
@@ -87,7 +155,7 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- MOV r64, imm64 (B8+rd with REX.W) --------------------------------
     if (opcode >= 0xB8u && opcode <= 0xBFu) {
-        if (!rex.w) return DecodeError::UnsupportedEncoding;  // MVP requires 64-bit
+        if (!rex.w) return DecodeError::UnsupportedEncoding;
         const unsigned reg_idx = opcode - 0xB8u;
         auto imm = read_le<8>(bytes, cursor);
         if (!imm) return DecodeError::TruncatedInput;
@@ -96,35 +164,42 @@ std::variant<Decoded, DecodeError> decode_one(
         Decoded d;
         const ir::Ref ref = next_ref++;
         d.stmts.push_back({ref, ir::Constant{*imm, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(reg_idx), ref, ir::OpSize::I64}});
+        d.stmts.push_back({std::nullopt,
+                           ir::StoreReg{gpr_from_index(reg_idx), ref, ir::OpSize::I64}});
         d.bytes_consumed = cursor;
         return d;
     }
 
-    // --- ADD r/m64, r64 (01 /r) -------------------------------------------
-    // --- SUB r/m64, r64 (29 /r) -------------------------------------------
-    if (opcode == 0x01u || opcode == 0x29u) {
+    // --- MOV r/m64, r64 (0x89 /r) -----------------------------------------
+    if (opcode == 0x89u) {
         if (!rex.w) return DecodeError::UnsupportedEncoding;
-        if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
-        const Byte modrm = bytes[cursor++];
-        const unsigned mod = (modrm >> 6) & 0x3u;
-        const unsigned reg = (modrm >> 3) & 0x7u;   // src
-        const unsigned rm  =  modrm       & 0x7u;   // dst (register-direct form)
+        return decode_mov_rm_r(bytes, cursor, next_ref);
+    }
 
-        if (mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
-        const ir::BinOpKind k = (opcode == 0x01u) ? ir::BinOpKind::Add : ir::BinOpKind::Sub;
-
-        Decoded d;
-        const ir::Ref ref_dst = next_ref++;
-        const ir::Ref ref_src = next_ref++;
-        const ir::Ref ref_res = next_ref++;
-        d.stmts.push_back({ref_dst, ir::LoadReg{gpr_from_index(rm), ir::OpSize::I64}});
-        d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(reg), ir::OpSize::I64}});
-        d.stmts.push_back({ref_res, ir::BinOp{k, ref_dst, ref_src, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(rm), ref_res, ir::OpSize::I64}});
-        d.bytes_consumed = cursor;
-        return d;
+    // --- ALU r/m64, r64 (shared shape) ------------------------------------
+    // OR  = 0x09  → Or
+    // AND = 0x21  → And
+    // SUB = 0x29  → Sub
+    // XOR = 0x31  → Xor
+    // ADD = 0x01  → Add
+    switch (opcode) {
+        case 0x01u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            return decode_alu_rm_r(bytes, cursor, ir::BinOpKind::Add, next_ref);
+        case 0x09u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            return decode_alu_rm_r(bytes, cursor, ir::BinOpKind::Or, next_ref);
+        case 0x21u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            return decode_alu_rm_r(bytes, cursor, ir::BinOpKind::And, next_ref);
+        case 0x29u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            return decode_alu_rm_r(bytes, cursor, ir::BinOpKind::Sub, next_ref);
+        case 0x31u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            return decode_alu_rm_r(bytes, cursor, ir::BinOpKind::Xor, next_ref);
+        default:
+            break;
     }
 
     return DecodeError::UnknownOpcode;

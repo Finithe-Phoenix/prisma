@@ -1,11 +1,19 @@
 // prisma/decoder.hpp — x86_64 → Prisma IR decoder.
 //
-// Status: Fase 0 MVP. Recognises four instructions:
+// Status: Fase 0 MVP. Recognises the following opcodes:
 //
-//   * MOV r64, imm64   (48 B8+rd imm64)             10 bytes
-//   * ADD r64, r64     (48 01 /r, mod=11)            3 bytes
-//   * SUB r64, r64     (48 29 /r, mod=11)            3 bytes
-//   * RET              (C3)                          1 byte
+//   No operands / immediates
+//     * NOP              (90)                        1 byte
+//     * RET              (C3)                        1 byte
+//     * MOV r64, imm64   (48 B8+rd imm64)           10 bytes
+//
+//   Register / register, 64-bit, mod=11
+//     * MOV r/m64, r64   (48 89 /r)                  3 bytes
+//     * ADD r/m64, r64   (48 01 /r)                  3 bytes
+//     * OR  r/m64, r64   (48 09 /r)                  3 bytes
+//     * AND r/m64, r64   (48 21 /r)                  3 bytes
+//     * SUB r/m64, r64   (48 29 /r)                  3 bytes
+//     * XOR r/m64, r64   (48 31 /r)                  3 bytes
 //
 // The decoder is deliberately minimal: no prefixes other than REX.W, no
 // memory operands (mod != 11 is rejected), no R8..R15 (REX.R / REX.B must
