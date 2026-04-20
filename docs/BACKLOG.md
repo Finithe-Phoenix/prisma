@@ -102,9 +102,9 @@ involvement or calendar time.
 - [ ] F0-DC-023: Read AVF / pKVM design docs.
 - [ ] F0-DC-024: Read Danny Lin's Windows on Pixel 6 writeup.
 - [ ] F0-DC-025: Publish `docs/research_notes.md` as public blog post at `/blog/designing-prisma-part-1`.
-- [~|claude] F0-DC-026: Write blog post "Why we're writing a new DBT from scratch".
+- [x] (pending commit) F0-DC-026: Write blog post "Why we're writing a new DBT from scratch".
 - [x] (pending commit) F0-DC-027: Write `docs/ARCHITECTURE.md` — one-page tour of the monorepo.
-- [~|claude] F0-DC-028: Write `docs/CONTRIBUTING.md` (placeholder for future OSS).
+- [x] (pending commit) F0-DC-028: Write `docs/CONTRIBUTING.md` (placeholder for future OSS).
 
 ### F0-CM — Community outreach
 
@@ -306,7 +306,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-PS-010: Constant folding on Extend / Truncate.
 - [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
 - [~|codex] F1-PS-012: Flag-write elimination when no reader exists.
-- [ ] F1-PS-013: CFG simplification (remove empty blocks).
+- [x] (pending commit) F1-PS-013: CFG simplification (remove empty blocks).
 - [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
 - [x] (pending commit) F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
 - [x] (pending commit) F1-PS-016: Pass timing instrumentation.
