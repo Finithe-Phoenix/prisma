@@ -116,6 +116,21 @@ target_link_libraries(prisma_passes
 )
 
 # ---------------------------------------------------------------------------
+# Translation cache (Pillar 4 seed — in-memory, SMC-aware)
+# ---------------------------------------------------------------------------
+
+add_library(prisma_cache STATIC
+    src/cache/translation_cache.cpp
+)
+
+target_include_directories(prisma_cache
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_cache PRIVATE prisma_warnings)
+
+# ---------------------------------------------------------------------------
 # vixl — ARM64 assembler library (BSD-3-Clause). See RFC 0002.
 # ---------------------------------------------------------------------------
 
@@ -179,6 +194,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_e2e.cpp
         tests/test_jit_execution.cpp
         tests/test_passes.cpp
+        tests/test_translation_cache.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
@@ -187,6 +203,7 @@ if(PRISMA_BUILD_TESTS)
             prisma_emitter
             prisma_runtime
             prisma_passes
+            prisma_cache
             prisma_warnings
             Catch2::Catch2WithMain
     )
