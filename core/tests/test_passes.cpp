@@ -48,6 +48,7 @@ TEST_CASE("const_prop: Sub / And / Or / Xor all fold correctly") {
     };
 
     REQUIRE(fold_one(ir::BinOpKind::Sub, 100, 58) == 42);
+    REQUIRE(fold_one(ir::BinOpKind::Mul, 6, 7) == 42);
     REQUIRE(fold_one(ir::BinOpKind::And, 0xFF, 0x0F) == 0x0F);
     REQUIRE(fold_one(ir::BinOpKind::Or,  0xF0, 0x0F) == 0xFF);
     REQUIRE(fold_one(ir::BinOpKind::Xor, 0xFF, 0x0F) == 0xF0);

@@ -233,6 +233,64 @@ TEST_CASE("decode NEG rax → Sub zero - reg placeholder, 3 bytes") {
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
 }
 
+TEST_CASE("decode MUL rax, rax placeholder → RAX*RAX low64 + RDX cleared, 3 bytes") {
+    // Encoding: 48 F7 E0
+    //   48 REX.W
+    //   F7 opcode F7 /4
+    //   E0 mod=11, reg=100 (/4), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xF7, 0xE0}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 6);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode IMUL rax, rax placeholder → RAX*RAX signed low64 + RDX cleared, 3 bytes") {
+    // Encoding: 48 F7 E8
+    //   48 REX.W
+    //   F7 opcode F7 /5
+    //   E8 mod=11, reg=101 (/5), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xF7, 0xE8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 6);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode IMUL rax, rbx placeholder → RAX*RBX, 3 bytes") {
+    // Encoding: 48 0F AF C3
+    //   48 REX.W
+    //   0F AF opcode
+    //   C3 mod=11, reg=000 (rax, destination), rm=011 (rbx, source)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0xAF, 0xC3}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 4);
+}
+
 TEST_CASE("next_ref is threaded across multiple decodes") {
     // Decode two instructions in sequence: ADD rax, rbx ; RET.
     // The second decode must NOT reset refs.
