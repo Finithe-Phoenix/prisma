@@ -318,7 +318,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-RT-002: Signal handler for SIGSEGV / SIGILL / SIGBUS.
 - [x] F1-RT-003: ScopedProtected RAII scope.
 - [x] (pending commit) F1-RT-004: CpuStateFrame layout (16 GPRs + flags + SIMD + x87).
-- [ ] F1-RT-005: TLS storage for per-thread guest state.
+- [x] F1-RT-005: TLS storage for per-thread guest state.
 - [x] (pending commit) F1-RT-006: Dispatcher loop (find-translation-and-jump).
 - [ ] F1-RT-007: Trampoline between translator and compiled blocks.
 - [ ] F1-RT-008: Return-address stack for guest CALL / RET tracking.
@@ -391,13 +391,13 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [ ] F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
 - [ ] F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
-- [~|claude] F1-DC-003: RFC 0005 — basic block representation + CFG construction.
+- [x] (pending commit) F1-DC-003: RFC 0005 — basic block representation + CFG construction.
 - [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
 - [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
 - [ ] F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
 - [ ] F1-DC-007: Blog post: "Designing an IR you can prove correct".
 - [ ] F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
-- [~|claude] F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
+- [x] (pending commit) F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
 
 ---
 

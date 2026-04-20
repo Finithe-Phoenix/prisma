@@ -49,29 +49,92 @@ El manifiesto técnico y las decisiones estratégicas están en [PROYECTO_PLAN_E
 - No escribir docstrings multi-párrafo. Comentarios solo para el WHY no-obvio.
 - No usar emojis en código/commits.
 
-## Comandos frecuentes (futuros)
+## Subsistemas activos
+
+Estado al **2026-04-20** (fin de Fase 0, comienzo de Fase 1).
+
+- **`core/`** (C++20) — DBT engine. Ya existe y compila con
+  `cmake --build core/build`. Subdivisiones:
+  - `prisma_ir` — IR SSA + pretty-print + validator (F1-IR-016).
+  - `prisma_decoder` — x86_64 → IR. SIB, RIP-relative, REX.R/X/B,
+    prefijo 0x67 address-size override, segment overrides aceptados,
+    `Cpuid` pseudo-op.
+  - `prisma_passes` — 10 pases en el pipeline por defecto:
+    const_prop → algebraic → strength_reduce → const_prop_2 →
+    redundant_load → CSE → copy_propagate → dead_store →
+    branch_fold → dead_code_eliminate. Pass timing + dump hooks
+    (F1-PS-016/017).
+  - `prisma_emitter` — vixl-backed ARM64 emitter. ALU 3-reg,
+    mul/umulh/smulh/sdiv/udiv/msub, clz/cls/rbit, rol/ror,
+    ldxr/stxr/ldaxr/stlxr, casal/ldaddal (LSE), labels + branches,
+    literal pool flush, sp-relative load/store.
+  - `prisma_cache` — translation cache. Key = (guest_addr,
+    content_hash FNV-1a). SMC-safe, LRU + byte-budget eviction,
+    persistent binary format (RFC 0007), async save
+    (`save_to_file_async`), SHA-256 disponible para trust envelope
+    Fase 2.5, per-entry stats (hit_count, last_used_tick).
+  - `prisma_runtime` — JIT memory (MAP_JIT en macOS), signal
+    handlers, dispatcher loop, `HostFeatures` (FEAT_LSE/LSE2/LRCPC/
+    FlagM/DotProd/CRC32 detection).
+  - `prisma_translator` — facade que combina decoder + passes +
+    lowerer + cache + runtime en un API público.
+  - `prisma_core_tests` — 400+ Catch2 tests. Benchmarks opt-in vía
+    `[.benchmark]` tag (F1-TC-007).
+- **`ir-spec/`** (Lean 4) — Spec formal del IR. Sintaxis,
+  semánticas puras, 3 lemmas base. Un único `sorry` pendiente (budget
+  enforced en CI, F1-TC-009).
+- **`docs/rfc/`** — 0001 IR-SSA, 0002 vixl integration, 0005 CFG
+  design, 0006 register allocator, 0007 cache format.
+- **`fuzz/`** — AFL++ harness para el decoder (F1-TC-004).
+
+Territorios todavía vacíos: `shell/` (Rust loader), `android/` (app
+Kotlin), `server/` (Python backend P2P), `tools/benchmarks/`.
+
+## Coordinación multi-agente
+
+Hay dos agentes activos sobre el repo: `claude` y `codex`. Protocolo
+en [docs/COORDINATION.md](docs/COORDINATION.md). Reglas clave:
+
+- Antes de tocar un item del backlog, marcarlo `[~|<agente>]` y
+  hacer commit del claim.
+- Al completar, marcar `[x] (<sha>)` en el commit que lo resuelve.
+- Codex dirige decoder + IR variants + dispatcher; Claude dirige
+  emitter + passes + lowerer + cache + runtime + infra CI.
+- Si hay conflicto de merge, resolver en favor del agente cuyo
+  claim fue primero; revertir el otro y re-claim.
+
+## Comandos frecuentes
 
 ```bash
-# Build del core
-cmake --preset debug && cmake --build --preset debug
+# Build del core (Debug por defecto)
+cmake -S core -B core/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build core/build
 
 # Tests del core
-ctest --preset debug
+core/build/prisma_core_tests
+# o con filtros:
+core/build/prisma_core_tests --reporter compact ~"signal_handler*"
 
-# Build del shell Rust
-cargo build --workspace
+# Benchmarks (opt-in, tag [.benchmark])
+core/build/prisma_core_tests --run-benchmarks
 
-# Tests del shell
-cargo test --workspace
+# Sanitizers (F1-TC-008)
+cmake -S core -B /tmp/prisma-asan \
+  -DPRISMA_ENABLE_ASAN=ON -DPRISMA_ENABLE_UBSAN=ON -G Ninja
+cmake --build /tmp/prisma-asan
+/tmp/prisma-asan/prisma_core_tests
+
+# Coverage (Clang-only, F1-TC-005)
+cmake -S core -B /tmp/prisma-cov \
+  -DPRISMA_ENABLE_COVERAGE=ON -DCMAKE_CXX_COMPILER=clang++ -G Ninja
 
 # Verificar proofs Lean 4
-lake build
+cd ir-spec && lake build
 
-# Build de la app Android
-./gradlew assembleDebug
+# Commands que aún no existen (subproyectos no arrancados):
+#   cargo build --workspace          (shell/)
+#   ./gradlew assembleDebug          (android/)
 ```
-
-Estos comandos aún no existen (fase 0). Se añadirán conforme cada subproyecto arranque.
 
 ## Memoria persistente
 
