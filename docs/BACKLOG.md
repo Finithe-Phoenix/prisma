@@ -244,9 +244,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-003: Add `Flags` SSA value type (tuple of carry, zero, sign, overflow, parity, aux).
 - [ ] F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
 - [ ] F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
-- [ ] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
+- [x] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
 - [ ] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
-- [ ] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
+- [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
 - [ ] F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
 - [ ] F1-IR-011: Add `Truncate{value, to_size}`.
@@ -308,7 +308,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-PS-012: Flag-write elimination when no reader exists.
 - [ ] F1-PS-013: CFG simplification (remove empty blocks).
 - [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
-- [ ] F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
+- [~|claude] F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
 - [x] (pending commit) F1-PS-016: Pass timing instrumentation.
 - [x] (pending commit) F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
 
@@ -321,7 +321,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-RT-005: TLS storage for per-thread guest state.
 - [x] (pending commit) F1-RT-006: Dispatcher loop (find-translation-and-jump).
 - [x] F1-RT-007: Trampoline between translator and compiled blocks.
-- [ ] F1-RT-008: Return-address stack for guest CALL / RET tracking.
+- [x] F1-RT-008: Return-address stack for guest CALL / RET tracking.
 - [ ] F1-RT-009: Thread-safe JitBuffer pool (many blocks).
 - [ ] F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
 - [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
