@@ -8,12 +8,23 @@
 //     * MOV r64, imm64   (48 B8+rd imm64)           10 bytes
 //
 //   Register / register, 64-bit, mod=11
-//     * MOV r/m64, r64   (48 89 /r)                  3 bytes
 //     * ADD r/m64, r64   (48 01 /r)                  3 bytes
 //     * OR  r/m64, r64   (48 09 /r)                  3 bytes
 //     * AND r/m64, r64   (48 21 /r)                  3 bytes
 //     * SUB r/m64, r64   (48 29 /r)                  3 bytes
 //     * XOR r/m64, r64   (48 31 /r)                  3 bytes
+//
+//   MOV, both register and simple memory forms
+//     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes
+//     * MOV r64, r/m64   (48 8B /r)                  3..7 bytes
+//         - mod=00: [base]            (no disp)
+//         - mod=01: [base + disp8]    (signed 8-bit disp)
+//         - mod=10: [base + disp32]   (signed 32-bit disp)
+//         - mod=11: register direct
+//         Memory forms always emit *_TSO variants of load/store. The
+//         TSO-adaptive pass (Pillar 3, later) may rewrite to non-TSO.
+//         Rejected for MVP: rm=100 (SIB required), mod=00 rm=101
+//         (disp32 absolute).
 //
 // The decoder is deliberately minimal: no prefixes other than REX.W, no
 // memory operands (mod != 11 is rejected), no R8..R15 (REX.R / REX.B must

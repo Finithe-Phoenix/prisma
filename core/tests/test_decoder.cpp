@@ -235,6 +235,145 @@ TEST_CASE("decode OR rbp, rsp → BinOpKind::Or") {
             ir::Op{ir::BinOp{ir::BinOpKind::Or, 0u, 1u, ir::OpSize::I64}});
 }
 
+// ---------------------------------------------------------------------------
+// H3: memory operands.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("decode MOV [rbx], rax → LoadReg+LoadReg+StoreMemTSO") {
+    // 48 89 03
+    //   89 MOV r/m64, r64
+    //   03 mod=00, reg=000 (rax, src), rm=011 (rbx → [rbx])
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x89, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 3);
+
+    // %0 = loadreg rax (the source value)
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    // %1 = loadreg rbx (the base address)
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    // store.tso.i64 [%1], %0
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::StoreMemTSO{1u, 0u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV rcx, [rdx + 0x10] → disp8 memory form") {
+    // 48 8B 4A 10
+    //   8B MOV r64, r/m64
+    //   4A mod=01, reg=001 (rcx, dst), rm=010 (rdx)
+    //   10 disp8 = +16
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x8B, 0x4A, 0x10}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 5);
+
+    // %0 = loadreg rdx (base)
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}});
+    // %1 = const 0x10
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0x10, ir::OpSize::I64}});
+    // %2 = add %0, %1
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
+    // %3 = load.tso.i64 [%2]
+    REQUIRE(d.stmts[3].op == ir::Op{ir::LoadMemTSO{2u, ir::OpSize::I64}});
+    // storereg rcx, %3
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV rdi, [rsi] → no-disp memory load") {
+    // 48 8B 3E
+    //   3E mod=00, reg=111 (rdi), rm=110 (rsi)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x8B, 0x3E}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdi, 1u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV [rbx - 8], rax → disp8 negative via sign extension") {
+    // 48 89 43 F8
+    //   43 mod=01, reg=000 (rax), rm=011 (rbx)
+    //   F8 disp8 = -8 (sign-extended)
+    //
+    // Emission order: loadreg(rax) → loadreg(rbx) → const(-8) → add → store.
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x89, 0x43, 0xF8}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 5);
+
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    // The constant the address computation uses must be -8 sign-extended to
+    // 64-bit: 0xFFFF_FFFF_FFFF_FFF8.
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::Constant{0xFFFF'FFFF'FFFF'FFF8ULL, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::StoreMemTSO{3u, 0u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV rax, [rbx + 0x0BADF00D] → disp32 memory form") {
+    // 48 8B 83 0D F0 AD 0B
+    //   83 mod=10, reg=000 (rax), rm=011 (rbx)
+    //   0D F0 AD 0B → disp32 = 0x0BADF00D little-endian
+    ir::Ref r = 0;
+    auto d = decode_ok(
+        {0x48, 0x8B, 0x83, 0x0D, 0xF0, 0xAD, 0x0B}, r);
+    REQUIRE(d.bytes_consumed == 7);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[1].op ==
+            ir::Op{ir::Constant{0x0BAD'F00DULL, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode MOV rax, rbx via 0x8B (register direct)") {
+    // 48 8B C3
+    //   C3 mod=11, reg=000 (rax, dst), rm=011 (rbx, src)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x8B, 0xC3}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}});
+}
+
+TEST_CASE("Error: memory form MOV with SIB byte (rm=100) is rejected") {
+    // 48 89 04 ... would require SIB. We stop at the ModR/M.
+    ir::Ref r = 0;
+    auto res = decode_any({0x48, 0x89, 0x04}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("Error: mod=00 rm=101 (disp32 absolute) is rejected") {
+    // 48 89 05 XX XX XX XX  (MOV [rip+disp32], rax). RIP-relative addressing
+    // is the x86-64 re-use of rm=101. Needs CFG awareness to map; out of scope.
+    ir::Ref r = 0;
+    auto res = decode_any({0x48, 0x89, 0x05, 0x00, 0x00, 0x00, 0x00}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("Error: truncated disp8 returns TruncatedInput") {
+    // 48 89 43  ← missing the disp8 byte
+    ir::Ref r = 0;
+    auto res = decode_any({0x48, 0x89, 0x43}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::TruncatedInput);
+}
+
+TEST_CASE("Error: truncated disp32 returns TruncatedInput") {
+    ir::Ref r = 0;
+    auto res = decode_any({0x48, 0x8B, 0x83, 0x01, 0x02}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::TruncatedInput);
+}
+
 TEST_CASE("NOP + MOV imm64 + RET sequence decodes cleanly one at a time") {
     // 90                                              ; nop
     // 48 B8 07 00 00 00 00 00 00 00                   ; mov rax, 7
