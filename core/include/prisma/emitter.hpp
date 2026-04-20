@@ -231,6 +231,25 @@ public:
     // most-recent flag-producing instruction (CmpFlags in our IR).
     void branch_cc(Label label, ir::CondCode cc);
 
+    // --- Literal pool management (F1-BK-018) -------------------------------
+    //
+    // vixl accumulates literals (64-bit immediates used by `ldr r, =#imm`
+    // forms) in a per-MacroAssembler pool. The pool auto-flushes when
+    // its size or the distance-to-first-use would exceed the load's
+    // reach (±1 MiB on AArch64), wrapping the literals in a branch so
+    // execution skips over them.
+    //
+    // Most Prisma code doesn't need to touch these — mov_imm64 uses
+    // movz/movk rather than ldr-literal. Expose them anyway so block
+    // boundaries (F1-BK-020 prologue / F1-BK-021 epilogue) can flush
+    // deterministically and so tests can assert pool size stays at 0.
+    //
+    // `flush_literal_pool()` emits any pending literals with a branch
+    // veneer so fallthrough code is unaffected. Safe to call at any
+    // valid instruction boundary.
+    [[nodiscard]] std::size_t literal_pool_size() const noexcept;
+    void flush_literal_pool();
+
     // --- lifecycle ---
 
     // Finalize the buffer: resolve labels, emit any literal pool, flush

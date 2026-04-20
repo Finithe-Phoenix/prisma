@@ -290,3 +290,39 @@ TEST_CASE("Emitter: multiple labels are independent") {
     // Finalize should not throw / assert — both labels bound.
     SUCCEED("two labels bound cleanly");
 }
+
+// ---------------------------------------------------------------------------
+// F1-BK-018 literal pool management
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emitter: literal pool is reachable at start") {
+    // vixl maintains a small always-present header (observed as 4 bytes)
+    // in its LiteralPool even when empty, so we can't assert strict
+    // zero. What matters is that the accessor is callable and returns
+    // a bounded value.
+    backend::Emitter em;
+    REQUIRE(em.literal_pool_size() <= 16u);
+}
+
+TEST_CASE("Emitter: flush_literal_pool completes cleanly on an empty pool") {
+    backend::Emitter em;
+    em.movz(arm64::Reg::X0, 1, 0);
+    em.flush_literal_pool();
+    em.ret();
+    em.finalize();
+    // Finalize succeeds; disassembly still contains the surrounding code.
+    REQUIRE(em.disassemble().find("ret") != std::string::npos);
+}
+
+TEST_CASE("Emitter: mov_imm64 of large immediates does NOT grow the pool") {
+    // Our mov_imm64 lowers large constants via movz+movk rather than
+    // ldr-literal, so the pool stays at its baseline even for values
+    // with many non-zero halfwords. This test locks that invariant in.
+    backend::Emitter em;
+    const auto before = em.literal_pool_size();
+    em.mov_imm64(arm64::Reg::X0, 0x1234'5678'9ABC'DEF0ULL);
+    const auto after = em.literal_pool_size();
+    REQUIRE(after == before);
+    em.ret();
+    em.finalize();
+}

@@ -44,6 +44,73 @@ if(PRISMA_WARNINGS_AS_ERRORS)
     target_compile_options(prisma_warnings INTERFACE -Werror)
 endif()
 
+# When sanitizers are enabled below, they attach to prisma_warnings so every
+# library that already links prisma_warnings picks them up with zero extra
+# wiring.
+
+# ---------------------------------------------------------------------------
+# Sanitizers (F1-TC-008).
+#
+# Orthogonal toggles. Combine ASan+UBSan safely; TSan is mutually exclusive
+# with ASan (same runtime, different detectors). All three cost compile time
+# and runtime, so we leave them off by default.
+#
+# Usage:
+#   cmake -B build-asan  -DPRISMA_ENABLE_ASAN=ON  -DPRISMA_ENABLE_UBSAN=ON
+#   cmake -B build-tsan  -DPRISMA_ENABLE_TSAN=ON
+#   cmake -B build-msan  -DPRISMA_ENABLE_MSAN=ON  # clang only
+# ---------------------------------------------------------------------------
+
+option(PRISMA_ENABLE_ASAN  "Build with AddressSanitizer"              OFF)
+option(PRISMA_ENABLE_UBSAN "Build with UndefinedBehaviorSanitizer"    OFF)
+option(PRISMA_ENABLE_TSAN  "Build with ThreadSanitizer (excludes ASan)" OFF)
+option(PRISMA_ENABLE_MSAN  "Build with MemorySanitizer (clang only)"  OFF)
+
+add_library(prisma_sanitizers INTERFACE)
+
+if(PRISMA_ENABLE_ASAN AND PRISMA_ENABLE_TSAN)
+    message(FATAL_ERROR
+        "PRISMA_ENABLE_ASAN and PRISMA_ENABLE_TSAN are mutually exclusive "
+        "— they share a runtime.")
+endif()
+
+if(PRISMA_ENABLE_ASAN)
+    target_compile_options(prisma_sanitizers INTERFACE
+        -fsanitize=address -fno-omit-frame-pointer)
+    target_link_options(prisma_sanitizers INTERFACE -fsanitize=address)
+    message(STATUS "Prisma: AddressSanitizer enabled")
+endif()
+
+if(PRISMA_ENABLE_UBSAN)
+    target_compile_options(prisma_sanitizers INTERFACE
+        -fsanitize=undefined -fno-omit-frame-pointer
+        -fno-sanitize-recover=undefined)
+    target_link_options(prisma_sanitizers INTERFACE -fsanitize=undefined)
+    message(STATUS "Prisma: UndefinedBehaviorSanitizer enabled")
+endif()
+
+if(PRISMA_ENABLE_TSAN)
+    target_compile_options(prisma_sanitizers INTERFACE
+        -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(prisma_sanitizers INTERFACE -fsanitize=thread)
+    message(STATUS "Prisma: ThreadSanitizer enabled")
+endif()
+
+if(PRISMA_ENABLE_MSAN)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "PRISMA_ENABLE_MSAN requires Clang")
+    endif()
+    target_compile_options(prisma_sanitizers INTERFACE
+        -fsanitize=memory -fno-omit-frame-pointer
+        -fsanitize-memory-track-origins=2)
+    target_link_options(prisma_sanitizers INTERFACE -fsanitize=memory)
+    message(STATUS "Prisma: MemorySanitizer enabled")
+endif()
+
+# Pipe sanitizers through the prisma_warnings INTERFACE target so all
+# downstream libraries + tests pick them up transparently.
+target_link_libraries(prisma_warnings INTERFACE prisma_sanitizers)
+
 # ---------------------------------------------------------------------------
 # Library target: prisma_ir
 # ---------------------------------------------------------------------------

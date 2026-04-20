@@ -1,0 +1,74 @@
+name: core sanitizers
+
+# Builds the core/ C++ engine under each sanitizer configuration and runs
+# the test suite. Slow(er) than the plain debug build — runs on PRs only
+# for paths that can plausibly break memory/thread safety. Infra added in
+# F1-TC-008.
+
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - '.github/workflows/core-sanitizers.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - '.github/workflows/core-sanitizers.yml'
+
+concurrency:
+  group: core-sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure (AddressSanitizer + UndefinedBehaviorSanitizer)
+        run: |
+          cmake -S core -B core/build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DPRISMA_ENABLE_ASAN=ON \
+            -DPRISMA_ENABLE_UBSAN=ON
+
+      - name: Build
+        run: cmake --build core/build-asan
+
+      - name: Run tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir core/build-asan --output-on-failure
+
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure (ThreadSanitizer)
+        run: |
+          cmake -S core -B core/build-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DPRISMA_ENABLE_TSAN=ON
+
+      - name: Build
+        run: cmake --build core/build-tsan
+
+      - name: Run tests
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir core/build-tsan --output-on-failure

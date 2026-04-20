@@ -350,6 +350,14 @@ void Emitter::branch_cc(Label label, ir::CondCode cc) {
     impl_->masm.B(impl_->labels[label.id - 1].get(), to_vixl_cond(cc));
 }
 
+std::size_t Emitter::literal_pool_size() const noexcept {
+    return impl_->masm.GetLiteralPoolSize();
+}
+
+void Emitter::flush_literal_pool() {
+    impl_->masm.EmitLiteralPool(vixl_aa::LiteralPool::kBranchRequired);
+}
+
 void Emitter::finalize() {
     if (impl_->finalized) return;
     impl_->masm.FinalizeCode();
