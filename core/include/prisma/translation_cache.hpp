@@ -167,15 +167,14 @@ public:
     [[nodiscard]] std::size_t total_code_bytes() const noexcept;
 
     // ------------------------------------------------------------------
-    // Persistent on-disk format (F1-CA-003).
+    // Persistent on-disk format (F1-CA-003 / F1-CA-010 / RFC 0007+0008).
     //
-    // Layout (all little-endian, no padding beyond what the struct
-    // sequence implies):
+    // Version 2 layout (all little-endian):
     //
     //   Header (32 bytes)
     //     u64 magic               = 0x50'52'53'4D'43'41'43'48  "PRSMCACH"
-    //     u32 version             = kFileVersion
-    //     u32 reserved            = 0
+    //     u32 version             = 2
+    //     u32 flags               bit 0 = entries_compressed
     //     u64 cpu_fingerprint     = 0 (reserved for Fase 2.5 host match)
     //     u64 entry_count
     //
@@ -183,16 +182,25 @@ public:
     //     u64 guest_addr
     //     u64 content_hash
     //     u64 guest_size
-    //     u64 code_size
-    //     u8  code_bytes[code_size]
+    //     u64 stored_size         (bytes on disk)
+    //     u64 uncompressed_size   (raw code size; == stored_size when flag 0)
+    //     u8  stored_bytes[stored_size]
     //
-    // Access pattern: whole-file snapshot. No delta format. Snapshots are
-    // meant to be written at shutdown and loaded at startup; the P2P
-    // distribution protocol (Pilar 4) will define its own signed chunk
-    // format on top of this.
+    // Version 1 (legacy, still readable):
+    //
+    //   Header (32 bytes)
+    //     u64 magic ; u32 version=1 ; u32 reserved=0
+    //     u64 cpu_fingerprint ; u64 entry_count
+    //   For each entry:
+    //     u64 guest_addr ; u64 content_hash ; u64 guest_size
+    //     u64 code_size ; u8 code_bytes[code_size]
+    //
+    // The reader auto-detects the version and handles both shapes;
+    // the writer always emits v2.
 
-    static constexpr std::uint64_t kFileMagic   = 0x4843'4143'4D53'5250ULL;
-    static constexpr std::uint32_t kFileVersion = 1u;
+    static constexpr std::uint64_t kFileMagic         = 0x4843'4143'4D53'5250ULL;
+    static constexpr std::uint32_t kFileVersion       = 2u;
+    static constexpr std::uint32_t kFlagCompressed    = 1u << 0;
 
     enum class IoError {
         OpenFailed,        // fopen / ofstream failed.
@@ -223,6 +231,13 @@ public:
     //   * `wait_for_async_save()` must be called before destroying the
     //     cache (the destructor also joins defensively).
     void save_to_file_async(std::filesystem::path path);
+
+    // F1-CA-010: set whether `save_to_file` / `save_to_file_async`
+    // zstd-compress each entry's `code_bytes`. Default false. The
+    // compression bit is recorded in the v2 file header; readers
+    // handle both compressed and uncompressed files automatically.
+    void set_compress_on_save(bool on) noexcept { compress_on_save_ = on; }
+    [[nodiscard]] bool compress_on_save() const noexcept { return compress_on_save_; }
 
     // Block until any in-flight async save finishes. Returns the error
     // from that save (if any), or nullopt when no save was pending or
@@ -271,6 +286,11 @@ private:
     std::thread                    writer_;
     std::optional<IoError>         writer_error_;
     std::atomic<bool>              writer_in_flight_{false};
+
+    // F1-CA-010: opt-in zstd compression on save. Read at save time
+    // and snapshotted into the worker lambda, so toggling mid-save
+    // doesn't race.
+    bool                           compress_on_save_{false};
 
     // Pick the LRU key (smallest access_times_ value) from the current
     // map. Undefined result on empty cache; callers must guard.

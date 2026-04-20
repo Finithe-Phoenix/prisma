@@ -2,6 +2,8 @@
 
 #include "prisma/translation_cache.hpp"
 
+#include "prisma/compress.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -219,20 +221,23 @@ bool read_u64(std::istream& is, std::uint64_t& v) {
     return true;
 }
 
-// Shared save path. Works on any range whose iterator value is a pair
-// with `.first == Key` and `.second == Entry` — both the live map and
-// an owned snapshot vector satisfy that.
+// Shared save path. Emits v2 format. Works on any range whose iterator
+// value is a pair with `.first == Key` and `.second == Entry`.
 template <typename Range>
 std::optional<TranslationCache::IoError>
 write_range_to_file(const std::filesystem::path& path,
                     std::size_t                  count,
-                    const Range&                 entries) {
+                    const Range&                 entries,
+                    bool                         compress_entries) {
     std::ofstream os(path, std::ios::binary | std::ios::trunc);
     if (!os) return TranslationCache::IoError::OpenFailed;
 
+    const std::uint32_t flags =
+        compress_entries ? TranslationCache::kFlagCompressed : 0u;
+
     write_u64(os, TranslationCache::kFileMagic);
     write_u32(os, TranslationCache::kFileVersion);
-    write_u32(os, 0u);                              // reserved
+    write_u32(os, flags);
     write_u64(os, 0ull);                            // cpu fingerprint (future)
     write_u64(os, static_cast<std::uint64_t>(count));
 
@@ -240,10 +245,24 @@ write_range_to_file(const std::filesystem::path& path,
         write_u64(os, key.guest_addr);
         write_u64(os, key.content_hash);
         write_u64(os, static_cast<std::uint64_t>(entry.guest_size));
-        write_u64(os, static_cast<std::uint64_t>(entry.code_bytes.size()));
-        if (!entry.code_bytes.empty()) {
-            os.write(reinterpret_cast<const char*>(entry.code_bytes.data()),
-                     static_cast<std::streamsize>(entry.code_bytes.size()));
+
+        const auto& raw = entry.code_bytes;
+        std::vector<std::uint8_t> compressed;
+        const std::uint8_t* payload_data = raw.data();
+        std::size_t         payload_size = raw.size();
+        if (compress_entries && !raw.empty()) {
+            compressed = zstd_compress(
+                std::span<const std::uint8_t>(raw.data(), raw.size()));
+            if (compressed.empty()) return TranslationCache::IoError::WriteFailed;
+            payload_data = compressed.data();
+            payload_size = compressed.size();
+        }
+
+        write_u64(os, static_cast<std::uint64_t>(payload_size));         // stored_size
+        write_u64(os, static_cast<std::uint64_t>(raw.size()));           // uncompressed_size
+        if (payload_size > 0) {
+            os.write(reinterpret_cast<const char*>(payload_data),
+                     static_cast<std::streamsize>(payload_size));
         }
         if (!os) return TranslationCache::IoError::WriteFailed;
     }
@@ -257,7 +276,8 @@ write_range_to_file(const std::filesystem::path& path,
 
 std::optional<TranslationCache::IoError>
 TranslationCache::save_to_file(const std::filesystem::path& path) const {
-    return write_range_to_file(path, entries_.size(), entries_);
+    return write_range_to_file(path, entries_.size(), entries_,
+                               compress_on_save_);
 }
 
 void TranslationCache::save_to_file_async(std::filesystem::path path) {
@@ -274,9 +294,12 @@ void TranslationCache::save_to_file_async(std::filesystem::path path) {
 
     writer_error_.reset();
     writer_in_flight_.store(true, std::memory_order_release);
+    // Snapshot the compression flag too — callers may flip it between
+    // async calls but one save sees a single value.
+    const bool compress = compress_on_save_;
     writer_ = std::thread(
-        [this, path = std::move(path), snap = std::move(snap)]() mutable {
-            auto err = write_range_to_file(path, snap.size(), snap);
+        [this, path = std::move(path), snap = std::move(snap), compress]() mutable {
+            auto err = write_range_to_file(path, snap.size(), snap, compress);
             writer_error_ = err;
             writer_in_flight_.store(false, std::memory_order_release);
         });
@@ -306,16 +329,22 @@ TranslationCache::load_from_file(const std::filesystem::path& path) {
     if (magic != kFileMagic)     return IoError::BadMagic;
 
     std::uint32_t version = 0;
-    std::uint32_t reserved = 0;
+    std::uint32_t header_word = 0;  // v1: reserved ; v2: flags
     std::uint64_t cpu_fp = 0;
     std::uint64_t count = 0;
-    if (!read_u32(is, version))  return IoError::ReadFailed;
-    if (!read_u32(is, reserved)) return IoError::ReadFailed;
-    if (!read_u64(is, cpu_fp))   return IoError::ReadFailed;
-    if (!read_u64(is, count))    return IoError::ReadFailed;
+    if (!read_u32(is, version))      return IoError::ReadFailed;
+    if (!read_u32(is, header_word))  return IoError::ReadFailed;
+    if (!read_u64(is, cpu_fp))       return IoError::ReadFailed;
+    if (!read_u64(is, count))        return IoError::ReadFailed;
 
-    if (version != kFileVersion) return IoError::UnsupportedVersion;
+    // v1 and v2 are both readable. Anything else is a hard stop.
+    if (version != 1u && version != kFileVersion) {
+        return IoError::UnsupportedVersion;
+    }
     (void)cpu_fp;  // reserved for Fase 2.5 host-match check.
+
+    const bool entries_compressed =
+        (version >= 2u) && ((header_word & kFlagCompressed) != 0u);
 
     // Parse into a temporary so partial failure leaves *this untouched.
     std::unordered_map<Key, Entry, KeyHash> tmp_entries;
@@ -325,23 +354,45 @@ TranslationCache::load_from_file(const std::filesystem::path& path) {
 
     for (std::uint64_t i = 0; i < count; ++i) {
         Key key{};
-        std::uint64_t guest_size = 0;
-        std::uint64_t code_size  = 0;
+        std::uint64_t guest_size  = 0;
+        std::uint64_t stored_size = 0;
+        std::uint64_t uncompr_size = 0;
         if (!read_u64(is, key.guest_addr))   return IoError::ReadFailed;
         if (!read_u64(is, key.content_hash)) return IoError::ReadFailed;
         if (!read_u64(is, guest_size))       return IoError::ReadFailed;
-        if (!read_u64(is, code_size))        return IoError::ReadFailed;
+        if (!read_u64(is, stored_size))      return IoError::ReadFailed;
 
-        Entry e;
-        e.guest_size = static_cast<std::size_t>(guest_size);
-        e.guest_content_hash = key.content_hash;
-        if (code_size > 0) {
-            e.code_bytes.resize(static_cast<std::size_t>(code_size));
-            if (!is.read(reinterpret_cast<char*>(e.code_bytes.data()),
-                         static_cast<std::streamsize>(code_size))) {
+        if (version >= 2u) {
+            if (!read_u64(is, uncompr_size)) return IoError::ReadFailed;
+        } else {
+            // v1: stored_size and uncompressed_size are the same thing.
+            uncompr_size = stored_size;
+        }
+
+        std::vector<std::uint8_t> stored;
+        if (stored_size > 0) {
+            stored.resize(static_cast<std::size_t>(stored_size));
+            if (!is.read(reinterpret_cast<char*>(stored.data()),
+                         static_cast<std::streamsize>(stored_size))) {
                 return IoError::Truncated;
             }
         }
+
+        Entry e;
+        e.guest_size         = static_cast<std::size_t>(guest_size);
+        e.guest_content_hash = key.content_hash;
+        if (entries_compressed) {
+            auto decompressed = zstd_decompress(
+                std::span<const std::uint8_t>(stored.data(), stored.size()));
+            if (!decompressed) return IoError::Truncated;
+            if (decompressed->size() != static_cast<std::size_t>(uncompr_size)) {
+                return IoError::Truncated;
+            }
+            e.code_bytes = std::move(*decompressed);
+        } else {
+            e.code_bytes = std::move(stored);
+        }
+
         tmp_entries.emplace(key, std::move(e));
         tmp_addr[key.guest_addr] = key.content_hash;
     }

@@ -233,20 +233,46 @@ target_link_libraries(prisma_passes
 )
 
 # ---------------------------------------------------------------------------
+# zstd — BSD-3-Clause compression library (RFC 0008). Used by the
+# translation cache for on-disk entry compression.
+# ---------------------------------------------------------------------------
+
+include(FetchContent)
+
+set(ZSTD_BUILD_TESTS    OFF CACHE BOOL "")
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
+set(ZSTD_BUILD_SHARED   OFF CACHE BOOL "")
+set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "")
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "")
+
+FetchContent_Declare(
+    zstd
+    GIT_REPOSITORY https://github.com/facebook/zstd.git
+    GIT_TAG        v1.5.7
+    SOURCE_SUBDIR  build/cmake
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(zstd)
+
+# ---------------------------------------------------------------------------
 # Translation cache (Pillar 4 seed — in-memory, SMC-aware)
 # ---------------------------------------------------------------------------
 
 add_library(prisma_cache STATIC
     src/cache/translation_cache.cpp
     src/cache/sha256.cpp
+    src/cache/compress.cpp
 )
 
 target_include_directories(prisma_cache
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${zstd_SOURCE_DIR}/lib
 )
 
-target_link_libraries(prisma_cache PRIVATE prisma_warnings)
+target_link_libraries(prisma_cache
+    PRIVATE prisma_warnings
+            libzstd_static)
 
 # ---------------------------------------------------------------------------
 # Translator — top-level facade that combines decoder + passes + lowerer

@@ -222,7 +222,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-071: Operand size prefix 0x66 (16-bit operands).
 - [x] F1-DC-072: Address size prefix 0x67.
 - [x] F1-DC-073: Segment override prefixes (documented; ES/CS/SS/DS are no-ops in 64-bit).
-- [ ] F1-DC-074: %fs / %gs segment base accesses (TLS / TEB).
+- [x] F1-DC-074: %fs / %gs segment base accesses (TLS / TEB).
 - [x] F1-DC-075: RIP-relative addressing (mod=00 rm=101).
 - [x] F1-DC-076: SIB byte decoding (rm=100 in ModR/M).
 - [x] F1-DC-077: REX.R / REX.X / REX.B — reject no longer; handle.
@@ -327,7 +327,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
 - [ ] F1-RT-013: Guest stack pointer management (rsp).
-- [ ] F1-RT-014: Guest segment registers fs / gs (TLS).
+- [x] F1-RT-014: Guest segment registers fs / gs (TLS).
 - [ ] F1-RT-015: Helper calls from generated code to C++ runtime (printf-style).
 - [x] (pending commit) F1-RT-016: CPU feature detection: FEAT_LSE2, LRCPC2, FlagM.
 - [x] (pending commit) F1-RT-017: HostFeatures struct + runtime initialisation.
@@ -343,7 +343,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
 - [x] (pending commit) F1-CA-009: Cache writer thread (offload serialization).
-- [~|claude] F1-CA-010: zstd compression for on-disk entries.
+- [x] (pending commit) F1-CA-010: zstd compression for on-disk entries.
 
 ### F1-LN — Lean spec expansion
 

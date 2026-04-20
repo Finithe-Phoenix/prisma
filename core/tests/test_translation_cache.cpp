@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "prisma/compress.hpp"
 #include "prisma/translation_cache.hpp"
 
 using namespace prisma::cache;
@@ -565,4 +566,174 @@ TEST_CASE("TranslationCache: async save to an invalid path returns OpenFailed") 
     auto err = cache.wait_for_async_save();
     REQUIRE(err.has_value());
     REQUIRE(*err == TranslationCache::IoError::OpenFailed);
+}
+
+// ---------------------------------------------------------------------------
+// F1-CA-010 zstd compression
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: compress_on_save round-trips entries correctly") {
+    TranslationCache src;
+    src.set_compress_on_save(true);
+    REQUIRE(src.compress_on_save());
+
+    // Highly-compressible code to make the on-disk payload shrink.
+    const std::vector<std::uint8_t> g{0xDE, 0xAD};
+    const std::uint64_t h = fnv1a_64(g);
+    std::vector<std::uint8_t> big(1024, 0xAA);
+    big[0] = 0xDE;
+    big[1] = 0xAD;
+    src.insert(Key{0x1000, h}, Entry{big, g.size(), h});
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_compressed.bin";
+    REQUIRE_FALSE(src.save_to_file(tmp).has_value());
+
+    TranslationCache dst;
+    auto err = dst.load_from_file(tmp);
+    REQUIRE_FALSE(err.has_value());
+    REQUIRE(dst.entry_count() == 1);
+
+    auto r = dst.lookup(0x1000, g);
+    REQUIRE(std::holds_alternative<const Entry*>(r));
+    const Entry* e = std::get<const Entry*>(r);
+    REQUIRE(e->code_bytes.size() == big.size());
+    REQUIRE(e->code_bytes == big);
+
+    // Compressed file must be smaller than the raw payload for
+    // this pathologically-compressible input.
+    const auto file_size = std::filesystem::file_size(tmp);
+    REQUIRE(file_size < big.size());
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: compress_on_save=false emits v2 uncompressed") {
+    TranslationCache src;
+    REQUIRE_FALSE(src.compress_on_save());
+
+    const std::vector<std::uint8_t> g{0x01};
+    const std::uint64_t h = fnv1a_64(g);
+    src.insert(Key{0x2000, h}, make_entry({0xAA, 0xBB, 0xCC, 0xDD}, 1, h));
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_uncompressed_v2.bin";
+    REQUIRE_FALSE(src.save_to_file(tmp).has_value());
+
+    TranslationCache dst;
+    auto err = dst.load_from_file(tmp);
+    REQUIRE_FALSE(err.has_value());
+    REQUIRE(dst.entry_count() == 1);
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: reader accepts hand-crafted v1 files (backward compat)") {
+    // Build a minimal valid v1 file by hand: magic, version=1, reserved=0,
+    // cpu_fp=0, entry_count=1; then one entry with 2 code bytes.
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_legacy_v1.bin";
+    {
+        std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
+        auto put_u64 = [&](std::uint64_t v) {
+            for (int i = 0; i < 8; ++i) {
+                char c = static_cast<char>((v >> (8 * i)) & 0xFF);
+                os.write(&c, 1);
+            }
+        };
+        auto put_u32 = [&](std::uint32_t v) {
+            for (int i = 0; i < 4; ++i) {
+                char c = static_cast<char>((v >> (8 * i)) & 0xFF);
+                os.write(&c, 1);
+            }
+        };
+        put_u64(TranslationCache::kFileMagic);
+        put_u32(1u);         // version = 1
+        put_u32(0u);         // reserved
+        put_u64(0ull);       // cpu_fingerprint
+        put_u64(1ull);       // entry_count
+        // Entry 1:
+        put_u64(0x3000ull);                          // guest_addr
+        const std::vector<std::uint8_t> g{0xAB};
+        const std::uint64_t h = fnv1a_64(g);
+        put_u64(h);                                   // content_hash
+        put_u64(g.size());                            // guest_size
+        put_u64(2ull);                                // code_size (v1 layout)
+        const char code[2] = {0x11, 0x22};
+        os.write(code, 2);
+    }
+
+    TranslationCache cache;
+    auto err = cache.load_from_file(tmp);
+    REQUIRE_FALSE(err.has_value());
+    REQUIRE(cache.entry_count() == 1);
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("TranslationCache: corrupt compressed payload is rejected") {
+    // Build a v2 file whose "compressed" bytes are garbage. load should
+    // fail without touching the destination cache.
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "prisma_corrupt_compressed.bin";
+    {
+        std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
+        auto put_u64 = [&](std::uint64_t v) {
+            for (int i = 0; i < 8; ++i) {
+                char c = static_cast<char>((v >> (8 * i)) & 0xFF);
+                os.write(&c, 1);
+            }
+        };
+        auto put_u32 = [&](std::uint32_t v) {
+            for (int i = 0; i < 4; ++i) {
+                char c = static_cast<char>((v >> (8 * i)) & 0xFF);
+                os.write(&c, 1);
+            }
+        };
+        put_u64(TranslationCache::kFileMagic);
+        put_u32(TranslationCache::kFileVersion);     // v2
+        put_u32(TranslationCache::kFlagCompressed);  // compressed bit set
+        put_u64(0ull);
+        put_u64(1ull);
+        put_u64(0x4000ull);
+        put_u64(0xCAFEull);
+        put_u64(4ull);
+        put_u64(4ull);                                // stored_size
+        put_u64(4ull);                                // uncompressed_size
+        const char junk[4] = {0, 0, 0, 0};            // NOT a zstd frame
+        os.write(junk, 4);
+    }
+    TranslationCache cache;
+    // Pre-populate so we can check it's not touched.
+    const std::vector<std::uint8_t> g{0x01};
+    const std::uint64_t h = fnv1a_64(g);
+    cache.insert(Key{0x1, h}, make_entry({0xFF}, 1, h));
+    REQUIRE(cache.entry_count() == 1);
+
+    auto err = cache.load_from_file(tmp);
+    REQUIRE(err.has_value());
+    REQUIRE(cache.entry_count() == 1);  // untouched
+
+    std::filesystem::remove(tmp);
+}
+
+TEST_CASE("zstd_compress + zstd_decompress round-trip") {
+    std::vector<std::uint8_t> src(4096);
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        src[i] = static_cast<std::uint8_t>(i * 31u);
+    }
+    auto compressed = zstd_compress(src);
+    REQUIRE_FALSE(compressed.empty());
+    auto round_trip = zstd_decompress(compressed);
+    REQUIRE(round_trip.has_value());
+    REQUIRE(*round_trip == src);
+}
+
+TEST_CASE("zstd_compress on empty input returns empty") {
+    const std::vector<std::uint8_t> empty;
+    auto out = zstd_compress(empty);
+    REQUIRE(out.empty());
+    auto back = zstd_decompress(out);
+    REQUIRE(back.has_value());
+    REQUIRE(back->empty());
 }
