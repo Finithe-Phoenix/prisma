@@ -169,6 +169,46 @@ TEST_CASE("Lowerer: UnsupportedOp for ops not yet implemented") {
     REQUIRE(r.error == backend::LowerError::UnsupportedOp);
 }
 
+TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Cpuid{}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("x10") != std::string::npos);  // rax
+    REQUIRE(d.find("x11") != std::string::npos);  // rcx
+    REQUIRE(d.find("x12") != std::string::npos);  // rdx
+    REQUIRE(d.find("x13") != std::string::npos);  // rbx
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Syscall returns the halt sentinel as a placeholder terminator") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Syscall{}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("x0") != std::string::npos);
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Trap(sigtrap) returns the placeholder terminator sequence") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Trap{ir::TrapKind::Sigtrap}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("x0") != std::string::npos);
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: Compare → cmp + cset emits the right ARM64") {
     std::vector<ir::Stmt> stmts = {
         {0u, ir::Constant{10, ir::OpSize::I64}},
@@ -454,4 +494,118 @@ TEST_CASE("Lowerer: linear-scan frees dead Constants, 11 in a row succeed") {
     auto r = lw.lower(stmts);
     REQUIRE(r.success);
     REQUIRE(lw.scratch_used() == 1u);  // peak: only one live at any time
+}
+
+// ---------------------------------------------------------------------------
+// F1-BK-008 register spill / reload
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Lowerer: spill_slots>=4 lets an 11-live-ref block succeed") {
+    const ir::Gpr srcs[11] = {
+        ir::Gpr::Rax, ir::Gpr::Rcx, ir::Gpr::Rdx, ir::Gpr::Rbx,
+        ir::Gpr::Rsi, ir::Gpr::Rdi, ir::Gpr::R8,  ir::Gpr::R9,
+        ir::Gpr::R10, ir::Gpr::R11, ir::Gpr::R12,
+    };
+    const ir::Gpr dsts[11] = {
+        ir::Gpr::R13, ir::Gpr::R14, ir::Gpr::R15, ir::Gpr::Rbp,
+        ir::Gpr::Rsp, ir::Gpr::Rax, ir::Gpr::Rcx, ir::Gpr::Rdx,
+        ir::Gpr::Rbx, ir::Gpr::Rsi, ir::Gpr::Rdi,
+    };
+    std::vector<ir::Stmt> stmts;
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({i, ir::LoadReg{srcs[i], ir::OpSize::I64}});
+    }
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({std::nullopt,
+                         ir::StoreReg{dsts[i], i, ir::OpSize::I64}});
+    }
+    backend::Emitter em;
+    backend::LowerOptions opts;
+    opts.spill_slots            = 4;
+    opts.spill_slot_base_offset = 0;
+    backend::Lowerer lw(em, opts);
+    auto r = lw.lower(stmts);
+    REQUIRE(r.success);
+    REQUIRE(lw.peak_spills() >= 1u);
+
+    em.finalize();
+    const std::string d = em.disassemble();
+    REQUIRE(d.find("[sp") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+    REQUIRE(d.find("ldr") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: pool + spill slots both exhaust gives OutOfScratchRegs") {
+    std::vector<ir::Stmt> stmts;
+    const ir::Gpr src[12] = {
+        ir::Gpr::Rax, ir::Gpr::Rcx, ir::Gpr::Rdx, ir::Gpr::Rbx,
+        ir::Gpr::Rsi, ir::Gpr::Rdi, ir::Gpr::R8,  ir::Gpr::R9,
+        ir::Gpr::R10, ir::Gpr::R11, ir::Gpr::R12, ir::Gpr::R13,
+    };
+    for (unsigned i = 0; i < 12; ++i) {
+        stmts.push_back({i, ir::LoadReg{src[i], ir::OpSize::I64}});
+    }
+    for (unsigned i = 0; i < 12; ++i) {
+        stmts.push_back({std::nullopt,
+                         ir::StoreReg{ir::Gpr::R14, i, ir::OpSize::I64}});
+    }
+    backend::Emitter em;
+    backend::LowerOptions opts;
+    opts.spill_slots = 1;
+    backend::Lowerer lw(em, opts);
+    auto r = lw.lower(stmts);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::OutOfScratchRegs);
+}
+
+TEST_CASE("Lowerer: spill honours spill_slot_base_offset") {
+    const ir::Gpr srcs[11] = {
+        ir::Gpr::Rax, ir::Gpr::Rcx, ir::Gpr::Rdx, ir::Gpr::Rbx,
+        ir::Gpr::Rsi, ir::Gpr::Rdi, ir::Gpr::R8,  ir::Gpr::R9,
+        ir::Gpr::R10, ir::Gpr::R11, ir::Gpr::R12,
+    };
+    std::vector<ir::Stmt> stmts;
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({i, ir::LoadReg{srcs[i], ir::OpSize::I64}});
+    }
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({std::nullopt,
+                         ir::StoreReg{ir::Gpr::R14, i, ir::OpSize::I64}});
+    }
+    backend::Emitter em;
+    backend::LowerOptions opts;
+    opts.spill_slots            = 4;
+    opts.spill_slot_base_offset = 64;
+    backend::Lowerer lw(em, opts);
+    auto r = lw.lower(stmts);
+    REQUIRE(r.success);
+
+    em.finalize();
+    const std::string d = em.disassemble();
+    // vixl renders sp-relative offsets differently across versions
+    // (`[sp, #64]` decimal vs `[sp, #0x40]` hex). Accept either.
+    const bool found = d.find("sp, #64")  != std::string::npos
+                    || d.find("sp, #0x40") != std::string::npos;
+    INFO("disasm: " << d);
+    REQUIRE(found);
+}
+
+TEST_CASE("Lowerer: spill+reload round-trip emits a valid add") {
+    std::vector<ir::Stmt> stmts;
+    for (unsigned i = 0; i < 11; ++i) {
+        stmts.push_back({i, ir::Constant{i + 1, ir::OpSize::I64}});
+    }
+    stmts.push_back({11u, ir::BinOp{ir::BinOpKind::Add, 0u, 10u, ir::OpSize::I64}});
+    stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, 11u, ir::OpSize::I64}});
+
+    backend::Emitter em;
+    backend::LowerOptions opts;
+    opts.spill_slots = 4;
+    backend::Lowerer lw(em, opts);
+    auto r = lw.lower(stmts);
+    REQUIRE(r.success);
+
+    em.finalize();
+    const std::string d = em.disassemble();
+    REQUIRE(d.find("add") != std::string::npos);
 }

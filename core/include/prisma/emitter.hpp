@@ -183,6 +183,14 @@ public:
     void load_offset   (arm64::Reg rd, arm64::Reg rbase, std::int32_t imm);
     void store_offset  (arm64::Reg rv, arm64::Reg rbase, std::int32_t imm);
 
+    // sp-relative 64-bit load/store (F1-BK-008). SP is not part of our
+    // Reg enum — it shares encoding 31 with XZR and needs vixl's
+    // dedicated `sp` singleton. These helpers exist so the Lowerer
+    // can spill/reload to a stack-frame slot without teaching the
+    // pool allocator about SP.
+    void sp_load       (arm64::Reg rd, std::int32_t imm);
+    void sp_store      (arm64::Reg rv, std::int32_t imm);
+
     // Stack push/pop as register pairs (the ARM64 idiom for prologue /
     // epilogue sequences). `push_pair(r1, r2)` emits
     //   stp r1, r2, [sp, #-16]!   ; sp -= 16, store both

@@ -68,8 +68,20 @@ struct LowerResult {
 //   false           — the Translator uses this so it can insert a
 //                     register-save epilogue between the terminator's
 //                     "put next PC in x0" and the final `ret`.
+//
+// `spill_slots` + `spill_slot_base_offset`: enable register spilling
+// (F1-BK-008). When the scratch pool is exhausted the allocator picks
+// a victim by Belady's heuristic (farthest next-use), stores it to
+// `[sp, #spill_slot_base_offset + slot*8]`, and reloads on next use.
+//   spill_slots == 0            — spilling disabled (MVP default).
+//   spill_slots > 0             — up to that many concurrent spills.
+//   spill_slot_base_offset      — byte offset of slot 0 from sp.
+// The caller (Translator) owns reserving the stack space; the Lowerer
+// only emits str/ldr referencing the pre-agreed offsets.
 struct LowerOptions {
-    bool emit_ret_on_terminator{true};
+    bool          emit_ret_on_terminator{true};
+    unsigned      spill_slots{0};
+    std::int32_t  spill_slot_base_offset{0};
 };
 
 class Lowerer {
@@ -126,17 +138,36 @@ private:
     void expire_intervals();
 
     // Allocate a scratch register bound to `ref`. Returns false on
-    // exhaustion.
+    // exhaustion (and spilling, if enabled, also failed to free one).
     [[nodiscard]] bool allocate_scratch(ir::Ref ref, arm64::Reg& out);
 
     // Allocate one extra scratch register for temporary use within a
     // single stmt (e.g. emulated rotate-left). Auto-freed at stmt end.
     [[nodiscard]] bool allocate_temporary(arm64::Reg& out);
 
-    // Look up the host register that currently holds an SSA Ref's value.
-    // Returns false if the Ref was never bound, or if its interval has
-    // already expired.
-    [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out) const;
+    // Look up the host register that currently holds an SSA Ref's
+    // value, reloading from a spill slot if necessary. Non-const because
+    // a reload may emit a `ldr` + allocate a fresh scratch (which may
+    // itself evict another ref).
+    [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out);
+
+    // Spill one currently-held ref to a stack slot, returning its reg
+    // to the free list. Picks the victim with the farthest next-use
+    // (Belady). Returns false if spill_slots are exhausted or no ref
+    // is evictable (e.g. all refs expire at this stmt).
+    [[nodiscard]] bool spill_one_ref();
+
+    // Spill tracking (F1-BK-008). `spilled_to_slot_[r] == i` means r
+    // lives in `[sp, #spill_slot_base_offset + i*8]`. `free_slots_`
+    // is a stack of available slot indices.
+    std::unordered_map<ir::Ref, std::uint32_t> spilled_to_slot_;
+    std::vector<std::uint32_t>                 free_slots_;
+    unsigned                                   peak_spills_{0};
+
+public:
+    // For tests: peak number of slots in concurrent use during the
+    // last lower() call.
+    [[nodiscard]] unsigned peak_spills() const noexcept { return peak_spills_; }
 };
 
 }  // namespace prisma::backend

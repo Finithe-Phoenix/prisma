@@ -270,6 +270,16 @@ void Emitter::store_offset(arm64::Reg rv, arm64::Reg rbase, std::int32_t imm) {
                     vixl_aa::MemOperand(to_vixl_x(rbase), imm));
 }
 
+void Emitter::sp_load(arm64::Reg rd, std::int32_t imm) {
+    impl_->masm.Ldr(to_vixl_x(rd),
+                    vixl_aa::MemOperand(vixl_aa::sp, imm));
+}
+
+void Emitter::sp_store(arm64::Reg rv, std::int32_t imm) {
+    impl_->masm.Str(to_vixl_x(rv),
+                    vixl_aa::MemOperand(vixl_aa::sp, imm));
+}
+
 void Emitter::push_pair(arm64::Reg r1, arm64::Reg r2) {
     // stp r1, r2, [sp, #-16]!  (pre-index)
     impl_->masm.Stp(to_vixl_x(r1), to_vixl_x(r2),

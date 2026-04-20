@@ -226,7 +226,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-075: RIP-relative addressing (mod=00 rm=101).
 - [x] F1-DC-076: SIB byte decoding (rm=100 in ModR/M).
 - [x] F1-DC-077: REX.R / REX.X / REX.B — reject no longer; handle.
-- [ ] F1-DC-078: Use a table-driven decoder for opcode dispatch.
+- [x] F1-DC-078: Use a table-driven decoder for opcode dispatch.
 - [x] F1-DC-079: Instruction length validator (reject 16+ byte oversized encodings).
 - [x] F1-DC-080: Decoder fuzz harness (AFL++) seeded with coreutils disassembly.
 - [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
@@ -274,7 +274,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
-- [~|claude] F1-BK-008: Register spill / reload to stack frame slots.
+- [x] (pending commit) F1-BK-008: Register spill / reload to stack frame slots.
 - [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
 - [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.

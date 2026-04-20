@@ -60,7 +60,10 @@ LowerResult emit_binop(Emitter& em,
 }  // namespace
 
 bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
-    if (free_regs_.empty()) return false;
+    if (free_regs_.empty()) {
+        // F1-BK-008: try to evict a currently-held ref to a spill slot.
+        if (!spill_one_ref()) return false;
+    }
     out = free_regs_.back();
     free_regs_.pop_back();
     ref_to_scratch_[ref] = out;
@@ -71,7 +74,9 @@ bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
 }
 
 bool Lowerer::allocate_temporary(arm64::Reg& out) {
-    if (free_regs_.empty()) return false;
+    if (free_regs_.empty()) {
+        if (!spill_one_ref()) return false;
+    }
     out = free_regs_.back();
     free_regs_.pop_back();
     stmt_temporaries_.push_back(out);
@@ -81,10 +86,70 @@ bool Lowerer::allocate_temporary(arm64::Reg& out) {
     return true;
 }
 
-bool Lowerer::reg_of(ir::Ref ref, arm64::Reg& out) const {
+bool Lowerer::spill_one_ref() {
+    if (options_.spill_slots == 0) return false;
+    if (free_slots_.empty()) return false;
+    if (ref_to_scratch_.empty()) return false;
+
+    // Belady: evict the ref whose next use is furthest in the future.
+    // `last_use_[r]` is the last use index; anything > current stmt
+    // index is still in the future, so the max such value is the
+    // farthest-used ref. Refs whose last_use <= stmt_index_ are about
+    // to be expired anyway — skipping them avoids spilling a zombie.
+    ir::Ref      victim{};
+    std::size_t  best = 0;
+    bool         found = false;
+    for (const auto& [r, _reg] : ref_to_scratch_) {
+        auto it = last_use_.find(r);
+        const std::size_t lu = (it == last_use_.end()) ? stmt_index_ : it->second;
+        if (lu <= stmt_index_) continue;   // dies this stmt or earlier
+        if (!found || lu > best) {
+            best   = lu;
+            victim = r;
+            found  = true;
+        }
+    }
+    if (!found) return false;
+
+    const arm64::Reg     vreg = ref_to_scratch_[victim];
+    const std::uint32_t  slot = free_slots_.back();
+    free_slots_.pop_back();
+
+    const std::int32_t offset =
+        options_.spill_slot_base_offset
+      + static_cast<std::int32_t>(slot) * 8;
+    emitter_.sp_store(vreg, offset);
+    spilled_to_slot_[victim] = slot;
+    ref_to_scratch_.erase(victim);
+    free_regs_.push_back(vreg);
+
+    const unsigned in_flight =
+        static_cast<unsigned>(spilled_to_slot_.size());
+    peak_spills_ = std::max(peak_spills_, in_flight);
+    return true;
+}
+
+bool Lowerer::reg_of(ir::Ref ref, arm64::Reg& out) {
     auto it = ref_to_scratch_.find(ref);
-    if (it == ref_to_scratch_.end()) return false;
-    out = it->second;
+    if (it != ref_to_scratch_.end()) {
+        out = it->second;
+        return true;
+    }
+    // Maybe it's spilled. Reload into a fresh scratch (spilling again if
+    // necessary — a spilled ref's reload can itself cause eviction).
+    auto sp_it = spilled_to_slot_.find(ref);
+    if (sp_it == spilled_to_slot_.end()) return false;
+
+    const std::uint32_t slot = sp_it->second;
+    arm64::Reg          rd;
+    if (!allocate_scratch(ref, rd)) return false;
+    const std::int32_t offset =
+        options_.spill_slot_base_offset
+      + static_cast<std::int32_t>(slot) * 8;
+    emitter_.sp_load(rd, offset);
+    spilled_to_slot_.erase(sp_it);
+    free_slots_.push_back(slot);
+    out = rd;
     return true;
 }
 
@@ -149,7 +214,19 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     ref_to_scratch_.clear();
     stmt_temporaries_.clear();
     free_regs_.clear();
-    peak_live_ = 0;
+    spilled_to_slot_.clear();
+    free_slots_.clear();
+    peak_live_   = 0;
+    peak_spills_ = 0;
+
+    // Seed the spill slot free-list if spilling is enabled. Slots are
+    // handed out in order 0..N-1 so stack layout is predictable.
+    if (options_.spill_slots > 0) {
+        free_slots_.reserve(options_.spill_slots);
+        for (unsigned i = options_.spill_slots; i-- > 0;) {
+            free_slots_.push_back(i);
+        }
+    }
 
     // Seed the free-list so that allocate_scratch hands out x0 first, x1
     // second, etc. — matches the old bump-pointer ordering, which keeps
@@ -320,6 +397,31 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::DanglingRef, "JumpReg.target"};
             }
             emitter_.mov_reg_reg(arm64::Reg::X0, target);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Trap>) {
+            // Placeholder until the runtime grows first-class guest
+            // signal delivery. The Translator/Dispatcher surfaces the
+            // trap via block metadata; the machine code just returns.
+            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Cpuid>) {
+            // Placeholder lowering for now: zero the architecturally-written
+            // guest outputs (EAX/EBX/ECX/EDX). A real host-query model can
+            // replace this op later without changing decoder surface.
+            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rax), 0);
+            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rbx), 0);
+            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rcx), 0);
+            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rdx), 0);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Syscall>) {
+            // Conservative placeholder: terminate the current block and
+            // return the halt sentinel until the syscall layer exists.
+            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
