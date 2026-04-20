@@ -103,6 +103,10 @@ TEST_CASE("Lowerer: each BinOpKind emits the right ARM64 mnemonic") {
         REQUIRE(ok); REQUIRE(d.find("sub") != std::string::npos);
     }
     {
+        auto [ok, d] = try_op(ir::BinOpKind::Mul);
+        REQUIRE(ok); REQUIRE(d.find("mul") != std::string::npos);
+    }
+    {
         auto [ok, d] = try_op(ir::BinOpKind::And);
         REQUIRE(ok); REQUIRE(d.find("and") != std::string::npos);
     }

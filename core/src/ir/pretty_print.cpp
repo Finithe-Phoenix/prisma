@@ -39,6 +39,7 @@ constexpr std::string_view size_suffix(OpSize s) noexcept {
 constexpr std::string_view binop_name(BinOpKind k) noexcept {
     switch (k) {
         case BinOpKind::Add: return "add"; case BinOpKind::Sub: return "sub";
+        case BinOpKind::Mul: return "mul";
         case BinOpKind::And: return "and"; case BinOpKind::Or:  return "or";
         case BinOpKind::Xor: return "xor"; case BinOpKind::Shl: return "shl";
         case BinOpKind::Shr: return "shr"; case BinOpKind::Sar: return "sar";

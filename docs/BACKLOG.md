@@ -170,10 +170,10 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-019: TEST r/m64, r64 (48 85 /r).
 - [x] F1-DC-020: INC r/m64 (48 FF /0).
 - [x] F1-DC-021: DEC r/m64 (48 FF /1).
-- [~|claude] F1-DC-022: NEG r/m64 (48 F7 /3).
-- [~|claude] F1-DC-023: NOT r/m64 (48 F7 /2).
-- [ ] F1-DC-024: MUL r/m64 (48 F7 /4).
-- [ ] F1-DC-025: IMUL r/m64 (48 F7 /5).
+- [x] F1-DC-022: NEG r/m64 (48 F7 /3).
+- [x] F1-DC-023: NOT r/m64 (48 F7 /2).
+- [x] F1-DC-024: MUL r/m64 (48 F7 /4).
+- [x] F1-DC-025: IMUL r/m64 (48 F7 /5).
 - [ ] F1-DC-026: IMUL r64, r/m64 (48 0F AF /r).
 - [ ] F1-DC-027: IMUL r64, r/m64, imm32 (48 69 /r).
 - [ ] F1-DC-028: IMUL r64, r/m64, imm8 (48 6B /r).

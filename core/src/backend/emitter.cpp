@@ -61,6 +61,9 @@ void Emitter::add(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
 void Emitter::sub(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Sub(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }
+void Emitter::mul(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Mul(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
 void Emitter::and_(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.And(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }

@@ -29,6 +29,7 @@ LowerResult emit_binop(Emitter& em,
     switch (op) {
         case ir::BinOpKind::Add: em.add(rd, rn, rm);  return {};
         case ir::BinOpKind::Sub: em.sub(rd, rn, rm);  return {};
+        case ir::BinOpKind::Mul: em.mul(rd, rn, rm);  return {};
         case ir::BinOpKind::And: em.and_(rd, rn, rm); return {};
         case ir::BinOpKind::Or:  em.orr(rd, rn, rm);  return {};
         case ir::BinOpKind::Xor: em.eor(rd, rn, rm);  return {};

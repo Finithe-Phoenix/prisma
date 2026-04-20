@@ -60,7 +60,7 @@ enum class OpSize : std::uint8_t {
 }
 
 enum class BinOpKind : std::uint8_t {
-    Add = 0, Sub,
+    Add = 0, Sub, Mul,
     And,     Or,  Xor,
     Shl,     Shr, Sar,
 };

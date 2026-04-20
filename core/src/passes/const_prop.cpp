@@ -29,6 +29,7 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
     switch (op) {
         case ir::BinOpKind::Add: return a + b;
         case ir::BinOpKind::Sub: return a - b;
+        case ir::BinOpKind::Mul: return a * b;
         case ir::BinOpKind::And: return a & b;
         case ir::BinOpKind::Or:  return a | b;
         case ir::BinOpKind::Xor: return a ^ b;

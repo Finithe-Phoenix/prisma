@@ -49,6 +49,7 @@ public:
     // Each maps 1-1 to our IR BinOpKind on OpSize::I64.
     void add (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Add
     void sub (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sub
+    void mul (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Mul
     void and_(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // And  (trailing _: `and` is a keyword)
     void orr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Or   (AArch64 spells it `orr`)
     void eor (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Xor  (AArch64 spells it `eor`)

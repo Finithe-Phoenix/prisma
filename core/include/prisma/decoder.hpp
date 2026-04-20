@@ -18,7 +18,11 @@
 //     * TEST r/m64, r64  (48 85 /r)                  3 bytes
 //     * INC r/m64        (48 FF /0)                  3 bytes
 //     * DEC r/m64        (48 FF /1)                  3 bytes
-//
+//     * NOT r/m64        (48 F7 /2)                  3 bytes
+//     * NEG r/m64        (48 F7 /3)                  3 bytes
+//     * MUL r/m64        (48 F7 /4)                  3 bytes
+//     * IMUL r/m64       (48 F7 /5)                  3 bytes
+// 
 //   MOV, both register and simple memory forms
 //     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes
 //     * MOV r64, r/m64   (48 8B /r)                  3..7 bytes
