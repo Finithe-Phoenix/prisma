@@ -45,12 +45,16 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
         }
         const auto& block = std::get<translator::TranslatedBlock>(r);
 
-        // Invoke the block. AAPCS64: the caller sets x30 (LR) via blr,
-        // the block returns to LR via ret, and the integer return value
-        // sits in x0 — which by our contract is the next guest PC.
-        using Fn = std::uint64_t (*)();
+        // Invoke the block. Calling convention established by the
+        // Translator's prologue/epilogue:
+        //   input:  x0 = CpuStateFrame*  (we pass &state_)
+        //   output: x0 = next guest PC
+        // The block's prologue loads guest GPRs from *state_ into
+        // pinned host regs, runs the body, and the epilogue stores
+        // them back — so guest state survives across blocks.
+        using Fn = std::uint64_t (*)(CpuStateFrame*);
         Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(block.code_entry));
-        const std::uint64_t next_pc = fn();
+        const std::uint64_t next_pc = fn(&state_);
 
         ++stats.blocks_executed;
         ++stats.steps_taken;

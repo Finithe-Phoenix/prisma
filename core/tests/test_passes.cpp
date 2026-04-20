@@ -226,6 +226,19 @@ TEST_CASE("dce: CmpFlags keeps its LoadReg operands alive") {
     REQUIRE(std::holds_alternative<ir::CmpFlags>(out[6].op));
 }
 
+TEST_CASE("dce: JumpReg keeps its target ref alive") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1234'5678ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::JumpReg{0u}},
+    };
+
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 2);
+    REQUIRE(out[0].op == ir::Op{ir::Constant{0x1234'5678ULL, ir::OpSize::I64}});
+    REQUIRE(std::holds_alternative<ir::JumpReg>(out[1].op));
+    REQUIRE(std::get<ir::JumpReg>(out[1].op).target == 0u);
+}
+
 TEST_CASE("dce: StoreReg with dead Constant keeps the Constant (store is live)") {
     // %0 = const 99
     //      storereg rax, %0     ← impure, keeps %0 alive

@@ -49,14 +49,27 @@
 //     * BSR r64, r/m64    (0F BD /r)                  4 bytes
 //     * LZCNT r64, r/m64  (F3 48 0F BD)              5 bytes
 //     * TZCNT r64, r/m64  (F3 48 0F BC)              5 bytes
+//     * POPCNT r64, r/m64  (F3 48 0F B8)              5 bytes
+//     * PUSHFQ / POPFQ    (9C / 9D)                      1 byte
+//     * PUSH r64          (50+rd)                     1 byte
+//     * POP r64           (58+rd)                     1 byte
+//     * PUSH imm8 / imm32 (6A / 68)                   2 / 5 bytes
+//     * LEA r64, [mem]    (48 8D /r)                   4..10 bytes
 // 
 //   MOV, both register and simple memory forms
 //     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes
+//     * MOVSX r64, r/m8   (0F BE /r)                 4 bytes
+//     * MOVSX r64, r/m16  (0F BF /r)                 4 bytes
 //     * MOV r64, r/m64   (48 8B /r)                  3..7 bytes
+//         - This form also supports MOVSXD with opcode 63 /r when REX.W is 1:
+//           sign-extend r/m32 to 64-bit and write r64.
 //         - mod=00: [base]            (no disp)
 //         - mod=01: [base + disp8]    (signed 8-bit disp)
 //         - mod=10: [base + disp32]   (signed 32-bit disp)
 //         - mod=11: register direct
+//     * XCHG r64, r/m64   (48 87 /r)                  3..7 bytes
+//     * MOVZX r64, r/m8   (0F B6 /r)                 4 bytes
+//     * MOVZX r64, r/m16  (0F B7 /r)                 4 bytes
 //         Memory forms always emit *_TSO variants of load/store. The
 //         TSO-adaptive pass (Pillar 3, later) may rewrite to non-TSO.
 //         Rejected for MVP: rm=100 (SIB required), mod=00 rm=101
@@ -72,7 +85,7 @@
 // The decoder is deliberately minimal but now supports a small subset of
 // prefixes:
 //   * 0x66 for selected size-sensitive MOV forms (I16),
-//   * 0xF3 for LZCNT/TZCNT family placeholder support,
+//   * 0xF3 for LZCNT/TZCNT/POPCNT family placeholder support,
 //   * REX.W for the 64-bit MOV/ALU variants.
 // No SIB / RIP-relative / R8..R15 yet (REX.R / REX.B / REX.X must be
 // zero). All of these constraints remain future-work items; the API stays

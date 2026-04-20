@@ -56,6 +56,9 @@ constexpr std::string_view cc_name(CondCode cc) noexcept {
         case CondCode::Ugt: return "ugt"; case CondCode::Uge: return "uge";
         case CondCode::Slt: return "slt"; case CondCode::Sle: return "sle";
         case CondCode::Sgt: return "sgt"; case CondCode::Sge: return "sge";
+        case CondCode::Cc:  return "cc";  case CondCode::Nc:  return "nc";
+        case CondCode::Ov:  return "ov";  case CondCode::NoOv: return "noov";
+        case CondCode::Mi:  return "mi";  case CondCode::Pl:  return "pl";
     }
     return "?";
 }
@@ -83,6 +86,10 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, Compare>) {
             os << "cmp." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, Select>) {
+            os << "select." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
+            print_ref(os, x.true_value); os << ", ";
+            print_ref(os, x.false_value);
         } else if constexpr (std::is_same_v<T, LoadMem>) {
             os << "load." << size_suffix(x.size) << " ["; print_ref(os, x.addr); os << "]";
         } else if constexpr (std::is_same_v<T, StoreMem>) {
@@ -95,6 +102,9 @@ std::string pretty_print(const Op& op) {
             os << "], "; print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Jump>) {
             os << "jmp bb" << x.target_block;
+        } else if constexpr (std::is_same_v<T, JumpReg>) {
+            os << "jmpreg ";
+            print_ref(os, x.target);
         } else if constexpr (std::is_same_v<T, CondJump>) {
             os << "condjmp "; print_ref(os, x.cond);
             os << ", bb" << x.if_true << ", bb" << x.if_false;

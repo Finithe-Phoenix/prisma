@@ -13,6 +13,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "prisma/ir.hpp"  // ir::Gpr, ir::kGprCount
@@ -40,6 +41,23 @@ struct CpuStateFrame {
     [[nodiscard]] std::uint64_t operator[](ir::Gpr g) const noexcept {
         return gpr[static_cast<std::size_t>(g)];
     }
+
+    // Byte offset from `&frame` to `frame.gpr[idx]`. Generated code
+    // uses these to emit `ldr x_pinned, [x19, #offset]` in the block
+    // prologue / epilogue. See `translator.cpp`.
+    [[nodiscard]] static constexpr std::int32_t gpr_offset_bytes(ir::Gpr g) noexcept {
+        return static_cast<std::int32_t>(static_cast<std::size_t>(g)) * 8;
+    }
 };
+
+// Guarantees the C++ struct layout matches what the Translator emits
+// into ARM64 code. If any of these fail, regenerate the pinned offsets
+// used in translator.cpp's prologue/epilogue.
+static_assert(std::is_standard_layout_v<CpuStateFrame>,
+              "CpuStateFrame must be standard-layout so offsetof is defined");
+static_assert(offsetof(CpuStateFrame, gpr) == 0,
+              "gpr[] must be the first field; prologue uses offsets from the frame base");
+static_assert(sizeof(CpuStateFrame::gpr) == ir::kGprCount * sizeof(std::uint64_t),
+              "gpr[] must be a tight array of 16 uint64_t");
 
 }  // namespace prisma::runtime

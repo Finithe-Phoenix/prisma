@@ -21,6 +21,10 @@ bool operator==(const BinOp& a, const BinOp& b) noexcept {
 bool operator==(const Compare& a, const Compare& b) noexcept {
     return a.cc == b.cc && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const Select& a, const Select& b) noexcept {
+    return a.cc == b.cc && a.true_value == b.true_value
+        && a.false_value == b.false_value && a.size == b.size;
+}
 bool operator==(const LoadMem& a, const LoadMem& b) noexcept {
     return a.addr == b.addr && a.size == b.size;
 }
@@ -35,6 +39,9 @@ bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept {
 }
 bool operator==(const Jump& a, const Jump& b) noexcept {
     return a.target_block == b.target_block;
+}
+bool operator==(const JumpReg& a, const JumpReg& b) noexcept {
+    return a.target == b.target;
 }
 bool operator==(const CondJump& a, const CondJump& b) noexcept {
     return a.cond == b.cond && a.if_true == b.if_true && a.if_false == b.if_false;

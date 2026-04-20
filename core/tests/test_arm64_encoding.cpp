@@ -56,11 +56,14 @@ TEST_CASE("ret x0 encodes to 0xD65F0000") {
 }
 
 TEST_CASE("Host-register mapping matches Box64-inspired fixed layout") {
-    // rax → x10, rcx → x11, ..., r15 → x25. This is the mapping chosen in
-    // research_notes.md decision #3 for Fase 1 (constrained RA arrives later).
+    // rax..rdi → x10..x17. r8..r15 → x19..x26 (x18 is reserved on Apple
+    // silicon so we skip it). research_notes.md decision #3 + the
+    // Translator ABI fix in the F1-RT block.
     REQUIRE(host_reg_for(ir::Gpr::Rax) == Reg::X10);
     REQUIRE(host_reg_for(ir::Gpr::Rcx) == Reg::X11);
-    REQUIRE(host_reg_for(ir::Gpr::R15) == Reg::X25);
+    REQUIRE(host_reg_for(ir::Gpr::Rdi) == Reg::X17);
+    REQUIRE(host_reg_for(ir::Gpr::R8)  == Reg::X19);  // skip x18
+    REQUIRE(host_reg_for(ir::Gpr::R15) == Reg::X26);
 }
 
 TEST_CASE("Prisma's first end-to-end bytecode: load 42 and return") {

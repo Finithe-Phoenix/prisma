@@ -52,9 +52,23 @@ struct LowerResult {
     std::string message{};  // human-readable context when !success
 };
 
+// Lowering options.
+//
+// `emit_ret_on_terminator`: controls whether IR::Return, IR::JumpRel,
+// and IR::CondJumpRel end with an ARM64 `ret` instruction.
+//   true  (default) — suitable for tests that exercise the Lowerer in
+//                     isolation and want self-contained code bytes.
+//   false           — the Translator uses this so it can insert a
+//                     register-save epilogue between the terminator's
+//                     "put next PC in x0" and the final `ret`.
+struct LowerOptions {
+    bool emit_ret_on_terminator{true};
+};
+
 class Lowerer {
 public:
-    explicit Lowerer(Emitter& emitter) : emitter_(emitter) {}
+    explicit Lowerer(Emitter& emitter, LowerOptions options = {})
+        : emitter_(emitter), options_(options) {}
 
     // Lower the given statement list onto the underlying Emitter. Returns
     // a result indicating success or the first error encountered. After
@@ -66,6 +80,7 @@ public:
 
 private:
     Emitter& emitter_;
+    LowerOptions options_;
 
     // Map IR Ref → host scratch register.
     std::unordered_map<ir::Ref, arm64::Reg> ref_to_scratch_;

@@ -149,6 +149,25 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.cset(rd, op.cc);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::Select>) {
+            if (!s.result) return {false, LowerError::DanglingRef, "Select without result ref"};
+            arm64::Reg r_true;
+            if (!reg_of(op.true_value, r_true)) {
+                return {false, LowerError::DanglingRef, "Select.true_value"};
+            }
+            arm64::Reg r_false;
+            if (!reg_of(op.false_value, r_false)) {
+                return {false, LowerError::DanglingRef, "Select.false_value"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Select"};
+            }
+            // Select maps directly to ARM64 conditional select using current NZCV
+            // (from a prior CmpFlags in MVP flow).
+            emitter_.csel(rd, r_true, r_false, op.cc);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::LoadMem>) {
             if (!s.result) return {false, LowerError::DanglingRef, "LoadMem without result ref"};
             arm64::Reg raddr;
@@ -196,10 +215,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::JumpRel>) {
-            // Load the absolute guest target into x0 and return from the
-            // block. The future dispatcher uses x0 as "next guest PC".
+            // Load the absolute guest target into x0. The dispatcher
+            // reads it as the next guest PC. Translator-wrapped mode
+            // elides the ret so it can emit a state-save epilogue first.
             emitter_.mov_imm64(arm64::Reg::X0, op.target_guest_pc);
-            emitter_.ret();
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::JumpReg>) {
+            arm64::Reg target;
+            if (!reg_of(op.target, target)) {
+                return {false, LowerError::DanglingRef, "JumpReg.target"};
+            }
+            emitter_.mov_reg_reg(arm64::Reg::X0, target);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
@@ -210,21 +239,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             //   mov x0, fallthrough
             //   mov x1, target
             //   csel x0, x1, x0, <cc>    ; x0 = cc ? target : fallthrough
-            //   ret
+            //   ret                      ; (or state-save epilogue + ret)
             emitter_.mov_imm64(arm64::Reg::X0, op.fallthrough_guest_pc);
             emitter_.mov_imm64(arm64::Reg::X1, op.target_guest_pc);
             emitter_.csel(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X0, op.cc);
-            emitter_.ret();
+            if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Return>) {
             // Guest RET in MVP: set x0 = 0 (the dispatcher halt sentinel,
-            // `CpuStateFrame::kHaltSentinel`) and ret. A real x86 RET pops
-            // the return address from the guest stack; that requires a
-            // stack and CALL-side pushing. Until F1-RT-008 lands (return-
-            // address stack), "guest returned" means "end of execution".
+            // `CpuStateFrame::kHaltSentinel`). The Translator-wrapped
+            // path appends a state-save epilogue before the ret, so the
+            // Lowerer only emits ret when running in standalone mode.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
-            emitter_.ret();
+            if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
         else {

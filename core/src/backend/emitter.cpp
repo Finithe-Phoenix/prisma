@@ -142,6 +142,28 @@ void Emitter::store_release(arm64::Reg rv, arm64::Reg raddr, ir::OpSize size) {
     }
 }
 
+void Emitter::load_offset(arm64::Reg rd, arm64::Reg rbase, std::int32_t imm) {
+    impl_->masm.Ldr(to_vixl_x(rd),
+                    vixl_aa::MemOperand(to_vixl_x(rbase), imm));
+}
+
+void Emitter::store_offset(arm64::Reg rv, arm64::Reg rbase, std::int32_t imm) {
+    impl_->masm.Str(to_vixl_x(rv),
+                    vixl_aa::MemOperand(to_vixl_x(rbase), imm));
+}
+
+void Emitter::push_pair(arm64::Reg r1, arm64::Reg r2) {
+    // stp r1, r2, [sp, #-16]!  (pre-index)
+    impl_->masm.Stp(to_vixl_x(r1), to_vixl_x(r2),
+                    vixl_aa::MemOperand(vixl_aa::sp, -16, vixl_aa::PreIndex));
+}
+
+void Emitter::pop_pair(arm64::Reg r1, arm64::Reg r2) {
+    // ldp r1, r2, [sp], #16  (post-index)
+    impl_->masm.Ldp(to_vixl_x(r1), to_vixl_x(r2),
+                    vixl_aa::MemOperand(vixl_aa::sp, 16, vixl_aa::PostIndex));
+}
+
 namespace {
 
 // Shared helper: Prisma CondCode → vixl Condition. ARM64 unsigned / signed
@@ -158,6 +180,12 @@ vixl_aa::Condition to_vixl_cond(ir::CondCode cc) noexcept {
         case ir::CondCode::Sle: return vixl_aa::le;
         case ir::CondCode::Sgt: return vixl_aa::gt;
         case ir::CondCode::Sge: return vixl_aa::ge;
+        case ir::CondCode::Cc:  return vixl_aa::cc;  // carry clear (unsigned <)
+        case ir::CondCode::Nc:  return vixl_aa::cs;  // carry set   (unsigned >=)
+        case ir::CondCode::Ov:  return vixl_aa::vs;  // overflow set
+        case ir::CondCode::NoOv: return vixl_aa::vc; // overflow clear
+        case ir::CondCode::Mi:  return vixl_aa::mi;  // sign set (negative)
+        case ir::CondCode::Pl:  return vixl_aa::pl;  // sign clear (non-negative)
     }
     return vixl_aa::nv;  // unreachable
 }

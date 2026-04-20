@@ -33,9 +33,11 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::LoadReg>) return true;
         else if constexpr (std::is_same_v<T, ir::BinOp>) return true;
         else if constexpr (std::is_same_v<T, ir::Compare>) return true;
+        else if constexpr (std::is_same_v<T, ir::Select>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadMem>) return true;
+        else if constexpr (std::is_same_v<T, ir::JumpReg>) return false;
         // Everything else is impure: StoreReg, StoreMem*, LoadMemTSO,
-        // Jump, CondJump, Return, CmpFlags (sets implicit flags),
+        // Jump, JumpReg, CondJump, Return, CmpFlags (sets implicit flags),
         // JumpRel / CondJumpRel (control-flow transfer).
         else return false;
     }, op);
@@ -58,6 +60,9 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::Compare>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::Select>) {
+            into.insert(x.true_value);
+            into.insert(x.false_value);
         } else if constexpr (std::is_same_v<T, ir::LoadMem>) {
             into.insert(x.addr);
         } else if constexpr (std::is_same_v<T, ir::StoreMem>) {
@@ -70,6 +75,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::Jump>) {
             (void)x;
+        } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
+            into.insert(x.target);
         } else if constexpr (std::is_same_v<T, ir::CondJump>) {
             into.insert(x.cond);
         } else if constexpr (std::is_same_v<T, ir::Return>) {

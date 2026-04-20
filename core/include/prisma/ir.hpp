@@ -71,6 +71,9 @@ enum class CondCode : std::uint8_t {
     Eq = 0, Ne,
     Ult,    Ule, Ugt, Uge,  // unsigned
     Slt,    Sle, Sgt, Sge,  // signed
+    Cc,    Nc,              // carry clear / carry set pair
+    Ov,   NoOv,             // overflow set / overflow clear pair
+    Mi,   Pl,               // sign-set / sign-clear pair
 };
 
 // ---------------------------------------------------------------------------
@@ -105,6 +108,16 @@ struct BinOp    { BinOpKind op; Ref lhs; Ref rhs; OpSize size; };
 
 struct Compare  { CondCode cc; Ref lhs; Ref rhs; OpSize size; };
 
+// Conditional select (ternary): `result = (cond ? true_value : false_value)`.
+// This is useful for CMOVcc / SETcc lowering in the current MVP slice and
+// maps cleanly to ARM64 `csel`.
+struct Select {
+    CondCode cc;
+    Ref true_value;
+    Ref false_value;
+    OpSize size;
+};
+
 struct LoadMem     { Ref addr; OpSize size; };
 struct StoreMem    { Ref addr; Ref value; OpSize size; };
 struct LoadMemTSO  { Ref addr; OpSize size; };
@@ -134,6 +147,10 @@ struct CmpFlags {
     OpSize size;
 };
 
+struct JumpReg {
+    Ref target;
+};
+
 struct JumpRel {
     std::uint64_t target_guest_pc;
 };
@@ -149,9 +166,11 @@ using Op = std::variant<
     LoadReg, StoreReg,
     BinOp,
     Compare,
+    Select,
     LoadMem, StoreMem,
     LoadMemTSO, StoreMemTSO,
     Jump, CondJump, Return,
+    JumpReg,
     CmpFlags, JumpRel, CondJumpRel
 >;
 
@@ -196,12 +215,14 @@ bool operator==(const LoadReg& a, const LoadReg& b) noexcept;
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept;
 bool operator==(const BinOp& a, const BinOp& b) noexcept;
 bool operator==(const Compare& a, const Compare& b) noexcept;
+bool operator==(const Select& a, const Select& b) noexcept;
 bool operator==(const LoadMem& a, const LoadMem& b) noexcept;
 bool operator==(const StoreMem& a, const StoreMem& b) noexcept;
 bool operator==(const LoadMemTSO& a, const LoadMemTSO& b) noexcept;
 bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept;
 bool operator==(const Jump& a, const Jump& b) noexcept;
 bool operator==(const CondJump& a, const CondJump& b) noexcept;
+bool operator==(const JumpReg& a, const JumpReg& b) noexcept;
 bool operator==(const Return&, const Return&) noexcept;
 
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept;

@@ -111,6 +111,23 @@ public:
     void load_acquire  (arm64::Reg rd, arm64::Reg raddr, ir::OpSize size);
     void store_release (arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
 
+    // [base, #imm] forms for the 64-bit load/store only. Used by the
+    // block prologue/epilogue to read and write guest GPRs from a
+    // CpuStateFrame*. The immediate is signed; the vixl MacroAssembler
+    // picks the best encoding or falls back to a scratch-based form.
+    void load_offset   (arm64::Reg rd, arm64::Reg rbase, std::int32_t imm);
+    void store_offset  (arm64::Reg rv, arm64::Reg rbase, std::int32_t imm);
+
+    // Stack push/pop as register pairs (the ARM64 idiom for prologue /
+    // epilogue sequences). `push_pair(r1, r2)` emits
+    //   stp r1, r2, [sp, #-16]!   ; sp -= 16, store both
+    // `pop_pair(r1, r2)` emits
+    //   ldp r1, r2, [sp], #16     ; load both, sp += 16
+    // Used by the Translator to save / restore AAPCS64 callee-saved
+    // registers that we clobber (x19..x26 + x27 state ptr + x29/x30).
+    void push_pair (arm64::Reg r1, arm64::Reg r2);
+    void pop_pair  (arm64::Reg r1, arm64::Reg r2);
+
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
 

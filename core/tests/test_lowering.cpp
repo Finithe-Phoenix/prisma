@@ -189,6 +189,30 @@ TEST_CASE("Lowerer: Compare → cmp + cset emits the right ARM64") {
     REQUIRE(d.find("lo")         != std::string::npos);
 }
 
+TEST_CASE("Lowerer: Select emits csel") {
+    // %0 = const.i64 10
+    // %1 = const.i64 20
+    // %2 = select.ne.%0.%1
+    //      storereg.i64 rax, %2
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{10, ir::OpSize::I64}},
+        {1u, ir::Constant{20, ir::OpSize::I64}},
+        {2u, ir::Select{ir::CondCode::Ne, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Expected:
+    //   mov x0, #10
+    //   mov x1, #20
+    //   csel x2, x0, x1, ne
+    //   mov x10, x2
+    REQUIRE(d.find("csel x2, x0, x1, ne") != std::string::npos);
+    REQUIRE(d.find("x10") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Memory ops lowering.
 // ---------------------------------------------------------------------------
@@ -314,6 +338,41 @@ TEST_CASE("Lowerer: Compare picks the correct ARM condition for each CondCode") 
     auto [ok_ne,  d_ne ] = try_cc(ir::CondCode::Ne ); REQUIRE(ok_ne ); REQUIRE(d_ne .find(" ne") != std::string::npos);
     auto [ok_slt, d_slt] = try_cc(ir::CondCode::Slt); REQUIRE(ok_slt); REQUIRE(d_slt.find(" lt") != std::string::npos);
     auto [ok_ugt, d_ugt] = try_cc(ir::CondCode::Ugt); REQUIRE(ok_ugt); REQUIRE(d_ugt.find(" hi") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: JumpReg emits mov x0, target and ret in standalone mode") {
+    // %0 = loadreg rax
+    // jumpreg %0
+    // ret
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {std::nullopt, ir::JumpReg{0u}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("mov x0, x10") != std::string::npos);
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: JumpReg can be lowered without auto-ret for translator mode") {
+    // %0 = loadreg rax
+    // jumpreg %0
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {std::nullopt, ir::JumpReg{0u}},
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em, backend::LowerOptions{/*emit_ret_on_terminator=*/false});
+    auto r = lw.lower(stmts);
+    REQUIRE(r.success);
+    em.finalize();
+    const std::string d = em.disassemble();
+
+    REQUIRE(d.find("mov x0, x10") != std::string::npos);
+    REQUIRE(d.find("ret") == std::string::npos);
 }
 
 TEST_CASE("Lowerer: OutOfScratchRegs when exceeding the 10-reg pool") {

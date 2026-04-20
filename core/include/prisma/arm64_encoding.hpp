@@ -96,9 +96,13 @@ struct Instr {
 //    flags, etc. — layout will be finalised in RFC 0003.)
 
 [[nodiscard]] constexpr Reg host_reg_for(ir::Gpr g) noexcept {
-    const auto base = static_cast<std::uint8_t>(Reg::X10);
-    const auto off  = static_cast<std::uint8_t>(g);
-    return static_cast<Reg>(base + off);
+    // Skip x18: on Apple platforms it is reserved by the OS ABI, and
+    // clobbering it is UB. Guest r8..r15 therefore land in x19..x26.
+    const auto idx = static_cast<std::uint8_t>(g);
+    if (idx < 8) {
+        return static_cast<Reg>(static_cast<std::uint8_t>(Reg::X10) + idx);
+    }
+    return static_cast<Reg>(static_cast<std::uint8_t>(Reg::X19) + (idx - 8));
 }
 
 }  // namespace prisma::arm64
