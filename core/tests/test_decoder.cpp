@@ -311,6 +311,171 @@ TEST_CASE("decode IMUL rax, rbx, -1 placeholder → RBX*-1, sign-extended imm32"
     REQUIRE(r == 3);
 }
 
+TEST_CASE("decode IMUL rax, rbx, 10 placeholder → RBX*10, sign-extended imm8") {
+    // Encoding: 48 6B C3 0A
+    //   48 REX.W
+    //   6B opcode IMUL r64, r/m64, imm8
+    //   C3 mod=11, reg=000 (rax, destination), rm=011 (rbx)
+    //   0A = +10
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x6B, 0xC3, 0x0A}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{10u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode DIV rax, rax placeholder → quotient/remainder in RAX/RDX as zero, 3 bytes") {
+    // Encoding: 48 F7 F0
+    //   48 REX.W
+    //   F7 opcode F7 /6
+    //   F0 mod=11, reg=110 (/6), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xF7, 0xF0}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode IDIV rax, rax placeholder → quotient/remainder in RAX/RDX as zero, 3 bytes") {
+    // Encoding: 48 F7 F8
+    //   48 REX.W
+    //   F7 opcode F7 /7
+    //   F8 mod=11, reg=111 (/7), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xF7, 0xF8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode SHL rax, 3 placeholder via 48 C1 E0 03") {
+    // Encoding: 48 C1 E0 03
+    //   48 REX.W
+    //   C1 opcode SHL r/m64, imm8
+    //   E0 mod=11, reg=100 (/4), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xE0, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Shl, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode SHR rax, 3 placeholder via 48 C1 E8 03") {
+    // Encoding: 48 C1 E8 03
+    //   48 REX.W
+    //   C1 opcode SHR r/m64, imm8
+    //   E8 mod=11, reg=101 (/5), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xE8, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Shr, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode SAR rax, 3 placeholder via 48 C1 F8 03") {
+    // Encoding: 48 C1 F8 03
+    //   48 REX.W
+    //   C1 opcode SAR r/m64, imm8
+    //   F8 mod=11, reg=111 (/7), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xC1, 0xF8, 0x03}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{3u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Sar, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode SHL rax, cl placeholder via 48 D3 E0") {
+    // Encoding: 48 D3 E0
+    //   48 REX.W
+    //   D3 opcode SHL r/m64, CL
+    //   E0 mod=11, reg=100 (/4), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xE0}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Shl, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode SHR rax, cl placeholder via 48 D3 E8") {
+    // Encoding: 48 D3 E8
+    //   48 REX.W
+    //   D3 opcode SHR r/m64, CL
+    //   E8 mod=11, reg=101 (/5), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xE8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Shr, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
+TEST_CASE("decode SAR rax, cl placeholder via 48 D3 F8") {
+    // Encoding: 48 D3 F8
+    //   48 REX.W
+    //   D3 opcode SAR r/m64, CL
+    //   F8 mod=11, reg=111 (/7), rm=000 (rax)
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xD3, 0xF8}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Sar, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(r == 3);
+}
+
 TEST_CASE("next_ref is threaded across multiple decodes") {
     // Decode two instructions in sequence: ADD rax, rbx ; RET.
     // The second decode must NOT reset refs.

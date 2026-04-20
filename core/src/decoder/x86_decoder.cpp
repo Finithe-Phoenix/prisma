@@ -301,6 +301,7 @@ std::variant<Decoded, DecodeError> decode_incdec_from_rm(
 //   /3: NEG (two's complement negation, 0 - x)
 //   /4: MUL (placeholder) 64x64 -> low64 in RAX, clear RDX
 //   /5: IMUL (placeholder) signed multiply, low64 in RAX, clear RDX
+//   /6: DIV (placeholder) 128/64 -> quotient in RAX, remainder in RDX
 // This keeps the decoder minimal while preserving existing lowering contracts.
 std::variant<Decoded, DecodeError> decode_neg_not_from_rm(
     const ModRmOperand& m,
@@ -325,6 +326,34 @@ std::variant<Decoded, DecodeError> decode_neg_not_from_rm(
     }
 
     d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_dst, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
+    return d;
+}
+
+// DIV/IDIV r/m64 family (48 F7 /6 and /7) — MVP placeholder.
+// Encodes:
+//   placeholder quotient = 0 in RAX, placeholder remainder = 0 in RDX.
+// Real signed/unsigned divide lowering (including divide-by-zero behavior and
+// full RDX:RAX dividend handling) is deferred to lowering work (F1-BK-011).
+std::variant<Decoded, DecodeError> decode_div_from_rm(
+    const ModRmOperand& m,
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_dividend = next_ref++;
+    const ir::Ref ref_divisor = next_ref++;
+    const ir::Ref ref_zero = next_ref++;
+
+    d.stmts.push_back({ref_dividend, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    d.stmts.push_back({ref_divisor, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+                       ir::StoreReg{ir::Gpr::Rax, ref_zero, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+                       ir::StoreReg{ir::Gpr::Rdx, ref_zero, ir::OpSize::I64}});
+
     d.bytes_consumed = bytes_consumed;
     return d;
 }
@@ -417,6 +446,95 @@ std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm32(
     d.stmts.push_back(
         {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_product, ir::OpSize::I64}});
     d.bytes_consumed = cursor;
+    return d;
+}
+
+// IMUL r64, r/m64, imm8 (6B /r) — MVP register-direct only.
+// Encodes:
+//   dest = reg field, operation: dest = signext(imm8) * r/m64 (implemented as mul).
+// The immediate is sign-extended to 64-bit and then multiplied as a placeholder.
+std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm8(
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    ir::Ref& next_ref) {
+    auto modrm = parse_modrm(bytes, cursor);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    auto imm = read_le<1>(bytes, cursor);
+    if (!imm) return DecodeError::TruncatedInput;
+    cursor += 1;
+    const std::int32_t imm_i8 = sign_extend_i32<1>(*imm);
+    const std::uint64_t imm_u64 = static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i8));
+
+    Decoded d;
+    const ir::Ref ref_rhs = next_ref++;
+    const ir::Ref ref_imm = next_ref++;
+    const ir::Ref ref_product = next_ref++;
+    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_imm, ir::Constant{imm_u64, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_product, ir::BinOp{ir::BinOpKind::Mul, ref_rhs, ref_imm, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_product, ir::OpSize::I64}});
+    d.bytes_consumed = cursor;
+    return d;
+}
+
+// SHL/SHR/SAR r/m64, imm8 (48 C1 /4|/5|/7) — MVP register-direct only.
+// Encodes:
+//   r/m64 <- reg-shift-operation(r/m64, imm8).
+// The immediate is loaded as a zero-extended u64; lowering handles shift count
+// masking rules.
+std::variant<Decoded, DecodeError> decode_shift_r64_rm_imm8_from_rm(
+    std::span<const Byte> bytes,
+    const ModRmOperand& m,
+    std::size_t& cursor,
+    ir::Ref& next_ref,
+    ir::BinOpKind op) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    auto imm = read_le<1>(bytes, cursor);
+    if (!imm) return DecodeError::TruncatedInput;
+    cursor += 1;
+
+    Decoded d;
+    const ir::Ref ref_dst = next_ref++;
+    const ir::Ref ref_imm = next_ref++;
+    const ir::Ref ref_res = next_ref++;
+    d.stmts.push_back({ref_dst, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_imm, ir::Constant{*imm, ir::OpSize::I64}});
+    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_imm, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+                       ir::StoreReg{m.base, ref_res, ir::OpSize::I64}});
+    d.bytes_consumed = cursor;
+    return d;
+}
+
+// SHL/SHR/SAR r/m64, CL (48 D3 /4|/5|/7) — MVP register-direct only.
+// Encodes:
+//   r/m64 <- reg-shift-operation(r/m64, cl).
+// The shift amount is loaded from CL as I64.
+std::variant<Decoded, DecodeError> decode_shift_r64_rm_cl_from_rm(
+    const ModRmOperand& m,
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref,
+    ir::BinOpKind op) {
+    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_dst = next_ref++;
+    const ir::Ref ref_shift = next_ref++;
+    const ir::Ref ref_res = next_ref++;
+    d.stmts.push_back({ref_dst, ir::LoadReg{m.base, ir::OpSize::I64}});
+    d.stmts.push_back({ref_shift, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_shift, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {std::nullopt, ir::StoreReg{m.base, ref_res, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
     return d;
 }
 
@@ -680,6 +798,51 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- ALU r/m64, r64 (shared shape, register-direct only for MVP) ----
     switch (opcode) {
+        case 0x6Bu:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+            return decode_imul_r64_rm_imm8(bytes, cursor, next_ref);
+        case 0xC1u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+            {
+                auto modrm = parse_modrm(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (m.reg == 4u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Shl);
+                }
+                if (m.reg == 5u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Shr);
+                }
+                if (m.reg == 7u) {
+                    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, ir::BinOpKind::Sar);
+                }
+                return DecodeError::UnsupportedEncoding;
+            }
+        case 0xD3u:
+            if (!rex.w) return DecodeError::UnsupportedEncoding;
+            if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+            {
+                auto modrm = parse_modrm(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+                if (m.reg == 4u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Shl);
+                }
+                if (m.reg == 5u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Shr);
+                }
+                if (m.reg == 7u) {
+                    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, ir::BinOpKind::Sar);
+                }
+                return DecodeError::UnsupportedEncoding;
+            }
         case 0x69u:
             if (!rex.w) return DecodeError::UnsupportedEncoding;
             if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
@@ -746,6 +909,12 @@ std::variant<Decoded, DecodeError> decode_one(
             }
             if (m.reg == 5u) {
                 return decode_mul_imul_from_rm(m, cursor, next_ref, ir::BinOpKind::Mul);
+            }
+            if (m.reg == 6u) {
+                return decode_div_from_rm(m, cursor, next_ref);
+            }
+            if (m.reg == 7u) {
+                return decode_div_from_rm(m, cursor, next_ref);
             }
             return DecodeError::UnsupportedEncoding;
         }

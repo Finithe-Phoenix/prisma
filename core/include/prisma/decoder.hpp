@@ -22,8 +22,17 @@
 //     * NEG r/m64        (48 F7 /3)                  3 bytes
 //     * MUL r/m64        (48 F7 /4)                  3 bytes
 //     * IMUL r/m64       (48 F7 /5)                  3 bytes
+//     * DIV r/m64        (48 F7 /6)                  3 bytes
+//     * IDIV r/m64       (48 F7 /7)                  3 bytes
+//     * SHL r/m64, imm8  (48 C1 /4)                  4 bytes
+//     * SHR r/m64, imm8  (48 C1 /5)                  4 bytes
+//     * SAR r/m64, imm8  (48 C1 /7)                  4 bytes
+//     * SHL r/m64, CL    (48 D3 /4)                  3 bytes
+//     * SHR r/m64, CL    (48 D3 /5)                  3 bytes
+//     * SAR r/m64, CL    (48 D3 /7)                  3 bytes
 //     * IMUL r64, r/m64  (48 0F AF /r)              4 bytes
 //     * IMUL r64, r/m64, imm32 (48 69 /r)           7 bytes
+//     * IMUL r64, r/m64, imm8  (48 6B /r)           4 bytes
 // 
 //   MOV, both register and simple memory forms
 //     * MOV r/m64, r64   (48 89 /r)                  3..7 bytes
