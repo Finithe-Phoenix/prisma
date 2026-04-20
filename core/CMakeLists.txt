@@ -1,0 +1,98 @@
+# core/CMakeLists.txt — Prisma DBT core engine
+#
+# Status: Fase 0 scaffolding. No DBT implementation yet; this sets up the
+# build system, testing harness, and include layout that Fase 1 will fill in.
+#
+# vixl integration is deferred: vixl ships a SCons build, and writing a
+# clean CMake wrapper deserves its own RFC (planned RFC 0002). Until then
+# this CMakeLists builds IR data structures and tests only — no code
+# emission.
+
+cmake_minimum_required(VERSION 3.30)
+
+project(prisma_core
+    VERSION 0.0.1
+    DESCRIPTION "Prisma DBT core engine (x86_64 → ARM64)"
+    LANGUAGES CXX
+)
+
+# ---------------------------------------------------------------------------
+# Compile settings
+# ---------------------------------------------------------------------------
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Export compile_commands.json for clangd / clang-tidy.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Treat warnings as errors in the core. We want a clean baseline.
+if(NOT DEFINED PRISMA_WARNINGS_AS_ERRORS)
+    set(PRISMA_WARNINGS_AS_ERRORS ON)
+endif()
+
+add_library(prisma_warnings INTERFACE)
+target_compile_options(prisma_warnings INTERFACE
+    -Wall -Wextra -Wpedantic
+    -Wshadow -Wconversion -Wsign-conversion
+    -Wold-style-cast -Wnon-virtual-dtor
+    -Wcast-align -Wunused -Woverloaded-virtual
+    -Wnull-dereference -Wdouble-promotion
+)
+if(PRISMA_WARNINGS_AS_ERRORS)
+    target_compile_options(prisma_warnings INTERFACE -Werror)
+endif()
+
+# ---------------------------------------------------------------------------
+# Library target: prisma_ir
+# ---------------------------------------------------------------------------
+#
+# A static library holding the IR data structures and pure helpers. Passes,
+# backend, cache, and runtime are future subtargets (Fase 1+).
+
+add_library(prisma_ir STATIC
+    src/ir/operation.cpp
+    src/ir/pretty_print.cpp
+)
+
+target_include_directories(prisma_ir
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_ir PRIVATE prisma_warnings)
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+
+option(PRISMA_BUILD_TESTS "Build Prisma core tests" ON)
+
+if(PRISMA_BUILD_TESTS)
+    include(FetchContent)
+
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.10.0  # pinned; update deliberately
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(Catch2)
+    list(APPEND CMAKE_MODULE_PATH ${Catch2_SOURCE_DIR}/extras)
+
+    enable_testing()
+    include(Catch)
+
+    add_executable(prisma_core_tests
+        tests/test_ir.cpp
+        tests/test_arm64_encoding.cpp
+    )
+    target_link_libraries(prisma_core_tests
+        PRIVATE
+            prisma_ir
+            prisma_warnings
+            Catch2::Catch2WithMain
+    )
+    catch_discover_tests(prisma_core_tests)
+endif()
