@@ -320,7 +320,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-RT-004: CpuStateFrame layout (16 GPRs + flags + SIMD + x87).
 - [x] F1-RT-005: TLS storage for per-thread guest state.
 - [x] (pending commit) F1-RT-006: Dispatcher loop (find-translation-and-jump).
-- [ ] F1-RT-007: Trampoline between translator and compiled blocks.
+- [x] F1-RT-007: Trampoline between translator and compiled blocks.
 - [ ] F1-RT-008: Return-address stack for guest CALL / RET tracking.
 - [ ] F1-RT-009: Thread-safe JitBuffer pool (many blocks).
 - [ ] F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
@@ -394,9 +394,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-DC-003: RFC 0005 — basic block representation + CFG construction.
 - [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
 - [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
-- [~|claude] F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
+- [x] (pending commit) F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
 - [ ] F1-DC-007: Blog post: "Designing an IR you can prove correct".
-- [~|claude] F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
+- [x] (pending commit) F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
 - [x] (pending commit) F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
 
 ---
