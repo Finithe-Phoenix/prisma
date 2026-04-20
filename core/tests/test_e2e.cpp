@@ -22,6 +22,7 @@
 #include "prisma/jit_memory.hpp"
 #include "prisma/lowering.hpp"
 #include "prisma/passes.hpp"
+#include "prisma/translator.hpp"
 
 using namespace prisma;
 
@@ -281,6 +282,151 @@ TEST_CASE("e2e executing: store then re-load round-trips through guest memory",
     constexpr std::uint64_t payload = 0xCAFEF00DDEADBEEFULL;
     REQUIRE(fn(&backing, payload) == payload);
     REQUIRE(backing == payload);  // the store also landed in host memory.
+}
+
+// ---------------------------------------------------------------------------
+// Control flow e2e — CMP + Jcc return the correct next-PC in x0.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("e2e executing: CMP + JE picks the taken target when operands are equal",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    // Build IR directly (we test the decoder path separately):
+    //   %0 = loadreg rax
+    //   %1 = loadreg rbx
+    //          cmpflags %0, %1        ; sets NZCV
+    //          condjmprel.eq 0xDEAD, 0xBEEF
+    // The thunk supplies rax via x0, rbx via x1.
+    const std::uint64_t taken        = 0x00000000DEADDEADULL;
+    const std::uint64_t fallthrough  = 0x00000000BEEFBEEFULL;
+
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::CondJumpRel{ir::CondCode::Eq, taken, fallthrough}},
+    };
+
+    backend::Emitter em;
+    // Prologue: x10 (rax) ← x0, x13 (rbx) ← x1.
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rax), arm64::Reg::X0);
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rbx), arm64::Reg::X1);
+    backend::Lowerer lw(em);
+    REQUIRE(lw.lower(stmts).success);
+    // No epilogue needed: CondJumpRel already ends with ret.
+    em.finalize();
+
+    runtime::JitBuffer jit(em.code_bytes().size());
+    REQUIRE(jit.write(em.code_bytes()));
+    jit.make_executable();
+
+    using Fn = std::uint64_t (*)(std::uint64_t, std::uint64_t);
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+
+    // Equal operands → taken branch.
+    REQUIRE(fn(42, 42) == taken);
+    // Unequal → fallthrough.
+    REQUIRE(fn(42, 43) == fallthrough);
+    // Still equal but with different operand values — semantics match.
+    REQUIRE(fn(0, 0)   == taken);
+}
+
+TEST_CASE("e2e executing: CMP + JNE is symmetric to CMP + JE",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    const std::uint64_t taken       = 0xAAAAAAAAAAAAAAAAULL;
+    const std::uint64_t fallthrough = 0xBBBBBBBBBBBBBBBBULL;
+
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::CondJumpRel{ir::CondCode::Ne, taken, fallthrough}},
+    };
+
+    backend::Emitter em;
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rax), arm64::Reg::X0);
+    em.mov_reg_reg(arm64::host_reg_for(ir::Gpr::Rbx), arm64::Reg::X1);
+    backend::Lowerer lw(em);
+    REQUIRE(lw.lower(stmts).success);
+    em.finalize();
+
+    runtime::JitBuffer jit(em.code_bytes().size());
+    REQUIRE(jit.write(em.code_bytes()));
+    jit.make_executable();
+
+    using Fn = std::uint64_t (*)(std::uint64_t, std::uint64_t);
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+
+    REQUIRE(fn(1, 2) == taken);         // unequal → JNE taken.
+    REQUIRE(fn(7, 7) == fallthrough);   // equal   → fallthrough.
+}
+
+TEST_CASE("e2e executing: unconditional JumpRel returns its target",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    const std::uint64_t target = 0xFEEDFACECAFEBABEULL;
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::JumpRel{target}},
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    REQUIRE(lw.lower(stmts).success);
+    em.finalize();
+
+    runtime::JitBuffer jit(em.code_bytes().size());
+    REQUIRE(jit.write(em.code_bytes()));
+    jit.make_executable();
+
+    using Fn = std::uint64_t (*)();
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(jit.entry()));
+    REQUIRE(fn() == target);
+}
+
+TEST_CASE("e2e executing: Translator end-to-end for decoded CMP + JE sequence",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    // Guest program at 0x8000:
+    //   48 B8 2A 00 00 00 00 00 00 00   mov rax, 42       ; 10 bytes
+    //   48 BB 2A 00 00 00 00 00 00 00   mov rbx, 42       ; 10 bytes
+    //   48 39 D8                        cmp rax, rbx      ; 3  bytes
+    //   74 10                           je +16            ; 2  bytes
+    //
+    // Addresses: cmp ends at 0x8017, je ends at 0x8019, taken = 0x8029,
+    // fallthrough = 0x8019. Since rax == rbx, the Translator'd block
+    // should return 0x8029.
+    const std::vector<std::uint8_t> guest_bytes = {
+        0x48, 0xB8, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0xBB, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x39, 0xD8,
+        0x74, 0x10,
+    };
+
+    translator::Translator t;
+    auto r = t.translate(0x8000, guest_bytes);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(r));
+    const auto& b = std::get<translator::TranslatedBlock>(r);
+
+    using Fn = std::uint64_t (*)();
+    Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(b.code_entry));
+    REQUIRE(fn() == 0x8029u);  // taken branch PC.
 }
 
 TEST_CASE("e2e executing: decoded x86 `mov rax, [rbx]` JITs and runs",

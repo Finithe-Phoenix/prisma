@@ -156,11 +156,11 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-008: XOR r/m64, r64 (48 31 /r).
 - [x] F1-DC-009: NOP (90).
 - [x] F1-DC-010: RET (C3).
-- [ ] F1-DC-011: MOV r32, imm32 (B8+rd, no REX.W).
-- [ ] F1-DC-012: MOV r8, imm8 (B0+rd).
-- [ ] F1-DC-013: MOV r/m8, r8 (88 /r) + memory.
-- [ ] F1-DC-014: MOV r/m16, r16 (66 89 /r) + memory.
-- [ ] F1-DC-015: MOV r/m32, r32 (89 /r) + memory.
+- [x] F1-DC-011: MOV r32, imm32 (B8+rd, no REX.W).
+- [x] F1-DC-012: MOV r8, imm8 (B0+rd).
+- [x] F1-DC-013: MOV r/m8, r8 (88 /r) + memory.
+- [x] F1-DC-014: MOV r/m16, r16 (66 89 /r) + memory.
+- [x] F1-DC-015: MOV r/m32, r32 (89 /r) + memory.
 - [ ] F1-DC-016: ADC r/m64, r64 (48 11 /r).
 - [ ] F1-DC-017: SBB r/m64, r64 (48 19 /r).
 - [ ] F1-DC-018: CMP r/m64, r64 (48 39 /r).

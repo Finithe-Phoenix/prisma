@@ -25,21 +25,30 @@ struct Decoded {
     std::size_t consumed{0};
 };
 
+// Terminator check: an IR Stmt that ends the block.
+bool is_block_terminator(const ir::Op& op) noexcept {
+    return std::holds_alternative<ir::Return>(op)
+        || std::holds_alternative<ir::JumpRel>(op)
+        || std::holds_alternative<ir::CondJumpRel>(op);
+}
+
 std::variant<Decoded, decoder::DecodeError>
-decode_until_terminator(std::span<const std::uint8_t> bytes) {
+decode_until_terminator(std::span<const std::uint8_t> bytes,
+                        std::uint64_t guest_addr) {
     Decoded out;
     ir::Ref next = 0;
     std::size_t cursor = 0;
     bool terminated = false;
 
     while (cursor < bytes.size()) {
-        auto res = decoder::decode_one(bytes.subspan(cursor), next);
+        const std::uint64_t instr_pc = guest_addr + cursor;
+        auto res = decoder::decode_one(bytes.subspan(cursor), next, instr_pc);
         if (std::holds_alternative<decoder::DecodeError>(res)) {
             return std::get<decoder::DecodeError>(res);
         }
         auto& d = std::get<decoder::Decoded>(res);
         for (auto& s : d.stmts) {
-            if (std::holds_alternative<ir::Return>(s.op)) {
+            if (is_block_terminator(s.op)) {
                 terminated = true;
             }
             out.stmts.push_back(std::move(s));
@@ -98,7 +107,7 @@ TranslateResult Translator::translate(
     // that {hits, misses, decode_failures, lower_failures} partitions
     // attempts cleanly.
 
-    auto decoded = decode_until_terminator(guest_bytes);
+    auto decoded = decode_until_terminator(guest_bytes, guest_addr);
     if (std::holds_alternative<decoder::DecodeError>(decoded)) {
         ++stats_.decode_failures;
         return TranslateError::DecodeFailed;
@@ -108,13 +117,20 @@ TranslateResult Translator::translate(
     // Optimise.
     auto [optimised, _stats] = pipeline_.run(dec.stmts);
 
-    // Strip the trailing Return; the lowerer will add an ARM64 ret
-    // for us. This keeps the block-end contract consistent whether or
-    // not future passes elide the explicit IR Return.
+    // Determine the block terminator (if any). The Lowerer emits its
+    // own ret for Return / JumpRel / CondJumpRel, so we only need to
+    // append a ret ourselves when the block ended without a terminator
+    // (ran off the end of guest_bytes — unusual but possible).
     std::vector<ir::Stmt> body = std::move(optimised);
-    if (!body.empty()
-        && std::holds_alternative<ir::Return>(body.back().op)) {
-        body.pop_back();
+    bool body_has_terminator = false;
+    if (!body.empty()) {
+        if (std::holds_alternative<ir::Return>(body.back().op)) {
+            // Pure Return: let Lowerer handle it; it already emits ret.
+            body_has_terminator = true;
+        } else if (std::holds_alternative<ir::JumpRel>(body.back().op)
+                || std::holds_alternative<ir::CondJumpRel>(body.back().op)) {
+            body_has_terminator = true;
+        }
     }
 
     backend::Emitter em;
@@ -124,8 +140,9 @@ TranslateResult Translator::translate(
         ++stats_.lower_failures;
         return TranslateError::LowerFailed;
     }
-    // Emit the block-terminating ret explicitly.
-    em.ret();
+    if (!body_has_terminator) {
+        em.ret();
+    }
     em.finalize();
 
     const auto emitted = em.code_bytes();

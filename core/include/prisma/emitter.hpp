@@ -68,6 +68,15 @@ public:
     void cmp  (arm64::Reg rn, arm64::Reg rm);
     void cset (arm64::Reg rd, ir::CondCode cc);
 
+    // csel xd, xn_true, xn_false, <cc>
+    //   xd = flag_true ? xn_true : xn_false
+    // Used by CondJumpRel lowering to pick between taken / fallthrough
+    // target PCs without emitting a real branch. movz/movk don't touch
+    // flags, so the NZCV set by a preceding cmp stays valid through
+    // the two target-load instructions.
+    void csel (arm64::Reg rd, arm64::Reg rn_true, arm64::Reg rn_false,
+               ir::CondCode cc);
+
     // --- Memory access -----------------------------------------------------
     //
     // Plain load / store (no barriers):

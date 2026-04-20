@@ -87,10 +87,18 @@ inductive Op where
   | loadMemTSO  (addr : Ref)           (size : OpSize) : Op
   | storeMemTSO (addr value : Ref)     (size : OpSize) : Op
 
-  -- Control flow
+  -- Control flow (basic-block indexed, unused in the current MVP)
   | jump     (target : Nat)                          : Op
   | condJump (cond : Ref) (ifTrue ifFalse : Nat)     : Op
   | ret                                              : Op
+
+  -- Control flow (guest-PC indexed, used today). CmpFlags is a
+  -- side-effecting op that sets an implicit flag bank; the next
+  -- CondJumpRel reads that bank. No SSA result.
+  | cmpFlags     (lhs rhs : Ref) (size : OpSize)              : Op
+  | jumpRel      (targetGuestPc : UInt64)                     : Op
+  | condJumpRel  (cc : CondCode)
+                 (targetGuestPc fallthroughGuestPc : UInt64)  : Op
 
   deriving Repr
 

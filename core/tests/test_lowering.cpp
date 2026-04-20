@@ -219,6 +219,42 @@ TEST_CASE("Lowerer: StoreMemTSO emits stlr") {
     REQUIRE(d.find("stlr x1, [x0]") != std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Control flow lowering.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Lowerer: JumpRel emits mov + ret") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::JumpRel{0xDEADBEEFULL}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("mov x0") != std::string::npos);
+    REQUIRE(d.find("ret")    != std::string::npos);
+}
+
+TEST_CASE("Lowerer: CmpFlags + CondJumpRel emits cmp + two movs + csel + ret") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{5, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::CondJumpRel{ir::CondCode::Eq, 0x2000, 0x1008}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Key tokens in order.
+    REQUIRE(d.find("cmp")  != std::string::npos);
+    REQUIRE(d.find("csel") != std::string::npos);
+    REQUIRE(d.find("ret")  != std::string::npos);
+    // The two candidate PCs must appear as hex immediates in the mov stream.
+    // vixl's disassembler prints 64-bit immediates so target and fallthrough
+    // should both be visible.
+    REQUIRE(d.find("0x2000") != std::string::npos);
+    REQUIRE(d.find("0x1008") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: each OpSize picks the matching ARM size suffix") {
     auto try_size = [](ir::OpSize sz) {
         std::vector<ir::Stmt> s = {

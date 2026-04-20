@@ -177,13 +177,14 @@ std::variant<Decoded, DecodeError> decode_alu_rm_r(
     return d;
 }
 
-// MOV r/m64, r64  (0x89 /r) — stores REG into R/M.
+// MOV r/m<size>, r<size>  (0x89 /r) — stores REG into R/M.
 // In register direct (mod=11): just StoreReg(rm, LoadReg(reg)).
 // In memory form: StoreMemTSO(addr(rm), LoadReg(reg)).
 std::variant<Decoded, DecodeError> decode_mov_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor_in_out,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    ir::OpSize size) {
     auto modrm = parse_modrm(bytes, cursor_in_out);
     if (std::holds_alternative<DecodeError>(modrm)) {
         return std::get<DecodeError>(modrm);
@@ -194,28 +195,29 @@ std::variant<Decoded, DecodeError> decode_mov_rm_r(
     if (m.mod == 0b11u) {
         const ir::Ref ref_src = next_ref++;
         d.stmts.push_back({ref_src,
-                           ir::LoadReg{gpr_from_index(m.reg), ir::OpSize::I64}});
+                           ir::LoadReg{gpr_from_index(m.reg), size}});
         d.stmts.push_back({std::nullopt,
-                           ir::StoreReg{m.base, ref_src, ir::OpSize::I64}});
+                           ir::StoreReg{m.base, ref_src, size}});
     } else {
         const ir::Ref ref_src = next_ref++;
         d.stmts.push_back({ref_src,
-                           ir::LoadReg{gpr_from_index(m.reg), ir::OpSize::I64}});
+                           ir::LoadReg{gpr_from_index(m.reg), size}});
         const ir::Ref ref_addr = emit_address(d.stmts, m, next_ref);
         d.stmts.push_back({std::nullopt,
-                           ir::StoreMemTSO{ref_addr, ref_src, ir::OpSize::I64}});
+                           ir::StoreMemTSO{ref_addr, ref_src, size}});
     }
     d.bytes_consumed = cursor_in_out;
     return d;
 }
 
-// MOV r64, r/m64  (0x8B /r) — loads from R/M into REG.
+// MOV r<size>, r/m<size>  (0x8B /r) — loads from R/M into REG.
 // In register direct (mod=11): same as 0x89 with roles swapped.
 // In memory form: LoadMemTSO(addr(rm)) → StoreReg(reg).
 std::variant<Decoded, DecodeError> decode_mov_r_rm(
     std::span<const Byte> bytes,
     std::size_t& cursor_in_out,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    ir::OpSize size) {
     auto modrm = parse_modrm(bytes, cursor_in_out);
     if (std::holds_alternative<DecodeError>(modrm)) {
         return std::get<DecodeError>(modrm);
@@ -225,16 +227,16 @@ std::variant<Decoded, DecodeError> decode_mov_r_rm(
     Decoded d;
     if (m.mod == 0b11u) {
         const ir::Ref ref_src = next_ref++;
-        d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
+        d.stmts.push_back({ref_src, ir::LoadReg{m.base, size}});
         d.stmts.push_back({std::nullopt,
-                           ir::StoreReg{gpr_from_index(m.reg), ref_src, ir::OpSize::I64}});
+                           ir::StoreReg{gpr_from_index(m.reg), ref_src, size}});
     } else {
         const ir::Ref ref_addr = emit_address(d.stmts, m, next_ref);
         const ir::Ref ref_loaded = next_ref++;
         d.stmts.push_back({ref_loaded,
-                           ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
+                           ir::LoadMemTSO{ref_addr, size}});
         d.stmts.push_back({std::nullopt,
-                           ir::StoreReg{gpr_from_index(m.reg), ref_loaded, ir::OpSize::I64}});
+                           ir::StoreReg{gpr_from_index(m.reg), ref_loaded, size}});
     }
     d.bytes_consumed = cursor_in_out;
     return d;
@@ -244,22 +246,46 @@ std::variant<Decoded, DecodeError> decode_mov_r_rm(
 
 std::variant<Decoded, DecodeError> decode_one(
     std::span<const Byte> bytes,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    std::uint64_t instruction_guest_pc) {
 
     std::size_t cursor = 0;
     if (bytes.empty()) return DecodeError::TruncatedInput;
 
-    // 1. Optional REX prefix.
+    // 1. Optional prefixes.
+    //
+    // We currently only support:
+    //   * 0x66 (operand-size override),
+    //   * one REX prefix.
+    // More prefix combinations can be added later.
+    bool has_operand_size_override = false;
     RexPrefix rex;
-    if (Byte b = bytes[cursor]; (b & 0xF0u) == 0x40u) {
-        rex.present = true;
-        rex.w = (b & 0x08u) != 0;
-        rex.r = (b & 0x04u) != 0;
-        rex.x = (b & 0x02u) != 0;
-        rex.b = (b & 0x01u) != 0;
-        ++cursor;
-        if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
+    bool seen_rex = false;
+    bool seen_66 = false;
+    while (cursor < bytes.size()) {
+        const Byte b = bytes[cursor];
+        if (b == 0x66u) {
+            if (seen_66) return DecodeError::UnsupportedEncoding;
+            has_operand_size_override = true;
+            seen_66 = true;
+            ++cursor;
+            continue;
+        }
+
+        if ((b & 0xF0u) == 0x40u) {
+            if (seen_rex) return DecodeError::UnsupportedEncoding;
+            rex.present = true;
+            rex.w = (b & 0x08u) != 0;
+            rex.r = (b & 0x04u) != 0;
+            rex.x = (b & 0x02u) != 0;
+            rex.b = (b & 0x01u) != 0;
+            seen_rex = true;
+            ++cursor;
+            continue;
+        }
+        break;
     }
+    if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
 
     // Reject extended registers for the MVP.
     if (rex.r || rex.x || rex.b) return DecodeError::UnsupportedEncoding;
@@ -270,6 +296,7 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- NOP (0x90) --------------------------------------------------------
     if (opcode == 0x90u) {
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
         Decoded d;
         d.bytes_consumed = cursor;
         return d;
@@ -277,6 +304,7 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- RET (0xC3) --------------------------------------------------------
     if (opcode == 0xC3u) {
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
         if (rex.present) return DecodeError::UnsupportedEncoding;
         Decoded d;
         d.stmts.push_back({std::nullopt, ir::Return{}});
@@ -284,33 +312,178 @@ std::variant<Decoded, DecodeError> decode_one(
         return d;
     }
 
-    // --- MOV r64, imm64 (B8+rd with REX.W) --------------------------------
-    if (opcode >= 0xB8u && opcode <= 0xBFu) {
-        if (!rex.w) return DecodeError::UnsupportedEncoding;
-        const unsigned reg_idx = opcode - 0xB8u;
-        auto imm = read_le<8>(bytes, cursor);
+    // --- JMP rel8 (EB cb) --------------------------------------------------
+    if (opcode == 0xEBu) {
+        if (rex.present) return DecodeError::UnsupportedEncoding;
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+        auto imm = read_le<1>(bytes, cursor);
         if (!imm) return DecodeError::TruncatedInput;
-        cursor += 8;
-
+        cursor += 1;
+        const std::int32_t rel = sign_extend_i32<1>(*imm);
+        const std::uint64_t target =
+            instruction_guest_pc + cursor + static_cast<std::uint64_t>(static_cast<std::int64_t>(rel));
         Decoded d;
-        const ir::Ref ref = next_ref++;
-        d.stmts.push_back({ref, ir::Constant{*imm, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt,
-                           ir::StoreReg{gpr_from_index(reg_idx), ref, ir::OpSize::I64}});
+        d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
         d.bytes_consumed = cursor;
         return d;
     }
 
-    // --- MOV r/m64, r64 (0x89 /r) -----------------------------------------
-    if (opcode == 0x89u) {
-        if (!rex.w) return DecodeError::UnsupportedEncoding;
-        return decode_mov_rm_r(bytes, cursor, next_ref);
+    // --- JMP rel32 (E9 cd) -------------------------------------------------
+    if (opcode == 0xE9u) {
+        if (rex.present) return DecodeError::UnsupportedEncoding;
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+        auto imm = read_le<4>(bytes, cursor);
+        if (!imm) return DecodeError::TruncatedInput;
+        cursor += 4;
+        const std::int32_t rel = sign_extend_i32<4>(*imm);
+        const std::uint64_t target =
+            instruction_guest_pc + cursor + static_cast<std::uint64_t>(static_cast<std::int64_t>(rel));
+        Decoded d;
+        d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
+        d.bytes_consumed = cursor;
+        return d;
     }
 
-    // --- MOV r64, r/m64 (0x8B /r) -----------------------------------------
-    if (opcode == 0x8Bu) {
+    // --- Jcc rel8 (74/75 for JE/JNE; more conditions arrive later) --------
+    if (opcode == 0x74u || opcode == 0x75u) {
+        if (rex.present) return DecodeError::UnsupportedEncoding;
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+        auto imm = read_le<1>(bytes, cursor);
+        if (!imm) return DecodeError::TruncatedInput;
+        cursor += 1;
+        const std::int32_t rel = sign_extend_i32<1>(*imm);
+        const std::uint64_t target =
+            instruction_guest_pc + cursor + static_cast<std::uint64_t>(static_cast<std::int64_t>(rel));
+        const std::uint64_t fallthrough = instruction_guest_pc + cursor;
+        const ir::CondCode cc =
+            (opcode == 0x74u) ? ir::CondCode::Eq : ir::CondCode::Ne;
+        Decoded d;
+        d.stmts.push_back({std::nullopt, ir::CondJumpRel{cc, target, fallthrough}});
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    // --- CMP r/m64, r64 (48 39 /r, mod=11) --------------------------------
+    //
+    // mod != 11 (memory) left for a future session — the lowering doesn't
+    // have to change, but decoder-level it reuses the memory-address
+    // helper. Skipped to keep this commit tight.
+    if (opcode == 0x39u) {
         if (!rex.w) return DecodeError::UnsupportedEncoding;
-        return decode_mov_r_rm(bytes, cursor, next_ref);
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+        auto modrm = parse_modrm(bytes, cursor);
+        if (std::holds_alternative<DecodeError>(modrm)) {
+            return std::get<DecodeError>(modrm);
+        }
+        const auto& m = std::get<ModRmOperand>(modrm);
+        if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
+
+        Decoded d;
+        const ir::Ref ref_lhs = next_ref++;
+        const ir::Ref ref_rhs = next_ref++;
+        d.stmts.push_back({ref_lhs, ir::LoadReg{m.base, ir::OpSize::I64}});
+        d.stmts.push_back({ref_rhs, ir::LoadReg{gpr_from_index(m.reg), ir::OpSize::I64}});
+        d.stmts.push_back({std::nullopt,
+                           ir::CmpFlags{ref_lhs, ref_rhs, ir::OpSize::I64}});
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    // --- MOV r<size>, imm<size> (B8+rd) ------------------------------------
+    //
+    // REX.W = 1 => I64, imm64
+    // REX.W = 0, no 0x66 => I32, imm32 (zero-extend)
+    // REX.W = 0, 0x66 => I16, imm16
+    if (opcode >= 0xB8u && opcode <= 0xBFu) {
+        const unsigned reg_idx = opcode - 0xB8u;
+        const ir::OpSize size = rex.w ? ir::OpSize::I64
+                                     : (has_operand_size_override ? ir::OpSize::I16
+                                                                 : ir::OpSize::I32);
+
+        if (rex.w && has_operand_size_override) return DecodeError::UnsupportedEncoding;
+
+        std::size_t imm_size_bytes = 0;
+        if (size == ir::OpSize::I16) imm_size_bytes = 2;
+        else if (size == ir::OpSize::I32) imm_size_bytes = 4;
+        else imm_size_bytes = 8;
+
+        std::uint64_t imm = 0;
+        if (imm_size_bytes == 2) {
+            auto x = read_le<2>(bytes, cursor);
+            if (!x) return DecodeError::TruncatedInput;
+            cursor += 2;
+            imm = *x;
+        } else if (imm_size_bytes == 4) {
+            auto x = read_le<4>(bytes, cursor);
+            if (!x) return DecodeError::TruncatedInput;
+            cursor += 4;
+            imm = *x;
+        } else {
+            auto x = read_le<8>(bytes, cursor);
+            if (!x) return DecodeError::TruncatedInput;
+            cursor += 8;
+            imm = *x;
+        }
+
+        Decoded d;
+        const ir::Ref ref = next_ref++;
+        d.stmts.push_back({ref, ir::Constant{imm, size}});
+        d.stmts.push_back({std::nullopt,
+                           ir::StoreReg{gpr_from_index(reg_idx), ref, size}});
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    // --- MOV r/m<size>, r<size> (0x89 /r) --------------------------------
+    if (opcode == 0x89u) {
+        const ir::OpSize size = rex.w ? ir::OpSize::I64
+                                      : (has_operand_size_override ? ir::OpSize::I16
+                                                                  : ir::OpSize::I32);
+        if (size == ir::OpSize::I64 && has_operand_size_override) {
+            return DecodeError::UnsupportedEncoding;
+        }
+        return decode_mov_rm_r(bytes, cursor, next_ref, size);
+    }
+
+    // --- MOV r<size>, r/m<size> (0x8A /r) --------------------------------
+    if (opcode == 0x8Au) {
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+        return decode_mov_r_rm(bytes, cursor, next_ref, ir::OpSize::I8);
+    }
+
+    // --- MOV r/m<size>, r<size> (0x88 /r) --------------------------------
+    if (opcode == 0x88u) {
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+        return decode_mov_rm_r(bytes, cursor, next_ref, ir::OpSize::I8);
+    }
+
+    // --- MOV r<size>, r/m<size> (0x8B /r) --------------------------------
+    if (opcode == 0x8Bu) {
+        const ir::OpSize size = rex.w ? ir::OpSize::I64
+                                      : (has_operand_size_override ? ir::OpSize::I16
+                                                                  : ir::OpSize::I32);
+        if (size == ir::OpSize::I64 && has_operand_size_override) {
+            return DecodeError::UnsupportedEncoding;
+        }
+        return decode_mov_r_rm(bytes, cursor, next_ref, size);
+    }
+
+    // --- MOV r<size>, imm<size> (B0+rd for I8, B8+rd for I16/I32/I64) ----
+    if (opcode >= 0xB0u && opcode <= 0xB7u) {
+        if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
+
+        const unsigned reg_idx = opcode - 0xB0u;
+        auto imm = read_le<1>(bytes, cursor);
+        if (!imm) return DecodeError::TruncatedInput;
+        cursor += 1;
+
+        Decoded d;
+        const ir::Ref ref = next_ref++;
+        d.stmts.push_back({ref, ir::Constant{*imm, ir::OpSize::I8}});
+        d.stmts.push_back({std::nullopt,
+                           ir::StoreReg{gpr_from_index(reg_idx), ref, ir::OpSize::I8}});
+        d.bytes_consumed = cursor;
+        return d;
     }
 
     // --- ALU r/m64, r64 (shared shape, register-direct only for MVP) ------

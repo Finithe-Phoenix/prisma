@@ -97,6 +97,15 @@ std::string pretty_print(const Op& op) {
             os << ", bb" << x.if_true << ", bb" << x.if_false;
         } else if constexpr (std::is_same_v<T, Return>) {
             os << "ret";
+        } else if constexpr (std::is_same_v<T, CmpFlags>) {
+            os << "cmpflags." << size_suffix(x.size) << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, JumpRel>) {
+            os << "jmprel 0x" << std::hex << x.target_guest_pc;
+        } else if constexpr (std::is_same_v<T, CondJumpRel>) {
+            os << "condjmprel." << cc_name(x.cc)
+               << " taken=0x" << std::hex << x.target_guest_pc
+               << ", fallthrough=0x" << std::hex << x.fallthrough_guest_pc;
         }
     }, op);
     return os.str();

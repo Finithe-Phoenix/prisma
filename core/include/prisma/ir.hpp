@@ -112,6 +112,36 @@ struct Jump     { std::uint32_t target_block; };
 struct CondJump { Ref cond; std::uint32_t if_true; std::uint32_t if_false; };
 struct Return   {};
 
+// ---- Guest-PC-based control flow (MVP, no basic-block index yet) -------
+//
+// CmpFlags is a side-effecting op: it sets the x86 flags bank implicitly
+// (no SSA result ref). Lowering emits an ARM64 `cmp` that leaves NZCV in
+// a state CondJumpRel can immediately consume. The invariant is that
+// CondJumpRel must follow a CmpFlags (or another flag-setting op in the
+// future) with no flag-clobbering op in between. The Lowerer enforces
+// this; the decoder produces IR that respects it by construction.
+//
+// JumpRel / CondJumpRel terminate the current block and cause the block
+// to return `target_guest_pc` (taken) or `fallthrough_guest_pc` (not
+// taken, cond only) to the caller in the convention x0. The dispatcher
+// (Fase 1+) uses that value to resume translation at the next PC.
+
+struct CmpFlags {
+    Ref   lhs;
+    Ref   rhs;
+    OpSize size;
+};
+
+struct JumpRel {
+    std::uint64_t target_guest_pc;
+};
+
+struct CondJumpRel {
+    CondCode      cc;
+    std::uint64_t target_guest_pc;
+    std::uint64_t fallthrough_guest_pc;
+};
+
 using Op = std::variant<
     Constant,
     LoadReg, StoreReg,
@@ -119,7 +149,8 @@ using Op = std::variant<
     Compare,
     LoadMem, StoreMem,
     LoadMemTSO, StoreMemTSO,
-    Jump, CondJump, Return
+    Jump, CondJump, Return,
+    CmpFlags, JumpRel, CondJumpRel
 >;
 
 // ---------------------------------------------------------------------------
@@ -170,6 +201,10 @@ bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept;
 bool operator==(const Jump& a, const Jump& b) noexcept;
 bool operator==(const CondJump& a, const CondJump& b) noexcept;
 bool operator==(const Return&, const Return&) noexcept;
+
+bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept;
+bool operator==(const JumpRel& a, const JumpRel& b) noexcept;
+bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

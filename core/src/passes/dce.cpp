@@ -34,9 +34,9 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::BinOp>) return true;
         else if constexpr (std::is_same_v<T, ir::Compare>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadMem>) return true;
-        // Note on LoadMemTSO: considered impure here until the TSO pass
-        // proves safety. StoreReg / StoreMem* / control flow / Return are
-        // always impure.
+        // Everything else is impure: StoreReg, StoreMem*, LoadMemTSO,
+        // Jump, CondJump, Return, CmpFlags (sets implicit flags),
+        // JumpRel / CondJumpRel (control-flow transfer).
         else return false;
     }, op);
 }
@@ -74,6 +74,13 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.cond);
         } else if constexpr (std::is_same_v<T, ir::Return>) {
             (void)x;
+        } else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::JumpRel>) {
+            (void)x;
+        } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
+            (void)x;  // no SSA operands; cc + PCs are constants.
         }
     }, op);
 }

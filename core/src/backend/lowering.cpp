@@ -158,6 +158,38 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.store_release(rv, raddr, op.size);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
+            // Side-effecting: emits ARM64 `cmp`, leaves NZCV set for the
+            // NEXT CondJumpRel / SetCC. No result ref; no scratch
+            // allocated.
+            arm64::Reg rl, rr;
+            if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "CmpFlags.lhs"};
+            if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "CmpFlags.rhs"};
+            emitter_.cmp(rl, rr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::JumpRel>) {
+            // Load the absolute guest target into x0 and return from the
+            // block. The future dispatcher uses x0 as "next guest PC".
+            emitter_.mov_imm64(arm64::Reg::X0, op.target_guest_pc);
+            emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
+            // Invariant: some earlier op (CmpFlags in MVP) set NZCV and
+            // nothing has clobbered it since. movz / movk used by
+            // mov_imm64 don't touch flags, so we can use csel safely.
+            //
+            //   mov x0, fallthrough
+            //   mov x1, target
+            //   csel x0, x1, x0, <cc>    ; x0 = cc ? target : fallthrough
+            //   ret
+            emitter_.mov_imm64(arm64::Reg::X0, op.fallthrough_guest_pc);
+            emitter_.mov_imm64(arm64::Reg::X1, op.target_guest_pc);
+            emitter_.csel(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X0, op.cc);
+            emitter_.ret();
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Return>) {
             // MVP: lower to a bare ARM64 ret. The caller (thunk builder)
             // is responsible for any calling-convention marshalling — the

@@ -26,10 +26,20 @@
 //         Rejected for MVP: rm=100 (SIB required), mod=00 rm=101
 //         (disp32 absolute).
 //
-// The decoder is deliberately minimal: no prefixes other than REX.W, no
-// memory operands (mod != 11 is rejected), no R8..R15 (REX.R / REX.B must
-// be zero). Each of these will be lifted in future RFCs as the opcode set
-// grows. The shape of the API does not change.
+//   Control flow (produce absolute-PC ir ops)
+//     * CMP r/m64, r64   (48 39 /r, mod=11)          3 bytes  → CmpFlags
+//     * JMP rel8         (EB cb)                     2 bytes  → JumpRel
+//     * JMP rel32        (E9 cd)                     5 bytes  → JumpRel
+//     * JE  rel8         (74 cb)                     2 bytes  → CondJumpRel(Eq)
+//     * JNE rel8         (75 cb)                     2 bytes  → CondJumpRel(Ne)
+//
+// The decoder is deliberately minimal but now supports a small subset of
+// prefixes:
+//   * 0x66 for selected size-sensitive MOV forms (I16),
+//   * REX.W for the 64-bit MOV/ALU variants.
+// No SIB / RIP-relative / R8..R15 yet (REX.R / REX.B / REX.X must be
+// zero). All of these constraints remain future-work items; the API stays
+// stable.
 //
 // The decoder is pure: it does not mmap, execute, or touch global state.
 // Given the same input + `next_ref`, it produces the same output.
@@ -80,9 +90,16 @@ struct Decoded {
 // `next_ref` is used-and-incremented for every new SSA value bound by the
 // returned statements. Caller owns the counter so it can be shared across
 // multiple `decode_one` calls.
+//
+// `instruction_guest_pc` is the absolute guest PC of the first byte of
+// the instruction. Only relevant for branch instructions (JMP / Jcc),
+// which need to translate rel8 / rel32 displacements into absolute
+// target PCs. Callers that don't care about branch targets (the many
+// tests decoding non-jump instructions) can leave it at the default 0.
 [[nodiscard]] std::variant<Decoded, DecodeError> decode_one(
     std::span<const std::uint8_t> bytes,
-    ir::Ref& next_ref
+    ir::Ref& next_ref,
+    std::uint64_t instruction_guest_pc = 0
 );
 
 }  // namespace prisma::decoder

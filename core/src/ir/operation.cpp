@@ -43,6 +43,18 @@ bool operator==(const Return&, const Return&) noexcept {
     return true;
 }
 
+bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
+bool operator==(const JumpRel& a, const JumpRel& b) noexcept {
+    return a.target_guest_pc == b.target_guest_pc;
+}
+bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept {
+    return a.cc == b.cc
+        && a.target_guest_pc == b.target_guest_pc
+        && a.fallthrough_guest_pc == b.fallthrough_guest_pc;
+}
+
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;
 }

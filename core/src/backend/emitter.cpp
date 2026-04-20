@@ -133,23 +133,38 @@ void Emitter::store_release(arm64::Reg rv, arm64::Reg raddr, ir::OpSize size) {
     }
 }
 
-void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
-    // Map Prisma's CondCode to vixl's Condition. ARM64 / x86 signed vs
-    // unsigned mnemonics line up cleanly once you know the mapping.
-    vixl_aa::Condition c{};
+namespace {
+
+// Shared helper: Prisma CondCode → vixl Condition. ARM64 unsigned / signed
+// mnemonics align with x86 once you know the mapping.
+vixl_aa::Condition to_vixl_cond(ir::CondCode cc) noexcept {
     switch (cc) {
-        case ir::CondCode::Eq:  c = vixl_aa::eq; break;
-        case ir::CondCode::Ne:  c = vixl_aa::ne; break;
-        case ir::CondCode::Ult: c = vixl_aa::lo; break;  // unsigned <
-        case ir::CondCode::Ule: c = vixl_aa::ls; break;  // unsigned <=
-        case ir::CondCode::Ugt: c = vixl_aa::hi; break;  // unsigned >
-        case ir::CondCode::Uge: c = vixl_aa::hs; break;  // unsigned >=
-        case ir::CondCode::Slt: c = vixl_aa::lt; break;
-        case ir::CondCode::Sle: c = vixl_aa::le; break;
-        case ir::CondCode::Sgt: c = vixl_aa::gt; break;
-        case ir::CondCode::Sge: c = vixl_aa::ge; break;
+        case ir::CondCode::Eq:  return vixl_aa::eq;
+        case ir::CondCode::Ne:  return vixl_aa::ne;
+        case ir::CondCode::Ult: return vixl_aa::lo;  // unsigned <
+        case ir::CondCode::Ule: return vixl_aa::ls;  // unsigned <=
+        case ir::CondCode::Ugt: return vixl_aa::hi;  // unsigned >
+        case ir::CondCode::Uge: return vixl_aa::hs;  // unsigned >=
+        case ir::CondCode::Slt: return vixl_aa::lt;
+        case ir::CondCode::Sle: return vixl_aa::le;
+        case ir::CondCode::Sgt: return vixl_aa::gt;
+        case ir::CondCode::Sge: return vixl_aa::ge;
     }
-    impl_->masm.Cset(to_vixl_x(rd), c);
+    return vixl_aa::nv;  // unreachable
+}
+
+}  // namespace
+
+void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
+    impl_->masm.Cset(to_vixl_x(rd), to_vixl_cond(cc));
+}
+
+void Emitter::csel(arm64::Reg rd, arm64::Reg rn_true, arm64::Reg rn_false,
+                   ir::CondCode cc) {
+    impl_->masm.Csel(to_vixl_x(rd),
+                     to_vixl_x(rn_true),
+                     to_vixl_x(rn_false),
+                     to_vixl_cond(cc));
 }
 
 void Emitter::ret(arm64::Reg rn) {
