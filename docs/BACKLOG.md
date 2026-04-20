@@ -274,7 +274,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
-- [ ] F1-BK-008: Register spill / reload to stack frame slots.
+- [~|claude] F1-BK-008: Register spill / reload to stack frame slots.
 - [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
 - [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.
