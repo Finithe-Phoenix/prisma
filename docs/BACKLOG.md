@@ -277,13 +277,13 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-008: Register spill / reload to stack frame slots.
 - [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
-- [ ] F1-BK-011: Emitter for MUL/DIV multi-register output.
+- [~|claude] F1-BK-011: Emitter for MUL/DIV multi-register output.
 - [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
 - [ ] F1-BK-013: Emitter for floating-point (fadd, fmul, fdiv).
 - [x] (pending commit) F1-BK-014: Emitter for rotates (ror / rol).
 - [x] (pending commit) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
-- [ ] F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
-- [ ] F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
+- [~|claude] F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
+- [~|claude] F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
 - [ ] F1-BK-018: Literal pool management.
 - [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
