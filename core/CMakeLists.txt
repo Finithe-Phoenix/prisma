@@ -154,6 +154,8 @@ add_library(prisma_ir STATIC
     src/ir/operation.cpp
     src/ir/pretty_print.cpp
     src/ir/validate.cpp
+    src/ir/serialize.cpp
+    src/ir/serialize_crc.cpp
 )
 
 target_include_directories(prisma_ir
@@ -389,6 +391,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes_more.cpp
         tests/test_passes_mem.cpp
         tests/test_ir_validate.cpp
+        tests/test_ir_serialize.cpp
         tests/test_host_features.cpp
         tests/test_cache_stress.cpp
         tests/test_sha256.cpp
