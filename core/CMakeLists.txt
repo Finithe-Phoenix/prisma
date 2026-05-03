@@ -326,6 +326,7 @@ prisma_add_vixl(prisma_vixl SOURCE_DIR ${vixl_src_SOURCE_DIR})
 add_library(prisma_emitter STATIC
     src/backend/emitter.cpp
     src/backend/lowering.cpp
+    src/backend/abi.cpp
 )
 
 target_include_directories(prisma_emitter
@@ -380,6 +381,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes.cpp
         tests/test_translation_cache.cpp
         tests/test_lowering.cpp
+        tests/test_abi.cpp
         tests/test_signal_handler.cpp
         tests/test_translator.cpp
         tests/test_dispatcher.cpp

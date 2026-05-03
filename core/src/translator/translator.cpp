@@ -8,6 +8,7 @@
 #include <utility>
 #include <variant>
 
+#include "prisma/abi.hpp"
 #include "prisma/cpu_state.hpp"
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
@@ -65,52 +66,16 @@ bool is_block_terminator(const ir::Op& op) noexcept {
 // the stack before `ret`.
 // ---------------------------------------------------------------------
 
-constexpr arm64::Reg kStatePtrReg = arm64::Reg::X27;
+// Block prologue / epilogue live in `prisma::backend::abi` (F1-BK-009)
+// so future inline guest-CALL sites can reuse the same callee-saved
+// discipline. These thin forwarders keep the call sites readable.
 
-void emit_prologue(backend::Emitter& em) {
-    // Save callee-saved regs we will clobber (pushed as pairs so SP
-    // stays 16-byte aligned). The `push_pair` helper is stp+pre-index.
-    em.push_pair(arm64::Reg::X29, arm64::Reg::X30);  // FP + LR
-    em.push_pair(arm64::Reg::X27, arm64::Reg::X28);  // state ptr holder + spare
-    em.push_pair(arm64::Reg::X25, arm64::Reg::X26);  // guest r14, r15
-    em.push_pair(arm64::Reg::X23, arm64::Reg::X24);  // guest r12, r13
-    em.push_pair(arm64::Reg::X21, arm64::Reg::X22);  // guest r10, r11
-    em.push_pair(arm64::Reg::X19, arm64::Reg::X20);  // guest r8,  r9
-
-    // x27 = x0  (preserve the state pointer across the body)
-    em.mov_reg_reg(kStatePtrReg, arm64::Reg::X0);
-
-    // Load 16 guest GPRs from state->gpr[] into their pinned host regs.
-    // (No host reg overlaps with x27 here because host_reg_for skips x18
-    // and lands in x10..x17, x19..x26.)
-    for (std::size_t i = 0; i < ir::kGprCount; ++i) {
-        const ir::Gpr g = static_cast<ir::Gpr>(i);
-        const arm64::Reg host = arm64::host_reg_for(g);
-        const std::int32_t off = runtime::CpuStateFrame::gpr_offset_bytes(g);
-        em.load_offset(host, kStatePtrReg, off);
-    }
+inline void emit_prologue(backend::Emitter& em) {
+    backend::abi::emit_block_prologue(em);
 }
 
-void emit_epilogue_and_ret(backend::Emitter& em) {
-    // Store pinned host regs back to the state frame. None of these
-    // writes touch x0 (our next-PC return value) or x27 (state ptr,
-    // still valid until we finish using it).
-    for (std::size_t i = 0; i < ir::kGprCount; ++i) {
-        const ir::Gpr g = static_cast<ir::Gpr>(i);
-        const arm64::Reg host = arm64::host_reg_for(g);
-        const std::int32_t off = runtime::CpuStateFrame::gpr_offset_bytes(g);
-        em.store_offset(host, kStatePtrReg, off);
-    }
-
-    // Restore callee-saved regs in reverse push order, then ret.
-    em.pop_pair(arm64::Reg::X19, arm64::Reg::X20);
-    em.pop_pair(arm64::Reg::X21, arm64::Reg::X22);
-    em.pop_pair(arm64::Reg::X23, arm64::Reg::X24);
-    em.pop_pair(arm64::Reg::X25, arm64::Reg::X26);
-    em.pop_pair(arm64::Reg::X27, arm64::Reg::X28);
-    em.pop_pair(arm64::Reg::X29, arm64::Reg::X30);
-
-    em.ret();
+inline void emit_epilogue_and_ret(backend::Emitter& em) {
+    backend::abi::emit_block_epilogue_and_ret(em);
 }
 
 std::variant<Decoded, decoder::DecodeError>
