@@ -248,15 +248,15 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
 - [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
-- [ ] F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
-- [ ] F1-IR-011: Add `Truncate{value, to_size}`.
-- [ ] F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
+- [x] (5bfaa98) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
+- [x] (5bfaa98) F1-IR-011: Add `Truncate{value, to_size}`.
+- [x] (5bfaa98) F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
 - [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
 - [ ] F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [ ] F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
 - [x] (pending commit) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
-- [x] (020eaa3) F1-IR-017: IR serialization to a compact binary form for cache storage.
-- [x] (020eaa3) F1-IR-018: IR deserialization + round-trip tests.
+- [x] (e7ac26c) F1-IR-017: IR serialization to a compact binary form for cache storage.
+- [x] (e7ac26c) F1-IR-018: IR deserialization + round-trip tests.
 - [ ] F1-IR-019: Memoise pretty-printed form for test stability.
 - [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
 - [ ] F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list.
@@ -269,13 +269,13 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [x] F1-BK-001: Emitter with mov*, ALU 3-reg, cmp+cset, memory 4-size.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
-- [~|claude] F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
-- [~|claude] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
+- [x] (61cc53f) F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
+- [x] (61cc53f) F1-BK-004: Lowerer for CondJump (cmp + cbnz + b with label). (CondJumpFlags-on-NZCV variant deferred until F1-IR-007 lands the new IR op.)
 - [x] (pending commit) F1-BK-005: Emitter label management (vixl Label class).
-- [~|claude] F1-BK-006: Basic block → CFG lowering with label fix-up.
+- [x] (61cc53f) F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
 - [x] (pending commit) F1-BK-008: Register spill / reload to stack frame slots.
-- [~|claude] F1-BK-009: Callee-saved register save / restore around guest calls.
+- [x] (b550cbc) F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
 - [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.
 - [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
@@ -288,8 +288,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
-- [~|claude] F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
-- [~|claude] F1-BK-023: Lowering of Fence (dmb ish / dsb).
+- [x] (5bfaa98) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
+- [x] (5bfaa98) F1-BK-023: Lowering of Fence (dmb ish / dsb).
 - [ ] F1-BK-024: Lowering of Select via csel.
 
 ### F1-PS — Passes
@@ -323,7 +323,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-RT-007: Trampoline between translator and compiled blocks.
 - [x] F1-RT-008: Return-address stack for guest CALL / RET tracking.
 - [ ] F1-RT-009: Thread-safe JitBuffer pool (many blocks).
-- [~|claude] F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
+- [x] (cfeb231) F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
 - [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
 - [ ] F1-RT-013: Guest stack pointer management (rsp).
