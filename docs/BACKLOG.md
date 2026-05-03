@@ -255,8 +255,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [ ] F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
 - [x] (pending commit) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
-- [ ] F1-IR-017: IR serialization to a compact binary form for cache storage.
-- [ ] F1-IR-018: IR deserialization + round-trip tests.
+- [~|claude] F1-IR-017: IR serialization to a compact binary form for cache storage.
+- [~|claude] F1-IR-018: IR deserialization + round-trip tests.
 - [ ] F1-IR-019: Memoise pretty-printed form for test stability.
 - [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
 - [ ] F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list.
@@ -269,13 +269,13 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [x] F1-BK-001: Emitter with mov*, ALU 3-reg, cmp+cset, memory 4-size.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
-- [ ] F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
-- [ ] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
+- [~|claude] F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
+- [~|claude] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
 - [x] (pending commit) F1-BK-005: Emitter label management (vixl Label class).
-- [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
+- [~|claude] F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
 - [x] (pending commit) F1-BK-008: Register spill / reload to stack frame slots.
-- [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
+- [~|claude] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
 - [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.
 - [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
@@ -288,8 +288,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
-- [ ] F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
-- [ ] F1-BK-023: Lowering of Fence (dmb ish / dsb).
+- [~|claude] F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
+- [~|claude] F1-BK-023: Lowering of Fence (dmb ish / dsb).
 - [ ] F1-BK-024: Lowering of Select via csel.
 
 ### F1-PS — Passes
@@ -323,7 +323,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-RT-007: Trampoline between translator and compiled blocks.
 - [x] F1-RT-008: Return-address stack for guest CALL / RET tracking.
 - [ ] F1-RT-009: Thread-safe JitBuffer pool (many blocks).
-- [ ] F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
+- [~|claude] F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
 - [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
 - [ ] F1-RT-013: Guest stack pointer management (rsp).
