@@ -1,5 +1,5 @@
 ---
-id: 0009
+id: 0010
 title: Page-protection-based SMC detection (SmcGuard)
 status: accepted
 authors: [Danny]
@@ -9,7 +9,7 @@ supersedes: []
 superseded_by: null
 ---
 
-# RFC 0009: Page-protection-based SMC detection (SmcGuard)
+# RFC 0010: Page-protection-based SMC detection (SmcGuard)
 
 ## Summary
 

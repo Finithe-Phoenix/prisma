@@ -15,7 +15,7 @@
 //      on retry, recording the page in a per-thread "needs reprotect"
 //      flag the dispatcher consults on its next round trip.
 //
-// See docs/rfc/0009-smc-page-protection.md for the design rationale,
+// See docs/rfc/0010-smc-page-protection.md for the design rationale,
 // trade-offs, and the alternatives considered.
 
 #pragma once
