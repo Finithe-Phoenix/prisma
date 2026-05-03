@@ -251,7 +251,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (5bfaa98) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
 - [x] (5bfaa98) F1-IR-011: Add `Truncate{value, to_size}`.
 - [x] (5bfaa98) F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
-- [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
+- [x] (6ccef14) F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
 - [x] (c9c428c) F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [ ] F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
 - [x] (pending commit) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
