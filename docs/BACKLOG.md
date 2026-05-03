@@ -258,7 +258,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (e7ac26c) F1-IR-017: IR serialization to a compact binary form for cache storage.
 - [x] (e7ac26c) F1-IR-018: IR deserialization + round-trip tests.
 - [x] (c9c428c) F1-IR-019: Memoise pretty-printed form for test stability.
-- [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
+- [x] (0a0e8d0) F1-IR-020: IR profiler instrumentation points (future ML features).
 - [x] (pre-existing) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list. (ir.hpp defines `struct BasicBlock { uint32_t id; vector<Stmt> stmts; }`.)
 - [x] (pre-existing) F1-IR-022: Add `Function` with multiple blocks + entry block. (ir.hpp defines `struct Function { vector<BasicBlock> blocks; uint32_t entry; }`.)
 - [x] (f7b6cad) F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
