@@ -181,8 +181,10 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CmpFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
-            // Constant, LoadReg, Jump, JumpRel, CondJumpRel, Return have
-            // no operand refs — nothing to bump.
+            else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
+            // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
+            // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap have no
+            // operand refs — nothing to bump.
         }, s.op);
     }
 }
@@ -216,6 +218,7 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     free_regs_.clear();
     spilled_to_slot_.clear();
     free_slots_.clear();
+    block_labels_.clear();
     peak_live_   = 0;
     peak_spills_ = 0;
 
@@ -242,6 +245,52 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
         LowerResult r = lower_stmt(stmts[stmt_index_]);
         if (!r.success) return r;
         expire_intervals();
+    }
+    return {};
+}
+
+LowerResult Lowerer::lower(const ir::Function& fn) {
+    // Per-call reset, identical to the flat overload.
+    ref_to_scratch_.clear();
+    stmt_temporaries_.clear();
+    free_regs_.clear();
+    spilled_to_slot_.clear();
+    free_slots_.clear();
+    block_labels_.clear();
+    peak_live_   = 0;
+    peak_spills_ = 0;
+    if (options_.spill_slots > 0) {
+        free_slots_.reserve(options_.spill_slots);
+        for (unsigned i = options_.spill_slots; i-- > 0;) free_slots_.push_back(i);
+    }
+
+    // Pre-create one Label per block so forward branches resolve.
+    block_labels_.reserve(fn.blocks.size());
+    for (const auto& b : fn.blocks) {
+        block_labels_[b.id] = emitter_.create_label();
+    }
+
+    // Per-block: rebuild liveness, refill the scratch pool, bind the
+    // label, then lower the block's stmts. SSA refs are block-local in
+    // the current MVP (no cross-block phi support yet — F1-IR-021/022
+    // will introduce that), so register state is reset between blocks.
+    for (const auto& b : fn.blocks) {
+        ref_to_scratch_.clear();
+        stmt_temporaries_.clear();
+        free_regs_.clear();
+        free_regs_.reserve(kScratchPoolSize);
+        for (unsigned i = kScratchPoolSize; i-- > 0;) {
+            free_regs_.push_back(scratch_reg(i));
+        }
+        compute_liveness(b.stmts);
+
+        emitter_.bind(block_labels_.at(b.id));
+
+        for (stmt_index_ = 0; stmt_index_ < b.stmts.size(); ++stmt_index_) {
+            LowerResult r = lower_stmt(b.stmts[stmt_index_]);
+            if (!r.success) return r;
+            expire_intervals();
+        }
     }
     return {};
 }
@@ -449,9 +498,84 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::Jump>) {
+            // F1-BK-003. Only valid inside a Function lowering; the flat
+            // overload has an empty block_labels_ and falls through.
+            auto it = block_labels_.find(op.target_block);
+            if (it == block_labels_.end()) {
+                return {false, LowerError::UnsupportedOp,
+                        "Jump outside Function lowering (no block label)"};
+            }
+            emitter_.branch(it->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CondJump>) {
+            // F1-BK-004. Cond is an SSA Ref holding 0 or 1 (typically the
+            // result of a Compare). Lower as `cbnz xcond, label_true; b
+            // label_false`. cbnz / b have the same range envelope so a
+            // veneer fires for either or neither, never asymmetrically.
+            arm64::Reg rc;
+            if (!reg_of(op.cond, rc)) {
+                return {false, LowerError::DanglingRef, "CondJump.cond"};
+            }
+            auto it_t = block_labels_.find(op.if_true);
+            auto it_f = block_labels_.find(op.if_false);
+            if (it_t == block_labels_.end() || it_f == block_labels_.end()) {
+                return {false, LowerError::UnsupportedOp,
+                        "CondJump outside Function lowering (no block label)"};
+            }
+            emitter_.cbnz(rc, it_t->second);
+            emitter_.branch(it_f->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadSegBase>) {
+            // Placeholder lowering: zero the destination. The real
+            // implementation reads from a runtime-supplied segment-base
+            // table, but that table doesn't exist yet (the runtime hook
+            // is part of F1-RT-014 follow-up work). Producing zero
+            // matches the semantics of "TLS not initialised" and is
+            // safe for unit tests that exercise nothing but the IR
+            // shape. See lowerer regression test for the assertion.
+            arm64::Reg rd;
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadSegBase requires a result ref"};
+            }
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadSegBase"};
+            }
+            emitter_.mov_imm64(rd, 0);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CallRel>
+                        || std::is_same_v<T, ir::CallReg>
+                        || std::is_same_v<T, ir::RetAdjusted>) {
+            // Placeholder terminator until the dispatcher learns about
+            // guest call/ret. For now: park the (next) target PC in x0
+            // and ret to the dispatcher; it'll loop back in for the
+            // next translation. Stack management for RetAdjusted's
+            // pop_bytes is deferred to F1-RT-008 follow-up.
+            std::uint64_t next_pc = 0;
+            if constexpr (std::is_same_v<T, ir::CallRel>) {
+                next_pc = op.target_guest_pc;
+            } else if constexpr (std::is_same_v<T, ir::CallReg>) {
+                arm64::Reg rt;
+                if (!reg_of(op.target, rt)) {
+                    return {false, LowerError::DanglingRef, "CallReg.target"};
+                }
+                emitter_.mov_reg_reg(arm64::Reg::X0, rt);
+                if (options_.emit_ret_on_terminator) emitter_.ret();
+                return {};
+            }
+            // CallRel / RetAdjusted both fall through with next_pc above.
+            emitter_.mov_imm64(arm64::Reg::X0, next_pc);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
         else {
-            // Compare, Jump, CondJump, LoadMem, StoreMem, LoadMemTSO,
-            // StoreMemTSO — deferred to future sessions.
+            // Compare, LoadMem, StoreMem, LoadMemTSO, StoreMemTSO are
+            // already lowered above. Anything reaching here is genuinely
+            // unsupported.
             return {false, LowerError::UnsupportedOp, "op not yet lowered"};
         }
     }, s.op);

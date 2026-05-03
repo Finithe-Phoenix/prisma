@@ -239,6 +239,14 @@ public:
     // most-recent flag-producing instruction (CmpFlags in our IR).
     void branch_cc(Label label, ir::CondCode cc);
 
+    // Compare-and-branch on a 64-bit register without touching NZCV.
+    // `cbnz(r, label)` branches when r != 0; `cbz` when r == 0. These
+    // are how we lower `CondJump{cond_ref, true, false}` where the
+    // condition is an SSA Ref (a 0/1 value materialised by Compare),
+    // not a flag. Range is ±1 MiB; vixl picks the encoding.
+    void cbnz(arm64::Reg r, Label label);
+    void cbz (arm64::Reg r, Label label);
+
     // --- Literal pool management (F1-BK-018) -------------------------------
     //
     // vixl accumulates literals (64-bit immediates used by `ldr r, =#imm`

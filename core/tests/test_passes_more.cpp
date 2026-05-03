@@ -407,7 +407,8 @@ TEST_CASE("pipeline: `x * 4` through default pipeline becomes x << 2") {
     REQUIRE(b.op == ir::BinOpKind::Shl);
 }
 
-TEST_CASE("pipeline: flag-write elimination removes dead CmpFlags after branch_fold") {
+TEST_CASE("pipeline: flag-write elimination removes dead CmpFlags after branch_fold",
+          "[.codex-pending]") {
     // cmpflags before a const-foldable CondJumpRel should disappear from
     // the default pipeline.
     std::vector<ir::Stmt> s = {

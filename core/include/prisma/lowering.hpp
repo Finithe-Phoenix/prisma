@@ -94,6 +94,22 @@ public:
     // an error the Emitter state is undefined — throw it away.
     [[nodiscard]] LowerResult lower(std::span<const ir::Stmt> stmts);
 
+    // Lower a multi-block ir::Function with explicit CFG (F1-BK-003,
+    // F1-BK-004, F1-BK-006). Pre-creates one Emitter::Label per
+    // BasicBlock, walks the blocks in their stored order, binds each
+    // block's label, and lowers its statements. Within a block,
+    // Jump{target_block} emits an unconditional `b <label>` and
+    // CondJump{cond, if_true, if_false} emits `cbnz xcond, label_true; b
+    // label_false`. vixl's MacroAssembler resolves forward references at
+    // finalize time — that is the "label fix-up" of F1-BK-006.
+    //
+    // The flat lower(stmts) overload above is unchanged: it still rejects
+    // Jump / CondJump with UnsupportedOp because no block context exists.
+    //
+    // This call mutates internal state (ref allocator, block label map)
+    // exactly like the flat lower(); they share private members.
+    [[nodiscard]] LowerResult lower(const ir::Function& fn);
+
     // For tests: the peak number of scratch registers that were
     // simultaneously live during the last call to lower(). A value of 10
     // means the pool was saturated.
@@ -163,6 +179,12 @@ private:
     std::unordered_map<ir::Ref, std::uint32_t> spilled_to_slot_;
     std::vector<std::uint32_t>                 free_slots_;
     unsigned                                   peak_spills_{0};
+
+    // Per-Function lowering: maps BasicBlock id → its Emitter::Label.
+    // Empty for the flat lower(span<Stmt>) path; non-empty (and
+    // populated up-front) for the lower(Function) path. Looked up by
+    // Jump / CondJump lowering inside lower_stmt.
+    std::unordered_map<std::uint32_t, Emitter::Label> block_labels_;
 
 public:
     // For tests: peak number of slots in concurrent use during the
