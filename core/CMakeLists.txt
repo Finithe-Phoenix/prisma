@@ -157,6 +157,7 @@ add_library(prisma_ir STATIC
     src/ir/serialize.cpp
     src/ir/serialize_crc.cpp
     src/ir/cfg.cpp
+    src/ir/dominators.cpp
 )
 
 target_include_directories(prisma_ir
@@ -387,6 +388,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_lowering.cpp
         tests/test_abi.cpp
         tests/test_cfg.cpp
+        tests/test_dominators.cpp
         tests/test_signal_handler.cpp
         tests/test_smc_guard.cpp
         tests/test_translator.cpp
