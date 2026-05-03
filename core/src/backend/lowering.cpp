@@ -613,6 +613,12 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::GuestPc>) {
+            // Pseudo-op: no machine code. Tracked in ir::Stmt for cache
+            // keying / debugging only. The presence of this op never
+            // affects emitted bytes.
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Fence>) {
             // F1-BK-023. Map x86 fences to ARM64 DMB ISH variants.
             switch (op.kind) {

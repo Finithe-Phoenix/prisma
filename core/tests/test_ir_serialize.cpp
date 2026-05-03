@@ -143,6 +143,15 @@ TEST_CASE("ir_serialize: Extend / Truncate / Fence round-trip", "[ir_serialize]"
         Op{Fence{FenceKind::Sfence}}});
 }
 
+TEST_CASE("ir_serialize: GuestPc round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{GuestPc{0x0000'0000'0040'1000ULL}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{GuestPc{0xFFFF'FFFF'FFFF'FFFFULL}}});  // edge: max u64
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{GuestPc{0u}}});                         // edge: zero
+}
+
 TEST_CASE("ir_serialize: large mixed program round-trip", "[ir_serialize]") {
     const std::vector<Stmt> program = {
         // 0-3: pure values

@@ -260,6 +260,22 @@ struct Fence {
     FenceKind kind;
 };
 
+// ---- Diagnostics / cache keying --------------------------------------
+//
+// `GuestPc{pc}` is a pseudo-op that records the original guest program
+// counter for debugging, cache lookup, and (later) profile-guided
+// inlining. It has no side effects in the IR semantics — the lowerer
+// emits no code for it. Validators and serializers treat it as a
+// 9-byte tag (1 byte op tag + 8 byte little-endian PC).
+//
+// Decoders may insert one at the start of every guest instruction to
+// preserve original-source mapping across passes; passes preserve
+// these in place but never duplicate them.
+
+struct GuestPc {
+    std::uint64_t pc;
+};
+
 enum class TrapKind : std::uint8_t {
     Sigtrap = 0,  // INT3 — debugger trap.
     Sigill,       // UD2 — illegal opcode.
@@ -284,7 +300,8 @@ using Op = std::variant<
     CmpFlags, JumpRel, CondJumpRel,
     CallRel, CallReg, RetAdjusted,
     Cpuid, Syscall, Trap,
-    Extend, Truncate, Fence
+    Extend, Truncate, Fence,
+    GuestPc
 >;
 
 // ---------------------------------------------------------------------------
@@ -314,6 +331,16 @@ struct Function {
 [[nodiscard]] std::string pretty_print(const Stmt& stmt);
 [[nodiscard]] std::string pretty_print(const BasicBlock& block);
 [[nodiscard]] std::string pretty_print(const Function& fn);
+
+// F1-IR-019: memoised variant of `pretty_print(const Stmt&)` for test
+// stability and debugger-loop performance. The cache is a per-thread
+// FIFO of bounded capacity (default 256 entries) keyed by structural
+// equality on Stmt; identical stmts return identical strings without
+// recomputation. Call `pretty_print_memoised_clear()` between unrelated
+// test runs to keep behaviour deterministic.
+[[nodiscard]] std::string pretty_print_memoised(const Stmt& stmt);
+void pretty_print_memoised_clear() noexcept;
+[[nodiscard]] std::size_t pretty_print_memoised_size() noexcept;
 
 // ---------------------------------------------------------------------------
 // Equality — structural, not identity.
@@ -352,6 +379,7 @@ bool operator==(const Trap& a, const Trap& b) noexcept;
 bool operator==(const Extend& a, const Extend& b) noexcept;
 bool operator==(const Truncate& a, const Truncate& b) noexcept;
 bool operator==(const Fence& a, const Fence& b) noexcept;
+bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

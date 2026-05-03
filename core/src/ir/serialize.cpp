@@ -61,11 +61,12 @@ enum class OpKind : std::uint8_t {
     kExtend      = 25,
     kTruncate    = 26,
     kFence       = 27,
+    kGuestPc     = 28,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kFence);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kGuestPc);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -189,6 +190,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Extend>)      return OpKind::kExtend;
         else if constexpr (std::is_same_v<T, Truncate>)    return OpKind::kTruncate;
         else if constexpr (std::is_same_v<T, Fence>)       return OpKind::kFence;
+        else if constexpr (std::is_same_v<T, GuestPc>)     return OpKind::kGuestPc;
     }, op);
 }
 
@@ -305,6 +307,9 @@ void write_payload(std::vector<std::uint8_t>& out, const Truncate& x) {
 }
 void write_payload(std::vector<std::uint8_t>& out, const Fence& x) {
     put_u8(out, static_cast<std::uint8_t>(x.kind));
+}
+void write_payload(std::vector<std::uint8_t>& out, const GuestPc& x) {
+    put_u64(out, x.pc);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -560,6 +565,12 @@ DeserializeError read_payload_fence(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_guest_pc(Cursor& c, Stmt& s) {
+    if (!c.remaining(8)) return DeserializeError::Truncated;
+    s.op = GuestPc{c.take_u64()};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -604,6 +615,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kExtend:      return read_payload_extend(c, s);
         case OpKind::kTruncate:    return read_payload_truncate(c, s);
         case OpKind::kFence:       return read_payload_fence(c, s);
+        case OpKind::kGuestPc:     return read_payload_guest_pc(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

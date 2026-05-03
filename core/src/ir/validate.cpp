@@ -37,8 +37,8 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, Extend>)     { visit(x.value); }
         else if constexpr (std::is_same_v<T, Truncate>)   { visit(x.value); }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
-        // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
-        // have no operand refs — nothing to bump.
+        // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
+        // GuestPc have no operand refs — nothing to bump.
     }, op);
 }
 

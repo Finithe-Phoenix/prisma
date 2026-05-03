@@ -90,6 +90,9 @@ bool operator==(const Truncate& a, const Truncate& b) noexcept {
 bool operator==(const Fence& a, const Fence& b) noexcept {
     return a.kind == b.kind;
 }
+bool operator==(const GuestPc& a, const GuestPc& b) noexcept {
+    return a.pc == b.pc;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

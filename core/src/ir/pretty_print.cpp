@@ -165,6 +165,8 @@ std::string pretty_print(const Op& op) {
                 case FenceKind::Sfence: k = "sfence"; break;
             }
             os << "fence." << k;
+        } else if constexpr (std::is_same_v<T, GuestPc>) {
+            os << "guest_pc 0x" << std::hex << x.pc;
         }
     }, op);
     return os.str();
@@ -197,6 +199,53 @@ std::string pretty_print(const Function& fn) {
     }
     os << "}\n";
     return os.str();
+}
+
+// ---------------------------------------------------------------------------
+// F1-IR-019 — memoised pretty_print for Stmt.
+// ---------------------------------------------------------------------------
+//
+// Per-thread bounded cache. We use std::vector<pair<Stmt,string>> rather
+// than std::unordered_map because Stmt isn't trivially hashable and the
+// expected cache hit rate during test runs is on small constant sets;
+// linear search of <=256 entries is faster than hashing through std::variant
+// for that size. When the cache fills, we drop the oldest entry (FIFO).
+
+namespace {
+
+constexpr std::size_t kMemoisedCapacity = 256;
+
+struct MemoEntry {
+    Stmt        key;
+    std::string value;
+};
+
+std::vector<MemoEntry>& memo_storage() {
+    thread_local std::vector<MemoEntry> storage;
+    return storage;
+}
+
+}  // namespace
+
+std::string pretty_print_memoised(const Stmt& stmt) {
+    auto& store = memo_storage();
+    for (const auto& e : store) {
+        if (e.key == stmt) return e.value;
+    }
+    std::string s = pretty_print(stmt);
+    if (store.size() >= kMemoisedCapacity) {
+        store.erase(store.begin());  // FIFO eviction
+    }
+    store.push_back({stmt, s});
+    return s;
+}
+
+void pretty_print_memoised_clear() noexcept {
+    memo_storage().clear();
+}
+
+std::size_t pretty_print_memoised_size() noexcept {
+    return memo_storage().size();
 }
 
 }  // namespace prisma::ir

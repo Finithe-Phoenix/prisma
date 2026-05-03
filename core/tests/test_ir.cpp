@@ -90,3 +90,56 @@ TEST_CASE("kInvalidRef renders as %?") {
     Stmt s{kInvalidRef, Constant{0, OpSize::I8}};
     REQUIRE(pretty_print(s) == "%? = const.i8 0x0");
 }
+
+// ---------------------------------------------------------------------
+// F1-IR-014 GuestPc pseudo-op
+// ---------------------------------------------------------------------
+
+TEST_CASE("GuestPc has structural equality and prints with hex address") {
+    Stmt a{std::nullopt, GuestPc{0xCAFE'BABE'1234'5678ull}};
+    Stmt b{std::nullopt, GuestPc{0xCAFE'BABE'1234'5678ull}};
+    Stmt c{std::nullopt, GuestPc{0xDEAD'BEEF'0000'0000ull}};
+    REQUIRE(a == b);
+    REQUIRE_FALSE(a == c);
+    REQUIRE(pretty_print(a) == "guest_pc 0xcafebabe12345678");
+}
+
+// ---------------------------------------------------------------------
+// F1-IR-019 memoised pretty-print
+// ---------------------------------------------------------------------
+
+TEST_CASE("pretty_print_memoised: identical Stmts share a string entry") {
+    pretty_print_memoised_clear();
+    Stmt a{0u, Constant{42, OpSize::I64}};
+    Stmt b{0u, Constant{42, OpSize::I64}};
+    const std::string sa = pretty_print_memoised(a);
+    REQUIRE(pretty_print_memoised_size() == 1);
+    const std::string sb = pretty_print_memoised(b);
+    REQUIRE(pretty_print_memoised_size() == 1);  // dedup hit
+    REQUIRE(sa == sb);
+    REQUIRE(sa == "%0 = const.i64 0x2a");
+}
+
+TEST_CASE("pretty_print_memoised: distinct Stmts grow the cache") {
+    pretty_print_memoised_clear();
+    for (unsigned i = 0; i < 10; ++i) {
+        Stmt s{i, Constant{i, OpSize::I64}};
+        (void)pretty_print_memoised(s);
+    }
+    REQUIRE(pretty_print_memoised_size() == 10);
+    pretty_print_memoised_clear();
+    REQUIRE(pretty_print_memoised_size() == 0);
+}
+
+TEST_CASE("pretty_print_memoised: agrees byte-for-byte with the un-memoised path") {
+    pretty_print_memoised_clear();
+    Stmt s_extend{1u,
+        Extend{/*value=*/0u, OpSize::I8, OpSize::I64, /*signed=*/true}};
+    REQUIRE(pretty_print_memoised(s_extend) == pretty_print(s_extend));
+
+    Stmt s_fence{std::nullopt, Fence{FenceKind::Mfence}};
+    REQUIRE(pretty_print_memoised(s_fence) == pretty_print(s_fence));
+
+    Stmt s_pc{std::nullopt, GuestPc{0x4000ULL}};
+    REQUIRE(pretty_print_memoised(s_pc) == pretty_print(s_pc));
+}
