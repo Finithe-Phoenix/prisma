@@ -80,6 +80,17 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, StoreReg>) {
             os << "storereg." << size_suffix(x.size) << " " << gpr_name(x.reg) << ", ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, LoadSegBase>) {
+            const char* s = "?";
+            switch (x.seg) {
+                case SegmentReg::Es: s = "es"; break;
+                case SegmentReg::Cs: s = "cs"; break;
+                case SegmentReg::Ss: s = "ss"; break;
+                case SegmentReg::Ds: s = "ds"; break;
+                case SegmentReg::Fs: s = "fs"; break;
+                case SegmentReg::Gs: s = "gs"; break;
+            }
+            os << "segbase " << s;
         } else if constexpr (std::is_same_v<T, BinOp>) {
             os << binop_name(x.op) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
@@ -119,6 +130,26 @@ std::string pretty_print(const Op& op) {
             os << "condjmprel." << cc_name(x.cc)
                << " taken=0x" << std::hex << x.target_guest_pc
                << ", fallthrough=0x" << std::hex << x.fallthrough_guest_pc;
+        } else if constexpr (std::is_same_v<T, CallRel>) {
+            os << "callrel target=0x" << std::hex << x.target_guest_pc
+               << ", ret=0x" << std::hex << x.return_guest_pc;
+        } else if constexpr (std::is_same_v<T, CallReg>) {
+            os << "callreg "; print_ref(os, x.target);
+            os << ", ret=0x" << std::hex << x.return_guest_pc;
+        } else if constexpr (std::is_same_v<T, RetAdjusted>) {
+            os << "ret pop=" << std::dec << x.pop_bytes;
+        } else if constexpr (std::is_same_v<T, Cpuid>) {
+            os << "cpuid";
+        } else if constexpr (std::is_same_v<T, Syscall>) {
+            os << "syscall";
+        } else if constexpr (std::is_same_v<T, Trap>) {
+            const char* k = "?";
+            switch (x.kind) {
+                case TrapKind::Sigtrap: k = "sigtrap"; break;
+                case TrapKind::Sigill:  k = "sigill";  break;
+                case TrapKind::Sigfpe:  k = "sigfpe";  break;
+            }
+            os << "trap " << k;
         }
     }, op);
     return os.str();

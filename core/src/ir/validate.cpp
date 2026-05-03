@@ -33,7 +33,9 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, CmpFlags>)   { visit(x.lhs); visit(x.rhs); }
         else if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); }
         else if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); }
-        // Constant, LoadReg, Jump, JumpRel, CondJumpRel, Return — no refs.
+        else if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); }
+        // Constant, LoadReg, Jump, JumpRel, CondJumpRel, Return,
+        // CallRel, RetAdjusted, Cpuid, Syscall, Trap — no refs.
     }, op);
 }
 
@@ -44,6 +46,7 @@ bool op_is_pure(const Op& op) {
         using T = std::decay_t<decltype(x)>;
         return std::is_same_v<T, Constant>
             || std::is_same_v<T, LoadReg>
+            || std::is_same_v<T, LoadSegBase>
             || std::is_same_v<T, BinOp>
             || std::is_same_v<T, Compare>
             || std::is_same_v<T, Select>

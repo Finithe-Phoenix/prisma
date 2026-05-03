@@ -104,6 +104,19 @@ struct Constant { std::uint64_t value; OpSize size; };
 struct LoadReg  { Gpr reg; OpSize size; };
 struct StoreReg { Gpr reg; Ref value; OpSize size; };
 
+// Segment registers. x86-64 ignores the base of CS/DS/ES/SS for normal
+// data accesses, but FS and GS still carry meaningful TLS pointers
+// (Win64 stores TEB at GS:[0x30], Linux glibc stores TLS at FS).
+enum class SegmentReg : std::uint8_t {
+    Es = 0, Cs, Ss, Ds, Fs, Gs,
+};
+
+// Yields the 64-bit base address of the named segment as an SSA value.
+// Pure: DCE-eligible. Lowering reads the base from a runtime-supplied
+// table so changing the TEB pointer at run time only requires updating
+// that table, not invalidating cached translations.
+struct LoadSegBase { SegmentReg seg; };
+
 struct BinOp    { BinOpKind op; Ref lhs; Ref rhs; OpSize size; };
 
 struct Compare  { CondCode cc; Ref lhs; Ref rhs; OpSize size; };
@@ -161,9 +174,60 @@ struct CondJumpRel {
     std::uint64_t fallthrough_guest_pc;
 };
 
+// ---- Calls and returns -------------------------------------------------
+//
+// Side-effecting terminators that participate in the guest's call stack.
+// CallRel pushes return_guest_pc onto the guest stack and transfers to
+// target_guest_pc. CallReg does the same with an indirect target held
+// in an SSA Ref. RetAdjusted pops the return address (and optionally
+// `pop_bytes` extra stack bytes for stdcall callees) and transfers to
+// the popped address. The dispatcher actually performs the transfer;
+// the lowered code returns the next guest PC in x0 like other
+// terminators.
+//
+// Both CallRel and CallReg carry the absolute return PC so the tail-call
+// optimiser can fold a `CallRel; RetAdjusted{0}` pair into a `JumpRel`
+// without losing any guest information.
+
+struct CallRel {
+    std::uint64_t target_guest_pc;
+    std::uint64_t return_guest_pc;
+};
+
+struct CallReg {
+    Ref           target;
+    std::uint64_t return_guest_pc;
+};
+
+struct RetAdjusted {
+    std::uint64_t pop_bytes;  // extra bytes popped after the return address.
+};
+
+// ---- Architectural placeholders ---------------------------------------
+//
+// CPUID, SYSCALL and INT3/UD2 (Trap) currently lower to placeholder
+// machine code (zeroed registers / halt sentinel). They exist as
+// first-class IR ops so the decoder can produce them today and the
+// lowerer can swap to real semantics later without changing decoder
+// output. See `core/src/backend/lowering.cpp` for the current shapes.
+
+struct Cpuid   {};
+struct Syscall {};
+
+enum class TrapKind : std::uint8_t {
+    Sigtrap = 0,  // INT3 — debugger trap.
+    Sigill,       // UD2 — illegal opcode.
+    Sigfpe,       // DE  — divide error / floating-point.
+};
+
+struct Trap {
+    TrapKind kind;
+};
+
 using Op = std::variant<
     Constant,
     LoadReg, StoreReg,
+    LoadSegBase,
     BinOp,
     Compare,
     Select,
@@ -171,7 +235,9 @@ using Op = std::variant<
     LoadMemTSO, StoreMemTSO,
     Jump, CondJump, Return,
     JumpReg,
-    CmpFlags, JumpRel, CondJumpRel
+    CmpFlags, JumpRel, CondJumpRel,
+    CallRel, CallReg, RetAdjusted,
+    Cpuid, Syscall, Trap
 >;
 
 // ---------------------------------------------------------------------------
@@ -213,6 +279,7 @@ struct Function {
 bool operator==(const Constant& a, const Constant& b) noexcept;
 bool operator==(const LoadReg& a, const LoadReg& b) noexcept;
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept;
+bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept;
 bool operator==(const BinOp& a, const BinOp& b) noexcept;
 bool operator==(const Compare& a, const Compare& b) noexcept;
 bool operator==(const Select& a, const Select& b) noexcept;
@@ -228,6 +295,13 @@ bool operator==(const Return&, const Return&) noexcept;
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept;
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept;
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept;
+
+bool operator==(const CallRel& a, const CallRel& b) noexcept;
+bool operator==(const CallReg& a, const CallReg& b) noexcept;
+bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
+bool operator==(const Cpuid&, const Cpuid&) noexcept;
+bool operator==(const Syscall&, const Syscall&) noexcept;
+bool operator==(const Trap& a, const Trap& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 
