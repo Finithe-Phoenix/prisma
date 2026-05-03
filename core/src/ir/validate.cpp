@@ -34,8 +34,11 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); }
         else if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); }
         else if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); }
-        // Constant, LoadReg, Jump, JumpRel, CondJumpRel, Return,
-        // CallRel, RetAdjusted, Cpuid, Syscall, Trap — no refs.
+        else if constexpr (std::is_same_v<T, Extend>)     { visit(x.value); }
+        else if constexpr (std::is_same_v<T, Truncate>)   { visit(x.value); }
+        // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
+        // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
+        // have no operand refs — nothing to bump.
     }, op);
 }
 
@@ -51,7 +54,9 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, Compare>
             || std::is_same_v<T, Select>
             || std::is_same_v<T, LoadMem>
-            || std::is_same_v<T, LoadMemTSO>;
+            || std::is_same_v<T, LoadMemTSO>
+            || std::is_same_v<T, Extend>
+            || std::is_same_v<T, Truncate>;
     }, op);
 }
 

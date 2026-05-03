@@ -759,3 +759,106 @@ TEST_CASE("Lowerer: CallRel parks target_guest_pc in x0 then ret") {
     REQUIRE(d.find("x0") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------
+// F1-BK-022 Extend / Truncate, F1-BK-023 Fence
+// ---------------------------------------------------------------------
+
+TEST_CASE("Lowerer: Extend signed i8 → i64 emits sxtb") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0xFF, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, /*signed=*/true}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sxtb") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Extend signed i16 → i64 emits sxth") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0x8000, ir::OpSize::I16}},
+        {1u, ir::Extend{0u, ir::OpSize::I16, ir::OpSize::I64, true}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sxth") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Extend signed i32 → i64 emits sxtw") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0x80000000u, ir::OpSize::I32}},
+        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sxtw") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Extend unsigned i8 → i64 emits uxtb") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0xFF, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, /*signed=*/false}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("uxtb") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Truncate to i32 emits a 32-bit move (mov w*)") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0x1234'5678'9ABC'DEF0ull, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I32}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // vixl prints `mov w*, w*` for the W-view move idiom.
+    REQUIRE(d.find("mov w") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Fence Mfence emits dmb ish") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("dmb ish") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Fence Lfence emits dmb ishld") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Fence{ir::FenceKind::Lfence}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("dmb ishld") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Fence Sfence emits dmb ishst") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Fence{ir::FenceKind::Sfence}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("dmb ishst") != std::string::npos);
+}

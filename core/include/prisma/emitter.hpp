@@ -204,6 +204,42 @@ public:
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
 
+    // --- Width adjustment (F1-BK-022) -------------------------------------
+    //
+    // sign- and zero-extension from a narrower view of `rn` into the
+    // 64-bit `rd`. ARM64 has dedicated single-cycle instructions for
+    // each width: SXTB / SXTH / SXTW for sign, UXTB / UXTH for zero;
+    // 32→64 zero-extension is implicit on any `mov w*` write so the
+    // emitter codegens that as `mov wd, wn`. The lowerer drives these.
+    void sxtb (arm64::Reg rd, arm64::Reg rn);   //  8 → 64 signed
+    void sxth (arm64::Reg rd, arm64::Reg rn);   // 16 → 64 signed
+    void sxtw (arm64::Reg rd, arm64::Reg rn);   // 32 → 64 signed
+    void uxtb (arm64::Reg rd, arm64::Reg rn);   //  8 → 64 unsigned
+    void uxth (arm64::Reg rd, arm64::Reg rn);   // 16 → 64 unsigned
+
+    // 32 → 64 zero-extension via `mov wd, wn`. AArch64 zeroes the upper
+    // 32 bits of any 64-bit register written through its W-view.
+    void uxtw (arm64::Reg rd, arm64::Reg rn);
+
+    // Truncate Xn to a narrower view in Xd by ANDing with a 64-bit
+    // mask. For 32-bit truncation we use `uxtw` (cheaper). For I8/I16
+    // the lowerer materialises the mask into a scratch first, and then
+    // calls and_().
+    // Truncations are not needed when the consumer already reads only
+    // the W-view; the lowerer only emits one when the SSA result has
+    // to live as a clean narrow value.
+
+    // --- Memory fences (F1-BK-023) ----------------------------------------
+    //
+    // ARM64 DMB / DSB barrier emission. In our IR:
+    //   FenceKind::Mfence → dmb ish        (full barrier)
+    //   FenceKind::Lfence → dmb ishld      (load-only)
+    //   FenceKind::Sfence → dmb ishst      (store-only)
+    // The TSO-adaptive pass (Pillar 3) can drop a fence proven
+    // redundant under a region's restricted memory model.
+    enum class BarrierKind : std::uint8_t { Ish, IshLd, IshSt };
+    void dmb(BarrierKind k);
+
     // --- Label management (F1-BK-005) --------------------------------------
     //
     // Opaque handle to a vixl label. A Label is:

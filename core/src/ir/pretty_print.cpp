@@ -150,6 +150,21 @@ std::string pretty_print(const Op& op) {
                 case TrapKind::Sigfpe:  k = "sigfpe";  break;
             }
             os << "trap " << k;
+        } else if constexpr (std::is_same_v<T, Extend>) {
+            os << (x.is_signed ? "sext." : "zext.")
+               << size_suffix(x.from_size) << "->" << size_suffix(x.to_size) << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Truncate>) {
+            os << "trunc->" << size_suffix(x.to_size) << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Fence>) {
+            const char* k = "?";
+            switch (x.kind) {
+                case FenceKind::Mfence: k = "mfence"; break;
+                case FenceKind::Lfence: k = "lfence"; break;
+                case FenceKind::Sfence: k = "sfence"; break;
+            }
+            os << "fence." << k;
         }
     }, op);
     return os.str();

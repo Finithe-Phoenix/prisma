@@ -128,6 +128,21 @@ TEST_CASE("ir_serialize: Cpuid / Syscall / Trap round-trip", "[ir_serialize]") {
         Op{Trap{TrapKind::Sigill}}});
 }
 
+TEST_CASE("ir_serialize: Extend / Truncate / Fence round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{1u},
+        Op{Extend{Ref{0u}, OpSize::I8, OpSize::I64, /*signed=*/true}}});
+    check_single_stmt_roundtrip(Stmt{Ref{2u},
+        Op{Extend{Ref{0u}, OpSize::I32, OpSize::I64, /*signed=*/false}}});
+    check_single_stmt_roundtrip(Stmt{Ref{3u},
+        Op{Truncate{Ref{0u}, OpSize::I8}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{Fence{FenceKind::Mfence}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{Fence{FenceKind::Lfence}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{Fence{FenceKind::Sfence}}});
+}
+
 TEST_CASE("ir_serialize: large mixed program round-trip", "[ir_serialize]") {
     const std::vector<Stmt> program = {
         // 0-3: pure values

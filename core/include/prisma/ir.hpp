@@ -214,6 +214,52 @@ struct RetAdjusted {
 struct Cpuid   {};
 struct Syscall {};
 
+// ---- Width adjustment -------------------------------------------------
+//
+// Extend{value, from_size, to_size, signed} grows a narrower SSA value
+// to a wider one. `signed=true` fills the upper bits with the sign bit
+// (sign-extension, ARM64 `sxtw` / `sxth` / `sxtb` family); `signed=false`
+// fills with zero (zero-extension, the AArch64 default for sub-64-bit
+// register writes via `mov w*` or `uxt*`).
+//
+// Truncate{value, to_size} narrows a wider SSA value to a smaller one.
+// On ARM64 this is implicit when storing or computing in a `W` register
+// since the host hardware zeroes the upper 32 bits, so the lowerer
+// often emits no instruction at all and just renames the register at
+// the next use. Pure: DCE-eligible.
+//
+// Both ops have a single Ref operand and produce a Ref result. They
+// participate in const folding (F1-PS-010, planned).
+
+struct Extend {
+    Ref    value;
+    OpSize from_size;
+    OpSize to_size;
+    bool   is_signed;
+};
+
+struct Truncate {
+    Ref    value;
+    OpSize to_size;
+};
+
+// ---- Memory fences ----------------------------------------------------
+//
+// Explicit x86 LFENCE / SFENCE / MFENCE. Lowered to ARM64 DMB ISH /
+// DMB ISHST / DMB ISHLD respectively. The pillar-3 TSO-adaptive pass
+// can drop fences proven redundant under a region's restricted memory
+// model.
+
+enum class FenceKind : std::uint8_t {
+    Mfence = 0,  // full barrier   → DMB ISH
+    Lfence,      // load barrier   → DMB ISHLD
+    Sfence,      // store barrier  → DMB ISHST
+};
+
+struct Fence {
+    FenceKind kind;
+};
+
 enum class TrapKind : std::uint8_t {
     Sigtrap = 0,  // INT3 — debugger trap.
     Sigill,       // UD2 — illegal opcode.
@@ -237,7 +283,8 @@ using Op = std::variant<
     JumpReg,
     CmpFlags, JumpRel, CondJumpRel,
     CallRel, CallReg, RetAdjusted,
-    Cpuid, Syscall, Trap
+    Cpuid, Syscall, Trap,
+    Extend, Truncate, Fence
 >;
 
 // ---------------------------------------------------------------------------
@@ -302,6 +349,9 @@ bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
 bool operator==(const Cpuid&, const Cpuid&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
+bool operator==(const Extend& a, const Extend& b) noexcept;
+bool operator==(const Truncate& a, const Truncate& b) noexcept;
+bool operator==(const Fence& a, const Fence& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

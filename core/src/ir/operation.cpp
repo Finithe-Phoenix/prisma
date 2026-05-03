@@ -78,6 +78,18 @@ bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept {
 bool operator==(const Cpuid&, const Cpuid&) noexcept   { return true; }
 bool operator==(const Syscall&, const Syscall&) noexcept { return true; }
 bool operator==(const Trap& a, const Trap& b) noexcept { return a.kind == b.kind; }
+bool operator==(const Extend& a, const Extend& b) noexcept {
+    return a.value == b.value
+        && a.from_size == b.from_size
+        && a.to_size == b.to_size
+        && a.is_signed == b.is_signed;
+}
+bool operator==(const Truncate& a, const Truncate& b) noexcept {
+    return a.value == b.value && a.to_size == b.to_size;
+}
+bool operator==(const Fence& a, const Fence& b) noexcept {
+    return a.kind == b.kind;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

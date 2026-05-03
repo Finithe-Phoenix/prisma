@@ -336,6 +336,45 @@ void Emitter::ret(arm64::Reg rn) {
     impl_->masm.Ret(to_vixl_x(rn));
 }
 
+// --- Width adjustment (F1-BK-022) -----------------------------------------
+//
+// `to_vixl_w` is defined earlier in this file; reuse it.
+
+void Emitter::sxtb(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Sxtb(to_vixl_x(rd), to_vixl_w(rn));
+}
+void Emitter::sxth(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Sxth(to_vixl_x(rd), to_vixl_w(rn));
+}
+void Emitter::sxtw(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Sxtw(to_vixl_x(rd), to_vixl_w(rn));
+}
+void Emitter::uxtb(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Uxtb(to_vixl_x(rd), to_vixl_w(rn));
+}
+void Emitter::uxth(arm64::Reg rd, arm64::Reg rn) {
+    impl_->masm.Uxth(to_vixl_x(rd), to_vixl_w(rn));
+}
+void Emitter::uxtw(arm64::Reg rd, arm64::Reg rn) {
+    // AArch64 zero-extends 32→64 implicitly when the destination is
+    // written through its W-view.  `mov wd, wn` is the canonical idiom.
+    impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rn));
+}
+
+// --- Memory fences (F1-BK-023) --------------------------------------------
+
+void Emitter::dmb(BarrierKind k) {
+    using vixl_aa::BarrierType;
+    using vixl_aa::BarrierDomain;
+    BarrierType bt;
+    switch (k) {
+        case BarrierKind::Ish:   bt = vixl_aa::BarrierAll;    break;
+        case BarrierKind::IshLd: bt = vixl_aa::BarrierReads;  break;
+        case BarrierKind::IshSt: bt = vixl_aa::BarrierWrites; break;
+    }
+    impl_->masm.Dmb(vixl_aa::InnerShareable, bt);
+}
+
 // --- Label management ------------------------------------------------------
 
 Emitter::Label Emitter::create_label() {

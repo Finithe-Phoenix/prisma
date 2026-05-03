@@ -182,9 +182,11 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
+            else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
-            // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap have no
-            // operand refs — nothing to bump.
+            // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
+            // have no operand refs — nothing to bump.
         }, s.op);
     }
 }
@@ -545,6 +547,82 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "LoadSegBase"};
             }
             emitter_.mov_imm64(rd, 0);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Extend>) {
+            // F1-BK-022. Sign / zero-extend a narrower view of the
+            // source ref into a fresh 64-bit destination scratch. The
+            // ARM64 sxt*/uxt* instructions all read Wn and write Xd.
+            arm64::Reg rs;
+            if (!reg_of(op.value, rs)) {
+                return {false, LowerError::DanglingRef, "Extend.value"};
+            }
+            arm64::Reg rd;
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "Extend requires a result ref"};
+            }
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Extend"};
+            }
+            if (op.is_signed) {
+                switch (op.from_size) {
+                    case ir::OpSize::I8:  emitter_.sxtb(rd, rs); break;
+                    case ir::OpSize::I16: emitter_.sxth(rd, rs); break;
+                    case ir::OpSize::I32: emitter_.sxtw(rd, rs); break;
+                    case ir::OpSize::I64:
+                        emitter_.mov_reg_reg(rd, rs);  // identity
+                        break;
+                }
+            } else {
+                switch (op.from_size) {
+                    case ir::OpSize::I8:  emitter_.uxtb(rd, rs); break;
+                    case ir::OpSize::I16: emitter_.uxth(rd, rs); break;
+                    case ir::OpSize::I32: emitter_.uxtw(rd, rs); break;
+                    case ir::OpSize::I64:
+                        emitter_.mov_reg_reg(rd, rs);  // identity
+                        break;
+                }
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            // F1-BK-022. Narrow `value` to `to_size` in a fresh 64-bit
+            // scratch. For I32 the cheap idiom is `mov wd, wn` (which
+            // zeroes the upper bits). For I8/I16 we materialise the
+            // mask and AND.
+            arm64::Reg rs;
+            if (!reg_of(op.value, rs)) {
+                return {false, LowerError::DanglingRef, "Truncate.value"};
+            }
+            arm64::Reg rd;
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "Truncate requires a result ref"};
+            }
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Truncate"};
+            }
+            switch (op.to_size) {
+                case ir::OpSize::I8:  emitter_.uxtb(rd, rs); break;
+                case ir::OpSize::I16: emitter_.uxth(rd, rs); break;
+                case ir::OpSize::I32: emitter_.uxtw(rd, rs); break;
+                case ir::OpSize::I64:
+                    emitter_.mov_reg_reg(rd, rs);  // identity
+                    break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Fence>) {
+            // F1-BK-023. Map x86 fences to ARM64 DMB ISH variants.
+            switch (op.kind) {
+                case ir::FenceKind::Mfence:
+                    emitter_.dmb(Emitter::BarrierKind::Ish);   break;
+                case ir::FenceKind::Lfence:
+                    emitter_.dmb(Emitter::BarrierKind::IshLd); break;
+                case ir::FenceKind::Sfence:
+                    emitter_.dmb(Emitter::BarrierKind::IshSt); break;
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::CallRel>

@@ -58,11 +58,14 @@ enum class OpKind : std::uint8_t {
     kCpuid       = 22,
     kSyscall     = 23,
     kTrap        = 24,
+    kExtend      = 25,
+    kTruncate    = 26,
+    kFence       = 27,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kTrap);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kFence);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -150,6 +153,9 @@ struct Cursor {
 [[nodiscard]] bool is_valid_trap(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(TrapKind::Sigfpe);
 }
+[[nodiscard]] bool is_valid_fence(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(FenceKind::Sfence);
+}
 
 // ---- OpKind dispatch on serialize side --------------------------------
 
@@ -180,6 +186,9 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Cpuid>)       return OpKind::kCpuid;
         else if constexpr (std::is_same_v<T, Syscall>)     return OpKind::kSyscall;
         else if constexpr (std::is_same_v<T, Trap>)        return OpKind::kTrap;
+        else if constexpr (std::is_same_v<T, Extend>)      return OpKind::kExtend;
+        else if constexpr (std::is_same_v<T, Truncate>)    return OpKind::kTruncate;
+        else if constexpr (std::is_same_v<T, Fence>)       return OpKind::kFence;
     }, op);
 }
 
@@ -282,6 +291,19 @@ void write_payload(std::vector<std::uint8_t>& /*out*/, const Syscall&) {
     // empty payload
 }
 void write_payload(std::vector<std::uint8_t>& out, const Trap& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.kind));
+}
+void write_payload(std::vector<std::uint8_t>& out, const Extend& x) {
+    put_u32(out, x.value);
+    put_u8(out, static_cast<std::uint8_t>(x.from_size));
+    put_u8(out, static_cast<std::uint8_t>(x.to_size));
+    put_u8(out, x.is_signed ? 1u : 0u);
+}
+void write_payload(std::vector<std::uint8_t>& out, const Truncate& x) {
+    put_u32(out, x.value);
+    put_u8(out, static_cast<std::uint8_t>(x.to_size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const Fence& x) {
     put_u8(out, static_cast<std::uint8_t>(x.kind));
 }
 
@@ -506,6 +528,38 @@ DeserializeError read_payload_trap(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_extend(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t v  = c.take_u32();
+    const std::uint8_t  fs = c.take_u8();
+    const std::uint8_t  ts = c.take_u8();
+    const std::uint8_t  sg = c.take_u8();
+    if (!is_valid_size(fs) || !is_valid_size(ts)) return DeserializeError::BadSize;
+    if (sg > 1u) return DeserializeError::BadSize;
+    s.op = Extend{v,
+                  static_cast<OpSize>(fs),
+                  static_cast<OpSize>(ts),
+                  sg == 1u};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_truncate(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t v  = c.take_u32();
+    const std::uint8_t  ts = c.take_u8();
+    if (!is_valid_size(ts)) return DeserializeError::BadSize;
+    s.op = Truncate{v, static_cast<OpSize>(ts)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_fence(Cursor& c, Stmt& s) {
+    if (!c.remaining(1)) return DeserializeError::Truncated;
+    const std::uint8_t k = c.take_u8();
+    if (!is_valid_fence(k)) return DeserializeError::BadSize;
+    s.op = Fence{static_cast<FenceKind>(k)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -547,6 +601,9 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kCpuid:       return read_payload_cpuid(c, s);
         case OpKind::kSyscall:     return read_payload_syscall(c, s);
         case OpKind::kTrap:        return read_payload_trap(c, s);
+        case OpKind::kExtend:      return read_payload_extend(c, s);
+        case OpKind::kTruncate:    return read_payload_truncate(c, s);
+        case OpKind::kFence:       return read_payload_fence(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;
