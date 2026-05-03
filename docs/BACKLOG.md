@@ -262,8 +262,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pre-existing) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list. (ir.hpp defines `struct BasicBlock { uint32_t id; vector<Stmt> stmts; }`.)
 - [x] (pre-existing) F1-IR-022: Add `Function` with multiple blocks + entry block. (ir.hpp defines `struct Function { vector<BasicBlock> blocks; uint32_t entry; }`.)
 - [x] (f7b6cad) F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
-- [ ] F1-IR-024: Dominator tree + postorder traversal utilities.
-- [ ] F1-IR-025: Loop detection (natural loops by back-edge analysis).
+- [x] (759346c) F1-IR-024: Dominator tree + postorder traversal utilities.
+- [x] (759346c) F1-IR-025: Loop detection (natural loops by back-edge analysis).
 
 ### F1-BK — Backend / Lowering
 
