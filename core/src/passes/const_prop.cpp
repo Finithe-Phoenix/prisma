@@ -65,6 +65,21 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
     return 0;  // unreachable
 }
 
+// Sign-extend a value from `from_size` bits to 64 bits by replicating
+// the top bit of the masked low bits up through the high bits. The
+// algorithm:
+//   1. Mask off the high bits we don't have.
+//   2. If the top bit of `from_size` is set, OR in the high bits.
+std::uint64_t sign_extend_from(std::uint64_t v, ir::OpSize from_size) noexcept {
+    const std::uint64_t mask = ir::mask_to_size(~0ULL, from_size);
+    const std::uint64_t low  = v & mask;
+    const std::uint32_t bits = ir::bit_width(from_size);
+    if (bits >= 64) return low;
+    const std::uint64_t top_bit = 1ULL << (bits - 1);
+    if ((low & top_bit) == 0) return low;          // positive — no fill needed
+    return low | (~mask);                          // negative — fill upper bits
+}
+
 }  // namespace
 
 std::vector<ir::Stmt>
@@ -96,6 +111,31 @@ constant_propagate(const std::vector<ir::Stmt>& stmts) {
                     ir::mask_to_size(eval_binop(b.op, ia->second, ib->second), b.size);
                 consts[*s.result] = folded;
                 out.push_back(ir::Stmt{s.result, ir::Constant{folded, b.size}});
+                rewritten = true;
+            }
+        } else if (std::holds_alternative<ir::Extend>(s.op) && s.result.has_value()) {
+            // F1-PS-010. If the source ref is a known constant, fold:
+            //   * signed   → sign-extend from `from_size` then mask to to_size
+            //   * unsigned → zero-extend (just mask to the wider size)
+            const auto& e = std::get<ir::Extend>(s.op);
+            const auto src = consts.find(e.value);
+            if (src != consts.end()) {
+                std::uint64_t folded = e.is_signed
+                    ? sign_extend_from(src->second, e.from_size)
+                    : ir::mask_to_size(src->second, e.from_size);
+                folded = ir::mask_to_size(folded, e.to_size);
+                consts[*s.result] = folded;
+                out.push_back(ir::Stmt{s.result, ir::Constant{folded, e.to_size}});
+                rewritten = true;
+            }
+        } else if (std::holds_alternative<ir::Truncate>(s.op) && s.result.has_value()) {
+            // F1-PS-010. Truncate of a known constant just masks down.
+            const auto& t = std::get<ir::Truncate>(s.op);
+            const auto src = consts.find(t.value);
+            if (src != consts.end()) {
+                const std::uint64_t folded = ir::mask_to_size(src->second, t.to_size);
+                consts[*s.result] = folded;
+                out.push_back(ir::Stmt{s.result, ir::Constant{folded, t.to_size}});
                 rewritten = true;
             }
         }

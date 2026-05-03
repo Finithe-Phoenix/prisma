@@ -370,6 +370,97 @@ TEST_CASE("PassManager: never mutates its input") {
     REQUIRE(s_original == s_copy_for_compare);
 }
 
+// ---------------------------------------------------------------------
+// F1-PS-010 const-fold Extend / Truncate
+// ---------------------------------------------------------------------
+
+TEST_CASE("const_prop: signed Extend i8 → i64 of 0xFF folds to 0xFFFF...FF") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xFFu, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, /*signed=*/true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[1].op));
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xFFFF'FFFF'FFFF'FFFFull);
+    REQUIRE(std::get<ir::Constant>(out[1].op).size  == ir::OpSize::I64);
+}
+
+TEST_CASE("const_prop: unsigned Extend i8 → i64 of 0xFF folds to 0xFF") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xFFu, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, /*signed=*/false}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[1].op));
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xFFu);
+}
+
+TEST_CASE("const_prop: signed Extend i32 → i64 of 0x80000000 folds to 0xFFFFFFFF80000000") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x8000'0000u, ir::OpSize::I32}},
+        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xFFFF'FFFF'8000'0000ull);
+}
+
+TEST_CASE("const_prop: signed Extend i16 → i64 of 0x7FFF folds to 0x7FFF (positive)") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x7FFFu, ir::OpSize::I16}},
+        {1u, ir::Extend{0u, ir::OpSize::I16, ir::OpSize::I64, true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0x7FFFu);
+}
+
+TEST_CASE("const_prop: Truncate i64 → i8 keeps the low byte") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xDEAD'BEEF'CAFE'BABEull, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I8}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xBEu);
+    REQUIRE(std::get<ir::Constant>(out[1].op).size  == ir::OpSize::I8);
+}
+
+TEST_CASE("const_prop: Truncate i64 → i32 keeps the low word") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xDEAD'BEEF'CAFE'BABEull, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I32}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xCAFE'BABEull);
+}
+
+TEST_CASE("const_prop: Extend with non-constant source is left untouched") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}},
+        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::holds_alternative<ir::Extend>(out[1].op));
+}
+
+TEST_CASE("const_prop: Extend with from_size == to_size is the identity") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x123u, ir::OpSize::I64}},
+        {1u, ir::Extend{0u, ir::OpSize::I64, ir::OpSize::I64, /*signed=*/true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0x123u);
+}
+
+TEST_CASE("const_prop: chain (Constant → Truncate → Extend) folds end-to-end") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1FFu, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I8}},                    // 0xFF
+        {2u, ir::Extend{1u, ir::OpSize::I8, ir::OpSize::I64,
+                        /*signed=*/true}},                         // 0xFF...FF
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[2].op).value == 0xFFFF'FFFF'FFFF'FFFFull);
+}
+
 TEST_CASE("const_prop: transitive folding through a chain") {
     // %0 = 2
     // %1 = 3
