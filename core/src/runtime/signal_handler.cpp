@@ -22,6 +22,8 @@
 #include <cstring>
 #include <mutex>
 
+#include "prisma/smc_guard.hpp"
+
 namespace prisma::runtime {
 
 namespace {
@@ -45,7 +47,33 @@ FaultKind fault_for_signal(int sig) noexcept {
 
 // The handler itself. Must be async-signal-safe — we only touch
 // thread_local POD, raise the signal by re-default, or longjmp.
-[[noreturn]] void prisma_sig_handler(int sig, siginfo_t* /*info*/, void* /*ctx*/) {
+//
+// SMC integration (F1-RT-010): on SIGSEGV, give the SmcGuard a
+// chance to consume the fault. If it does, the page has been
+// flipped back to RW and the kernel will re-deliver the trapping
+// instruction successfully on resume; we return from the handler
+// rather than longjmp. Strict caveat documented in RFC 0009: until
+// we wire single-step + reprotect, the page stays RW until the
+// dispatcher's next round trip notices `pending_reprotect`.
+void prisma_sig_handler(int sig, siginfo_t* info, void* /*ctx*/) {
+    if (sig == SIGSEGV && info != nullptr) {
+        SmcGuard* g = global_smc_guard();
+        if (g != nullptr) {
+            // The cache wiring lives in a future commit. The handler
+            // currently consumes the fault if the address belongs to a
+            // tracked page; the no-op callback means cache entries are
+            // forgotten by the SmcGuard but the cache itself is not
+            // notified yet. Translator integration (separate change)
+            // will replace this with a real invalidate hook.
+            const auto cb = [](std::uint64_t) {};
+            if (g->handle_fault(info->si_addr, cb)) {
+                // The page is now RW; returning from the signal handler
+                // re-runs the faulting instruction.
+                return;
+            }
+        }
+    }
+
     if (tls_current_jb != nullptr) {
         tls_last_fault = fault_for_signal(sig);
         // siglongjmp back to the ScopedProtected setup. The non-zero

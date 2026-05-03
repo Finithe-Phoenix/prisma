@@ -192,6 +192,7 @@ add_library(prisma_runtime STATIC
     src/runtime/signal_handler.cpp
     src/runtime/dispatcher.cpp
     src/runtime/host_features.cpp
+    src/runtime/smc_guard.cpp
 )
 
 target_include_directories(prisma_runtime
@@ -385,6 +386,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_lowering.cpp
         tests/test_abi.cpp
         tests/test_signal_handler.cpp
+        tests/test_smc_guard.cpp
         tests/test_translator.cpp
         tests/test_dispatcher.cpp
         tests/test_passes_advanced.cpp
