@@ -1,0 +1,81 @@
+// core/src/ir/profiler.cpp — F1-IR-020.
+
+#include "prisma/profiler.hpp"
+
+#include <variant>
+
+namespace prisma::ir {
+
+namespace {
+
+OpCounter::Kind kind_for(const Op& op) noexcept {
+    return std::visit([](const auto& x) -> OpCounter::Kind {
+        using T = std::decay_t<decltype(x)>;
+        if      constexpr (std::is_same_v<T, Constant>)    return OpCounter::Kind::Constant;
+        else if constexpr (std::is_same_v<T, LoadReg>)     return OpCounter::Kind::LoadReg;
+        else if constexpr (std::is_same_v<T, StoreReg>)    return OpCounter::Kind::StoreReg;
+        else if constexpr (std::is_same_v<T, LoadSegBase>) return OpCounter::Kind::LoadSegBase;
+        else if constexpr (std::is_same_v<T, BinOp>)       return OpCounter::Kind::BinOp;
+        else if constexpr (std::is_same_v<T, Compare>)     return OpCounter::Kind::Compare;
+        else if constexpr (std::is_same_v<T, Select>)      return OpCounter::Kind::Select;
+        else if constexpr (std::is_same_v<T, LoadMem>)     return OpCounter::Kind::LoadMem;
+        else if constexpr (std::is_same_v<T, StoreMem>)    return OpCounter::Kind::StoreMem;
+        else if constexpr (std::is_same_v<T, LoadMemTSO>)  return OpCounter::Kind::LoadMemTSO;
+        else if constexpr (std::is_same_v<T, StoreMemTSO>) return OpCounter::Kind::StoreMemTSO;
+        else if constexpr (std::is_same_v<T, Jump>)        return OpCounter::Kind::Jump;
+        else if constexpr (std::is_same_v<T, CondJump>)    return OpCounter::Kind::CondJump;
+        else if constexpr (std::is_same_v<T, Return>)      return OpCounter::Kind::Return;
+        else if constexpr (std::is_same_v<T, JumpReg>)     return OpCounter::Kind::JumpReg;
+        else if constexpr (std::is_same_v<T, CmpFlags>)    return OpCounter::Kind::CmpFlags;
+        else if constexpr (std::is_same_v<T, JumpRel>)     return OpCounter::Kind::JumpRel;
+        else if constexpr (std::is_same_v<T, CondJumpRel>) return OpCounter::Kind::CondJumpRel;
+        else if constexpr (std::is_same_v<T, CallRel>)     return OpCounter::Kind::CallRel;
+        else if constexpr (std::is_same_v<T, CallReg>)     return OpCounter::Kind::CallReg;
+        else if constexpr (std::is_same_v<T, RetAdjusted>) return OpCounter::Kind::RetAdjusted;
+        else if constexpr (std::is_same_v<T, Cpuid>)       return OpCounter::Kind::Cpuid;
+        else if constexpr (std::is_same_v<T, Syscall>)     return OpCounter::Kind::Syscall;
+        else if constexpr (std::is_same_v<T, Trap>)        return OpCounter::Kind::Trap;
+        else if constexpr (std::is_same_v<T, Extend>)      return OpCounter::Kind::Extend;
+        else if constexpr (std::is_same_v<T, Truncate>)    return OpCounter::Kind::Truncate;
+        else if constexpr (std::is_same_v<T, Fence>)       return OpCounter::Kind::Fence;
+        else if constexpr (std::is_same_v<T, GuestPc>)     return OpCounter::Kind::GuestPc;
+        else if constexpr (std::is_same_v<T, InlineAsm>)   return OpCounter::Kind::InlineAsm;
+    }, op);
+}
+
+}  // namespace
+
+void OpCounter::reset() noexcept { counts_ = {}; }
+
+void OpCounter::visit(const Stmt& stmt) noexcept {
+    ++counts_[static_cast<std::size_t>(kind_for(stmt.op))];
+}
+
+void OpCounter::visit(std::span<const Stmt> stmts) noexcept {
+    for (const auto& s : stmts) visit(s);
+}
+
+void OpCounter::visit(const BasicBlock& block) noexcept {
+    visit(std::span<const Stmt>(block.stmts));
+}
+
+void OpCounter::visit(const Function& fn) noexcept {
+    for (const auto& b : fn.blocks) visit(b);
+}
+
+std::uint64_t OpCounter::count(Kind k) const noexcept {
+    return counts_[static_cast<std::size_t>(k)];
+}
+
+std::uint64_t OpCounter::total() const noexcept {
+    std::uint64_t t = 0;
+    for (auto c : counts_) t += c;
+    return t;
+}
+
+std::array<std::uint64_t, static_cast<std::size_t>(OpCounter::Kind::kCount)>
+OpCounter::snapshot() const noexcept {
+    return counts_;
+}
+
+}  // namespace prisma::ir

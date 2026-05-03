@@ -1,0 +1,110 @@
+// core/tests/test_profiler.cpp — F1-IR-020.
+
+#include <catch2/catch_test_macros.hpp>
+
+#include "prisma/ir.hpp"
+#include "prisma/profiler.hpp"
+
+using namespace prisma;
+using namespace prisma::ir;
+
+TEST_CASE("OpCounter: tally increments for the matching variant") {
+    OpCounter c;
+    c.visit(Stmt{0u, Constant{42, OpSize::I64}});
+    REQUIRE(c.count(OpCounter::Kind::Constant) == 1);
+    REQUIRE(c.count(OpCounter::Kind::BinOp) == 0);
+    REQUIRE(c.total() == 1);
+}
+
+TEST_CASE("OpCounter: visit a Stmt list rolls all counts up") {
+    OpCounter c;
+    std::vector<Stmt> stmts = {
+        {0u, Constant{1, OpSize::I64}},
+        {1u, Constant{2, OpSize::I64}},
+        {2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}},
+        {std::nullopt, StoreReg{Gpr::Rax, 2u, OpSize::I64}},
+        {std::nullopt, Return{}},
+    };
+    c.visit(stmts);
+    REQUIRE(c.count(OpCounter::Kind::Constant) == 2);
+    REQUIRE(c.count(OpCounter::Kind::BinOp)    == 1);
+    REQUIRE(c.count(OpCounter::Kind::StoreReg) == 1);
+    REQUIRE(c.count(OpCounter::Kind::Return)   == 1);
+    REQUIRE(c.total() == 5);
+}
+
+TEST_CASE("OpCounter: visit a Function rolls every block in") {
+    OpCounter c;
+    Function fn;
+    fn.entry = 0;
+    fn.blocks.push_back(BasicBlock{0u, {
+        {0u, Constant{1, OpSize::I64}}, {std::nullopt, Jump{1u}}}});
+    fn.blocks.push_back(BasicBlock{1u, {
+        {1u, Constant{2, OpSize::I64}}, {std::nullopt, Return{}}}});
+    c.visit(fn);
+    REQUIRE(c.count(OpCounter::Kind::Constant) == 2);
+    REQUIRE(c.count(OpCounter::Kind::Jump) == 1);
+    REQUIRE(c.count(OpCounter::Kind::Return) == 1);
+    REQUIRE(c.total() == 4);
+}
+
+TEST_CASE("OpCounter: reset zeroes everything") {
+    OpCounter c;
+    c.visit(Stmt{std::nullopt, Return{}});
+    REQUIRE(c.total() == 1);
+    c.reset();
+    REQUIRE(c.total() == 0);
+    REQUIRE(c.count(OpCounter::Kind::Return) == 0);
+}
+
+TEST_CASE("OpCounter: snapshot captures the current counts") {
+    OpCounter c;
+    c.visit(Stmt{0u, Constant{1, OpSize::I64}});
+    c.visit(Stmt{1u, Constant{2, OpSize::I64}});
+    auto snap = c.snapshot();
+    REQUIRE(snap[static_cast<std::size_t>(OpCounter::Kind::Constant)] == 2);
+    // mutating after snapshot doesn't change the captured array
+    c.visit(Stmt{std::nullopt, Return{}});
+    REQUIRE(snap[static_cast<std::size_t>(OpCounter::Kind::Constant)] == 2);
+}
+
+TEST_CASE("OpCounter: Kind covers every Op variant") {
+    // Every variant exercised at least once. If a variant is added
+    // without updating profiler.cpp, this test catches it via missed
+    // increments.
+    OpCounter c;
+    c.visit(Stmt{0u, Constant{0, OpSize::I64}});
+    c.visit(Stmt{1u, LoadReg{Gpr::Rax, OpSize::I64}});
+    c.visit(Stmt{std::nullopt, StoreReg{Gpr::Rbx, 1u, OpSize::I64}});
+    c.visit(Stmt{2u, LoadSegBase{SegmentReg::Fs}});
+    c.visit(Stmt{3u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}});
+    c.visit(Stmt{4u, Compare{CondCode::Eq, 0u, 1u, OpSize::I64}});
+    c.visit(Stmt{5u, Select{CondCode::Ne, 0u, 1u, OpSize::I64}});
+    c.visit(Stmt{6u, LoadMem{1u, OpSize::I64}});
+    c.visit(Stmt{std::nullopt, StoreMem{1u, 6u, OpSize::I64}});
+    c.visit(Stmt{7u, LoadMemTSO{1u, OpSize::I64}});
+    c.visit(Stmt{std::nullopt, StoreMemTSO{1u, 7u, OpSize::I64}});
+    c.visit(Stmt{std::nullopt, Jump{0u}});
+    c.visit(Stmt{std::nullopt, CondJump{4u, 0u, 1u}});
+    c.visit(Stmt{std::nullopt, Return{}});
+    c.visit(Stmt{std::nullopt, JumpReg{1u}});
+    c.visit(Stmt{std::nullopt, CmpFlags{0u, 1u, OpSize::I64}});
+    c.visit(Stmt{std::nullopt, JumpRel{0x100ULL}});
+    c.visit(Stmt{std::nullopt,
+        CondJumpRel{CondCode::Eq, 0x100ULL, 0x200ULL}});
+    c.visit(Stmt{std::nullopt, CallRel{0x100ULL, 0x105ULL}});
+    c.visit(Stmt{std::nullopt, CallReg{1u, 0x105ULL}});
+    c.visit(Stmt{std::nullopt, RetAdjusted{0u}});
+    c.visit(Stmt{std::nullopt, Cpuid{}});
+    c.visit(Stmt{std::nullopt, Syscall{}});
+    c.visit(Stmt{std::nullopt, Trap{TrapKind::Sigtrap}});
+    c.visit(Stmt{8u,
+        Extend{1u, OpSize::I8, OpSize::I64, /*signed=*/true}});
+    c.visit(Stmt{9u, Truncate{8u, OpSize::I8}});
+    c.visit(Stmt{std::nullopt, Fence{FenceKind::Mfence}});
+    c.visit(Stmt{std::nullopt, GuestPc{0x4000ULL}});
+    c.visit(Stmt{std::nullopt, InlineAsm{{0x0F, 0x05}}});
+
+    REQUIRE(c.total() ==
+            static_cast<std::uint64_t>(OpCounter::Kind::kCount));
+}
