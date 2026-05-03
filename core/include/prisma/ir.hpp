@@ -276,6 +276,19 @@ struct GuestPc {
     std::uint64_t pc;
 };
 
+// ---- InlineAsm escape hatch (F1-IR-013) ------------------------------
+//
+// Last resort for guest instructions our decoder + lowerer can't handle
+// natively. Stores the raw guest bytes; the runtime emits a thunk that
+// interprets the instruction via a software model (or jumps to a manual
+// helper). The cache key includes these bytes verbatim so SMC remains
+// detectable. Side-effecting; the validator treats it as a terminator
+// (no later refs may rely on guest state staying coherent through it).
+
+struct InlineAsm {
+    std::vector<std::uint8_t> bytes;
+};
+
 enum class TrapKind : std::uint8_t {
     Sigtrap = 0,  // INT3 — debugger trap.
     Sigill,       // UD2 — illegal opcode.
@@ -301,7 +314,7 @@ using Op = std::variant<
     CallRel, CallReg, RetAdjusted,
     Cpuid, Syscall, Trap,
     Extend, Truncate, Fence,
-    GuestPc
+    GuestPc, InlineAsm
 >;
 
 // ---------------------------------------------------------------------------
@@ -380,6 +393,7 @@ bool operator==(const Extend& a, const Extend& b) noexcept;
 bool operator==(const Truncate& a, const Truncate& b) noexcept;
 bool operator==(const Fence& a, const Fence& b) noexcept;
 bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
+bool operator==(const InlineAsm& a, const InlineAsm& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

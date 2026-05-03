@@ -93,6 +93,9 @@ bool operator==(const Fence& a, const Fence& b) noexcept {
 bool operator==(const GuestPc& a, const GuestPc& b) noexcept {
     return a.pc == b.pc;
 }
+bool operator==(const InlineAsm& a, const InlineAsm& b) noexcept {
+    return a.bytes == b.bytes;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

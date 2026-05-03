@@ -259,8 +259,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (e7ac26c) F1-IR-018: IR deserialization + round-trip tests.
 - [x] (c9c428c) F1-IR-019: Memoise pretty-printed form for test stability.
 - [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
-- [ ] F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list.
-- [ ] F1-IR-022: Add `Function` with multiple blocks + entry block.
+- [x] (pre-existing) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list. (ir.hpp defines `struct BasicBlock { uint32_t id; vector<Stmt> stmts; }`.)
+- [x] (pre-existing) F1-IR-022: Add `Function` with multiple blocks + entry block. (ir.hpp defines `struct Function { vector<BasicBlock> blocks; uint32_t entry; }`.)
 - [ ] F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
 - [ ] F1-IR-024: Dominator tree + postorder traversal utilities.
 - [ ] F1-IR-025: Loop detection (natural loops by back-edge analysis).
@@ -285,9 +285,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
 - [x] (pending commit) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
 - [x] (pending commit) F1-BK-018: Literal pool management.
-- [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
-- [ ] F1-BK-020: Emit guest-state save on translation entry.
-- [ ] F1-BK-021: Emit guest-state restore on translation exit.
+- [x] (pre-existing) F1-BK-019: Code buffer flushing and I-cache invalidation integration. (jit_memory.cpp invalidate_icache + Emitter::flush_literal_pool, both wired.)
+- [x] (b550cbc) F1-BK-020: Emit guest-state save on translation entry. (backend::abi::emit_block_prologue.)
+- [x] (b550cbc) F1-BK-021: Emit guest-state restore on translation exit. (backend::abi::emit_block_epilogue_and_ret.)
 - [x] (5bfaa98) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
 - [x] (5bfaa98) F1-BK-023: Lowering of Fence (dmb ish / dsb).
 - [x] (pre-existing) F1-BK-024: Lowering of Select via csel. (Already in lowering.cpp:372-389 + test_lowering.cpp:232.)

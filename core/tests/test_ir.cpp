@@ -95,6 +95,15 @@ TEST_CASE("kInvalidRef renders as %?") {
 // F1-IR-014 GuestPc pseudo-op
 // ---------------------------------------------------------------------
 
+TEST_CASE("InlineAsm carries opaque guest bytes and equates by content") {
+    Stmt a{std::nullopt, InlineAsm{{0x0F, 0x05}}};   // SYSCALL bytes
+    Stmt b{std::nullopt, InlineAsm{{0x0F, 0x05}}};
+    Stmt c{std::nullopt, InlineAsm{{0x0F, 0x07}}};   // SYSRET bytes
+    REQUIRE(a == b);
+    REQUIRE_FALSE(a == c);
+    REQUIRE(pretty_print(a) == "inline_asm 2B");
+}
+
 TEST_CASE("GuestPc has structural equality and prints with hex address") {
     Stmt a{std::nullopt, GuestPc{0xCAFE'BABE'1234'5678ull}};
     Stmt b{std::nullopt, GuestPc{0xCAFE'BABE'1234'5678ull}};

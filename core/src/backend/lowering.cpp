@@ -619,6 +619,16 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // affects emitted bytes.
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::InlineAsm>) {
+            // Placeholder until the dispatcher learns how to call into
+            // a software interpreter for the raw guest bytes (planned
+            // alongside F1-RT-011 guest signal delivery). For now we
+            // just halt the block, returning the sentinel so the
+            // dispatcher knows we couldn't handle this region.
+            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Fence>) {
             // F1-BK-023. Map x86 fences to ARM64 DMB ISH variants.
             switch (op.kind) {

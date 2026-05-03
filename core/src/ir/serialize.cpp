@@ -62,11 +62,12 @@ enum class OpKind : std::uint8_t {
     kTruncate    = 26,
     kFence       = 27,
     kGuestPc     = 28,
+    kInlineAsm   = 29,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kGuestPc);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kInlineAsm);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -191,6 +192,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Truncate>)    return OpKind::kTruncate;
         else if constexpr (std::is_same_v<T, Fence>)       return OpKind::kFence;
         else if constexpr (std::is_same_v<T, GuestPc>)     return OpKind::kGuestPc;
+        else if constexpr (std::is_same_v<T, InlineAsm>)   return OpKind::kInlineAsm;
     }, op);
 }
 
@@ -310,6 +312,10 @@ void write_payload(std::vector<std::uint8_t>& out, const Fence& x) {
 }
 void write_payload(std::vector<std::uint8_t>& out, const GuestPc& x) {
     put_u64(out, x.pc);
+}
+void write_payload(std::vector<std::uint8_t>& out, const InlineAsm& x) {
+    put_u32(out, static_cast<std::uint32_t>(x.bytes.size()));
+    for (std::uint8_t b : x.bytes) put_u8(out, b);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -571,6 +577,17 @@ DeserializeError read_payload_guest_pc(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_inline_asm(Cursor& c, Stmt& s) {
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    const std::uint32_t n = c.take_u32();
+    if (!c.remaining(n)) return DeserializeError::Truncated;
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(n);
+    for (std::uint32_t i = 0; i < n; ++i) bytes.push_back(c.take_u8());
+    s.op = InlineAsm{std::move(bytes)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -616,6 +633,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kTruncate:    return read_payload_truncate(c, s);
         case OpKind::kFence:       return read_payload_fence(c, s);
         case OpKind::kGuestPc:     return read_payload_guest_pc(c, s);
+        case OpKind::kInlineAsm:   return read_payload_inline_asm(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

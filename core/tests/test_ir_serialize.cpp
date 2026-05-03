@@ -152,6 +152,17 @@ TEST_CASE("ir_serialize: GuestPc round-trip", "[ir_serialize]") {
         Op{GuestPc{0u}}});                         // edge: zero
 }
 
+TEST_CASE("ir_serialize: InlineAsm round-trip preserves the byte payload",
+          "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{InlineAsm{{0x0F, 0x05}}}});               // SYSCALL
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{InlineAsm{{}}}});                         // edge: empty
+    std::vector<std::uint8_t> long_bytes(1024u, 0xCCu);
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{InlineAsm{long_bytes}}});                 // edge: large
+}
+
 TEST_CASE("ir_serialize: large mixed program round-trip", "[ir_serialize]") {
     const std::vector<Stmt> program = {
         // 0-3: pure values

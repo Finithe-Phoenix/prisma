@@ -167,6 +167,8 @@ std::string pretty_print(const Op& op) {
             os << "fence." << k;
         } else if constexpr (std::is_same_v<T, GuestPc>) {
             os << "guest_pc 0x" << std::hex << x.pc;
+        } else if constexpr (std::is_same_v<T, InlineAsm>) {
+            os << "inline_asm " << std::dec << x.bytes.size() << "B";
         }
     }, op);
     return os.str();
