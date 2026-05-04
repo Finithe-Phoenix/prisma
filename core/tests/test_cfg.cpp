@@ -88,6 +88,7 @@ TEST_CASE("is_terminator: all expected ops are terminators") {
     REQUIRE(is_terminator(Op{Cpuid{}}));
     REQUIRE(is_terminator(Op{Syscall{}}));
     REQUIRE(is_terminator(Op{InlineAsm{{}}}));
+    REQUIRE(is_terminator(Op{CondJumpFlags{0u, CondCode::Eq, 1u, 2u}}));
 }
 
 TEST_CASE("is_terminator: pure ops are not terminators") {

@@ -204,6 +204,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::ReadFlag>)      { bump(op.flags, i); }
+            else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -247,6 +250,7 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     for (unsigned i = kFpScratchPoolSize; i-- > 0;) {
         fp_free_.push_back(fp_scratch_reg(i));
     }
+    flag_refs_.clear();
     peak_live_   = 0;
     peak_spills_ = 0;
 
@@ -291,6 +295,7 @@ LowerResult Lowerer::lower(const ir::Function& fn) {
     for (unsigned i = kFpScratchPoolSize; i-- > 0;) {
         fp_free_.push_back(fp_scratch_reg(i));
     }
+    flag_refs_.clear();
     peak_live_   = 0;
     peak_spills_ = 0;
     if (options_.spill_slots > 0) {
@@ -659,6 +664,88 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // dispatcher knows we couldn't handle this region.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlags>) {
+            // F1-IR-004 / F1-BK lowering. Emit the flag-setting variant
+            // of the integer op so NZCV reflects the result, then bind
+            // the result Ref to "NZCV is current" (no machine register
+            // backing; the consumer reads NZCV directly).
+            arm64::Reg rl, rr;
+            if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlags.lhs"};
+            if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlags.rhs"};
+            switch (op.op) {
+                case ir::BinOpKind::Sub:
+                    // `cmp` is `subs xzr, lhs, rhs` — sets NZCV without
+                    // writing a destination. Perfect for the
+                    // discard-result Sub case the validator allows.
+                    emitter_.cmp(rl, rr);
+                    break;
+                case ir::BinOpKind::Add:
+                case ir::BinOpKind::And:
+                    // adds / ands aren't yet exposed by the Emitter
+                    // surface; defer until F1-BK adds the flag-setting
+                    // arithmetic forms. For now, decline gracefully.
+                    return {false, LowerError::UnsupportedOp,
+                            "WriteFlags.op = Add/And not yet lowered"};
+                default:
+                    return {false, LowerError::UnsupportedOp,
+                            "WriteFlags only supports Sub today"};
+            }
+            // Result Ref lives in NZCV; track it in flag_refs_ so
+            // consumers verify their operand was a real WriteFlags
+            // result (no host register backing).
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::ReadFlag>) {
+            // F1-IR-005. Emit `cset rd, <armcond>` for the requested
+            // FlagBit. The producer (WriteFlags) must have set NZCV
+            // and nothing in between may have clobbered it.
+            if (flag_refs_.find(op.flags) == flag_refs_.end()) {
+                return {false, LowerError::DanglingRef,
+                        "ReadFlag.flags must be a WriteFlags result"};
+            }
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "ReadFlag requires a result ref"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "ReadFlag"};
+            }
+            ir::CondCode cc = ir::CondCode::Eq;  // mapped per which:
+            switch (op.which) {
+                case ir::FlagBit::Carry:    cc = ir::CondCode::Cc;   break;
+                case ir::FlagBit::Zero:     cc = ir::CondCode::Eq;   break;
+                case ir::FlagBit::Sign:     cc = ir::CondCode::Mi;   break;
+                case ir::FlagBit::Overflow: cc = ir::CondCode::Ov;   break;
+                case ir::FlagBit::Parity:
+                case ir::FlagBit::Aux:
+                    // Not mappable to ARM64 NZCV directly; software
+                    // emulation lands in F1-RT-* future work.
+                    return {false, LowerError::UnsupportedOp,
+                            "ReadFlag(Parity/Aux) needs SW emulation"};
+            }
+            emitter_.cset(rd, cc);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) {
+            // F1-IR-007. Branch on NZCV using the supplied CondCode.
+            if (flag_refs_.find(op.flags) == flag_refs_.end()) {
+                return {false, LowerError::DanglingRef,
+                        "CondJumpFlags.flags must be a WriteFlags result"};
+            }
+            auto it_t = block_labels_.find(op.if_true);
+            auto it_f = block_labels_.find(op.if_false);
+            if (it_t == block_labels_.end() || it_f == block_labels_.end()) {
+                return {false, LowerError::UnsupportedOp,
+                        "CondJumpFlags outside Function lowering (no block label)"};
+            }
+            emitter_.branch_cc(it_t->second, op.cc);
+            emitter_.branch(it_f->second);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::FpConstant>) {

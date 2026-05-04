@@ -152,6 +152,20 @@ TEST_CASE("ir_serialize: GuestPc round-trip", "[ir_serialize]") {
         Op{GuestPc{0u}}});                         // edge: zero
 }
 
+TEST_CASE("ir_serialize: WriteFlags + ReadFlag + CondJumpFlags round-trip",
+          "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{1u},
+        Op{WriteFlags{BinOpKind::Sub, Ref{0u}, Ref{0u}, OpSize::I64}}});
+    check_single_stmt_roundtrip(Stmt{Ref{2u},
+        Op{ReadFlag{Ref{1u}, FlagBit::Zero}}});
+    check_single_stmt_roundtrip(Stmt{Ref{3u},
+        Op{ReadFlag{Ref{1u}, FlagBit::Carry}}});
+    check_single_stmt_roundtrip(Stmt{Ref{4u},
+        Op{ReadFlag{Ref{1u}, FlagBit::Overflow}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{CondJumpFlags{Ref{1u}, CondCode::Eq, 5u, 6u}}});
+}
+
 TEST_CASE("ir_serialize: FpConstant + FpBinOp round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{1u},
         Op{FpConstant{0x3FF0'0000'0000'0000ULL, FpSize::F64}}});  // 1.0 double

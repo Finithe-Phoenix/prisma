@@ -42,6 +42,9 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, InlineAsm>)   return OpCounter::Kind::InlineAsm;
         else if constexpr (std::is_same_v<T, FpConstant>)  return OpCounter::Kind::FpConstant;
         else if constexpr (std::is_same_v<T, FpBinOp>)     return OpCounter::Kind::FpBinOp;
+        else if constexpr (std::is_same_v<T, WriteFlags>)    return OpCounter::Kind::WriteFlags;
+        else if constexpr (std::is_same_v<T, ReadFlag>)      return OpCounter::Kind::ReadFlag;
+        else if constexpr (std::is_same_v<T, CondJumpFlags>) return OpCounter::Kind::CondJumpFlags;
     }, op);
 }
 

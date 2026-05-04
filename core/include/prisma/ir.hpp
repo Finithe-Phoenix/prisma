@@ -276,6 +276,53 @@ struct GuestPc {
     std::uint64_t pc;
 };
 
+// ---- Flags (F1-IR-003 / F1-IR-004 / F1-IR-005 / F1-IR-007) -----------
+//
+// SSA-tracked x86 EFLAGS bits. The naive "side-effecting CmpFlags +
+// implicit NZCV consumer" model already in this header gets the
+// common case, but it can't represent a SETcc that consumes flags
+// from a non-adjacent producer, nor a CondJump that wants to test
+// flags from an ALU operation rather than a dedicated CmpFlags.
+//
+// The new ops form a typed pillar:
+//
+//   WriteFlags{op, lhs, rhs, size}  — pure. Produces a "Flags" Ref by
+//                                      doing a flag-setting variant of
+//                                      `op` on (lhs, rhs).
+//   ReadFlag{flags_ref, which}      — pure. Extracts a single FlagBit
+//                                      as an I8 (0 or 1).
+//   CondJumpFlags{flags, cc, t, f}  — terminator. Branches on the
+//                                      Flags Ref using the CondCode.
+//
+// Lowering invariant: a Flags Ref is materialised in ARM64 NZCV.
+// Between the WriteFlags and any consumer (ReadFlag / CondJumpFlags)
+// the lowerer must not emit any flag-clobbering op. The validator
+// gives a SizeMismatch (pseudo-typed Flags ≠ regular I8/I16/...)
+// for any non-flag op that tries to consume a Flags ref.
+
+enum class FlagBit : std::uint8_t {
+    Carry = 0, Zero, Sign, Overflow, Parity, Aux
+};
+
+struct WriteFlags {
+    BinOpKind op;
+    Ref       lhs;
+    Ref       rhs;
+    OpSize    size;
+};
+
+struct ReadFlag {
+    Ref     flags;
+    FlagBit which;
+};
+
+struct CondJumpFlags {
+    Ref           flags;
+    CondCode      cc;
+    std::uint32_t if_true;
+    std::uint32_t if_false;
+};
+
 // ---- Floating-point (F1-IR-026, lowered by F1-BK-013) ----------------
 //
 // Single- (S, 32-bit) and double- (D, 64-bit) precision IEEE-754 FP.
@@ -333,7 +380,8 @@ using Op = std::variant<
     Cpuid, Syscall, Trap,
     Extend, Truncate, Fence,
     GuestPc, InlineAsm,
-    FpConstant, FpBinOp
+    FpConstant, FpBinOp,
+    WriteFlags, ReadFlag, CondJumpFlags
 >;
 
 // ---------------------------------------------------------------------------
@@ -415,6 +463,9 @@ bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
 bool operator==(const InlineAsm& a, const InlineAsm& b) noexcept;
 bool operator==(const FpConstant& a, const FpConstant& b) noexcept;
 bool operator==(const FpBinOp&    a, const FpBinOp&    b) noexcept;
+bool operator==(const WriteFlags& a, const WriteFlags& b) noexcept;
+bool operator==(const ReadFlag&   a, const ReadFlag&   b) noexcept;
+bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

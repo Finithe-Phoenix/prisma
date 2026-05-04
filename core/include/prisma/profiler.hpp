@@ -39,6 +39,7 @@ public:
         Extend, Truncate, Fence,
         GuestPc, InlineAsm,
         FpConstant, FpBinOp,
+        WriteFlags, ReadFlag, CondJumpFlags,
         kCount  // sentinel
     };
 

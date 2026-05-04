@@ -102,6 +102,16 @@ bool operator==(const FpConstant& a, const FpConstant& b) noexcept {
 bool operator==(const FpBinOp& a, const FpBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const WriteFlags& a, const WriteFlags& b) noexcept {
+    return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
+bool operator==(const ReadFlag& a, const ReadFlag& b) noexcept {
+    return a.flags == b.flags && a.which == b.which;
+}
+bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept {
+    return a.flags == b.flags && a.cc == b.cc
+        && a.if_true == b.if_true && a.if_false == b.if_false;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

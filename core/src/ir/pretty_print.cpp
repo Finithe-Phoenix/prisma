@@ -183,6 +183,26 @@ std::string pretty_print(const Op& op) {
             const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
             os << op_n << "." << sz << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, WriteFlags>) {
+            os << "writeflags." << binop_name(x.op) << "."
+               << size_suffix(x.size) << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, ReadFlag>) {
+            const char* w = "?";
+            switch (x.which) {
+                case FlagBit::Carry:    w = "cf"; break;
+                case FlagBit::Zero:     w = "zf"; break;
+                case FlagBit::Sign:     w = "sf"; break;
+                case FlagBit::Overflow: w = "of"; break;
+                case FlagBit::Parity:   w = "pf"; break;
+                case FlagBit::Aux:      w = "af"; break;
+            }
+            os << "readflag." << w << " "; print_ref(os, x.flags);
+        } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
+            os << "condjmpflags." << cc_name(x.cc) << " ";
+            print_ref(os, x.flags);
+            os << ", bb" << std::dec << x.if_true
+               << ", bb" << std::dec << x.if_false;
         }
     }, op);
     return os.str();

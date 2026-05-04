@@ -39,6 +39,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "prisma/arm64_encoding.hpp"  // for arm64::Reg
@@ -194,6 +195,12 @@ private:
     std::vector<Emitter::FpReg>                 fp_free_;
     [[nodiscard]] bool allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out);
     [[nodiscard]] bool fp_reg_of(ir::Ref ref, Emitter::FpReg& out);
+
+    // Flags refs (F1-IR-003 .. F1-IR-007) don't have a host register
+    // — they live in NZCV. We just track which Refs are valid Flags
+    // values so consumers (ReadFlag / CondJumpFlags) can verify
+    // their operand was produced by a prior WriteFlags.
+    std::unordered_set<ir::Ref> flag_refs_;
 
 public:
     // For tests: peak number of slots in concurrent use during the

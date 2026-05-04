@@ -38,6 +38,9 @@ std::optional<OpSize> result_size_static(const Op& op) {
         else if constexpr (std::is_same_v<T, LoadMemTSO>)  return x.size;
         else if constexpr (std::is_same_v<T, Extend>)      return x.to_size;
         else if constexpr (std::is_same_v<T, Truncate>)    return x.to_size;
+        else if constexpr (std::is_same_v<T, ReadFlag>)    return OpSize::I8;
+        // WriteFlags / FpConstant / FpBinOp produce non-integer-typed
+        // refs (Flags pseudo-type or FP); the size table doesn't apply.
         else                                                return std::nullopt;
     }, op);
 }
@@ -62,6 +65,9 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, Extend>)     { visit(x.value); }
         else if constexpr (std::is_same_v<T, Truncate>)   { visit(x.value); }
         else if constexpr (std::is_same_v<T, FpBinOp>)    { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, WriteFlags>)    { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, ReadFlag>)      { visit(x.flags); }
+        else if constexpr (std::is_same_v<T, CondJumpFlags>) { visit(x.flags); }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant — no operand refs.
@@ -84,7 +90,9 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, Extend>
             || std::is_same_v<T, Truncate>
             || std::is_same_v<T, FpConstant>
-            || std::is_same_v<T, FpBinOp>;
+            || std::is_same_v<T, FpBinOp>
+            || std::is_same_v<T, WriteFlags>
+            || std::is_same_v<T, ReadFlag>;
     }, op);
 }
 
@@ -128,7 +136,12 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
             // to_size; the validator can't pin it without per-op
             // logic. For now skip the check.
             (void)x; (void)r;
+        } else if constexpr (std::is_same_v<T, WriteFlags>) {
+            if (r == x.lhs || r == x.rhs) return x.size;
         }
+        // ReadFlag / CondJumpFlags consume Flags-typed refs; the
+        // integer-size table doesn't apply, so return nullopt to
+        // skip the check.
         return std::nullopt;
     }, op);
 }

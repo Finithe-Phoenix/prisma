@@ -853,6 +853,62 @@ TEST_CASE("Lowerer: Fence Lfence emits dmb ishld") {
 }
 
 // ---------------------------------------------------------------------
+// F1-IR-003/004/005 flags pillar lowering
+// ---------------------------------------------------------------------
+
+TEST_CASE("Lowerer: WriteFlags(Sub) + ReadFlag(Zero) emits cmp + cset eq") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::ReadFlag{2u, ir::FlagBit::Zero}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I8}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("cmp") != std::string::npos);
+    REQUIRE(d.find("cset") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: ReadFlag without a prior WriteFlags is rejected") {
+    std::vector<ir::Stmt> stmts = {
+        // Ref 7 is undefined as a Flags ref.
+        {0u, ir::ReadFlag{7u, ir::FlagBit::Zero}},
+    };
+    bool ok;
+    (void)lower_to_disasm(stmts, ok);
+    REQUIRE_FALSE(ok);
+}
+
+TEST_CASE("Lowerer(Function): CondJumpFlags emits b.cc + b") {
+    // bb0: WriteFlags Sub, %0=loadreg rax, %1=loadreg rbx;
+    //      CondJumpFlags eq, bb1, bb2
+    // bb1, bb2: Return
+    ir::Function fn;
+    fn.entry = 0;
+    fn.blocks.push_back(ir::BasicBlock{0u, {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpFlags{2u, ir::CondCode::Eq, 1u, 2u}},
+    }});
+    fn.blocks.push_back(ir::BasicBlock{1u, {{std::nullopt, ir::Return{}}}});
+    fn.blocks.push_back(ir::BasicBlock{2u, {{std::nullopt, ir::Return{}}}});
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    auto r = lw.lower(fn);
+    REQUIRE(r.success);
+    em.finalize();
+    const std::string d = em.disassemble();
+    REQUIRE(d.find("b.eq") != std::string::npos);
+    REQUIRE(d.find("cmp")  != std::string::npos);
+}
+
+// ---------------------------------------------------------------------
 // F1-BK-013 floating-point lowering
 // ---------------------------------------------------------------------
 
