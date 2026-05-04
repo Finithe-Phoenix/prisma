@@ -302,7 +302,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
 - [x] (pending commit) F1-PS-007: Redundant-load elimination across a block.
 - [x] (pending commit) F1-PS-008: Dead-store elimination within a block.
-- [ ] F1-PS-009: Peephole pattern matcher (IR-level patterns).
+- [x] (aa1e3cd) F1-PS-009: Peephole pattern matcher (IR-level patterns).
 - [x] (84c03a7) F1-PS-010: Constant folding on Extend / Truncate.
 - [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
 - [~|codex] F1-PS-012: Flag-write elimination when no reader exists.
