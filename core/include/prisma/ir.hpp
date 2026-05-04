@@ -276,6 +276,24 @@ struct GuestPc {
     std::uint64_t pc;
 };
 
+// ---- Floating-point (F1-IR-026, lowered by F1-BK-013) ----------------
+//
+// Single- (S, 32-bit) and double- (D, 64-bit) precision IEEE-754 FP.
+// We share the SSA Ref machinery with integer ops; the lowerer maps
+// each FP Ref to an ARM64 Vn register (S- or D-view per FpSize) on a
+// separate scratch pool from the integer x-pool to avoid interference.
+//
+// FpBinOpKind covers the four hot operations from x86 SSE/AVX
+// scalar-single and scalar-double (ADDSS / ADDSD / MULSS / MULSD /
+// SUBSS / SUBSD / DIVSS / DIVSD). Sqrt and the comparison family
+// land later (F1-BK-029, planned).
+
+enum class FpSize     : std::uint8_t { F32 = 0, F64 };
+enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
+
+struct FpConstant { std::uint64_t bits; FpSize size; };
+struct FpBinOp    { FpBinOpKind op; Ref lhs; Ref rhs; FpSize size; };
+
 // ---- InlineAsm escape hatch (F1-IR-013) ------------------------------
 //
 // Last resort for guest instructions our decoder + lowerer can't handle
@@ -314,7 +332,8 @@ using Op = std::variant<
     CallRel, CallReg, RetAdjusted,
     Cpuid, Syscall, Trap,
     Extend, Truncate, Fence,
-    GuestPc, InlineAsm
+    GuestPc, InlineAsm,
+    FpConstant, FpBinOp
 >;
 
 // ---------------------------------------------------------------------------
@@ -394,6 +413,8 @@ bool operator==(const Truncate& a, const Truncate& b) noexcept;
 bool operator==(const Fence& a, const Fence& b) noexcept;
 bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
 bool operator==(const InlineAsm& a, const InlineAsm& b) noexcept;
+bool operator==(const FpConstant& a, const FpConstant& b) noexcept;
+bool operator==(const FpBinOp&    a, const FpBinOp&    b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

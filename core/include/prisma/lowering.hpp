@@ -186,6 +186,15 @@ private:
     // Jump / CondJump lowering inside lower_stmt.
     std::unordered_map<std::uint32_t, Emitter::Label> block_labels_;
 
+    // FP scratch pool (F1-BK-013). 8-register pool V0..V7, separate
+    // from the integer pool because ARM64's V regs encode in their
+    // own namespace. Non-spillable in the MVP — too many simultaneous
+    // FP refs returns OutOfScratchRegs.
+    std::unordered_map<ir::Ref, Emitter::FpReg> ref_to_fp_;
+    std::vector<Emitter::FpReg>                 fp_free_;
+    [[nodiscard]] bool allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out);
+    [[nodiscard]] bool fp_reg_of(ir::Ref ref, Emitter::FpReg& out);
+
 public:
     // For tests: peak number of slots in concurrent use during the
     // last lower() call.

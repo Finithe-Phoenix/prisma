@@ -96,6 +96,12 @@ bool operator==(const GuestPc& a, const GuestPc& b) noexcept {
 bool operator==(const InlineAsm& a, const InlineAsm& b) noexcept {
     return a.bytes == b.bytes;
 }
+bool operator==(const FpConstant& a, const FpConstant& b) noexcept {
+    return a.bits == b.bits && a.size == b.size;
+}
+bool operator==(const FpBinOp& a, const FpBinOp& b) noexcept {
+    return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

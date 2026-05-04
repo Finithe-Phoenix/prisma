@@ -38,6 +38,7 @@ public:
         Cpuid, Syscall, Trap,
         Extend, Truncate, Fence,
         GuestPc, InlineAsm,
+        FpConstant, FpBinOp,
         kCount  // sentinel
     };
 

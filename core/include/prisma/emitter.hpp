@@ -229,6 +229,31 @@ public:
     // the W-view; the lowerer only emits one when the SSA result has
     // to live as a clean narrow value.
 
+    // --- Floating-point ALU (F1-BK-013) -----------------------------------
+    //
+    // ARM64 has 32 vector/FP registers V0..V31. Each register has
+    // sub-views: B (8b), H (16b), S (32b), D (64b), Q (128b). Scalar
+    // FP ops use the S- or D-view per `ir::FpSize`.
+    //
+    // We expose a small `FpReg` enum (V0..V31) and the four hot
+    // scalar binops. NEON 128-bit forms come later (F1-BK-012).
+    enum class FpReg : std::uint8_t {
+        V0 = 0,  V1,  V2,  V3,  V4,  V5,  V6,  V7,
+        V8,  V9, V10, V11, V12, V13, V14, V15,
+        V16, V17, V18, V19, V20, V21, V22, V23,
+        V24, V25, V26, V27, V28, V29, V30, V31,
+    };
+
+    void fadd(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void fsub(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void fmul(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void fdiv(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+
+    // Materialise an FP constant. The bits are the IEEE-754 encoding
+    // of the value (single → low 32 bits, double → all 64). vixl
+    // picks fmov-immediate / ldr-literal as appropriate.
+    void fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz);
+
     // --- Memory fences (F1-BK-023) ----------------------------------------
     //
     // ARM64 DMB / DSB barrier emission. In our IR:

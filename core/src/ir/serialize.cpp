@@ -63,11 +63,13 @@ enum class OpKind : std::uint8_t {
     kFence       = 27,
     kGuestPc     = 28,
     kInlineAsm   = 29,
+    kFpConstant  = 30,
+    kFpBinOp     = 31,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kInlineAsm);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kFpBinOp);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -158,6 +160,12 @@ struct Cursor {
 [[nodiscard]] bool is_valid_fence(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(FenceKind::Sfence);
 }
+[[nodiscard]] bool is_valid_fpsize(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(FpSize::F64);
+}
+[[nodiscard]] bool is_valid_fpbinop(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(FpBinOpKind::Div);
+}
 
 // ---- OpKind dispatch on serialize side --------------------------------
 
@@ -193,6 +201,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Fence>)       return OpKind::kFence;
         else if constexpr (std::is_same_v<T, GuestPc>)     return OpKind::kGuestPc;
         else if constexpr (std::is_same_v<T, InlineAsm>)   return OpKind::kInlineAsm;
+        else if constexpr (std::is_same_v<T, FpConstant>)  return OpKind::kFpConstant;
+        else if constexpr (std::is_same_v<T, FpBinOp>)     return OpKind::kFpBinOp;
     }, op);
 }
 
@@ -316,6 +326,16 @@ void write_payload(std::vector<std::uint8_t>& out, const GuestPc& x) {
 void write_payload(std::vector<std::uint8_t>& out, const InlineAsm& x) {
     put_u32(out, static_cast<std::uint32_t>(x.bytes.size()));
     for (std::uint8_t b : x.bytes) put_u8(out, b);
+}
+void write_payload(std::vector<std::uint8_t>& out, const FpConstant& x) {
+    put_u64(out, x.bits);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const FpBinOp& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.op));
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -588,6 +608,28 @@ DeserializeError read_payload_inline_asm(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_fp_constant(Cursor& c, Stmt& s) {
+    if (!c.remaining(8 + 1)) return DeserializeError::Truncated;
+    const std::uint64_t bits = c.take_u64();
+    const std::uint8_t  sz   = c.take_u8();
+    if (!is_valid_fpsize(sz)) return DeserializeError::BadSize;
+    s.op = FpConstant{bits, static_cast<FpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_fp_binop(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  op  = c.take_u8();
+    const std::uint32_t lhs = c.take_u32();
+    const std::uint32_t rhs = c.take_u32();
+    const std::uint8_t  sz  = c.take_u8();
+    if (!is_valid_fpbinop(op)) return DeserializeError::BadSize;
+    if (!is_valid_fpsize(sz))  return DeserializeError::BadSize;
+    s.op = FpBinOp{static_cast<FpBinOpKind>(op), lhs, rhs,
+                   static_cast<FpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -634,6 +676,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kFence:       return read_payload_fence(c, s);
         case OpKind::kGuestPc:     return read_payload_guest_pc(c, s);
         case OpKind::kInlineAsm:   return read_payload_inline_asm(c, s);
+        case OpKind::kFpConstant:  return read_payload_fp_constant(c, s);
+        case OpKind::kFpBinOp:     return read_payload_fp_binop(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

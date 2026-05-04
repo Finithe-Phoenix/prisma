@@ -169,6 +169,20 @@ std::string pretty_print(const Op& op) {
             os << "guest_pc 0x" << std::hex << x.pc;
         } else if constexpr (std::is_same_v<T, InlineAsm>) {
             os << "inline_asm " << std::dec << x.bytes.size() << "B";
+        } else if constexpr (std::is_same_v<T, FpConstant>) {
+            const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
+            os << "fpconst." << sz << " 0x" << std::hex << x.bits;
+        } else if constexpr (std::is_same_v<T, FpBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case FpBinOpKind::Add: op_n = "fadd"; break;
+                case FpBinOpKind::Sub: op_n = "fsub"; break;
+                case FpBinOpKind::Mul: op_n = "fmul"; break;
+                case FpBinOpKind::Div: op_n = "fdiv"; break;
+            }
+            const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
+            os << op_n << "." << sz << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         }
     }, op);
     return os.str();

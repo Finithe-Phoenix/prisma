@@ -40,6 +40,8 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, Fence>)       return OpCounter::Kind::Fence;
         else if constexpr (std::is_same_v<T, GuestPc>)     return OpCounter::Kind::GuestPc;
         else if constexpr (std::is_same_v<T, InlineAsm>)   return OpCounter::Kind::InlineAsm;
+        else if constexpr (std::is_same_v<T, FpConstant>)  return OpCounter::Kind::FpConstant;
+        else if constexpr (std::is_same_v<T, FpBinOp>)     return OpCounter::Kind::FpBinOp;
     }, op);
 }
 

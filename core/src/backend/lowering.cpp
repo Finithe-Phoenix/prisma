@@ -22,11 +22,16 @@ namespace prisma::backend {
 
 namespace {
 
-constexpr unsigned kScratchPoolSize = 10;  // x0..x9
+constexpr unsigned kScratchPoolSize   = 10;  // x0..x9
+constexpr unsigned kFpScratchPoolSize = 8;   // V0..V7
 
 constexpr arm64::Reg scratch_reg(unsigned idx) noexcept {
     // x0 = 0, x1 = 1, ... x9 = 9.
     return static_cast<arm64::Reg>(idx);
+}
+
+constexpr Emitter::FpReg fp_scratch_reg(unsigned idx) noexcept {
+    return static_cast<Emitter::FpReg>(idx);  // V0..V7
 }
 
 // Map an IR BinOpKind to the Emitter method. Expressed as a small switch
@@ -70,6 +75,21 @@ bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
     const unsigned live = static_cast<unsigned>(
         ref_to_scratch_.size() + stmt_temporaries_.size());
     peak_live_ = std::max(peak_live_, live);
+    return true;
+}
+
+bool Lowerer::allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out) {
+    if (fp_free_.empty()) return false;
+    out = fp_free_.back();
+    fp_free_.pop_back();
+    ref_to_fp_[ref] = out;
+    return true;
+}
+
+bool Lowerer::fp_reg_of(ir::Ref ref, Emitter::FpReg& out) {
+    auto it = ref_to_fp_.find(ref);
+    if (it == ref_to_fp_.end()) return false;
+    out = it->second;
     return true;
 }
 
@@ -221,6 +241,12 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     spilled_to_slot_.clear();
     free_slots_.clear();
     block_labels_.clear();
+    ref_to_fp_.clear();
+    fp_free_.clear();
+    fp_free_.reserve(kFpScratchPoolSize);
+    for (unsigned i = kFpScratchPoolSize; i-- > 0;) {
+        fp_free_.push_back(fp_scratch_reg(i));
+    }
     peak_live_   = 0;
     peak_spills_ = 0;
 
@@ -259,6 +285,12 @@ LowerResult Lowerer::lower(const ir::Function& fn) {
     spilled_to_slot_.clear();
     free_slots_.clear();
     block_labels_.clear();
+    ref_to_fp_.clear();
+    fp_free_.clear();
+    fp_free_.reserve(kFpScratchPoolSize);
+    for (unsigned i = kFpScratchPoolSize; i-- > 0;) {
+        fp_free_.push_back(fp_scratch_reg(i));
+    }
     peak_live_   = 0;
     peak_spills_ = 0;
     if (options_.spill_slots > 0) {
@@ -627,6 +659,45 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // dispatcher knows we couldn't handle this region.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpConstant>) {
+            // F1-BK-013. Materialise an FP constant in a scratch V reg.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "FpConstant requires a result ref"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpConstant"};
+            }
+            emitter_.fmov_imm(rd, op.bits, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpBinOp>) {
+            // F1-BK-013. fadd / fsub / fmul / fdiv on a freshly-allocated
+            // V scratch.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "FpBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "FpBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "FpBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpBinOp"};
+            }
+            switch (op.op) {
+                case ir::FpBinOpKind::Add: emitter_.fadd(rd, rl, rr, op.size); break;
+                case ir::FpBinOpKind::Sub: emitter_.fsub(rd, rl, rr, op.size); break;
+                case ir::FpBinOpKind::Mul: emitter_.fmul(rd, rl, rr, op.size); break;
+                case ir::FpBinOpKind::Div: emitter_.fdiv(rd, rl, rr, op.size); break;
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Fence>) {

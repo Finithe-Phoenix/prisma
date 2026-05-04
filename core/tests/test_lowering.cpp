@@ -852,6 +852,80 @@ TEST_CASE("Lowerer: Fence Lfence emits dmb ishld") {
     REQUIRE(d.find("dmb ishld") != std::string::npos);
 }
 
+// ---------------------------------------------------------------------
+// F1-BK-013 floating-point lowering
+// ---------------------------------------------------------------------
+
+TEST_CASE("Lowerer: FpConstant + FpBinOp(Add) emits fadd s/d") {
+    // double 1.0 + 2.0 → 3.0 (we don't execute, just check disasm)
+    std::uint64_t one = 0; std::uint64_t two = 0;
+    {
+        const double a = 1.0, b = 2.0;
+        std::memcpy(&one, &a, sizeof one);
+        std::memcpy(&two, &b, sizeof two);
+    }
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::FpConstant{one, ir::FpSize::F64}},
+        {1u, ir::FpConstant{two, ir::FpSize::F64}},
+        {2u, ir::FpBinOp{ir::FpBinOpKind::Add, 0u, 1u, ir::FpSize::F64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("fadd") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: FpBinOp(Mul) on f32 emits fmul s") {
+    std::uint32_t bits_one = 0;
+    {
+        const float a = 1.5f;
+        std::memcpy(&bits_one, &a, sizeof bits_one);
+    }
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::FpConstant{bits_one, ir::FpSize::F32}},
+        {1u, ir::FpConstant{bits_one, ir::FpSize::F32}},
+        {2u, ir::FpBinOp{ir::FpBinOpKind::Mul, 0u, 1u, ir::FpSize::F32}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("fmul") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: FpBinOp(Sub) and (Div) emit the matching instructions") {
+    std::uint64_t two = 0;
+    {
+        const double a = 2.0;
+        std::memcpy(&two, &a, sizeof two);
+    }
+    {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::FpConstant{two, ir::FpSize::F64}},
+            {1u, ir::FpConstant{two, ir::FpSize::F64}},
+            {2u, ir::FpBinOp{ir::FpBinOpKind::Sub, 0u, 1u, ir::FpSize::F64}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find("fsub") != std::string::npos);
+    }
+    {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::FpConstant{two, ir::FpSize::F64}},
+            {1u, ir::FpConstant{two, ir::FpSize::F64}},
+            {2u, ir::FpBinOp{ir::FpBinOpKind::Div, 0u, 1u, ir::FpSize::F64}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find("fdiv") != std::string::npos);
+    }
+}
+
 TEST_CASE("Lowerer: Fence Sfence emits dmb ishst") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Fence{ir::FenceKind::Sfence}},

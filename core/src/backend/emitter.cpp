@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -359,6 +360,61 @@ void Emitter::uxtw(arm64::Reg rd, arm64::Reg rn) {
     // AArch64 zero-extends 32→64 implicitly when the destination is
     // written through its W-view.  `mov wd, wn` is the canonical idiom.
     impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rn));
+}
+
+// --- Floating-point ALU (F1-BK-013) ---------------------------------------
+
+namespace {
+
+vixl_aa::SRegister to_vixl_s(Emitter::FpReg r) noexcept {
+    return vixl_aa::SRegister(static_cast<int>(r));
+}
+vixl_aa::DRegister to_vixl_d(Emitter::FpReg r) noexcept {
+    return vixl_aa::DRegister(static_cast<int>(r));
+}
+
+}  // namespace
+
+void Emitter::fadd(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fadd(to_vixl_s(rd), to_vixl_s(rn), to_vixl_s(rm));
+    } else {
+        impl_->masm.Fadd(to_vixl_d(rd), to_vixl_d(rn), to_vixl_d(rm));
+    }
+}
+void Emitter::fsub(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fsub(to_vixl_s(rd), to_vixl_s(rn), to_vixl_s(rm));
+    } else {
+        impl_->masm.Fsub(to_vixl_d(rd), to_vixl_d(rn), to_vixl_d(rm));
+    }
+}
+void Emitter::fmul(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fmul(to_vixl_s(rd), to_vixl_s(rn), to_vixl_s(rm));
+    } else {
+        impl_->masm.Fmul(to_vixl_d(rd), to_vixl_d(rn), to_vixl_d(rm));
+    }
+}
+void Emitter::fdiv(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fdiv(to_vixl_s(rd), to_vixl_s(rn), to_vixl_s(rm));
+    } else {
+        impl_->masm.Fdiv(to_vixl_d(rd), to_vixl_d(rn), to_vixl_d(rm));
+    }
+}
+
+void Emitter::fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz) {
+    if (sz == ir::FpSize::F32) {
+        float f;
+        const std::uint32_t low = static_cast<std::uint32_t>(bits);
+        std::memcpy(&f, &low, sizeof f);
+        impl_->masm.Fmov(to_vixl_s(rd), f);
+    } else {
+        double d;
+        std::memcpy(&d, &bits, sizeof d);
+        impl_->masm.Fmov(to_vixl_d(rd), d);
+    }
 }
 
 // --- Memory fences (F1-BK-023) --------------------------------------------

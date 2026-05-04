@@ -152,6 +152,17 @@ TEST_CASE("ir_serialize: GuestPc round-trip", "[ir_serialize]") {
         Op{GuestPc{0u}}});                         // edge: zero
 }
 
+TEST_CASE("ir_serialize: FpConstant + FpBinOp round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{1u},
+        Op{FpConstant{0x3FF0'0000'0000'0000ULL, FpSize::F64}}});  // 1.0 double
+    check_single_stmt_roundtrip(Stmt{Ref{2u},
+        Op{FpConstant{0x3F80'0000ULL, FpSize::F32}}});            // 1.0 float
+    check_single_stmt_roundtrip(Stmt{Ref{3u},
+        Op{FpBinOp{FpBinOpKind::Add, Ref{1u}, Ref{2u}, FpSize::F64}}});
+    check_single_stmt_roundtrip(Stmt{Ref{4u},
+        Op{FpBinOp{FpBinOpKind::Div, Ref{1u}, Ref{2u}, FpSize::F32}}});
+}
+
 TEST_CASE("ir_serialize: InlineAsm round-trip preserves the byte payload",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt,
