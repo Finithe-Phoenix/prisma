@@ -93,6 +93,11 @@ inductive FpBinOp where
   | fadd | fsub | fmul | fdiv
   deriving DecidableEq, Repr, BEq
 
+/-- Per-bit identifier in EFLAGS. Mirrors the C++ `FlagBit` enum. -/
+inductive FlagBit where
+  | carry | zero | sign | overflow | parity | aux
+  deriving DecidableEq, Repr, BEq
+
 /-- Core IR operation. An `Op` either produces exactly one value (pure ops,
     loads) or has side-effects (stores, control flow) and produces nothing.
     We model both with a single inductive for now; a future refinement will
@@ -168,6 +173,12 @@ inductive Op where
   -- Floating-point (F1-IR-026 / F1-BK-013).
   | fpConstant   (bits : UInt64) (size : FpSize)              : Op
   | fpBinop      (op : FpBinOp) (lhs rhs : Ref) (size : FpSize) : Op
+
+  -- Flags pillar (F1-IR-003 / F1-IR-004 / F1-IR-005 / F1-IR-007).
+  | writeFlags   (op : BinOp) (lhs rhs : Ref) (size : OpSize) : Op
+  | readFlag     (flags : Ref) (which : FlagBit)              : Op
+  | condJumpFlags (flags : Ref) (cc : CondCode)
+                  (ifTrue ifFalse : Nat)                      : Op
 
   deriving Repr
 

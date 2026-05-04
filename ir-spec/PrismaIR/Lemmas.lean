@@ -10,6 +10,7 @@
 import PrismaIR.Syntax
 import PrismaIR.Semantics
 import PrismaIR.MachineState
+import Std.Tactic.BVDecide
 
 namespace PrismaIR
 
@@ -82,14 +83,17 @@ example :
 /-!
 ## Masking idempotence.
 
-A one-line statement that `maskToSize (maskToSize v sz) sz = maskToSize v sz`.
-The proof requires AND idempotence on `UInt64`, which lives in mathlib.
-We mark it pending until mathlib is wired into the Lake build (planned
-for Fase 1 week 9 alongside full memory-model work).
+`maskToSize (maskToSize v sz) sz = maskToSize v sz` — applying the
+size mask twice is the same as once. The proof reduces to four cases
+on `sz`; in each case the body is `(v &&& C) &&& C` with `C` a
+concrete constant. `bv_decide` is complete on closed bit-vector
+goals; with the free `v` we instead lift to `BitVec 64` via the
+`UInt64.toBitVec` coercion and apply `BitVec.and_assoc` +
+`BitVec.and_self`.
 -/
 
 theorem maskToSize_idem (v : UInt64) (sz : OpSize) :
     maskToSize (maskToSize v sz) sz = maskToSize v sz := by
-  sorry
+  cases sz <;> simp [maskToSize] <;> first | rfl | bv_decide
 
 end PrismaIR

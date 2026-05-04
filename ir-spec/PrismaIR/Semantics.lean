@@ -72,19 +72,23 @@ def Env.extend (e : Env) (r : Ref) (v : UInt64) : Env :=
     caller's job; for the purposes of CondCode evaluation only the
     low bits matter for the unsigned comparisons, and the sign-bit
     interpretation matters for the signed ones. -/
-def evalCompare (cc : CondCode) (lhs rhs : UInt64) : UInt64 :=
-  match cc with
-  | .eq    => if lhs == rhs then 1 else 0
-  | .ne    => if lhs != rhs then 1 else 0
-  | .ult   => if lhs < rhs then 1 else 0
-  | .ule   => if lhs ≤ rhs then 1 else 0
-  | .ugt   => if lhs > rhs then 1 else 0
-  | .uge   => if lhs ≥ rhs then 1 else 0
-  | .slt   => if lhs.toInt8 < rhs.toInt8 then 1 else 0  -- signed compare via Int8
-  | .sle   => if lhs.toInt8 ≤ rhs.toInt8 then 1 else 0
-  | .sgt   => if lhs.toInt8 > rhs.toInt8 then 1 else 0
-  | .sge   => if lhs.toInt8 ≥ rhs.toInt8 then 1 else 0
-  | _      => 0  -- flag-direct codes are NZCV-driven; not modelled here yet
+def evalCompare (code : CondCode) (lhs rhs : UInt64) : UInt64 :=
+  -- Signed comparison via the toInt64 view; Lean's UInt64 has a
+  -- two's-complement Int64 reading.
+  let lhs_s := lhs.toInt64
+  let rhs_s := rhs.toInt64
+  match code with
+  | CondCode.eq    => if lhs == rhs then 1 else 0
+  | CondCode.ne    => if lhs != rhs then 1 else 0
+  | CondCode.ult   => if lhs < rhs then 1 else 0
+  | CondCode.ule   => if lhs ≤ rhs then 1 else 0
+  | CondCode.ugt   => if lhs > rhs then 1 else 0
+  | CondCode.uge   => if lhs ≥ rhs then 1 else 0
+  | CondCode.slt   => if lhs_s < rhs_s then 1 else 0
+  | CondCode.sle   => if lhs_s ≤ rhs_s then 1 else 0
+  | CondCode.sgt   => if lhs_s > rhs_s then 1 else 0
+  | CondCode.sge   => if lhs_s ≥ rhs_s then 1 else 0
+  | _              => 0  -- flag-direct codes are NZCV-driven; not modelled here yet
 
 /-- Sign-extend the low `n` bits of `v` to a 64-bit value. -/
 def signExtend (v : UInt64) : OpSize → UInt64
