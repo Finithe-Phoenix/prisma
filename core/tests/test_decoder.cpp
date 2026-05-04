@@ -1892,11 +1892,14 @@ TEST_CASE("decode SCASQ via 48 AF compares RAX with [RDI] and advances RDI by 8"
     REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{8u, ir::OpSize::I64}});
 }
 
-TEST_CASE("Error: REP STOSB remains unsupported until REP loop lowering exists") {
+// REP STOSB used to be rejected; F1-DC-066 (commit pending) now
+// accepts it as an InlineAsm{bytes} placeholder until the proper
+// IR-level loop expansion lands. This regression pin documents the
+// new contract.
+TEST_CASE("decode REP STOSB (F3 AA) is accepted as InlineAsm placeholder") {
     ir::Ref r = 0;
     auto res = decode_any({0xF3, 0xAA}, r);
-    REQUIRE(std::holds_alternative<DecodeError>(res));
-    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+    REQUIRE(std::holds_alternative<Decoded>(res));
 }
 
 TEST_CASE("Error: HLT (F4) is rejected as UnsupportedEncoding") {
@@ -2555,4 +2558,45 @@ TEST_CASE("NOP + MOV imm64 + RET sequence decodes cleanly one at a time") {
     REQUIRE(decoded_count == 3);
     REQUIRE(cursor == bytes.size());
     REQUIRE(r == 1);  // only the MOV contributed an SSA ref
+}
+
+// ---------------------------------------------------------------------
+// F1-DC-066 REP / REPE / REPNE prefixes on string ops
+// ---------------------------------------------------------------------
+
+TEST_CASE("decode REP STOSB (F3 AA) → InlineAsm placeholder, 2 bytes") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0xAA}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
+    const auto& ia = std::get<ir::InlineAsm>(d.stmts[0].op);
+    REQUIRE(ia.bytes == std::vector<std::uint8_t>{0xF3, 0xAA});
+}
+
+TEST_CASE("decode REPNE SCASB (F2 AE) → InlineAsm placeholder, 2 bytes") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0xAE}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
+}
+
+TEST_CASE("decode REP MOVSQ (F3 48 A5) → InlineAsm placeholder, 3 bytes") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x48, 0xA5}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
+    REQUIRE(std::get<ir::InlineAsm>(d.stmts[0].op).bytes.size() == 3);
+}
+
+TEST_CASE("decode REPE CMPSB (F3 A6) → InlineAsm placeholder") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0xA6}, r);
+    REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
+}
+
+TEST_CASE("decode plain STOSB (no REP) still produces real IR (regression)") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xAA}, r);
+    REQUIRE_FALSE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
 }

@@ -2605,9 +2605,28 @@ std::variant<Decoded, DecodeError> decode_one(
         return d;
     }
 
+    // F1-DC-066: REP / REPE / REPNE on string ops decode to an
+    // InlineAsm{full original bytes} placeholder. The runtime
+    // interprets via a software stub until the proper IR-level
+    // loop expansion lands. Any (F2 || F3) prefix on a string-op
+    // opcode lands in the helper below.
+    auto rep_string_inline_asm = [&](std::size_t consumed)
+        -> std::variant<Decoded, DecodeError> {
+        Decoded d;
+        std::vector<std::uint8_t> raw(bytes.begin(),
+                                      bytes.begin() + static_cast<std::ptrdiff_t>(consumed));
+        d.stmts.push_back({std::nullopt, ir::InlineAsm{std::move(raw)}});
+        d.bytes_consumed = consumed;
+        return d;
+    };
+
     // --- STOSB/STOSW/STOSD/STOSQ (AA / AB) ----------------------------------
     if (opcode == 0xAAu || opcode == 0xABu) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
+        if (has_f2 || has_f3) {
+            // REP / REPNE STOS — InlineAsm placeholder.
+            return rep_string_inline_asm(cursor);
+        }
         const ir::OpSize size =
             opcode == 0xAAu ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
@@ -2624,7 +2643,8 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5) ----------------------------------
     if (opcode == 0xA4u || opcode == 0xA5u) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
+        if (has_f2 || has_f3) return rep_string_inline_asm(cursor);
         const ir::OpSize size =
             opcode == 0xA4u ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
@@ -2641,7 +2661,8 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7) ----------------------------------
     if (opcode == 0xA6u || opcode == 0xA7u) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
+        if (has_f2 || has_f3) return rep_string_inline_asm(cursor);
         const ir::OpSize size =
             opcode == 0xA6u ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
@@ -2658,7 +2679,8 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- SCASB/SCASW/SCASD/SCASQ (AE / AF) ----------------------------------
     if (opcode == 0xAEu || opcode == 0xAFu) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
+        if (has_f2 || has_f3) return rep_string_inline_asm(cursor);
         const ir::OpSize size =
             opcode == 0xAEu ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
