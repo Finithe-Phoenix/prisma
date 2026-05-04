@@ -153,6 +153,28 @@ void TranslationCache::reset_hit_counts() noexcept {
     for (auto& [_k, c] : hit_counts_) c = 0;
 }
 
+std::size_t TranslationCache::compact() {
+    // For each guest_addr, the canonical entry is the one whose
+    // content_hash matches addr_to_hash_[addr] (the latest hash we
+    // saw on insert / upsert). Every other entry sharing that
+    // guest_addr is a superseded SMC version — drop it.
+    std::vector<Key> to_drop;
+    to_drop.reserve(entries_.size());
+    for (const auto& [k, _] : entries_) {
+        const auto it = addr_to_hash_.find(k.guest_addr);
+        if (it == addr_to_hash_.end()) {
+            // Should not happen — addr_to_hash_ tracks every insert.
+            // Defensive: keep the orphan entry.
+            continue;
+        }
+        if (it->second != k.content_hash) {
+            to_drop.push_back(k);
+        }
+    }
+    for (const auto& k : to_drop) erase_key(k);
+    return to_drop.size();
+}
+
 void TranslationCache::invalidate_page(std::uint64_t page_addr,
                                        std::size_t page_size) {
     // Collect addresses to drop first (cannot mutate while iterating).
