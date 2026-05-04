@@ -292,7 +292,7 @@ TEST_CASE("branch_fold: flag-direct cc (Cc) is conservatively untouched") {
 // ---------------------------------------------------------------------
 
 TEST_CASE("flag_write_elimination: removes unused CmpFlags",
-          "[.codex-pending]") {
+          "[passes][flag_write]") {
     // cmpflags written here has no later CondJumpRel, so it can be dropped.
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{0x42, ir::OpSize::I64}},
@@ -308,7 +308,7 @@ TEST_CASE("flag_write_elimination: removes unused CmpFlags",
 }
 
 TEST_CASE("flag_write_elimination: keeps CmpFlags required by CondJumpRel",
-          "[.codex-pending]") {
+          "[passes][flag_write]") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{9, ir::OpSize::I64}},
         {1u, ir::Constant{9, ir::OpSize::I64}},
@@ -328,7 +328,7 @@ TEST_CASE("flag_write_elimination: keeps CmpFlags required by CondJumpRel",
 }
 
 TEST_CASE("flag_write_elimination: drops older CmpFlags when a newer one appears first",
-          "[.codex-pending]") {
+          "[passes][flag_write]") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{0x1111, ir::OpSize::I64}},
         {1u, ir::Constant{0x2222, ir::OpSize::I64}},
@@ -350,7 +350,7 @@ TEST_CASE("flag_write_elimination: drops older CmpFlags when a newer one appears
 }
 
 TEST_CASE("flag_write_elimination: clears stale writes on Compare",
-          "[.codex-pending]") {
+          "[passes][flag_write]") {
     // Compare writes flags; it can satisfy CondJumpRel, so the previous
     // CmpFlags becomes stale and should be removed.
     std::vector<ir::Stmt> s = {
@@ -408,7 +408,7 @@ TEST_CASE("pipeline: `x * 4` through default pipeline becomes x << 2") {
 }
 
 TEST_CASE("pipeline: flag-write elimination removes dead CmpFlags after branch_fold",
-          "[.codex-pending]") {
+          "[passes][flag_write]") {
     // cmpflags before a const-foldable CondJumpRel should disappear from
     // the default pipeline.
     std::vector<ir::Stmt> s = {
