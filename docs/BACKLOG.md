@@ -324,7 +324,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-RT-008: Return-address stack for guest CALL / RET tracking.
 - [x] (e6b3e64) F1-RT-009: Thread-safe JitBuffer pool (many blocks).
 - [x] (cfeb231) F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
-- [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
+- [x] (fdcc16c) F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.). (Framework lands; SIGSEGV-trampoline integration deferred.)
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
 - [x] (8982d97) F1-RT-013: Guest stack pointer management (rsp). (Via `RspAdjust{delta_bytes}` IR op + lowering to add/sub on the pinned host x14.)
 - [x] F1-RT-014: Guest segment registers fs / gs (TLS).
