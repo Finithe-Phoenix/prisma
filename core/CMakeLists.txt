@@ -398,6 +398,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_peephole.cpp
         tests/test_guest_signal.cpp
         tests/test_cpu_state.cpp
+        tests/test_property.cpp
         tests/test_signal_handler.cpp
         tests/test_smc_guard.cpp
         tests/test_translator.cpp
