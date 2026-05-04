@@ -326,7 +326,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (cfeb231) F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
 - [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
-- [ ] F1-RT-013: Guest stack pointer management (rsp).
+- [x] (8982d97) F1-RT-013: Guest stack pointer management (rsp). (Via `RspAdjust{delta_bytes}` IR op + lowering to add/sub on the pinned host x14.)
 - [x] F1-RT-014: Guest segment registers fs / gs (TLS).
 - [x] F1-RT-015: Helper calls from generated code to C++ runtime (printf-style).
 - [x] (pending commit) F1-RT-016: CPU feature detection: FEAT_LSE2, LRCPC2, FlagM.
