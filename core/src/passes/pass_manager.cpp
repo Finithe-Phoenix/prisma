@@ -74,6 +74,7 @@ PassManager default_pipeline() {
     pm.add("constant_propagate",             constant_propagate);
     pm.add("algebraic_simplify",             algebraic_simplify);
     pm.add("strength_reduce",                strength_reduce);
+    pm.add("peephole",                       peephole_optimise_default);
     pm.add("constant_propagate_2",           constant_propagate);
     pm.add("redundant_load_eliminate",       redundant_load_eliminate);
     pm.add("common_subexpression_eliminate", common_subexpression_eliminate);
