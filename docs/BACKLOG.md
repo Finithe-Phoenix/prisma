@@ -214,7 +214,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-063: XADD r/m64, r64 (48 0F C1 /r).
 - [x] F1-DC-064: LOCK prefix handling (emits atomics via TSO variants).
 - [x] F1-DC-065: XACQUIRE / XRELEASE HLE prefixes (ignored; documented).
-- [ ] F1-DC-066: REP / REPE / REPNE prefixes (STOS/MOVS/CMPS/SCAS).
+- [x] (bdd4f01) F1-DC-066: REP / REPE / REPNE prefixes (STOS/MOVS/CMPS/SCAS). (Decoder accepts via InlineAsm placeholder; proper IR-level loop expansion is follow-up.)
 - [x] F1-DC-067: STOSB/STOSW/STOSD/STOSQ (AA / AB with size).
 - [x] F1-DC-068: MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5).
 - [x] F1-DC-069: CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7).
