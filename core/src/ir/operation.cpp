@@ -112,6 +112,9 @@ bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept {
     return a.flags == b.flags && a.cc == b.cc
         && a.if_true == b.if_true && a.if_false == b.if_false;
 }
+bool operator==(const RspAdjust& a, const RspAdjust& b) noexcept {
+    return a.delta_bytes == b.delta_bytes;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

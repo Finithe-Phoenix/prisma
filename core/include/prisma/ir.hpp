@@ -323,6 +323,21 @@ struct CondJumpFlags {
     std::uint32_t if_false;
 };
 
+// ---- Stack pointer adjustment (F1-RT-013) -----------------------------
+//
+// `RspAdjust{delta_bytes}` adds `delta_bytes` (signed, two's-complement
+// in a u64) to the guest RSP. Decoders emit one for every PUSH/POP/CALL/
+// RET that moves the stack. Lowered to `add x14, x14, #imm` or `sub`,
+// using the pinned host register that holds guest RSP.
+//
+// Side-effecting; no result Ref. The dispatcher round-trip writes the
+// up-to-date host x14 back into `state->gpr[Rsp]` so the next block
+// (or signal handler) sees the correct guest stack pointer.
+
+struct RspAdjust {
+    std::int64_t delta_bytes;
+};
+
 // ---- Floating-point (F1-IR-026, lowered by F1-BK-013) ----------------
 //
 // Single- (S, 32-bit) and double- (D, 64-bit) precision IEEE-754 FP.
@@ -381,7 +396,8 @@ using Op = std::variant<
     Extend, Truncate, Fence,
     GuestPc, InlineAsm,
     FpConstant, FpBinOp,
-    WriteFlags, ReadFlag, CondJumpFlags
+    WriteFlags, ReadFlag, CondJumpFlags,
+    RspAdjust
 >;
 
 // ---------------------------------------------------------------------------
@@ -466,6 +482,7 @@ bool operator==(const FpBinOp&    a, const FpBinOp&    b) noexcept;
 bool operator==(const WriteFlags& a, const WriteFlags& b) noexcept;
 bool operator==(const ReadFlag&   a, const ReadFlag&   b) noexcept;
 bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
+bool operator==(const RspAdjust&     a, const RspAdjust&     b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

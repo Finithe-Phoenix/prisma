@@ -130,6 +130,16 @@ public:
     void casal   (arm64::Reg rs, arm64::Reg rt, arm64::Reg raddr, ir::OpSize size);
     void ldaddal (arm64::Reg rs, arm64::Reg rt, arm64::Reg raddr, ir::OpSize size);
 
+    // Flag-setting ALU forms (F1-IR-004 lowering).
+    //   adds rd, rn, rm   — like add but also sets NZCV.
+    //   ands rd, rn, rm   — like and but also sets N + Z (clears C/V).
+    // The destination is mandatory because vixl's macro path doesn't
+    // expose a "discard-result" form; the lowerer passes XZR-equivalent
+    // (any scratch the lowerer is willing to clobber) when only the
+    // flags are wanted. Currently we expose a 3-reg form.
+    void adds(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void ands(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+
     // Compare (SUBS with discard) + materialise 0/1 from flags.
     //   cmp(xn, xm)                — sets NZCV.
     //   cset(rd, CondCode)         — rd = 1 if condition holds, else 0.

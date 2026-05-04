@@ -68,11 +68,12 @@ enum class OpKind : std::uint8_t {
     kWriteFlags  = 32,
     kReadFlag    = 33,
     kCondJumpFlags = 34,
+    kRspAdjust   = 35,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kCondJumpFlags);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kRspAdjust);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -212,6 +213,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, WriteFlags>)    return OpKind::kWriteFlags;
         else if constexpr (std::is_same_v<T, ReadFlag>)      return OpKind::kReadFlag;
         else if constexpr (std::is_same_v<T, CondJumpFlags>) return OpKind::kCondJumpFlags;
+        else if constexpr (std::is_same_v<T, RspAdjust>)     return OpKind::kRspAdjust;
     }, op);
 }
 
@@ -361,6 +363,9 @@ void write_payload(std::vector<std::uint8_t>& out, const CondJumpFlags& x) {
     put_u8(out, static_cast<std::uint8_t>(x.cc));
     put_u32(out, x.if_true);
     put_u32(out, x.if_false);
+}
+void write_payload(std::vector<std::uint8_t>& out, const RspAdjust& x) {
+    put_u64(out, static_cast<std::uint64_t>(x.delta_bytes));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -688,6 +693,12 @@ DeserializeError read_payload_cond_jump_flags(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_rsp_adjust(Cursor& c, Stmt& s) {
+    if (!c.remaining(8)) return DeserializeError::Truncated;
+    s.op = RspAdjust{static_cast<std::int64_t>(c.take_u64())};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -739,6 +750,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kWriteFlags:  return read_payload_write_flags(c, s);
         case OpKind::kReadFlag:    return read_payload_read_flag(c, s);
         case OpKind::kCondJumpFlags: return read_payload_cond_jump_flags(c, s);
+        case OpKind::kRspAdjust:   return read_payload_rsp_adjust(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

@@ -853,6 +853,35 @@ TEST_CASE("Lowerer: Fence Lfence emits dmb ishld") {
 }
 
 // ---------------------------------------------------------------------
+// F1-RT-013 RspAdjust
+// ---------------------------------------------------------------------
+
+TEST_CASE("Lowerer: RspAdjust(-8) emits a sub on the rsp host reg") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::RspAdjust{-8}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Guest RSP maps to host x14 (per arm64::host_reg_for(Rsp)).
+    REQUIRE(d.find("sub") != std::string::npos);
+    REQUIRE(d.find("x14") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: RspAdjust(+16) emits an add on the rsp host reg") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::RspAdjust{16}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("add") != std::string::npos);
+    REQUIRE(d.find("x14") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------
 // F1-IR-003/004/005 flags pillar lowering
 // ---------------------------------------------------------------------
 
@@ -870,6 +899,36 @@ TEST_CASE("Lowerer: WriteFlags(Sub) + ReadFlag(Zero) emits cmp + cset eq") {
     REQUIRE(ok);
     REQUIRE(d.find("cmp") != std::string::npos);
     REQUIRE(d.find("cset") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: WriteFlags(Add) emits adds (flag-setting variant)") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::ReadFlag{2u, ir::FlagBit::Carry}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I8}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("adds") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: WriteFlags(And) emits ands") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::ReadFlag{2u, ir::FlagBit::Zero}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I8}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ands") != std::string::npos);
 }
 
 TEST_CASE("Lowerer: ReadFlag without a prior WriteFlags is rejected") {

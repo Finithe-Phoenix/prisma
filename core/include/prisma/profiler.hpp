@@ -40,6 +40,7 @@ public:
         GuestPc, InlineAsm,
         FpConstant, FpBinOp,
         WriteFlags, ReadFlag, CondJumpFlags,
+        RspAdjust,
         kCount  // sentinel
     };
 

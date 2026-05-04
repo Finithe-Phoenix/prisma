@@ -152,6 +152,14 @@ TEST_CASE("ir_serialize: GuestPc round-trip", "[ir_serialize]") {
         Op{GuestPc{0u}}});                         // edge: zero
 }
 
+TEST_CASE("ir_serialize: RspAdjust round-trip preserves signed delta",
+          "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{-8}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{0}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{16}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{0x7FFF'FFFF'FFFFLL}}});
+}
+
 TEST_CASE("ir_serialize: WriteFlags + ReadFlag + CondJumpFlags round-trip",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{1u},

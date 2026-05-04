@@ -666,6 +666,27 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::RspAdjust>) {
+            // F1-RT-013. Add or subtract the literal delta from the
+            // pinned host register backing guest RSP. Materialise the
+            // (possibly negative) delta via mov_imm64 + add (vixl
+            // selects the cheap immediate-add encoding when it fits).
+            const arm64::Reg rsp_host = arm64::host_reg_for(ir::Gpr::Rsp);
+            arm64::Reg tmp;
+            if (!allocate_temporary(tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "RspAdjust"};
+            }
+            if (op.delta_bytes >= 0) {
+                emitter_.mov_imm64(tmp,
+                    static_cast<std::uint64_t>(op.delta_bytes));
+                emitter_.add(rsp_host, rsp_host, tmp);
+            } else {
+                emitter_.mov_imm64(tmp,
+                    static_cast<std::uint64_t>(-op.delta_bytes));
+                emitter_.sub(rsp_host, rsp_host, tmp);
+            }
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::WriteFlags>) {
             // F1-IR-004 / F1-BK lowering. Emit the flag-setting variant
             // of the integer op so NZCV reflects the result, then bind
@@ -677,20 +698,29 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             switch (op.op) {
                 case ir::BinOpKind::Sub:
                     // `cmp` is `subs xzr, lhs, rhs` — sets NZCV without
-                    // writing a destination. Perfect for the
-                    // discard-result Sub case the validator allows.
+                    // writing a destination.
                     emitter_.cmp(rl, rr);
                     break;
                 case ir::BinOpKind::Add:
-                case ir::BinOpKind::And:
-                    // adds / ands aren't yet exposed by the Emitter
-                    // surface; defer until F1-BK adds the flag-setting
-                    // arithmetic forms. For now, decline gracefully.
-                    return {false, LowerError::UnsupportedOp,
-                            "WriteFlags.op = Add/And not yet lowered"};
+                case ir::BinOpKind::And: {
+                    // adds / ands need a destination register. Allocate
+                    // a single-stmt temporary so the result value is
+                    // discarded but NZCV is set as a side effect.
+                    arm64::Reg rd_tmp;
+                    if (!allocate_temporary(rd_tmp)) {
+                        return {false, LowerError::OutOfScratchRegs,
+                                "WriteFlags(Add/And) needs a temp"};
+                    }
+                    if (op.op == ir::BinOpKind::Add) {
+                        emitter_.adds(rd_tmp, rl, rr);
+                    } else {
+                        emitter_.ands(rd_tmp, rl, rr);
+                    }
+                    break;
+                }
                 default:
                     return {false, LowerError::UnsupportedOp,
-                            "WriteFlags only supports Sub today"};
+                            "WriteFlags only supports Sub/Add/And today"};
             }
             // Result Ref lives in NZCV; track it in flag_refs_ so
             // consumers verify their operand was a real WriteFlags

@@ -109,6 +109,7 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{12u, WriteFlags{BinOpKind::Sub, 0u, 0u, OpSize::I64}});
     c.visit(Stmt{13u, ReadFlag{12u, FlagBit::Zero}});
     c.visit(Stmt{std::nullopt, CondJumpFlags{12u, CondCode::Eq, 0u, 1u}});
+    c.visit(Stmt{std::nullopt, RspAdjust{-8}});
 
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));

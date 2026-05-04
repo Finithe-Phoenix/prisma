@@ -132,6 +132,13 @@ void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Cmp(to_vixl_x(rn), to_vixl_x(rm));
 }
 
+void Emitter::adds(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Adds(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+void Emitter::ands(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Ands(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
+}
+
 namespace {
 
 // Build a vixl WRegister from our Reg enum (for 32-bit form loads/stores).

@@ -203,6 +203,8 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.flags);
             os << ", bb" << std::dec << x.if_true
                << ", bb" << std::dec << x.if_false;
+        } else if constexpr (std::is_same_v<T, RspAdjust>) {
+            os << "rsp_adjust " << std::dec << x.delta_bytes;
         }
     }, op);
     return os.str();
