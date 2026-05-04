@@ -192,6 +192,7 @@ target_link_libraries(prisma_decoder
 
 add_library(prisma_runtime STATIC
     src/runtime/jit_memory.cpp
+    src/runtime/jit_buffer_pool.cpp
     src/runtime/signal_handler.cpp
     src/runtime/dispatcher.cpp
     src/runtime/host_features.cpp
@@ -391,6 +392,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_cfg.cpp
         tests/test_dominators.cpp
         tests/test_profiler.cpp
+        tests/test_jit_buffer_pool.cpp
         tests/test_signal_handler.cpp
         tests/test_smc_guard.cpp
         tests/test_translator.cpp
