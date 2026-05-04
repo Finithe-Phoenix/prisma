@@ -328,6 +328,32 @@ TEST_CASE("Emitter: mov_imm64 of large immediates does NOT grow the pool") {
 }
 
 // ---------------------------------------------------------------------
+// F1-BK-010 32-bit W-register ALU
+// ---------------------------------------------------------------------
+
+TEST_CASE("Emitter: add_w / sub_w / and_w / orr_w / eor_w emit 32-bit forms") {
+    backend::Emitter em;
+    em.add_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.sub_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.and_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.orr_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.eor_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.mov_w_reg_reg(arm64::Reg::X0, arm64::Reg::X1);
+    em.finalize();
+    const std::string d = em.disassemble();
+    INFO("disasm: " << d);
+    // vixl prints `add w0, w1, w2`, etc. Each W-form should appear.
+    REQUIRE(d.find("w0") != std::string::npos);
+    REQUIRE(d.find("w1") != std::string::npos);
+    REQUIRE(d.find("add") != std::string::npos);
+    REQUIRE(d.find("sub") != std::string::npos);
+    // Bitwise mnemonics at least exist somewhere.
+    REQUIRE(d.find("and") != std::string::npos);
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("eor") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------
 // F1-BK-013 floating-point ALU
 // ---------------------------------------------------------------------
 

@@ -139,6 +139,10 @@ void Emitter::ands(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Ands(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }
 
+// 32-bit W-register ALU forms — defined after the anonymous namespace
+// that hosts `to_vixl_w` (further down in this file).
+
+
 namespace {
 
 // Build a vixl WRegister from our Reg enum (for 32-bit form loads/stores).
@@ -342,6 +346,27 @@ void Emitter::csel(arm64::Reg rd, arm64::Reg rn_true, arm64::Reg rn_false,
 
 void Emitter::ret(arm64::Reg rn) {
     impl_->masm.Ret(to_vixl_x(rn));
+}
+
+// --- 32-bit W-register ALU forms (F1-BK-010) ------------------------------
+
+void Emitter::add_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Add(to_vixl_w(rd), to_vixl_w(rn), to_vixl_w(rm));
+}
+void Emitter::sub_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Sub(to_vixl_w(rd), to_vixl_w(rn), to_vixl_w(rm));
+}
+void Emitter::and_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.And(to_vixl_w(rd), to_vixl_w(rn), to_vixl_w(rm));
+}
+void Emitter::orr_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Orr(to_vixl_w(rd), to_vixl_w(rn), to_vixl_w(rm));
+}
+void Emitter::eor_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
+    impl_->masm.Eor(to_vixl_w(rd), to_vixl_w(rn), to_vixl_w(rm));
+}
+void Emitter::mov_w_reg_reg(arm64::Reg rd, arm64::Reg rs) {
+    impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rs));
 }
 
 // --- Width adjustment (F1-BK-022) -----------------------------------------

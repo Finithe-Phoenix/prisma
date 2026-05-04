@@ -140,6 +140,18 @@ public:
     void adds(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
     void ands(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
 
+    // 32-bit W-register ALU forms (F1-BK-010). AArch64 implicitly
+    // zero-extends the upper 32 bits when writing through a W-view,
+    // so these are the canonical lowering for x86 32-bit ops without
+    // an explicit Truncate. Each is a thin wrapper over vixl
+    // operating on `WRegister(reg_id)`.
+    void add_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void sub_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void and_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void orr_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void eor_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void mov_w_reg_reg(arm64::Reg rd, arm64::Reg rs);
+
     // Compare (SUBS with discard) + materialise 0/1 from flags.
     //   cmp(xn, xm)                — sets NZCV.
     //   cset(rd, CondCode)         — rd = 1 if condition holds, else 0.
