@@ -353,9 +353,9 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (57455ad) F1-LN-004: Extend evalPure to cover Compare and Extend.
 - [x] (57455ad) F1-LN-005: Define MachineState with memory (function Nat → UInt8).
 - [x] (57455ad) F1-LN-006: Step relation for StoreReg / LoadReg / LoadMem / StoreMem.
-- [ ] F1-LN-007: Step relation for CondJumpFlags.
-- [ ] F1-LN-008: Add mathlib dependency to Lake.
-- [ ] F1-LN-009: Prove `maskToSize_idem` (remove sorry).
+- [x] (ff57d65) F1-LN-007: Step relation for CondJumpFlags.
+- [?] F1-LN-008: Add mathlib dependency to Lake. (Deferred — `bv_decide` from `Std.Tactic.BVDecide` covers the F1-LN-009 use case without mathlib; mathlib lands when a proof actually needs it.)
+- [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
 - [ ] F1-LN-010: Prove `constant_propagate` soundness (observable equivalence).
 - [ ] F1-LN-011: Prove `dead_code_eliminate` soundness.
 - [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
