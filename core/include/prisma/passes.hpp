@@ -13,7 +13,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -293,6 +297,56 @@ private:
     std::vector<Entry>    passes_;
     std::vector<DumpHook> hooks_;
 };
+
+// ---------------------------------------------------------------------------
+// F1-PS-009 peephole pattern matcher.
+// ---------------------------------------------------------------------------
+//
+// A `PeepholeRule` looks at a statement list at a given index and either
+// declines (returns `nullopt`) or returns the rewrite — a sequence of 0
+// or more replacement statements that should occupy `match_len` slots
+// starting at `idx`.
+//
+// The orchestrator `peephole_optimise(stmts, rules)` walks the list,
+// tries each rule at each position, applies the first match, and starts
+// over. Termination is bounded by `kPeepholeMaxIterations` to guard
+// against rules that loop. Rules that *grow* the program count toward
+// the iteration cap too.
+//
+// Pre-baked rule sets:
+//   * `peephole_default_rules()` — the small canonical set used by the
+//     default pipeline (BinOp xor-self → 0; redundant Truncate I64→I64;
+//     Extend identity).
+
+struct PeepholeMatch {
+    std::size_t            consumed;     // how many input stmts to remove
+    std::vector<ir::Stmt>  replacement;  // 0..N replacements
+};
+
+class PeepholeRule {
+public:
+    virtual ~PeepholeRule() = default;
+    [[nodiscard]] virtual std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const = 0;
+
+    // Human-readable rule name, surfaced in stats and dumps.
+    [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+};
+
+inline constexpr std::size_t kPeepholeMaxIterations = 8u;
+
+[[nodiscard]] std::vector<ir::Stmt>
+peephole_optimise(const std::vector<ir::Stmt>& stmts,
+                  std::span<const PeepholeRule* const> rules);
+
+[[nodiscard]] std::vector<std::unique_ptr<PeepholeRule>>
+peephole_default_rules();
+
+// Convenience wrapper for the most common case: load the default rule
+// set, run a pass over `stmts`. Allocates per call; for hot paths
+// build the rule list once.
+[[nodiscard]] std::vector<ir::Stmt>
+peephole_optimise_default(const std::vector<ir::Stmt>& stmts);
 
 // Returns the default pipeline used by the rest of the codebase:
 //   constant_propagate → dead_code_eliminate

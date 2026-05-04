@@ -228,6 +228,7 @@ add_library(prisma_passes STATIC
     src/passes/redundant_load.cpp
     src/passes/dead_store.cpp
     src/passes/tail_call.cpp
+    src/passes/peephole.cpp
     src/passes/pass_manager.cpp
 )
 
@@ -393,6 +394,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_dominators.cpp
         tests/test_profiler.cpp
         tests/test_jit_buffer_pool.cpp
+        tests/test_peephole.cpp
         tests/test_signal_handler.cpp
         tests/test_smc_guard.cpp
         tests/test_translator.cpp
