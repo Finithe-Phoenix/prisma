@@ -381,16 +381,16 @@ grinding through x86_64 ISA + maturing the lowering.
 
 ### F1-AC — Academic (Fase 1 concern)
 
-- [ ] F1-AC-001: Start LaTeX draft in `papers/drafts/01-early-results/`.
-- [ ] F1-AC-002: Outline paper structure (intro, IR, passes, evaluation, related).
+- [x] (8f0f182) F1-AC-001: Start LaTeX draft in `papers/drafts/01-early-results/`.
+- [x] (8f0f182) F1-AC-002: Outline paper structure (intro, IR, passes, evaluation, related).
 - [ ] F1-AC-003: Reproduce baseline: QEMU / Box64 / FEX on the same hardware.
 - [ ] F1-AC-004: First benchmark table (Dhrystone / CoreMark vs baselines).
 - [ ] F1-AC-005: Write 3-paragraph blog post when first program runs (Notepad XP? coreutils?).
 
 ### F1-DC — Documentation
 
-- [ ] F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
-- [ ] F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
+- [x] (8f0f182) F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
+- [x] (8f0f182) F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
 - [x] (pending commit) F1-DC-003: RFC 0005 — basic block representation + CFG construction.
 - [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
 - [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
