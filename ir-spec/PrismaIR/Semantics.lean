@@ -67,13 +67,53 @@ abbrev Env := Ref → UInt64
 def Env.extend (e : Env) (r : Ref) (v : UInt64) : Env :=
   fun r' => if r' = r then v else e r'
 
+/-- Evaluate a comparison condition over two 64-bit values, returning a
+    1-bit result (1 = true, 0 = false). The masking to `size` is the
+    caller's job; for the purposes of CondCode evaluation only the
+    low bits matter for the unsigned comparisons, and the sign-bit
+    interpretation matters for the signed ones. -/
+def evalCompare (cc : CondCode) (lhs rhs : UInt64) : UInt64 :=
+  match cc with
+  | .eq    => if lhs == rhs then 1 else 0
+  | .ne    => if lhs != rhs then 1 else 0
+  | .ult   => if lhs < rhs then 1 else 0
+  | .ule   => if lhs ≤ rhs then 1 else 0
+  | .ugt   => if lhs > rhs then 1 else 0
+  | .uge   => if lhs ≥ rhs then 1 else 0
+  | .slt   => if lhs.toInt8 < rhs.toInt8 then 1 else 0  -- signed compare via Int8
+  | .sle   => if lhs.toInt8 ≤ rhs.toInt8 then 1 else 0
+  | .sgt   => if lhs.toInt8 > rhs.toInt8 then 1 else 0
+  | .sge   => if lhs.toInt8 ≥ rhs.toInt8 then 1 else 0
+  | _      => 0  -- flag-direct codes are NZCV-driven; not modelled here yet
+
+/-- Sign-extend the low `n` bits of `v` to a 64-bit value. -/
+def signExtend (v : UInt64) : OpSize → UInt64
+  | .i8  =>
+      let low := v &&& 0xFF
+      if (low &&& 0x80) == 0 then low else low ||| 0xFFFFFFFFFFFFFF00
+  | .i16 =>
+      let low := v &&& 0xFFFF
+      if (low &&& 0x8000) == 0 then low else low ||| 0xFFFFFFFFFFFF0000
+  | .i32 =>
+      let low := v &&& 0xFFFFFFFF
+      if (low &&& 0x80000000) == 0 then low else low ||| 0xFFFFFFFF00000000
+  | .i64 => v
+
 /-- Evaluate the pure fragment of the IR inside a given environment. Returns
-    `none` for ops that are not pure (memory, control flow) — those are
-    handled by the step relation in the full semantics. -/
+    `none` for ops that are not pure (memory, control flow, side effects).
+    Pure ops grow over time: F1-LN-004 added Compare, Extend, Truncate. -/
 def evalPure (e : Env) : Op → Option UInt64
-  | .constant v sz          => some (maskToSize v sz)
-  | .binop op lhs rhs sz    => some (maskToSize (evalBinOp op (e lhs) (e rhs)) sz)
-  | _                        => none
+  | .constant v sz                     => some (maskToSize v sz)
+  | .binop op lhs rhs sz               =>
+      some (maskToSize (evalBinOp op (e lhs) (e rhs)) sz)
+  | .compare cc lhs rhs _              => some (evalCompare cc (e lhs) (e rhs))
+  | .extend value fromSz toSz signed   =>
+      some (maskToSize
+              (if signed then signExtend (e value) fromSz
+                         else maskToSize (e value) fromSz)
+              toSz)
+  | .truncate value toSz               => some (maskToSize (e value) toSz)
+  | _                                   => none
 
 /-- Smoke test — demonstrates Lean 4 + Prisma IR compile together. -/
 def exampleProgram : Function :=
