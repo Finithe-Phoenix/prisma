@@ -122,12 +122,181 @@ public:
     }
 };
 
+// Helper: walk back from `idx` to find the most recent Stmt that
+// defines `ref`. Returns nullptr if not found before idx 0. Used by
+// the constant-aware identity rules below.
+const ir::Stmt* find_def_of(const std::vector<ir::Stmt>& stmts,
+                            std::size_t                   idx,
+                            ir::Ref                       ref) noexcept {
+    for (std::size_t i = idx; i-- > 0;) {
+        if (stmts[i].result.has_value() && *stmts[i].result == ref) {
+            return &stmts[i];
+        }
+    }
+    return nullptr;
+}
+
+// Returns the constant value of `ref` if its def is a `Constant`,
+// otherwise nullopt.
+std::optional<std::uint64_t>
+try_const(const std::vector<ir::Stmt>& stmts,
+          std::size_t                   idx,
+          ir::Ref                       ref) noexcept {
+    const ir::Stmt* def = find_def_of(stmts, idx, ref);
+    if (def == nullptr) return std::nullopt;
+    if (!std::holds_alternative<ir::Constant>(def->op)) return std::nullopt;
+    return std::get<ir::Constant>(def->op).value;
+}
+
+// Rule: BinOp Or where lhs == rhs → x (replaced by a Truncate-identity
+// to keep the SSA shape; const_prop / DCE folds it further).
+class OrSelfRule final : public PeepholeRule {
+public:
+    [[nodiscard]] std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const override {
+        const auto& s = stmts[idx];
+        if (!std::holds_alternative<ir::BinOp>(s.op)) return std::nullopt;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op != ir::BinOpKind::Or) return std::nullopt;
+        if (b.lhs != b.rhs)             return std::nullopt;
+        if (!s.result.has_value())      return std::nullopt;
+        return PeepholeMatch{
+            /*consumed=*/1u,
+            /*replacement=*/{ir::Stmt{s.result, ir::Truncate{b.lhs, b.size}}}};
+    }
+    [[nodiscard]] std::string_view name() const noexcept override {
+        return "or_self_to_self";
+    }
+};
+
+// Rule: BinOp And where lhs == rhs → x (same shape as Or-self).
+class AndSelfRule final : public PeepholeRule {
+public:
+    [[nodiscard]] std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const override {
+        const auto& s = stmts[idx];
+        if (!std::holds_alternative<ir::BinOp>(s.op)) return std::nullopt;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op != ir::BinOpKind::And) return std::nullopt;
+        if (b.lhs != b.rhs)             return std::nullopt;
+        if (!s.result.has_value())      return std::nullopt;
+        return PeepholeMatch{
+            /*consumed=*/1u,
+            /*replacement=*/{ir::Stmt{s.result, ir::Truncate{b.lhs, b.size}}}};
+    }
+    [[nodiscard]] std::string_view name() const noexcept override {
+        return "and_self_to_self";
+    }
+};
+
+// Rule: BinOp Add where one operand is a constant 0 → other operand
+// (via Truncate-identity).
+class AddZeroRule final : public PeepholeRule {
+public:
+    [[nodiscard]] std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const override {
+        const auto& s = stmts[idx];
+        if (!std::holds_alternative<ir::BinOp>(s.op)) return std::nullopt;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op != ir::BinOpKind::Add) return std::nullopt;
+        if (!s.result.has_value())      return std::nullopt;
+        const auto cl = try_const(stmts, idx, b.lhs);
+        const auto cr = try_const(stmts, idx, b.rhs);
+        ir::Ref keep = ir::kInvalidRef;
+        if (cl.has_value() && *cl == 0u) keep = b.rhs;
+        else if (cr.has_value() && *cr == 0u) keep = b.lhs;
+        else return std::nullopt;
+        return PeepholeMatch{
+            /*consumed=*/1u,
+            /*replacement=*/{ir::Stmt{s.result, ir::Truncate{keep, b.size}}}};
+    }
+    [[nodiscard]] std::string_view name() const noexcept override {
+        return "add_zero_to_other";
+    }
+};
+
+// Rule: BinOp Sub where rhs is constant 0 → lhs.
+class SubZeroRule final : public PeepholeRule {
+public:
+    [[nodiscard]] std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const override {
+        const auto& s = stmts[idx];
+        if (!std::holds_alternative<ir::BinOp>(s.op)) return std::nullopt;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op != ir::BinOpKind::Sub) return std::nullopt;
+        if (!s.result.has_value())      return std::nullopt;
+        const auto cr = try_const(stmts, idx, b.rhs);
+        if (!cr.has_value() || *cr != 0u) return std::nullopt;
+        return PeepholeMatch{
+            /*consumed=*/1u,
+            /*replacement=*/{ir::Stmt{s.result, ir::Truncate{b.lhs, b.size}}}};
+    }
+    [[nodiscard]] std::string_view name() const noexcept override {
+        return "sub_zero_to_lhs";
+    }
+};
+
+// Rule: BinOp Mul by constant 1 → other operand.
+class MulOneRule final : public PeepholeRule {
+public:
+    [[nodiscard]] std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const override {
+        const auto& s = stmts[idx];
+        if (!std::holds_alternative<ir::BinOp>(s.op)) return std::nullopt;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op != ir::BinOpKind::Mul) return std::nullopt;
+        if (!s.result.has_value())      return std::nullopt;
+        const auto cl = try_const(stmts, idx, b.lhs);
+        const auto cr = try_const(stmts, idx, b.rhs);
+        ir::Ref keep = ir::kInvalidRef;
+        if (cl.has_value() && *cl == 1u) keep = b.rhs;
+        else if (cr.has_value() && *cr == 1u) keep = b.lhs;
+        else return std::nullopt;
+        return PeepholeMatch{
+            /*consumed=*/1u,
+            /*replacement=*/{ir::Stmt{s.result, ir::Truncate{keep, b.size}}}};
+    }
+    [[nodiscard]] std::string_view name() const noexcept override {
+        return "mul_one_to_other";
+    }
+};
+
+// Rule: BinOp Mul by constant 0 → constant 0.
+class MulZeroRule final : public PeepholeRule {
+public:
+    [[nodiscard]] std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const override {
+        const auto& s = stmts[idx];
+        if (!std::holds_alternative<ir::BinOp>(s.op)) return std::nullopt;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op != ir::BinOpKind::Mul) return std::nullopt;
+        if (!s.result.has_value())      return std::nullopt;
+        const auto cl = try_const(stmts, idx, b.lhs);
+        const auto cr = try_const(stmts, idx, b.rhs);
+        const bool zero = (cl.has_value() && *cl == 0u)
+                       || (cr.has_value() && *cr == 0u);
+        if (!zero) return std::nullopt;
+        return PeepholeMatch{
+            /*consumed=*/1u,
+            /*replacement=*/{ir::Stmt{s.result, ir::Constant{0u, b.size}}}};
+    }
+    [[nodiscard]] std::string_view name() const noexcept override {
+        return "mul_zero_to_zero";
+    }
+};
+
 }  // namespace
 
 std::vector<std::unique_ptr<PeepholeRule>>
 peephole_default_rules() {
     std::vector<std::unique_ptr<PeepholeRule>> rules;
     rules.emplace_back(std::make_unique<XorSelfRule>());
+    rules.emplace_back(std::make_unique<OrSelfRule>());
+    rules.emplace_back(std::make_unique<AndSelfRule>());
+    rules.emplace_back(std::make_unique<AddZeroRule>());
+    rules.emplace_back(std::make_unique<SubZeroRule>());
+    rules.emplace_back(std::make_unique<MulOneRule>());
+    rules.emplace_back(std::make_unique<MulZeroRule>());
     rules.emplace_back(std::make_unique<IdentityExtendRule>());
     rules.emplace_back(std::make_unique<RedundantTruncateRule>());
     return rules;

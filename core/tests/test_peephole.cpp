@@ -75,6 +75,98 @@ TEST_CASE("peephole: idempotent (running twice is a fixed point)") {
     REQUIRE(a == b);
 }
 
+TEST_CASE("peephole: BinOp or x, x folds to source via Truncate-identity") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::BinOp{ir::BinOpKind::Or, 0u, 0u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out[1].op));
+    REQUIRE(std::get<ir::Truncate>(out[1].op).value == 0u);
+}
+
+TEST_CASE("peephole: BinOp and x, x folds to source via Truncate-identity") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {1u, ir::BinOp{ir::BinOpKind::And, 0u, 0u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out[1].op));
+}
+
+TEST_CASE("peephole: x + 0 folds to x") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Constant{0, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out[2].op));
+    REQUIRE(std::get<ir::Truncate>(out[2].op).value == 0u);
+}
+
+TEST_CASE("peephole: 0 + x folds to x") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::Constant{0, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out[2].op));
+    REQUIRE(std::get<ir::Truncate>(out[2].op).value == 1u);
+}
+
+TEST_CASE("peephole: x - 0 folds to x") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Constant{0, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out[2].op));
+}
+
+TEST_CASE("peephole: x * 1 folds to x; 1 * x folds to x") {
+    std::vector<ir::Stmt> a = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Constant{1, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out_a = passes::peephole_optimise_default(a);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out_a[2].op));
+    REQUIRE(std::get<ir::Truncate>(out_a[2].op).value == 0u);
+
+    std::vector<ir::Stmt> b = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out_b = passes::peephole_optimise_default(b);
+    REQUIRE(std::holds_alternative<ir::Truncate>(out_b[2].op));
+    REQUIRE(std::get<ir::Truncate>(out_b[2].op).value == 1u);
+}
+
+TEST_CASE("peephole: x * 0 folds to Constant 0") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Constant{0, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[2].op));
+    REQUIRE(std::get<ir::Constant>(out[2].op).value == 0u);
+}
+
+TEST_CASE("peephole: Add of two non-zero non-constant operands is unchanged") {
+    std::vector<ir::Stmt> in = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto out = passes::peephole_optimise_default(in);
+    REQUIRE(std::holds_alternative<ir::BinOp>(out[2].op));
+}
+
 TEST_CASE("peephole: custom rule list (just XOR-self) does not touch Extend") {
     auto owned = passes::peephole_default_rules();
     // Use only the first rule (xor_self_to_zero).
