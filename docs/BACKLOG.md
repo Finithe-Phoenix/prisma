@@ -375,7 +375,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
 - [x] (pending commit) F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
 - [x] (pending commit) F1-TC-009: Lean proof check added as a blocking CI step.
-- [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
+- [x] (c19e609) F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck). (Implemented via Catch2 + custom RNG; rapidcheck dep avoided. 5 property tests, +215 assertions.)
 - [x] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
 - [x] (pending commit) F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
 
