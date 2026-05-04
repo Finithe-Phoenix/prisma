@@ -348,11 +348,11 @@ grinding through x86_64 ISA + maturing the lowering.
 ### F1-LN — Lean spec expansion
 
 - [x] F1-LN-001: Initial syntax / semantics / machine state.
-- [ ] F1-LN-002: Add Flags type to `Syntax.lean`.
-- [ ] F1-LN-003: Add Block / Function to Syntax.
-- [ ] F1-LN-004: Extend evalPure to cover Compare and Extend.
-- [ ] F1-LN-005: Define MachineState with memory (function Nat → UInt8).
-- [ ] F1-LN-006: Step relation for StoreReg / LoadReg / LoadMem / StoreMem.
+- [x] (cb4e170) F1-LN-002: Add Flags type to `Syntax.lean`.
+- [x] (cb4e170) F1-LN-003: Add Block / Function to Syntax.
+- [x] (57455ad) F1-LN-004: Extend evalPure to cover Compare and Extend.
+- [x] (57455ad) F1-LN-005: Define MachineState with memory (function Nat → UInt8).
+- [x] (57455ad) F1-LN-006: Step relation for StoreReg / LoadReg / LoadMem / StoreMem.
 - [ ] F1-LN-007: Step relation for CondJumpFlags.
 - [ ] F1-LN-008: Add mathlib dependency to Lake.
 - [ ] F1-LN-009: Prove `maskToSize_idem` (remove sorry).
