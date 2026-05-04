@@ -322,7 +322,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-RT-006: Dispatcher loop (find-translation-and-jump).
 - [x] F1-RT-007: Trampoline between translator and compiled blocks.
 - [x] F1-RT-008: Return-address stack for guest CALL / RET tracking.
-- [ ] F1-RT-009: Thread-safe JitBuffer pool (many blocks).
+- [x] (e6b3e64) F1-RT-009: Thread-safe JitBuffer pool (many blocks).
 - [x] (cfeb231) F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
 - [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
 - [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
