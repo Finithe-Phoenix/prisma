@@ -417,6 +417,64 @@ void Emitter::fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz) {
     }
 }
 
+// --- 128-bit NEON SIMD (F1-BK-012) ----------------------------------------
+
+namespace {
+
+// Pick the correct vixl VRegister "arrangement" for the lane size.
+vixl_aa::VRegister to_vixl_q(Emitter::FpReg r, Emitter::VecLane lane) noexcept {
+    using L = Emitter::VecLane;
+    const int code = static_cast<int>(r);
+    switch (lane) {
+        case L::B16: return vixl_aa::VRegister(code, vixl_aa::kFormat16B);
+        case L::H8:  return vixl_aa::VRegister(code, vixl_aa::kFormat8H);
+        case L::S4:  return vixl_aa::VRegister(code, vixl_aa::kFormat4S);
+        case L::D2:  return vixl_aa::VRegister(code, vixl_aa::kFormat2D);
+    }
+    return vixl_aa::VRegister(code, vixl_aa::kFormat16B);
+}
+
+// Bitwise ops are lane-agnostic; use the byte view.
+vixl_aa::VRegister to_vixl_q_bitwise(Emitter::FpReg r) noexcept {
+    return vixl_aa::VRegister(static_cast<int>(r), vixl_aa::kFormat16B);
+}
+
+// 128-bit Q-register (single full vector, no arrangement needed for
+// some load/store variants).
+vixl_aa::QRegister to_vixl_qreg(Emitter::FpReg r) noexcept {
+    return vixl_aa::QRegister(static_cast<int>(r));
+}
+
+}  // namespace
+
+void Emitter::vadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Add(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                    to_vixl_q(rm, lane));
+}
+void Emitter::vsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Sub(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                    to_vixl_q(rm, lane));
+}
+void Emitter::vand_q(FpReg rd, FpReg rn, FpReg rm) {
+    impl_->masm.And(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn),
+                    to_vixl_q_bitwise(rm));
+}
+void Emitter::vorr_q(FpReg rd, FpReg rn, FpReg rm) {
+    impl_->masm.Orr(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn),
+                    to_vixl_q_bitwise(rm));
+}
+void Emitter::veor_q(FpReg rd, FpReg rn, FpReg rm) {
+    impl_->masm.Eor(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn),
+                    to_vixl_q_bitwise(rm));
+}
+
+void Emitter::vld1_q(FpReg rd, arm64::Reg base) {
+    impl_->masm.Ldr(to_vixl_qreg(rd), vixl_aa::MemOperand(to_vixl_x(base)));
+}
+void Emitter::vst1_q(FpReg rs, arm64::Reg base) {
+    impl_->masm.Str(to_vixl_qreg(rs), vixl_aa::MemOperand(to_vixl_x(base)));
+}
+
 // --- Memory fences (F1-BK-023) --------------------------------------------
 
 void Emitter::dmb(BarrierKind k) {

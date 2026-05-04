@@ -254,6 +254,33 @@ public:
     // picks fmov-immediate / ldr-literal as appropriate.
     void fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz);
 
+    // --- 128-bit NEON SIMD (F1-BK-012) ------------------------------------
+    //
+    // Same V0..V31 register file as scalar FP, viewed as 16 bytes (B16),
+    // 8 halfwords (H8), 4 words (S4), or 2 doublewords (D2). The lane
+    // size is fixed by the call (`VecLane`); SSE/AVX-style integer
+    // SIMD lowers through these.
+    //
+    // Initial coverage: ALU integer (add/sub/and/or/xor) and a 16-byte
+    // load/store. Multiplies, shuffles and reductions land in
+    // F1-BK-028+ as we unblock real SSE2 binaries.
+    enum class VecLane : std::uint8_t {
+        B16 = 0,  // 16 × i8
+        H8,       //  8 × i16
+        S4,       //  4 × i32
+        D2,       //  2 × i64
+    };
+    void vadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vand_q(FpReg rd, FpReg rn, FpReg rm);  // bitwise: lane-agnostic
+    void vorr_q(FpReg rd, FpReg rn, FpReg rm);
+    void veor_q(FpReg rd, FpReg rn, FpReg rm);
+
+    // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
+    // already holding the effective address.
+    void vld1_q(FpReg rd, arm64::Reg base);
+    void vst1_q(FpReg rs, arm64::Reg base);
+
     // --- Memory fences (F1-BK-023) ----------------------------------------
     //
     // ARM64 DMB / DSB barrier emission. In our IR:
