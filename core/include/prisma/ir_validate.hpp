@@ -36,6 +36,8 @@ enum class ValidationCode {
     DuplicateResult,     // two stmts define the same ref
     ImpureHasResult,     // a store/jump/return has result != nullopt
     PureLacksResult,     // a Constant/BinOp/... has result == nullopt
+    SizeMismatch,        // F1-IR-015: an operand ref's size disagrees
+                         // with the consuming op's declared size
 };
 
 struct ValidationError {

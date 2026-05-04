@@ -1,7 +1,10 @@
-// core/src/ir/validate.cpp — implementation of F1-IR-016 validator.
+// core/src/ir/validate.cpp — implementation of F1-IR-016 validator
+// + F1-IR-015 typed-Ref consistency checks.
 
 #include "prisma/ir_validate.hpp"
 
+#include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 
@@ -15,6 +18,28 @@ ValidationResult err(ValidationCode code,
                      std::string    message) {
     ValidationError e{code, stmt_index, bad_ref, std::move(message)};
     return {false, std::move(e)};
+}
+
+// What size does this op produce? `nullopt` for ops without a result
+// (the validator already rejects pure-without-result above) or for
+// ops whose result size depends on something the validator can't
+// know without the ref-size map (which is only possible during the
+// forward pass — handled in `result_size_for` below).
+std::optional<OpSize> result_size_static(const Op& op) {
+    return std::visit([](const auto& x) -> std::optional<OpSize> {
+        using T = std::decay_t<decltype(x)>;
+        if      constexpr (std::is_same_v<T, Constant>)    return x.size;
+        else if constexpr (std::is_same_v<T, LoadReg>)     return x.size;
+        else if constexpr (std::is_same_v<T, LoadSegBase>) return OpSize::I64;
+        else if constexpr (std::is_same_v<T, BinOp>)       return x.size;
+        else if constexpr (std::is_same_v<T, Compare>)     return OpSize::I8;
+        else if constexpr (std::is_same_v<T, Select>)      return x.size;
+        else if constexpr (std::is_same_v<T, LoadMem>)     return x.size;
+        else if constexpr (std::is_same_v<T, LoadMemTSO>)  return x.size;
+        else if constexpr (std::is_same_v<T, Extend>)      return x.to_size;
+        else if constexpr (std::is_same_v<T, Truncate>)    return x.to_size;
+        else                                                return std::nullopt;
+    }, op);
 }
 
 // Walk every Ref-valued field of `op` and invoke `visit(ref)`.
@@ -62,9 +87,54 @@ bool op_is_pure(const Op& op) {
 
 }  // namespace
 
+// Helper: returns the size that operand `r` must have for op `op`'s
+// declared semantics. When `op` says nothing about the size (e.g.
+// JumpReg.target may be any 64-bit ref, conservatively treated as
+// I64), returns nullopt so the check is skipped.
+std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
+    return std::visit([&](const auto& x) -> std::optional<OpSize> {
+        using T = std::decay_t<decltype(x)>;
+        if constexpr (std::is_same_v<T, BinOp>) {
+            if (r == x.lhs || r == x.rhs) return x.size;
+        } else if constexpr (std::is_same_v<T, Compare>) {
+            if (r == x.lhs || r == x.rhs) return x.size;
+        } else if constexpr (std::is_same_v<T, CmpFlags>) {
+            if (r == x.lhs || r == x.rhs) return x.size;
+        } else if constexpr (std::is_same_v<T, Select>) {
+            if (r == x.true_value || r == x.false_value) return x.size;
+        } else if constexpr (std::is_same_v<T, StoreReg>) {
+            if (r == x.value) return x.size;
+        } else if constexpr (std::is_same_v<T, StoreMem>) {
+            if (r == x.value) return x.size;
+            if (r == x.addr)  return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
+            if (r == x.value) return x.size;
+            if (r == x.addr)  return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, LoadMem>) {
+            if (r == x.addr)  return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, LoadMemTSO>) {
+            if (r == x.addr)  return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, JumpReg>) {
+            if (r == x.target) return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, CallReg>) {
+            if (r == x.target) return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, Extend>) {
+            if (r == x.value) return x.from_size;
+        } else if constexpr (std::is_same_v<T, Truncate>) {
+            // Truncate accepts any source size strictly wider than
+            // to_size; the validator can't pin it without per-op
+            // logic. For now skip the check.
+            (void)x; (void)r;
+        }
+        return std::nullopt;
+    }, op);
+}
+
 ValidationResult validate(const std::vector<Stmt>& stmts) {
-    std::unordered_set<Ref> defs;
+    std::unordered_set<Ref>           defs;
+    std::unordered_map<Ref, OpSize>   ref_size;  // F1-IR-015
     defs.reserve(stmts.size());
+    ref_size.reserve(stmts.size());
 
     for (std::size_t i = 0; i < stmts.size(); ++i) {
         const auto& s = stmts[i];
@@ -90,11 +160,30 @@ ValidationResult validate(const std::vector<Stmt>& stmts) {
         });
         if (!undef.ok) return undef;
 
-        // Rule 2: result ref must be unique.
+        // Rule 5 (F1-IR-015): operand sizes must match the consuming
+        // op's declared expectation.
+        ValidationResult mism{true, std::nullopt};
+        for_each_operand_ref(s.op, [&](Ref r) {
+            if (!mism.ok) return;
+            const auto want = required_operand_size(s.op, r);
+            if (!want.has_value()) return;
+            const auto it = ref_size.find(r);
+            if (it == ref_size.end()) return;  // size unknown — skip
+            if (it->second != *want) {
+                mism = err(ValidationCode::SizeMismatch, i, r,
+                           "operand size disagrees with consuming op");
+            }
+        });
+        if (!mism.ok) return mism;
+
+        // Rule 2: result ref must be unique. Record its inferred size.
         if (s.result) {
             if (!defs.insert(*s.result).second) {
                 return err(ValidationCode::DuplicateResult, i, *s.result,
                            "result ref already defined by an earlier stmt");
+            }
+            if (auto sz = result_size_static(s.op)) {
+                ref_size[*s.result] = *sz;
             }
         }
     }
