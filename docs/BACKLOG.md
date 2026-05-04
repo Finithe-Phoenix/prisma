@@ -341,7 +341,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (PENDING) F1-CA-005: Cache eviction policy (LRU).
 - [x] (pending commit) F1-CA-006: Size-bounded cache with eviction trigger.
 - [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
-- [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
+- [x] (cd85682) F1-CA-008: Cache compaction pass (merge adjacent blocks). (Drops superseded SMC entries; the "merge adjacent code blocks" interpretation requires re-translation and is deferred.)
 - [x] (pending commit) F1-CA-009: Cache writer thread (offload serialization).
 - [x] (pending commit) F1-CA-010: zstd compression for on-disk entries.
 
