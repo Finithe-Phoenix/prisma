@@ -33,10 +33,9 @@
 #include <vector>
 
 #include "prisma/decoder.hpp"
+#include "prisma/jit_buffer_pool.hpp"
 #include "prisma/passes.hpp"
 #include "prisma/translation_cache.hpp"
-
-namespace prisma::runtime { class JitBuffer; }
 
 namespace prisma::translator {
 
@@ -103,11 +102,11 @@ public:
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
 private:
-    // Internal book-keeping for each translation we own. Separate from
-    // the persistent TranslationCache because we need to know the
-    // buffer index to hand back an executable pointer.
+    // Internal book-keeping for each translation we own. The entry
+    // pointer is owned by the JitBufferPool's slab list; it stays
+    // valid for the lifetime of the Translator.
     struct Record {
-        std::size_t buffer_idx{0};
+        const std::uint8_t* entry{nullptr};
         std::size_t code_size{0};
         std::size_t guest_size{0};
         std::uint64_t content_hash{0};
@@ -115,11 +114,12 @@ private:
 
     passes::PassManager pipeline_;
     cache::TranslationCache cache_;
-    // Owning storage of every executable buffer we've produced.
-    std::vector<std::unique_ptr<runtime::JitBuffer>> buffers_;
-    // Lookup by guest_addr → our own Record (for in-process JIT). The
-    // persistent TranslationCache is still updated in parallel so that
-    // future Fase 2.5 work (P2P distribution) sees entries.
+    // Pool that owns every translated region. F1-RT-009: replaces the
+    // previous one-mmap-per-translation pattern.
+    runtime::JitBufferPool pool_;
+    // Lookup by guest_addr → Record. The persistent TranslationCache
+    // is updated in parallel so future Fase 2.5 P2P distribution sees
+    // entries.
     std::unordered_map<std::uint64_t, Record> by_addr_;
     Stats stats_;
 };

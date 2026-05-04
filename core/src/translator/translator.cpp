@@ -12,7 +12,7 @@
 #include "prisma/cpu_state.hpp"
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
-#include "prisma/jit_memory.hpp"
+#include "prisma/jit_buffer_pool.hpp"
 #include "prisma/lowering.hpp"
 
 namespace prisma::translator {
@@ -139,9 +139,8 @@ TranslateResult Translator::translate(
         const Record& rec = it->second;
         if (rec.content_hash == hash_of_input) {
             ++stats_.cache_hits;
-            const runtime::JitBuffer* buf = buffers_[rec.buffer_idx].get();
             return TranslatedBlock{
-                buf->entry(), rec.code_size, rec.guest_size, /*from_cache=*/true};
+                rec.entry, rec.code_size, rec.guest_size, /*from_cache=*/true};
         }
         // SMC: the guest bytes at this address changed. Drop the record,
         // drop the persistent cache entry, fall through to retranslate.
@@ -212,16 +211,15 @@ TranslateResult Translator::translate(
         return TranslateError::LowerFailed;
     }
 
-    auto jit = std::make_unique<runtime::JitBuffer>(emitted.size());
-    if (!jit->write(emitted)) {
+    runtime::JitBlock blk;
+    try {
+        blk = pool_.acquire(emitted);
+    } catch (const std::bad_alloc&) {
         return TranslateError::JitAllocFailed;
     }
-    jit->make_executable();
 
-    const std::uint8_t* entry = jit->entry();
+    const std::uint8_t* entry = blk.entry;
     const std::size_t code_size = emitted.size();
-    const std::size_t buffer_idx = buffers_.size();
-    buffers_.push_back(std::move(jit));
 
     // Persistent cache: store bytes for SMC verification + future
     // distribution. The actual executable memory lives in our buffer.
@@ -233,7 +231,7 @@ TranslateResult Translator::translate(
 
     // In-process record for the next call.
     by_addr_[guest_addr] = Record{
-        buffer_idx, code_size, dec.consumed, hash_of_input};
+        entry, code_size, dec.consumed, hash_of_input};
 
     ++stats_.cache_misses;  // accounted only on success; see comment above.
     return TranslatedBlock{entry, code_size, dec.consumed, /*from_cache=*/false};
