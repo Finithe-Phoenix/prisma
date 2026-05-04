@@ -278,7 +278,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (b550cbc) F1-BK-009: Callee-saved register save / restore around guest calls.
 - [ ] F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
 - [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.
-- [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
+- [x] (e53e7a6) F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
 - [x] (34bd169) F1-BK-013: Emitter for floating-point (fadd, fmul, fdiv).
 - [x] (pending commit) F1-BK-014: Emitter for rotates (ror / rol).
 - [x] (pending commit) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
