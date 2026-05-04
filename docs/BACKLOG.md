@@ -241,11 +241,11 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [x] F1-IR-001: SSA `Ref` as uint32_t (FEX-style compression).
 - [x] F1-IR-002: Op variants: Constant, LoadReg/StoreReg, BinOp, Compare, Load/Store x4, Jump, CondJump, Return.
-- [ ] F1-IR-003: Add `Flags` SSA value type (tuple of carry, zero, sign, overflow, parity, aux).
-- [ ] F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
-- [ ] F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
+- [x] (a1ee74c) F1-IR-003: Add `Flags` SSA value type (tuple of carry, zero, sign, overflow, parity, aux).
+- [x] (a1ee74c) F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
+- [x] (a1ee74c) F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
 - [x] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
-- [ ] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
+- [x] (a1ee74c) F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
 - [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
 - [x] (5bfaa98) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
