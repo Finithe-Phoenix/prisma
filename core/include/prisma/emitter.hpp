@@ -352,6 +352,12 @@ public:
     void vshuffle_2src_s4(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control);
     void vshuffle_2src_d2(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control);
 
+    // F2-IR-022. Per-lane insert/extract to/from a GPR.
+    void vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
+                          arm64::Reg w_value, VecLane lane);
+    void vumov_w_from_lane(arm64::Reg w_dst, FpReg rn,
+                           std::uint8_t lane_idx, VecLane lane);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

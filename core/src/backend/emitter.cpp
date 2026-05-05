@@ -815,6 +815,40 @@ void Emitter::vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) 
                      static_cast<int>(eff));
 }
 
+namespace {
+vixl_aa::VectorFormat vec_format_for_lane(Emitter::VecLane lane) noexcept {
+    using L = Emitter::VecLane;
+    switch (lane) {
+        case L::B16: return vixl_aa::kFormat16B;
+        case L::H8:  return vixl_aa::kFormat8H;
+        case L::S4:  return vixl_aa::kFormat4S;
+        case L::D2:  return vixl_aa::kFormat2D;
+    }
+    return vixl_aa::kFormat16B;
+}
+}  // namespace
+
+void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
+                               arm64::Reg w_value, VecLane lane) {
+    // Copy lhs into V31 first (preserve other lanes), insert from GPR, mov to dst.
+    const auto fmt = vec_format_for_lane(lane);
+    const vixl_aa::VRegister v_t_q(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_n_q(static_cast<int>(rn), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_t_q, v_n_q);
+    const vixl_aa::VRegister v_t_lane(kInternalFpScratchV, fmt);
+    impl_->masm.Mov(v_t_lane, lane_idx,
+                    vixl_aa::Register(to_vixl_w(w_value)));
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
+void Emitter::vumov_w_from_lane(arm64::Reg w_dst, FpReg rn,
+                                std::uint8_t lane_idx, VecLane lane) {
+    const auto fmt = vec_format_for_lane(lane);
+    const vixl_aa::VRegister v_n_lane(static_cast<int>(rn), fmt);
+    impl_->masm.Umov(to_vixl_w(w_dst), v_n_lane, lane_idx);
+}
+
 void Emitter::vshuffle_2src_s4(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control) {
     const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);
     const vixl_aa::VRegister v_n_s4(static_cast<int>(rn), vixl_aa::kFormat4S);

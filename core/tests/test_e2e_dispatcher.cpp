@@ -271,6 +271,29 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PEXTRW eax, xmm0, 3 — F2-IR-022 word extract from lane 3") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xC5, 0xC0, 0x03,  // pextrw eax, xmm0, 3
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // xmm0 lanes (H8): {0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7777, 0x8888}.
+    disp.state().xmm[0].lo = 0x4444'3333'2222'1111ULL;
+    disp.state().xmm[0].hi = 0x8888'7777'6666'5555ULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 0x4444u);
+}
+
 TEST_CASE("e2e: MOVSS reg-reg preserves upper xmm bits") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

@@ -85,6 +85,8 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, FpToIntScalar>) { visit(x.value); }
         else if constexpr (std::is_same_v<T, FpCvtScalar>)   { visit(x.lhs); visit(x.src); }
         else if constexpr (std::is_same_v<T, VecShuffle2Src>) { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, VecInsertLane>)  { visit(x.lhs_xmm); visit(x.value); }
+        else if constexpr (std::is_same_v<T, VecExtractLaneU>) { visit(x.src_xmm); }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg —
@@ -127,7 +129,9 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, IntToFpScalar>
             || std::is_same_v<T, FpToIntScalar>
             || std::is_same_v<T, FpCvtScalar>
-            || std::is_same_v<T, VecShuffle2Src>;
+            || std::is_same_v<T, VecShuffle2Src>
+            || std::is_same_v<T, VecInsertLane>
+            || std::is_same_v<T, VecExtractLaneU>;
     }, op);
 }
 

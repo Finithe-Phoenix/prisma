@@ -2193,6 +2193,22 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode PINSRW xmm0, eax, 3 (66 0F C4 C0 03) — F2-IR-022 insert word") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xC4, 0xC0, 0x03}, r);
+    auto vi = std::get<ir::VecInsertLane>(d.stmts[2].op);
+    REQUIRE(vi.lane_idx == 3);
+    REQUIRE(vi.lane     == ir::VecLane::H8);
+}
+
+TEST_CASE("decode PEXTRW eax, xmm0, 5 (66 0F C5 C0 05) — extract word") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xC5, 0xC0, 0x05}, r);
+    auto ve = std::get<ir::VecExtractLaneU>(d.stmts[1].op);
+    REQUIRE(ve.lane_idx == 5);
+    REQUIRE(ve.lane     == ir::VecLane::H8);
+}
+
 TEST_CASE("decode MOVSS xmm0, xmm1 (F3 0F 10 C1) — F2-IR-021 reg-reg upper-preserve") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x0F, 0x10, 0xC1}, r);

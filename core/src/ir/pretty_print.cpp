@@ -281,6 +281,12 @@ std::string pretty_print(const Op& op) {
             os << "fcvtzs." << ((x.int_size == OpSize::I32) ? "i32" : "i64")
                << ((x.fp_size == FpSize::F32) ? ".f32 " : ".f64 ");
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecInsertLane>) {
+            os << "vins.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
+            print_ref(os, x.lhs_xmm); os << ", "; print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecExtractLaneU>) {
+            os << "vextu.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
+            print_ref(os, x.src_xmm);
         } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
             os << (x.is_pd ? "vshufpd " : "vshufps ");
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);

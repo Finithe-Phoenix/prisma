@@ -174,6 +174,13 @@ bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept {
     return a.is_pd == b.is_pd && a.lhs == b.lhs && a.rhs == b.rhs
         && a.control == b.control;
 }
+bool operator==(const VecInsertLane& a, const VecInsertLane& b) noexcept {
+    return a.lhs_xmm == b.lhs_xmm && a.value == b.value
+        && a.lane_idx == b.lane_idx && a.lane == b.lane;
+}
+bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept {
+    return a.src_xmm == b.src_xmm && a.lane_idx == b.lane_idx && a.lane == b.lane;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

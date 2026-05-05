@@ -226,6 +226,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::FpCvtScalar>)   { bump(op.lhs, i); bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecShuffle2Src>) { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecInsertLane>)  { bump(op.lhs_xmm, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecExtractLaneU>){ bump(op.src_xmm, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -982,6 +984,46 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             if (op.is_pd) emitter_.vshuffle_2src_d2(rd, rl, rr, op.control);
             else          emitter_.vshuffle_2src_s4(rd, rl, rr, op.control);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecInsertLane>) {
+            // F2-IR-022. Lane insert from a GPR.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecInsertLane without result"};
+            }
+            Emitter::FpReg rl;
+            if (!fp_reg_of(op.lhs_xmm, rl)) return {false, LowerError::DanglingRef, "VecInsertLane.lhs"};
+            arm64::Reg rv;
+            if (!reg_of(op.value, rv)) return {false, LowerError::DanglingRef, "VecInsertLane.value"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecInsertLane"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vins_lane_from_w(rd, rl, op.lane_idx, rv, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecExtractLaneU>) {
+            // F2-IR-022. Lane extract to a GPR (zero-extended).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecExtractLaneU without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src_xmm, rn)) return {false, LowerError::DanglingRef, "VecExtractLaneU.src"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecExtractLaneU"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vumov_w_from_lane(rd, rn, op.lane_idx, lane);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::FpCvtScalar>) {

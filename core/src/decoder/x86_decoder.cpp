@@ -3050,6 +3050,61 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-022: PINSRW / PEXTRW.
+        //   66 0F C4 /r ib — PINSRW xmm1, r/m32, imm8 (insert low 16 of r/m at lane imm8 & 7)
+        //   66 0F C5 /r ib — PEXTRW r32, xmm, imm8 (extract H8 lane, zero-extend; reg-only)
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xC4u || subop == 0xC5u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            // PEXTRW only supports register-direct (the GPR dst form).
+            if (subop == 0xC5u && m.mod != 0b11) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t lane_idx = static_cast<std::uint8_t>(
+                std::get<std::uint64_t>(imm)) & 0x7u;
+            Decoded d;
+            if (subop == 0xC4u) {
+                // PINSRW: xmm dest = m.reg, source = m.base (GPR) at reg-direct
+                // or memory r/m. We'll only handle register form for now.
+                if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({r_val,
+                    ir::LoadReg{m.base, ir::OpSize::I32}});
+                d.stmts.push_back({r_res,
+                    ir::VecInsertLane{r_lhs, r_val, lane_idx, ir::VecLane::H8}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            } else {
+                // PEXTRW r32, xmm, imm8: GPR dest = m.reg (raw idx),
+                // xmm source = m.base.
+                const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+                const unsigned src_xmm = static_cast<unsigned>(m.base);
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_val,
+                    ir::VecExtractLaneU{r_xmm, lane_idx, ir::VecLane::H8}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{dst_gpr, r_val, ir::OpSize::I32}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-020: SHUFPS / SHUFPD (two-source FP shuffle).
         //   0F C6 /r ib — SHUFPS xmm1, xmm2/m128, imm8 (S4 lanes)
         //   66 0F C6 /r ib — SHUFPD                    (D2 lanes)

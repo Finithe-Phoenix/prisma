@@ -50,6 +50,7 @@ public:
         VecUnpack, VecShiftImm, VecShiftBytes,
         IntToFpScalar, FpToIntScalar, FpCvtScalar,
         VecShuffle2Src,
+        VecInsertLane, VecExtractLaneU,
         kCount  // sentinel
     };
 

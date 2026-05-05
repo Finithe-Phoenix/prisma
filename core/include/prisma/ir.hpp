@@ -420,6 +420,25 @@ struct VecShuffle2Src {
     std::uint8_t control;
 };
 
+// F2-IR-022 — single-lane insert/extract.
+//   VecInsertLane{lhs_xmm, value_gpr, lane_idx, lane} — produces a
+//     128-bit value with `value_gpr` placed in lane `lane_idx`,
+//     other lanes copied from `lhs_xmm`. Models PINSRW (lane=H8)
+//     and the SSE4.1 family.
+//   VecExtractLaneU{src_xmm, lane_idx, lane} — extracts the lane
+//     into a GPR (zero-extended). Models PEXTRW.
+struct VecInsertLane {
+    Ref          lhs_xmm;
+    Ref          value;
+    std::uint8_t lane_idx;
+    VecLane      lane;
+};
+struct VecExtractLaneU {
+    Ref          src_xmm;
+    std::uint8_t lane_idx;
+    VecLane      lane;
+};
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -588,7 +607,8 @@ using Op = std::variant<
     VecShiftBytes,
     IntToFpScalar, FpToIntScalar,
     FpCvtScalar,
-    VecShuffle2Src
+    VecShuffle2Src,
+    VecInsertLane, VecExtractLaneU
 >;
 
 // ---------------------------------------------------------------------------
@@ -693,6 +713,8 @@ bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept;
 bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept;
 bool operator==(const FpCvtScalar&   a, const FpCvtScalar&   b) noexcept;
 bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept;
+bool operator==(const VecInsertLane& a, const VecInsertLane& b) noexcept;
+bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

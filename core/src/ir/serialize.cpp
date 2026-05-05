@@ -88,11 +88,13 @@ enum class OpKind : std::uint8_t {
     kFpToIntScalar = 52,
     kFpCvtScalar = 53,
     kVecShuffle2Src = 54,
+    kVecInsertLane = 55,
+    kVecExtractLaneU = 56,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecShuffle2Src);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecExtractLaneU);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -264,6 +266,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, FpToIntScalar>) return OpKind::kFpToIntScalar;
         else if constexpr (std::is_same_v<T, FpCvtScalar>)   return OpKind::kFpCvtScalar;
         else if constexpr (std::is_same_v<T, VecShuffle2Src>) return OpKind::kVecShuffle2Src;
+        else if constexpr (std::is_same_v<T, VecInsertLane>) return OpKind::kVecInsertLane;
+        else if constexpr (std::is_same_v<T, VecExtractLaneU>) return OpKind::kVecExtractLaneU;
     }, op);
 }
 
@@ -509,6 +513,17 @@ void write_payload(std::vector<std::uint8_t>& out, const VecShuffle2Src& x) {
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
     put_u8(out, x.control);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecInsertLane& x) {
+    put_u32(out, x.lhs_xmm);
+    put_u32(out, x.value);
+    put_u8(out, x.lane_idx);
+    put_u8(out, static_cast<std::uint8_t>(x.lane));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecExtractLaneU& x) {
+    put_u32(out, x.src_xmm);
+    put_u8(out, x.lane_idx);
+    put_u8(out, static_cast<std::uint8_t>(x.lane));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -893,6 +908,26 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_insert_lane(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t lhs   = c.take_u32();
+    const std::uint32_t value = c.take_u32();
+    const std::uint8_t  idx   = c.take_u8();
+    const std::uint8_t  lane  = c.take_u8();
+    if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
+    s.op = VecInsertLane{lhs, value, idx, static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+DeserializeError read_payload_vec_extract_lane_u(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t src  = c.take_u32();
+    const std::uint8_t  idx  = c.take_u8();
+    const std::uint8_t  lane = c.take_u8();
+    if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
+    s.op = VecExtractLaneU{src, idx, static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_shuffle_2src(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  is_pd   = c.take_u8();
@@ -1105,6 +1140,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kFpToIntScalar: return read_payload_fp_to_int_scalar(c, s);
         case OpKind::kFpCvtScalar: return read_payload_fp_cvt_scalar(c, s);
         case OpKind::kVecShuffle2Src: return read_payload_vec_shuffle_2src(c, s);
+        case OpKind::kVecInsertLane: return read_payload_vec_insert_lane(c, s);
+        case OpKind::kVecExtractLaneU: return read_payload_vec_extract_lane_u(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;
