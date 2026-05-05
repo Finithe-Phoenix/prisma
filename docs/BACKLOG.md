@@ -385,7 +385,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (8f0f182) F1-AC-002: Outline paper structure (intro, IR, passes, evaluation, related).
 - [x] (c8ecfb4) F1-AC-003: Reproduce baseline: QEMU / Box64 / FEX on the same hardware. (Driver framework in `tools/benchmarks/bench.py`; soft-skips per engine. Real numbers gated on hardware + binaries.)
 - [ ] F1-AC-004: First benchmark table (Dhrystone / CoreMark vs baselines).
-- [ ] F1-AC-005: Write 3-paragraph blog post when first program runs (Notepad XP? coreutils?).
+- [x] (0c98045) F1-AC-005: Write 3-paragraph blog post when first program runs (Notepad XP? coreutils?). (`prisma_run` (b7bd82b) validated end-to-end on Apple silicon; blog-drafts/004 documents the milestone.)
 
 ### F1-DC — Documentation
 
