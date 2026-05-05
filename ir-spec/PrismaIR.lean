@@ -8,4 +8,5 @@
 import PrismaIR.Syntax
 import PrismaIR.Semantics
 import PrismaIR.MachineState
+import PrismaIR.Trace
 import PrismaIR.Lemmas
