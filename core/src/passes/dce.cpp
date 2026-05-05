@@ -118,6 +118,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) {
             into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::FpCvtScalar>) {
+            into.insert(x.lhs); into.insert(x.src);
         }
     }, op);
 }

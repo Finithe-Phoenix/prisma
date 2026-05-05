@@ -166,6 +166,10 @@ bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept {
 bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept {
     return a.value == b.value && a.fp_size == b.fp_size && a.int_size == b.int_size;
 }
+bool operator==(const FpCvtScalar& a, const FpCvtScalar& b) noexcept {
+    return a.lhs == b.lhs && a.src == b.src
+        && a.src_size == b.src_size && a.dst_size == b.dst_size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

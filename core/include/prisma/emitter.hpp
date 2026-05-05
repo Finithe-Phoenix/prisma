@@ -287,6 +287,11 @@ public:
     // F2-IR-016. scvtf / fcvtzs scalar conversions.
     void scvtf(FpReg rd, arm64::Reg rn, ir::OpSize int_sz, ir::FpSize fp_sz);
     void fcvtzs(arm64::Reg rd, FpReg rn, ir::FpSize fp_sz, ir::OpSize int_sz);
+    // F2-IR-017. Scalar FP precision convert with upper-preserve.
+    // Steps: fcvt scratch.dst, src.src; mov rd, lhs; ins rd.dst[0],
+    // scratch.dst[0]. Uses V31 internal scratch.
+    void fcvt_scalar_with_upper(FpReg rd, FpReg lhs, FpReg src,
+                                ir::FpSize src_sz, ir::FpSize dst_sz);
 
     // --- 128-bit NEON SIMD (F1-BK-012) ------------------------------------
     //

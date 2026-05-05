@@ -457,6 +457,8 @@ void Emitter::fmov_x_from_v(arm64::Reg rd, FpReg rn, ir::FpSize sz) {
     }
 }
 
+namespace { constexpr int kInternalFpScratchV = 31; }
+
 void Emitter::scvtf(FpReg rd, arm64::Reg rn, ir::OpSize int_sz, ir::FpSize fp_sz) {
     const vixl_aa::Register r =
         int_sz == ir::OpSize::I32 ? vixl_aa::Register(to_vixl_w(rn))
@@ -466,6 +468,41 @@ void Emitter::scvtf(FpReg rd, arm64::Reg rn, ir::OpSize int_sz, ir::FpSize fp_sz
                                  : vixl_aa::VRegister(to_vixl_d(rd));
     impl_->masm.Scvtf(v, r);
 }
+void Emitter::fcvt_scalar_with_upper(FpReg rd, FpReg lhs, FpReg src,
+                                     ir::FpSize src_sz, ir::FpSize dst_sz) {
+    // 1. fcvt v31.dst[0] from src.src. Wrap in VRegister to disambig
+    // vixl's Fmov overloads.
+    if (src_sz == ir::FpSize::F32 && dst_sz == ir::FpSize::F64) {
+        impl_->masm.Fcvt(vixl_aa::VRegister(vixl_aa::DRegister(kInternalFpScratchV)),
+                         vixl_aa::VRegister(to_vixl_s(src)));
+    } else if (src_sz == ir::FpSize::F64 && dst_sz == ir::FpSize::F32) {
+        impl_->masm.Fcvt(vixl_aa::VRegister(vixl_aa::SRegister(kInternalFpScratchV)),
+                         vixl_aa::VRegister(to_vixl_d(src)));
+    } else {
+        if (dst_sz == ir::FpSize::F32) {
+            impl_->masm.Fmov(vixl_aa::VRegister(vixl_aa::SRegister(kInternalFpScratchV)),
+                             vixl_aa::VRegister(to_vixl_s(src)));
+        } else {
+            impl_->masm.Fmov(vixl_aa::VRegister(vixl_aa::DRegister(kInternalFpScratchV)),
+                             vixl_aa::VRegister(to_vixl_d(src)));
+        }
+    }
+    // 2. mov rd.16b, lhs.16b — preserve upper from lhs.
+    const vixl_aa::VRegister v_d_q  (static_cast<int>(rd),  vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_lhs_q(static_cast<int>(lhs), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_lhs_q);
+    // 3. ins rd.dst[0] from v31.dst[0].
+    if (dst_sz == ir::FpSize::F32) {
+        const vixl_aa::VRegister v_d_s4(static_cast<int>(rd),    vixl_aa::kFormat4S);
+        const vixl_aa::VRegister v_t_s4(kInternalFpScratchV,     vixl_aa::kFormat4S);
+        impl_->masm.Mov(v_d_s4, 0, v_t_s4, 0);
+    } else {
+        const vixl_aa::VRegister v_d_d2(static_cast<int>(rd),    vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_t_d2(kInternalFpScratchV,     vixl_aa::kFormat2D);
+        impl_->masm.Mov(v_d_d2, 0, v_t_d2, 0);
+    }
+}
+
 void Emitter::fcvtzs(arm64::Reg rd, FpReg rn, ir::FpSize fp_sz, ir::OpSize int_sz) {
     const vixl_aa::Register r =
         int_sz == ir::OpSize::I32 ? vixl_aa::Register(to_vixl_w(rd))
@@ -587,8 +624,6 @@ void Emitter::vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
 // and let the assembler optimise. Using V31 as a stable scratch means
 // the SSA register allocator (which only uses V0..V7) never aliases it.
 namespace {
-constexpr int kInternalFpScratchV = 31;
-
 void emit_scalar_sse_op(vixl_aa::MacroAssembler& masm,
                         int rd_c, int rn_c, int rm_c,
                         ir::FpSize sz,

@@ -497,6 +497,16 @@ enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
 struct IntToFpScalar { Ref value; OpSize int_size; FpSize fp_size; };
 struct FpToIntScalar { Ref value; FpSize fp_size; OpSize int_size; };
 
+// F2-IR-017 — CVTSS2SD / CVTSD2SS scalar precision conversion. Result
+// low-lane FP = fcvt(src.low), upper xmm bits taken from `lhs`. Same
+// upper-preserve pattern as VecFpScalarBinOp.
+struct FpCvtScalar {
+    Ref    lhs;        // 128-bit source for upper bits (the dest's old xmm).
+    Ref    src;        // 128-bit source for the low FP value to convert.
+    FpSize src_size;
+    FpSize dst_size;
+};
+
 // F2-IR-006 — scalar-form SSE FP. Result is a 128-bit value where the
 // low lane is `op(lhs.low, rhs.low)` and the upper bits are copied from
 // `lhs`. Models ADDSS/SUBSS/MULSS/DIVSS (FpSize::F32) and the SD
@@ -561,7 +571,8 @@ using Op = std::variant<
     VecCmp, VecShuffle32x4,
     VecUnpack, VecShiftImm,
     VecShiftBytes,
-    IntToFpScalar, FpToIntScalar
+    IntToFpScalar, FpToIntScalar,
+    FpCvtScalar
 >;
 
 // ---------------------------------------------------------------------------
@@ -664,6 +675,7 @@ bool operator==(const VecShiftImm&   a, const VecShiftImm&   b) noexcept;
 bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept;
 bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept;
 bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept;
+bool operator==(const FpCvtScalar&   a, const FpCvtScalar&   b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

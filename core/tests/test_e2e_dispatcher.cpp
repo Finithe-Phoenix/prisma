@@ -271,6 +271,32 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: CVTSS2SD chain — F2-IR-017 single→double round trip via int") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // cvtsi2ss xmm0, eax; cvtss2sd xmm0, xmm0; cvttsd2si rcx, xmm0; ret.
+    // RAX=7 → xmm0=f32(7.0) → xmm0=f64(7.0) → rcx=7.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0x0F, 0x2A, 0xC0,  // cvtsi2ss xmm0, eax
+        0xF3, 0x0F, 0x5A, 0xC0,  // cvtss2sd xmm0, xmm0
+        0xF2, 0x48, 0x0F, 0x2C, 0xC8,  // cvttsd2si rcx, xmm0
+        0xC3,                     // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state()[ir::Gpr::Rax] = 7u;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch message: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rcx] == 7u);
+}
+
 TEST_CASE("e2e: CVTSI2SD + CVTTSD2SI — F2-IR-016 round-trip int→f64→int") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // mov rax, 42; cvtsi2sd xmm0, rax; cvttsd2si rcx, xmm0; ret.

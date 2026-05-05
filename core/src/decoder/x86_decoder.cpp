@@ -3121,6 +3121,39 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-017: CVTSS2SD / CVTSD2SS — scalar precision conversion.
+        //   F3 0F 5A /r — CVTSS2SD xmm1, xmm2/m32 (single → double)
+        //   F2 0F 5A /r — CVTSD2SS xmm1, xmm2/m64 (double → single)
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) && subop == 0x5Au) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::FpSize src_sz =
+                has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            const ir::FpSize dst_sz =
+                has_f3 ? ir::FpSize::F64 : ir::FpSize::F32;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(
+                    static_cast<unsigned>(m.base))}});
+            d.stmts.push_back({r_res,
+                ir::FpCvtScalar{r_lhs, r_src, src_sz, dst_sz}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-016: scalar int ↔ FP conversions, register-direct only.
         //   F3 0F 2A /r — CVTSI2SS xmm, r/m32   (REX.W → r/m64)
         //   F2 0F 2A /r — CVTSI2SD

@@ -86,11 +86,12 @@ enum class OpKind : std::uint8_t {
     kVecShiftBytes = 50,
     kIntToFpScalar = 51,
     kFpToIntScalar = 52,
+    kFpCvtScalar = 53,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kFpToIntScalar);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kFpCvtScalar);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -260,6 +261,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecShiftBytes>) return OpKind::kVecShiftBytes;
         else if constexpr (std::is_same_v<T, IntToFpScalar>) return OpKind::kIntToFpScalar;
         else if constexpr (std::is_same_v<T, FpToIntScalar>) return OpKind::kFpToIntScalar;
+        else if constexpr (std::is_same_v<T, FpCvtScalar>)   return OpKind::kFpCvtScalar;
     }, op);
 }
 
@@ -493,6 +495,12 @@ void write_payload(std::vector<std::uint8_t>& out, const FpToIntScalar& x) {
     put_u32(out, x.value);
     put_u8(out, static_cast<std::uint8_t>(x.fp_size));
     put_u8(out, static_cast<std::uint8_t>(x.int_size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const FpCvtScalar& x) {
+    put_u32(out, x.lhs);
+    put_u32(out, x.src);
+    put_u8(out, static_cast<std::uint8_t>(x.src_size));
+    put_u8(out, static_cast<std::uint8_t>(x.dst_size));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -877,6 +885,17 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_fp_cvt_scalar(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t lhs = c.take_u32();
+    const std::uint32_t src = c.take_u32();
+    const std::uint8_t  ss  = c.take_u8();
+    const std::uint8_t  ds  = c.take_u8();
+    if (!is_valid_fpsize(ss) || !is_valid_fpsize(ds)) return DeserializeError::BadSize;
+    s.op = FpCvtScalar{lhs, src, static_cast<FpSize>(ss), static_cast<FpSize>(ds)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_int_to_fp_scalar(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 1 + 1)) return DeserializeError::Truncated;
     const std::uint32_t v = c.take_u32();
@@ -1065,6 +1084,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecShiftBytes: return read_payload_vec_shift_bytes(c, s);
         case OpKind::kIntToFpScalar: return read_payload_int_to_fp_scalar(c, s);
         case OpKind::kFpToIntScalar: return read_payload_fp_to_int_scalar(c, s);
+        case OpKind::kFpCvtScalar: return read_payload_fp_cvt_scalar(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

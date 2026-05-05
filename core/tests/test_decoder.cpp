@@ -2193,6 +2193,22 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode CVTSS2SD xmm0, xmm1 (F3 0F 5A C1) — F2-IR-017 single→double") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x5A, 0xC1}, r);
+    auto cv = std::get<ir::FpCvtScalar>(d.stmts[2].op);
+    REQUIRE(cv.src_size == ir::FpSize::F32);
+    REQUIRE(cv.dst_size == ir::FpSize::F64);
+}
+
+TEST_CASE("decode CVTSD2SS xmm0, xmm1 (F2 0F 5A C1) — double→single") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x0F, 0x5A, 0xC1}, r);
+    auto cv = std::get<ir::FpCvtScalar>(d.stmts[2].op);
+    REQUIRE(cv.src_size == ir::FpSize::F64);
+    REQUIRE(cv.dst_size == ir::FpSize::F32);
+}
+
 TEST_CASE("decode CVTSI2SS xmm0, eax (F3 0F 2A C0) — F2-IR-016 int→FP F32") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x0F, 0x2A, 0xC0}, r);

@@ -224,6 +224,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::FpCvtScalar>)   { bump(op.lhs, i); bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -962,6 +963,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecShiftKind::ArithShr:
                     emitter_.vsshr_imm_q(rd, rn, op.count, lane); break;
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpCvtScalar>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "FpCvtScalar without result"};
+            }
+            Emitter::FpReg rl, rs;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "FpCvtScalar.lhs"};
+            if (!fp_reg_of(op.src, rs)) return {false, LowerError::DanglingRef, "FpCvtScalar.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpCvtScalar"};
+            }
+            emitter_.fcvt_scalar_with_upper(rd, rl, rs, op.src_size, op.dst_size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) {
