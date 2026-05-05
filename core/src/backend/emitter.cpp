@@ -629,6 +629,28 @@ void Emitter::vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
         static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '/');
 }
 
+void Emitter::vcmeq_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Cmeq(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                     to_vixl_q(rm, lane));
+}
+void Emitter::vcmgt_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Cmgt(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                     to_vixl_q(rm, lane));
+}
+
+void Emitter::vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control) {
+    // Build the result in V31 first to handle the rd == rn case.
+    const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_n_s4(static_cast<int>(rn), vixl_aa::kFormat4S);
+    for (int i = 0; i < 4; ++i) {
+        const int src_lane = (control >> (2 * i)) & 0x3;
+        impl_->masm.Mov(v_t_s4, i, v_n_s4, src_lane);
+    }
+    const vixl_aa::VRegister v_t_q(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
 void Emitter::vld1_q(FpReg rd, arm64::Reg base) {
     impl_->masm.Ldr(to_vixl_qreg(rd), vixl_aa::MemOperand(to_vixl_x(base)));
 }

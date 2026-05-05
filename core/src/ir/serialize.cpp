@@ -79,11 +79,13 @@ enum class OpKind : std::uint8_t {
     kStoreVec    = 43,
     kXmmFromGpr  = 44,
     kGprFromXmm  = 45,
+    kVecCmp      = 46,
+    kVecShuffle32x4 = 47,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kGprFromXmm);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecShuffle32x4);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -246,6 +248,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, StoreVec>)      return OpKind::kStoreVec;
         else if constexpr (std::is_same_v<T, XmmFromGpr>)    return OpKind::kXmmFromGpr;
         else if constexpr (std::is_same_v<T, GprFromXmm>)    return OpKind::kGprFromXmm;
+        else if constexpr (std::is_same_v<T, VecCmp>)        return OpKind::kVecCmp;
+        else if constexpr (std::is_same_v<T, VecShuffle32x4>) return OpKind::kVecShuffle32x4;
     }, op);
 }
 
@@ -442,6 +446,16 @@ void write_payload(std::vector<std::uint8_t>& out, const XmmFromGpr& x) {
 void write_payload(std::vector<std::uint8_t>& out, const GprFromXmm& x) {
     put_u32(out, x.value);
     put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecCmp& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.kind));
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.lane));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecShuffle32x4& x) {
+    put_u32(out, x.src);
+    put_u8(out, x.control);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -826,6 +840,27 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_shuffle32x4(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t src     = c.take_u32();
+    const std::uint8_t  control = c.take_u8();
+    s.op = VecShuffle32x4{src, control};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_vec_cmp(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  kind = c.take_u8();
+    const std::uint32_t lhs  = c.take_u32();
+    const std::uint32_t rhs  = c.take_u32();
+    const std::uint8_t  lane = c.take_u8();
+    if (kind > static_cast<std::uint8_t>(VecCmpKind::Gt)) return DeserializeError::BadSize;
+    if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
+    s.op = VecCmp{static_cast<VecCmpKind>(kind), lhs, rhs,
+                  static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_xmm_from_gpr(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
     const std::uint32_t v  = c.take_u32();
@@ -931,6 +966,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kStoreVec:    return read_payload_store_vec(c, s);
         case OpKind::kXmmFromGpr:  return read_payload_xmm_from_gpr(c, s);
         case OpKind::kGprFromXmm:  return read_payload_gpr_from_xmm(c, s);
+        case OpKind::kVecCmp:      return read_payload_vec_cmp(c, s);
+        case OpKind::kVecShuffle32x4: return read_payload_vec_shuffle32x4(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

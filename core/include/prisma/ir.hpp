@@ -385,6 +385,27 @@ struct StoreVec { Ref addr; Ref value; };
 struct XmmFromGpr { Ref value; OpSize size; };
 struct GprFromXmm { Ref value; OpSize size; };
 
+// F2-IR-009 — packed integer comparisons, lane-wise.
+//   Eq  → all-1s where lanes equal, else 0.
+//   Gt  → all-1s where lhs > rhs (signed), else 0.
+// Models PCMPEQB/W/D (B16/H8/S4) and PCMPGTB/W/D — D2 lane is not
+// supported (matches the SSE2 ISA: no PCMPEQQ/PCMPGTQ until SSE4.1).
+enum class VecCmpKind : std::uint8_t { Eq = 0, Gt };
+struct VecCmp {
+    VecCmpKind kind;
+    Ref        lhs;
+    Ref        rhs;
+    VecLane    lane;  // B16, H8, or S4
+};
+
+// F2-IR-010 — PSHUFD xmm1, xmm2, imm8. Permutes the 4 32-bit lanes of
+// `src` according to `control`: result lane i = src lane ((control >>
+// (2*i)) & 3). Pure 4-way 32-bit shuffle.
+struct VecShuffle32x4 {
+    Ref          src;
+    std::uint8_t control;
+};
+
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
@@ -491,7 +512,8 @@ using Op = std::variant<
     LoadVecReg, StoreVecReg,
     LoadVec, StoreVec,
     VecFpBinOp, VecFpScalarBinOp,
-    XmmFromGpr, GprFromXmm
+    XmmFromGpr, GprFromXmm,
+    VecCmp, VecShuffle32x4
 >;
 
 // ---------------------------------------------------------------------------
@@ -587,6 +609,8 @@ bool operator==(const LoadVec&       a, const LoadVec&       b) noexcept;
 bool operator==(const StoreVec&      a, const StoreVec&      b) noexcept;
 bool operator==(const XmmFromGpr&    a, const XmmFromGpr&    b) noexcept;
 bool operator==(const GprFromXmm&    a, const GprFromXmm&    b) noexcept;
+bool operator==(const VecCmp&        a, const VecCmp&        b) noexcept;
+bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

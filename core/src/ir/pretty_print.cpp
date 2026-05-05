@@ -254,6 +254,21 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, GprFromXmm>) {
             os << "gpr_from_xmm." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecShuffle32x4>) {
+            os << "vshuffle.s4 ";
+            print_ref(os, x.src);
+            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+        } else if constexpr (std::is_same_v<T, VecCmp>) {
+            const char* op_n = (x.kind == VecCmpKind::Eq) ? "vcmeq" : "vcmgt";
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << op_n << "." << lane_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

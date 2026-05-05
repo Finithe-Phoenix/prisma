@@ -145,6 +145,12 @@ bool operator==(const XmmFromGpr& a, const XmmFromGpr& b) noexcept {
 bool operator==(const GprFromXmm& a, const GprFromXmm& b) noexcept {
     return a.value == b.value && a.size == b.size;
 }
+bool operator==(const VecCmp& a, const VecCmp& b) noexcept {
+    return a.kind == b.kind && a.lhs == b.lhs && a.rhs == b.rhs && a.lane == b.lane;
+}
+bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept {
+    return a.src == b.src && a.control == b.control;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

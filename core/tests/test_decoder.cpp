@@ -2067,6 +2067,30 @@ TEST_CASE("decode DIVSS xmm0, xmm1 (F3 0F 5E C1) — scalar Div F32") {
     REQUIRE(vfb.size == ir::FpSize::F32);
 }
 
+TEST_CASE("decode PSHUFD xmm0, xmm1, 0x1B (66 0F 70 C1 1B) — VecShuffle32x4 reverse") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x70, 0xC1, 0x1B}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    auto vs = std::get<ir::VecShuffle32x4>(d.stmts[1].op);
+    REQUIRE(vs.control == 0x1B);
+}
+
+TEST_CASE("decode PCMPEQB xmm0, xmm1 (66 0F 74 C1) — VecCmp.Eq B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x74, 0xC1}, r);
+    auto vc = std::get<ir::VecCmp>(d.stmts[2].op);
+    REQUIRE(vc.kind == ir::VecCmpKind::Eq);
+    REQUIRE(vc.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x66, 0xC1}, r);
+    auto vc = std::get<ir::VecCmp>(d.stmts[2].op);
+    REQUIRE(vc.kind == ir::VecCmpKind::Gt);
+    REQUIRE(vc.lane == ir::VecLane::S4);
+}
+
 TEST_CASE("decode MOVD xmm0, eax (66 0F 6E C0) — XmmFromGpr.I32") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x6E, 0xC0}, r);

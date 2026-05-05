@@ -46,6 +46,7 @@ public:
         VecFpBinOp, VecFpScalarBinOp,
         LoadVec, StoreVec,
         XmmFromGpr, GprFromXmm,
+        VecCmp, VecShuffle32x4,
         kCount  // sentinel
     };
 

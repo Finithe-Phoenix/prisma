@@ -104,6 +104,10 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
             into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::VecCmp>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) {
+            into.insert(x.src);
         }
     }, op);
 }

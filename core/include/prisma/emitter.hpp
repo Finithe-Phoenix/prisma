@@ -322,6 +322,15 @@ public:
     void vfmul_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
     void vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
 
+    // F2-IR-009. Lane-wise integer compare (cmeq / cmgt).
+    void vcmeq_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vcmgt_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+
+    // F2-IR-010. 4-way 32-bit lane shuffle (PSHUFD). Result lane i =
+    // src lane ((control >> (2*i)) & 3). Implemented as four INS
+    // (mov v.s[i], src.s[lane]) into V31 scratch, then mov to dst.
+    void vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control);
+
     // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
     // already holding the effective address.
     void vld1_q(FpReg rd, arm64::Reg base);

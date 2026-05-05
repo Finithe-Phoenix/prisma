@@ -271,6 +271,68 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PSHUFD xmm0, xmm1, 0x1B — F2-IR-010 lane reversal") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // pshufd xmm0, xmm1, 0x1B (= binary 00_01_10_11 = lanes [3,2,1,0]).
+    // xmm1 = {1,2,3,4}, expect xmm0 = {4,3,2,1}.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x70, 0xC1, 0x1B,  // pshufd xmm0, xmm1, 0x1B
+        0xC3,                            // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) |
+               (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[1].lo = pack4(1u, 2u);
+    disp.state().xmm[1].hi = pack4(3u, 4u);
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack4(4u, 3u));
+    REQUIRE(disp.state().xmm[0].hi == pack4(2u, 1u));
+}
+
+TEST_CASE("e2e: PCMPEQD xmm0, xmm1 — F2-IR-009 lane-wise equality") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // pcmpeqd xmm0, xmm1; ret. xmm0 = {1,2,3,4}, xmm1 = {1,99,3,99}.
+    // Expect xmm0 lanes 0 and 2 = 0xFFFFFFFF, lanes 1 and 3 = 0.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x76, 0xC1,  // pcmpeqd xmm0, xmm1
+        0xC3,                     // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) |
+               (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[0].lo = pack4(1u, 2u);
+    disp.state().xmm[0].hi = pack4(3u, 4u);
+    disp.state().xmm[1].lo = pack4(1u, 99u);
+    disp.state().xmm[1].hi = pack4(3u, 99u);
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack4(0xFFFFFFFFu, 0u));
+    REQUIRE(disp.state().xmm[0].hi == pack4(0xFFFFFFFFu, 0u));
+}
+
 TEST_CASE("e2e: MOVQ xmm0, rax + MOVQ rcx, xmm0 — F2-IR-008 GPR↔XMM transfers") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // mov rax, 0xCAFEBABEDEADBEEF; movq xmm0, rax; movq rcx, xmm0; ret.

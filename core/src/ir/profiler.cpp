@@ -56,6 +56,8 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, StoreVec>)      return OpCounter::Kind::StoreVec;
         else if constexpr (std::is_same_v<T, XmmFromGpr>)    return OpCounter::Kind::XmmFromGpr;
         else if constexpr (std::is_same_v<T, GprFromXmm>)    return OpCounter::Kind::GprFromXmm;
+        else if constexpr (std::is_same_v<T, VecCmp>)        return OpCounter::Kind::VecCmp;
+        else if constexpr (std::is_same_v<T, VecShuffle32x4>) return OpCounter::Kind::VecShuffle32x4;
     }, op);
 }
 

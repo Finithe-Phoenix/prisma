@@ -217,6 +217,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::XmmFromGpr>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::GprFromXmm>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecCmp>)        { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) { bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -908,6 +910,49 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Sub: emitter_.vfsub_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Mul: emitter_.vfmul_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Div: emitter_.vfdiv_q(rd, rl, rr, lane); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) {
+            // F2-IR-010. PSHUFD: 4-way 32-bit lane permutation.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShuffle32x4 without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) {
+                return {false, LowerError::DanglingRef, "VecShuffle32x4.src"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShuffle32x4"};
+            }
+            emitter_.vshuffle_s4(rd, rn, op.control);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecCmp>) {
+            // F2-IR-009. cmeq / cmgt on V regs (lane-wise integer compare).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecCmp without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecCmp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecCmp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecCmp"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            switch (op.kind) {
+                case ir::VecCmpKind::Eq: emitter_.vcmeq_q(rd, rl, rr, lane); break;
+                case ir::VecCmpKind::Gt: emitter_.vcmgt_q(rd, rl, rr, lane); break;
             }
             return {};
         }
