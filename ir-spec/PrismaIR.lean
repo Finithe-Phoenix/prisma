@@ -11,3 +11,4 @@ import PrismaIR.MachineState
 import PrismaIR.Trace
 import PrismaIR.Lemmas
 import PrismaIR.Passes.ConstantPropagation
+import PrismaIR.Passes.DeadCodeElimination
