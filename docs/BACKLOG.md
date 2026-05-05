@@ -359,7 +359,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-LN-010: Prove `constant_propagate` soundness (observable equivalence).
 - [ ] F1-LN-011: Prove `dead_code_eliminate` soundness.
 - [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
-- [ ] F1-LN-013: Define "observable trace" formally.
+- [x] (451c669) F1-LN-013: Define "observable trace" formally.
 - [ ] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store).
 - [ ] F1-LN-015: TSO axioms as lemmas over the weak memory model.
 - [ ] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5).
