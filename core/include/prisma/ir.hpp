@@ -348,6 +348,10 @@ enum class VecBinOpKind : std::uint8_t {
     UqAdd,          //              unsigned saturating add (PADDUSB/W).
     SqSub,          //              signed saturating sub  (PSUBSB/W).
     UqSub,          //              unsigned saturating sub (PSUBUSB/W).
+    UMin,           // F2-IR-024 — lane-wise min/max (PMINUB/PMAXUB H8 versions).
+    UMax,
+    SMin,
+    SMax,
 };
 
 struct VecConstant {

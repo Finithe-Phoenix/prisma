@@ -189,7 +189,7 @@ struct Cursor {
     return v <= static_cast<std::uint8_t>(VecLane::D2);
 }
 [[nodiscard]] bool is_valid_vecbinop(std::uint8_t v) noexcept {
-    return v <= static_cast<std::uint8_t>(VecBinOpKind::UqSub);
+    return v <= static_cast<std::uint8_t>(VecBinOpKind::SMax);
 }
 [[nodiscard]] bool is_valid_vecfpbinop(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(VecFpBinOpKind::Sqrt);

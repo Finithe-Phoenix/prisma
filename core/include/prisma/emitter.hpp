@@ -320,6 +320,11 @@ public:
     void vuqadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vsqsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vuqsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    // F2-IR-024. Lane-wise min/max (PMINUB / PMAXUB / PMINSW / PMAXSW).
+    void vumin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vumax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
 
     // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
     // D2 (2×f64); other values are rejected by an assert.

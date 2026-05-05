@@ -2193,6 +2193,22 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode PMINUB xmm0, xmm1 (66 0F DA C1) — F2-IR-024 unsigned min B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xDA, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::UMin);
+    REQUIRE(vb.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PMAXSW xmm0, xmm1 (66 0F EE C1) — signed max H8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xEE, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::SMax);
+    REQUIRE(vb.lane == ir::VecLane::H8);
+}
+
 TEST_CASE("decode PADDSB xmm0, xmm1 (66 0F EC C1) — F2-IR-023 signed sat add B16") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0xEC, 0xC1}, r);

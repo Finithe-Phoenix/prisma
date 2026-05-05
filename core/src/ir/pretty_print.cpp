@@ -227,6 +227,10 @@ std::string pretty_print(const Op& op) {
                 case VecBinOpKind::UqAdd: op_n = "vuqadd"; break;
                 case VecBinOpKind::SqSub: op_n = "vsqsub"; break;
                 case VecBinOpKind::UqSub: op_n = "vuqsub"; break;
+                case VecBinOpKind::UMin:  op_n = "vumin"; break;
+                case VecBinOpKind::UMax:  op_n = "vumax"; break;
+                case VecBinOpKind::SMin:  op_n = "vsmin"; break;
+                case VecBinOpKind::SMax:  op_n = "vsmax"; break;
             }
             const char* lane_n = "?";
             switch (x.lane) {
