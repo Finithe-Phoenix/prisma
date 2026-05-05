@@ -66,9 +66,9 @@ involvement or calendar time.
 - [ ] F0-DX-015: Set up Sentry self-hosted on Hetzner (crash reporting).
 - [ ] F0-DX-016: Set up PostHog self-hosted (telemetry pipeline).
 - [ ] F0-DX-017: Cloudflare R2 bucket for future cache CDN. ($20/mo trigger at Fase 2.5.)
-- [ ] F0-DX-018: Configure `.editorconfig`.
-- [ ] F0-DX-019: Configure `.clang-format` and `.clang-tidy`.
-- [ ] F0-DX-020: Pre-commit hooks: clang-format, rustfmt, ruff, detekt.
+- [x] (26100d1) F0-DX-018: Configure `.editorconfig`.
+- [x] (26100d1) F0-DX-019: Configure `.clang-format` and `.clang-tidy`.
+- [x] (26100d1) F0-DX-020: Pre-commit hooks: clang-format, rustfmt, ruff, detekt.
 - [ ] F0-DX-021: Buy POCO X6 Pro (Dimensity 8300-Ultra).
 - [ ] F0-DX-022: Buy Pixel 7a (Tensor G3, for AVF).
 - [ ] F0-DX-023: Buy Redmi Note 13 Pro (Snapdragon 7s Gen 2).
