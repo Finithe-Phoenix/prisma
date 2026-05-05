@@ -2914,6 +2914,58 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-005: SSE/SSE2 packed-FP arithmetic, register-direct.
+        //   0F 58 /r — ADDPS xmm1, xmm2   (S4 = 4×f32)
+        //   0F 59 /r — MULPS
+        //   0F 5C /r — SUBPS
+        //   0F 5E /r — DIVPS
+        //   66 0F 58 /r — ADDPD xmm1, xmm2  (D2 = 2×f64)
+        //   66 0F 59 /r — MULPD
+        //   66 0F 5C /r — SUBPD
+        //   66 0F 5E /r — DIVPD
+        // Memory forms (mod != 11) deferred. F2/F3 prefixes select scalar
+        // (ADDSS/ADDSD) and are left for a follow-up.
+        if (!has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x58u || subop == 0x59u ||
+             subop == 0x5Cu || subop == 0x5Eu)) {
+            auto mr = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(mr)) {
+                return std::get<DecodeError>(mr);
+            }
+            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
+            const unsigned mod = (modrm >> 6) & 0x3u;
+            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
+            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
+            if (mod != 0b11) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            ir::VecFpBinOpKind vop = ir::VecFpBinOpKind::Add;
+            switch (subop) {
+                case 0x58u: vop = ir::VecFpBinOpKind::Add; break;
+                case 0x59u: vop = ir::VecFpBinOpKind::Mul; break;
+                case 0x5Cu: vop = ir::VecFpBinOpKind::Sub; break;
+                case 0x5Eu: vop = ir::VecFpBinOpKind::Div; break;
+                default: break;  // unreachable
+            }
+            const ir::VecFpSize size = has_operand_size_override
+                                           ? ir::VecFpSize::D2
+                                           : ir::VecFpSize::S4;
+            Decoded d;
+            const ir::Ref r_dst_old = next_ref++;
+            const ir::Ref r_src     = next_ref++;
+            const ir::Ref r_res     = next_ref++;
+            d.stmts.push_back({r_dst_old,
+                ir::LoadVecReg{static_cast<std::uint8_t>(reg)}});
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+            d.stmts.push_back({r_res,
+                ir::VecFpBinOp{vop, r_dst_old, r_src, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // We currently consume LOCK/HLE only for the exchange-family atomics
         // added in this slice. Everywhere else they remain unsupported.
         if ((has_lock || has_f2) &&

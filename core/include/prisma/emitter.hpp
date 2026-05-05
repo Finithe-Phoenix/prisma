@@ -298,6 +298,13 @@ public:
     void vorr_q(FpReg rd, FpReg rn, FpReg rm);
     void veor_q(FpReg rd, FpReg rn, FpReg rm);
 
+    // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
+    // D2 (2×f64); other values are rejected by an assert.
+    void vfadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+
     // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
     // already holding the effective address.
     void vld1_q(FpReg rd, arm64::Reg base);

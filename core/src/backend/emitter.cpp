@@ -500,6 +500,37 @@ void Emitter::veor_q(FpReg rd, FpReg rn, FpReg rm) {
                     to_vixl_q_bitwise(rm));
 }
 
+namespace {
+vixl_aa::VRegister to_vixl_q_fp(Emitter::FpReg r, Emitter::VecLane lane) noexcept {
+    using L = Emitter::VecLane;
+    int code = static_cast<int>(r);
+    switch (lane) {
+        case L::S4: return vixl_aa::VRegister(code, vixl_aa::kFormat4S);
+        case L::D2: return vixl_aa::VRegister(code, vixl_aa::kFormat2D);
+        default:    break;
+    }
+    // Lane invariant: only S4/D2 reach here; gated by IR lowerer.
+    return vixl_aa::VRegister(code, vixl_aa::kFormat4S);
+}
+}  // namespace
+
+void Emitter::vfadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fadd(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fsub(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fmul(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fdiv(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+
 void Emitter::vld1_q(FpReg rd, arm64::Reg base) {
     impl_->masm.Ldr(to_vixl_qreg(rd), vixl_aa::MemOperand(to_vixl_x(base)));
 }

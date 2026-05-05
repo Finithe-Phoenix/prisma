@@ -11,6 +11,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -190,6 +191,45 @@ TEST_CASE("e2e: PXOR xmm0, xmm0 zeroes xmm0 (idiomatic SSE2 zero)") {
     auto r = disp.run(0x4000, 100);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(disp.state().xmm[0].lo == 0u);
+}
+
+TEST_CASE("e2e: ADDPS xmm0, xmm1 — packed-FP add lanes-wise (4×f32)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    // Load xmm0 with {1.0, 2.0, 3.0, 4.0} (low pair → lo) and xmm1 with
+    // {10.0, 20.0, 30.0, 40.0}, run `addps xmm0, xmm1; ret`, expect
+    // {11.0, 22.0, 33.0, 44.0}. We compare the low pair as packed
+    // u32 lanes in xmm0.lo.
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0x0F, 0x58, 0xC1,  // addps xmm0, xmm1
+        0xC3,              // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+
+    auto pack2f = [](float lo32, float hi32) -> std::uint64_t {
+        std::uint32_t a, b;
+        std::memcpy(&a, &lo32, 4);
+        std::memcpy(&b, &hi32, 4);
+        return static_cast<std::uint64_t>(a) |
+               (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[0].lo = pack2f(1.0f, 2.0f);
+    disp.state().xmm[0].hi = pack2f(3.0f, 4.0f);
+    disp.state().xmm[1].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi = pack2f(30.0f, 40.0f);
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack2f(11.0f, 22.0f));
+    REQUIRE(disp.state().xmm[0].hi == pack2f(33.0f, 44.0f));
 }
 
 TEST_CASE("e2e: cache hit — running the same blob twice reuses the translation") {

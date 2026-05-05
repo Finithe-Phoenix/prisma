@@ -368,6 +368,21 @@ inline constexpr std::size_t kXmmCount = 16;
 struct LoadVecReg  { std::uint8_t xmm_index; };  // 0..15
 struct StoreVecReg { std::uint8_t xmm_index; Ref value; };  // 0..15
 
+// F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
+// (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
+// hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
+enum class VecFpBinOpKind : std::uint8_t {
+    Add = 0, Sub, Mul, Div,
+};
+enum class VecFpSize : std::uint8_t { S4 = 0, D2 };
+
+struct VecFpBinOp {
+    VecFpBinOpKind op;
+    Ref            lhs;
+    Ref            rhs;
+    VecFpSize      size;
+};
+
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
 // `RspAdjust{delta_bytes}` adds `delta_bytes` (signed, two's-complement
@@ -444,7 +459,8 @@ using Op = std::variant<
     WriteFlags, ReadFlag, CondJumpFlags,
     RspAdjust,
     VecConstant, VecBinOp,
-    LoadVecReg, StoreVecReg
+    LoadVecReg, StoreVecReg,
+    VecFpBinOp
 >;
 
 // ---------------------------------------------------------------------------
@@ -534,6 +550,7 @@ bool operator==(const VecConstant&   a, const VecConstant&   b) noexcept;
 bool operator==(const VecBinOp&      a, const VecBinOp&      b) noexcept;
 bool operator==(const LoadVecReg&    a, const LoadVecReg&    b) noexcept;
 bool operator==(const StoreVecReg&   a, const StoreVecReg&   b) noexcept;
+bool operator==(const VecFpBinOp&    a, const VecFpBinOp&    b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

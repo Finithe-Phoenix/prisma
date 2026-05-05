@@ -2007,6 +2007,48 @@ TEST_CASE("decode MOVDQU xmm1, xmm0 (F3 0F 6F C8) — unaligned variant decodes 
     REQUIRE(std::get<ir::StoreVecReg>(d.stmts[1].op).xmm_index == 1u);
 }
 
+TEST_CASE("decode ADDPS xmm0, xmm1 (0F 58 C1) — VecFpBinOp.Add S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x58, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(d.stmts.size() == 4);
+    auto vfb = std::get<ir::VecFpBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Add);
+    REQUIRE(vfb.size == ir::VecFpSize::S4);
+}
+
+TEST_CASE("decode MULPD xmm0, xmm1 (66 0F 59 C1) — VecFpBinOp.Mul D2") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x59, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    auto vfb = std::get<ir::VecFpBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Mul);
+    REQUIRE(vfb.size == ir::VecFpSize::D2);
+}
+
+TEST_CASE("decode SUBPS xmm0, xmm1 (0F 5C C1) — VecFpBinOp.Sub S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x5C, 0xC1}, r);
+    auto vfb = std::get<ir::VecFpBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Sub);
+    REQUIRE(vfb.size == ir::VecFpSize::S4);
+}
+
+TEST_CASE("decode DIVPD xmm0, xmm1 (66 0F 5E C1) — VecFpBinOp.Div D2") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x5E, 0xC1}, r);
+    auto vfb = std::get<ir::VecFpBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Div);
+    REQUIRE(vfb.size == ir::VecFpSize::D2);
+}
+
+TEST_CASE("decode ADDPS with memory operand (mod != 11) is UnsupportedEncoding") {
+    ir::Ref r = 0;
+    auto res = decode_any({0x0F, 0x58, 0x01}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
 TEST_CASE("decode MOVDQA with memory operand (mod != 11) is UnsupportedEncoding") {
     ir::Ref r = 0;
     auto res = decode_any({0x66, 0x0F, 0x6F, 0x01}, r);
