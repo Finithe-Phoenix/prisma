@@ -520,6 +520,10 @@ void Emitter::veor_q(FpReg rd, FpReg rn, FpReg rm) {
     impl_->masm.Eor(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn),
                     to_vixl_q_bitwise(rm));
 }
+void Emitter::vmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Mul(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                    to_vixl_q(rm, lane));
+}
 
 namespace {
 vixl_aa::VRegister to_vixl_q_fp(Emitter::FpReg r, Emitter::VecLane lane) noexcept {

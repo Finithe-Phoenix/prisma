@@ -222,6 +222,7 @@ std::string pretty_print(const Op& op) {
                 case VecBinOpKind::And: op_n = "vand"; break;
                 case VecBinOpKind::Or:  op_n = "vorr"; break;
                 case VecBinOpKind::Xor: op_n = "veor"; break;
+                case VecBinOpKind::Mul: op_n = "vmul"; break;
             }
             const char* lane_n = "?";
             switch (x.lane) {

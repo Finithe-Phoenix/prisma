@@ -2067,6 +2067,42 @@ TEST_CASE("decode DIVSS xmm0, xmm1 (F3 0F 5E C1) — scalar Div F32") {
     REQUIRE(vfb.size == ir::FpSize::F32);
 }
 
+TEST_CASE("decode MOVAPS xmm0, xmm1 (0F 28 C1) — F2-IR-013 reg-reg load") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x28, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    REQUIRE(std::holds_alternative<ir::LoadVecReg>(d.stmts[0].op));
+    REQUIRE(std::holds_alternative<ir::StoreVecReg>(d.stmts[1].op));
+}
+
+TEST_CASE("decode MOVUPS [rcx], xmm0 (0F 11 01) — F2-IR-013 unaligned store") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x11, 0x01}, r);
+    bool saw_storevec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::StoreVec>(st.op)) saw_storevec = true;
+    }
+    REQUIRE(saw_storevec);
+}
+
+TEST_CASE("decode MOVAPD xmm0, [rcx] (66 0F 28 01) — F2-IR-013 prefixed load") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x28, 0x01}, r);
+    bool saw_loadvec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(st.op)) saw_loadvec = true;
+    }
+    REQUIRE(saw_loadvec);
+}
+
+TEST_CASE("decode PMULLW xmm0, xmm1 (66 0F D5 C1) — VecBinOp.Mul H8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xD5, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::Mul);
+    REQUIRE(vb.lane == ir::VecLane::H8);
+}
+
 TEST_CASE("decode PUNPCKLBW xmm0, xmm1 (66 0F 60 C1) — VecUnpack low B16") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x60, 0xC1}, r);

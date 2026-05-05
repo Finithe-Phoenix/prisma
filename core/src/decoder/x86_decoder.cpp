@@ -2830,7 +2830,8 @@ std::variant<Decoded, DecodeError> decode_one(
             (subop == 0xFCu || subop == 0xFDu || subop == 0xFEu ||
              subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
              subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
-             subop == 0xDBu || subop == 0xEFu)) {
+             subop == 0xDBu || subop == 0xEFu ||
+             subop == 0xD5u)) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -2851,6 +2852,7 @@ std::variant<Decoded, DecodeError> decode_one(
                 case 0xDBu: vop = ir::VecBinOpKind::And; break;
                 case 0xEBu: vop = ir::VecBinOpKind::Or;  break;
                 case 0xEFu: vop = ir::VecBinOpKind::Xor; break;
+                case 0xD5u: vop = ir::VecBinOpKind::Mul; lane = ir::VecLane::H8; break;
                 default: break;
             }
             Decoded d;
@@ -3099,17 +3101,26 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
-        // F2-IR-004: SSE2 MOVDQA / MOVDQU register-to-register.
-        //   66 0F 6F /r — MOVDQA xmm1, xmm2/m128   (load: dst=reg, src=rm)
-        //   66 0F 7F /r — MOVDQA xmm2/m128, xmm1   (store: dst=rm,  src=reg)
-        //   F3 0F 6F /r — MOVDQU xmm1, xmm2/m128   (unaligned variant)
-        //   F3 0F 7F /r — MOVDQU xmm2/m128, xmm1
-        // For register-direct (mod==11) the alignment distinction
-        // collapses, so both 66- and F3-prefixed forms decode the same.
-        // Memory forms deferred (UnsupportedEncoding).
-        if ((has_operand_size_override || has_f3) && !has_lock && !has_f2 &&
+        // F2-IR-004 / F2-IR-013: 128-bit register-or-memory MOV family.
+        //   MOVDQA  66 0F 6F/7F   (integer, aligned)
+        //   MOVDQU  F3 0F 6F/7F   (integer, unaligned)
+        //   MOVAPS     0F 28/29   (FP packed single, aligned)
+        //   MOVUPS     0F 10/11   (FP packed single, unaligned)
+        //   MOVAPD  66 0F 28/29   (FP packed double, aligned)
+        //   MOVUPD  66 0F 10/11   (FP packed double, unaligned)
+        // All decode to the same LoadVecReg / LoadVec / StoreVecReg /
+        // StoreVec primitives; the alignment distinction is irrelevant
+        // on ARM64 hosts we target.
+        const bool is_mov_28_29 =
+            (subop == 0x28u || subop == 0x29u) &&
+            !has_lock && !has_f2 && !has_f3;
+        const bool is_mov_10_11 =
+            (subop == 0x10u || subop == 0x11u) &&
+            !has_lock && !has_f2 && !has_f3;
+        if (((has_operand_size_override || has_f3) && !has_lock && !has_f2 &&
             !(has_operand_size_override && has_f3) &&
-            (subop == 0x6Fu || subop == 0x7Fu)) {
+            (subop == 0x6Fu || subop == 0x7Fu))
+            || is_mov_28_29 || is_mov_10_11) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3117,7 +3128,7 @@ std::variant<Decoded, DecodeError> decode_one(
             }
             const auto& m = std::get<ModRmOperand>(modrm);
             Decoded d;
-            const bool is_load = (subop == 0x6Fu);
+            const bool is_load = (subop == 0x6Fu) || (subop == 0x28u) || (subop == 0x10u);
             if (m.mod == 0b11) {
                 const unsigned src_xmm =
                     is_load ? static_cast<unsigned>(m.base) : m.reg;

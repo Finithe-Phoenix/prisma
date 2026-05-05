@@ -883,6 +883,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecBinOpKind::And: emitter_.vand_q(rd, rl, rr);       break;
                 case ir::VecBinOpKind::Or:  emitter_.vorr_q(rd, rl, rr);       break;
                 case ir::VecBinOpKind::Xor: emitter_.veor_q(rd, rl, rr);       break;
+                case ir::VecBinOpKind::Mul: emitter_.vmul_q(rd, rl, rr, lane); break;
             }
             return {};
         }

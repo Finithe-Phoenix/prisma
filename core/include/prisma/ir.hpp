@@ -343,6 +343,7 @@ enum class VecLane : std::uint8_t { B16 = 0, H8, S4, D2 };
 enum class VecBinOpKind : std::uint8_t {
     Add = 0, Sub,
     And, Or, Xor,
+    Mul,            // F2-IR-013 — lane-wise integer multiply (PMULLW etc.)
 };
 
 struct VecConstant {

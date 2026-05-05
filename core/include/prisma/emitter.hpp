@@ -305,6 +305,7 @@ public:
     void vand_q(FpReg rd, FpReg rn, FpReg rm);  // bitwise: lane-agnostic
     void vorr_q(FpReg rd, FpReg rn, FpReg rm);
     void veor_q(FpReg rd, FpReg rn, FpReg rm);
+    void vmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);  // F2-IR-013
 
     // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
     // D2 (2×f64); other values are rejected by an assert.

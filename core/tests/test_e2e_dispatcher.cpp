@@ -271,6 +271,42 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PMULLW xmm0, xmm1 — F2-IR-013 lane-wise i16 multiply") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // pmullw xmm0, xmm1: lane-wise low-16 of (xmm0[i] * xmm1[i]).
+    // xmm0 lanes (i16): {2,3,4,5,6,7,8,9}; xmm1: {10,10,...,10}.
+    // Expect xmm0: {20,30,40,50,60,70,80,90}.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xD5, 0xC1,  // pmullw xmm0, xmm1
+        0xC3,                     // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack8 = [](std::uint16_t a, std::uint16_t b,
+                    std::uint16_t c, std::uint16_t d) -> std::uint64_t {
+        return  static_cast<std::uint64_t>(a)
+              | (static_cast<std::uint64_t>(b) << 16)
+              | (static_cast<std::uint64_t>(c) << 32)
+              | (static_cast<std::uint64_t>(d) << 48);
+    };
+    disp.state().xmm[0].lo = pack8(2, 3, 4, 5);
+    disp.state().xmm[0].hi = pack8(6, 7, 8, 9);
+    disp.state().xmm[1].lo = pack8(10, 10, 10, 10);
+    disp.state().xmm[1].hi = pack8(10, 10, 10, 10);
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack8(20, 30, 40, 50));
+    REQUIRE(disp.state().xmm[0].hi == pack8(60, 70, 80, 90));
+}
+
 TEST_CASE("e2e: PUNPCKLDQ xmm0, xmm1 — F2-IR-011 32-bit interleave low") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // xmm0 = {a0,a1,a2,a3} (lanes 0..3), xmm1 = {b0,b1,b2,b3}.
