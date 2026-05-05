@@ -2067,6 +2067,40 @@ TEST_CASE("decode DIVSS xmm0, xmm1 (F3 0F 5E C1) — scalar Div F32") {
     REQUIRE(vfb.size == ir::FpSize::F32);
 }
 
+TEST_CASE("decode PUNPCKLBW xmm0, xmm1 (66 0F 60 C1) — VecUnpack low B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x60, 0xC1}, r);
+    auto vu = std::get<ir::VecUnpack>(d.stmts[2].op);
+    REQUIRE(vu.is_high == false);
+    REQUIRE(vu.lane    == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PUNPCKHQDQ xmm0, xmm1 (66 0F 6D C1) — VecUnpack high D2") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x6D, 0xC1}, r);
+    auto vu = std::get<ir::VecUnpack>(d.stmts[2].op);
+    REQUIRE(vu.is_high == true);
+    REQUIRE(vu.lane    == ir::VecLane::D2);
+}
+
+TEST_CASE("decode PSLLD xmm0, 4 (66 0F 72 F0 04) — VecShiftImm.ShiftL S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x72, 0xF0, 0x04}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    auto vs = std::get<ir::VecShiftImm>(d.stmts[1].op);
+    REQUIRE(vs.kind  == ir::VecShiftKind::ShiftL);
+    REQUIRE(vs.lane  == ir::VecLane::S4);
+    REQUIRE(vs.count == 4u);
+}
+
+TEST_CASE("decode PSRAW xmm0, 1 (66 0F 71 E0 01) — VecShiftImm.ArithShr H8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x71, 0xE0, 0x01}, r);
+    auto vs = std::get<ir::VecShiftImm>(d.stmts[1].op);
+    REQUIRE(vs.kind  == ir::VecShiftKind::ArithShr);
+    REQUIRE(vs.lane  == ir::VecLane::H8);
+}
+
 TEST_CASE("decode PSHUFD xmm0, xmm1, 0x1B (66 0F 70 C1 1B) — VecShuffle32x4 reverse") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x70, 0xC1, 0x1B}, r);

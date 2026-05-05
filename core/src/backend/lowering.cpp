@@ -219,6 +219,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::GprFromXmm>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecCmp>)        { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecUnpack>)     { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShiftImm>)   { bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -910,6 +912,51 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Sub: emitter_.vfsub_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Mul: emitter_.vfmul_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Div: emitter_.vfdiv_q(rd, rl, rr, lane); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecUnpack>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecUnpack without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecUnpack.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecUnpack.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecUnpack"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            if (op.is_high) emitter_.vzip2_q(rd, rl, rr, lane);
+            else            emitter_.vzip1_q(rd, rl, rr, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShiftImm>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShiftImm without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecShiftImm.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShiftImm"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            switch (op.kind) {
+                case ir::VecShiftKind::ShiftL:
+                    emitter_.vshl_imm_q(rd, rn, op.count, lane); break;
+                case ir::VecShiftKind::LogicalShr:
+                    emitter_.vushr_imm_q(rd, rn, op.count, lane); break;
+                case ir::VecShiftKind::ArithShr:
+                    emitter_.vsshr_imm_q(rd, rn, op.count, lane); break;
             }
             return {};
         }

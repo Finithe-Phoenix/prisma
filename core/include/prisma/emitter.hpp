@@ -331,6 +331,17 @@ public:
     // (mov v.s[i], src.s[lane]) into V31 scratch, then mov to dst.
     void vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control);
 
+    // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
+    void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+
+    // F2-IR-012. Per-lane shift by immediate (PSLLW/D/Q-style).
+    // For ShiftL `count` may be >= lane bits; the lowerer clamps to
+    // lane width via the SSE rule (count >= bits → lane = 0).
+    void vshl_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
+    void vushr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
+    void vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
+
     // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
     // already holding the effective address.
     void vld1_q(FpReg rd, arm64::Reg base);

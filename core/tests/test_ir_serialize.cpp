@@ -182,6 +182,17 @@ TEST_CASE("ir_serialize: LoadVec + StoreVec round-trip", "[ir_serialize]") {
         Op{StoreVec{Ref{0u}, Ref{8u}}}});
 }
 
+TEST_CASE("ir_serialize: VecUnpack + VecShiftImm round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{17u},
+        Op{VecUnpack{false, Ref{0u}, Ref{1u}, VecLane::B16}}});
+    check_single_stmt_roundtrip(Stmt{Ref{18u},
+        Op{VecUnpack{true,  Ref{0u}, Ref{1u}, VecLane::D2}}});
+    check_single_stmt_roundtrip(Stmt{Ref{19u},
+        Op{VecShiftImm{VecShiftKind::ShiftL, Ref{0u}, 4u, VecLane::S4}}});
+    check_single_stmt_roundtrip(Stmt{Ref{20u},
+        Op{VecShiftImm{VecShiftKind::ArithShr, Ref{0u}, 31u, VecLane::S4}}});
+}
+
 TEST_CASE("ir_serialize: VecShuffle32x4 round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{15u}, Op{VecShuffle32x4{Ref{0u}, 0xE4}}});
     check_single_stmt_roundtrip(Stmt{Ref{16u}, Op{VecShuffle32x4{Ref{0u}, 0x00}}});

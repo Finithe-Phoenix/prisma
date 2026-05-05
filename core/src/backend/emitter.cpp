@@ -638,6 +638,63 @@ void Emitter::vcmgt_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
                      to_vixl_q(rm, lane));
 }
 
+void Emitter::vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Zip1(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                     to_vixl_q(rm, lane));
+}
+void Emitter::vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Zip2(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                     to_vixl_q(rm, lane));
+}
+
+namespace {
+unsigned lane_bits(Emitter::VecLane lane) noexcept {
+    switch (lane) {
+        case Emitter::VecLane::B16: return 8;
+        case Emitter::VecLane::H8:  return 16;
+        case Emitter::VecLane::S4:  return 32;
+        case Emitter::VecLane::D2:  return 64;
+    }
+    return 8;
+}
+}  // namespace
+
+void Emitter::vshl_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) {
+    const unsigned bits = lane_bits(lane);
+    if (count >= bits) {
+        // SSE: shift count >= lane width → result is zero.
+        impl_->masm.Movi(to_vixl_q_bitwise(rd), 0);
+        return;
+    }
+    impl_->masm.Shl(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                    static_cast<int>(count));
+}
+void Emitter::vushr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) {
+    const unsigned bits = lane_bits(lane);
+    if (count >= bits) {
+        impl_->masm.Movi(to_vixl_q_bitwise(rd), 0);
+        return;
+    }
+    if (count == 0) {
+        impl_->masm.Mov(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn));
+        return;
+    }
+    impl_->masm.Ushr(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                     static_cast<int>(count));
+}
+void Emitter::vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) {
+    const unsigned bits = lane_bits(lane);
+    // PSRA semantics: count >= lane bits → result lane = sign-fill, i.e.
+    // shift by (bits - 1) to broadcast the sign bit.
+    const unsigned eff = count >= bits ? bits - 1 : count;
+    if (eff == 0) {
+        impl_->masm.Mov(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn));
+        return;
+    }
+    impl_->masm.Sshr(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                     static_cast<int>(eff));
+}
+
 void Emitter::vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control) {
     // Build the result in V31 first to handle the rd == rn case.
     const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);

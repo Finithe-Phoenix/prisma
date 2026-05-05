@@ -2876,6 +2876,106 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-011: UNPCKL/UNPCKH — interleave lanes.
+        //   66 0F 60/61/62/6C — PUNPCKL{BW,WD,DQ,QDQ}
+        //   66 0F 68/69/6A/6D — PUNPCKH{BW,WD,DQ,QDQ}
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x60u || subop == 0x61u || subop == 0x62u || subop == 0x6Cu ||
+             subop == 0x68u || subop == 0x69u || subop == 0x6Au || subop == 0x6Du)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const bool is_high = (subop & 0x08u) != 0;
+            ir::VecLane lane = ir::VecLane::B16;
+            switch (subop & 0x07u) {
+                case 0x0u: lane = ir::VecLane::B16; break;  // BW
+                case 0x1u: lane = ir::VecLane::H8;  break;  // WD
+                case 0x2u: lane = ir::VecLane::S4;  break;  // DQ
+                case 0x4u: case 0x5u: lane = ir::VecLane::D2; break;  // QDQ
+                default:   lane = ir::VecLane::B16;
+            }
+            // 6C/6D: QDQ. Override the switch above for those exact codes.
+            if (subop == 0x6Cu || subop == 0x6Du) lane = ir::VecLane::D2;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res, ir::VecUnpack{is_high, r_lhs, r_rhs, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-012: per-lane shift by immediate.
+        //   66 0F 71 /6 ib — PSLLW (H8)
+        //   66 0F 71 /2 ib — PSRLW
+        //   66 0F 71 /4 ib — PSRAW
+        //   66 0F 72 /6 ib — PSLLD (S4)
+        //   66 0F 72 /2 ib — PSRLD
+        //   66 0F 72 /4 ib — PSRAD
+        //   66 0F 73 /6 ib — PSLLQ (D2)
+        //   66 0F 73 /2 ib — PSRLQ
+        // (PSLLDQ /7, PSRLDQ /3 — byte shifts of whole reg, deferred.)
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x71u || subop == 0x72u || subop == 0x73u)) {
+            auto mr = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(mr)) {
+                return std::get<DecodeError>(mr);
+            }
+            const Byte modrm_b = static_cast<Byte>(std::get<std::uint64_t>(mr));
+            const unsigned mod    = (modrm_b >> 6) & 0x3u;
+            const unsigned reg_op = (modrm_b >> 3) & 0x7u;  // /digit
+            const unsigned rm     = (modrm_b & 0x7u) | (rex.b ? 0x8u : 0x0u);
+            if (mod != 0b11) return DecodeError::UnsupportedEncoding;
+            ir::VecShiftKind kind;
+            switch (reg_op) {
+                case 6: kind = ir::VecShiftKind::ShiftL;     break;
+                case 2: kind = ir::VecShiftKind::LogicalShr; break;
+                case 4: kind = ir::VecShiftKind::ArithShr;   break;
+                default: return DecodeError::UnsupportedEncoding;
+            }
+            // PSRAQ doesn't exist in SSE2.
+            if (subop == 0x73u && kind == ir::VecShiftKind::ArithShr) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            const ir::VecLane lane =
+                subop == 0x71u ? ir::VecLane::H8 :
+                subop == 0x72u ? ir::VecLane::S4 :
+                                 ir::VecLane::D2;
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t count =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+            d.stmts.push_back({r_res,
+                ir::VecShiftImm{kind, r_src, count, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(rm), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-010: PSHUFD xmm1, xmm2/m128, imm8 (66 0F 70 /r ib).
         // Permutes 4 32-bit lanes of source per immediate control byte.
         if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&

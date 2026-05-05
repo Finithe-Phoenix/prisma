@@ -151,6 +151,12 @@ bool operator==(const VecCmp& a, const VecCmp& b) noexcept {
 bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept {
     return a.src == b.src && a.control == b.control;
 }
+bool operator==(const VecUnpack& a, const VecUnpack& b) noexcept {
+    return a.is_high == b.is_high && a.lhs == b.lhs && a.rhs == b.rhs && a.lane == b.lane;
+}
+bool operator==(const VecShiftImm& a, const VecShiftImm& b) noexcept {
+    return a.kind == b.kind && a.src == b.src && a.count == b.count && a.lane == b.lane;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

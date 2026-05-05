@@ -406,6 +406,33 @@ struct VecShuffle32x4 {
     std::uint8_t control;
 };
 
+// F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
+// merge of two source vectors: low form takes the bottom n/2 lanes of
+// each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
+// PUNPCK*BW / *WD / *DQ / *QDQ. Maps to NEON zip1 / zip2.
+struct VecUnpack {
+    bool    is_high;
+    Ref     lhs;
+    Ref     rhs;
+    VecLane lane;
+};
+
+// F2-IR-012 — per-lane shift by immediate. Models PSLLW/D/Q (Shl),
+// PSRLW/D/Q (LogicalShr) and PSRAW/D (ArithShr). Lanes H8/S4/D2.
+// `count` is the SSE shift amount in bits; counts >= lane width
+// saturate to lane width (PSRA semantics differ — see lowerer).
+enum class VecShiftKind : std::uint8_t {
+    ShiftL = 0,         // PSLLW/D/Q
+    LogicalShr,         // PSRLW/D/Q
+    ArithShr,           // PSRAW/D
+};
+struct VecShiftImm {
+    VecShiftKind kind;
+    Ref          src;
+    std::uint8_t count;
+    VecLane      lane;
+};
+
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
@@ -513,7 +540,8 @@ using Op = std::variant<
     LoadVec, StoreVec,
     VecFpBinOp, VecFpScalarBinOp,
     XmmFromGpr, GprFromXmm,
-    VecCmp, VecShuffle32x4
+    VecCmp, VecShuffle32x4,
+    VecUnpack, VecShiftImm
 >;
 
 // ---------------------------------------------------------------------------
@@ -611,6 +639,8 @@ bool operator==(const XmmFromGpr&    a, const XmmFromGpr&    b) noexcept;
 bool operator==(const GprFromXmm&    a, const GprFromXmm&    b) noexcept;
 bool operator==(const VecCmp&        a, const VecCmp&        b) noexcept;
 bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept;
+bool operator==(const VecUnpack&     a, const VecUnpack&     b) noexcept;
+bool operator==(const VecShiftImm&   a, const VecShiftImm&   b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 
