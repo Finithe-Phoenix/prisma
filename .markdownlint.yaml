@@ -1,0 +1,19 @@
+# F0-DX-020 — markdownlint config used by both the CI workflow
+# (lint-docs.yml) and the local pre-commit hook.
+
+default: true
+
+# Allow long lines — the docs intentionally include detailed
+# explanations and tables that would be ugly wrapped at 80.
+MD013: false
+
+# Allow inline HTML — needed for some RFC tables / figures.
+MD033: false
+
+# Allow duplicate headings between RFCs (each RFC has its own
+# "Summary" / "Background" / "Trade-offs").
+MD024:
+  siblings_only: true
+
+# Code blocks may omit the language tag for short snippets.
+MD040: false

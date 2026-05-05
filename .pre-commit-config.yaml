@@ -1,0 +1,69 @@
+# F0-DX-020 — Prisma pre-commit configuration.
+#
+# Install:
+#   brew install pre-commit          (or: pip install pre-commit)
+#   pre-commit install
+#
+# After install, every `git commit` runs the checks below on the
+# staged set. Run manually:
+#   pre-commit run --all-files
+
+repos:
+  # Core hygiene.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=512']
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # C / C++ — clang-format + a fast warning-only clang-tidy pass.
+  # The full clang-tidy run lives in CI (slow; uses
+  # compile_commands.json which doesn't exist locally on a fresh
+  # checkout).
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.4
+    hooks:
+      - id: clang-format
+        files: \.(cpp|hpp|h|c)$
+        types_or: [c++, c]
+
+  # Python — black + ruff.
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+        args: [--line-length=100]
+        files: \.py$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: \.py$
+
+  # Rust — rustfmt (only if Rust files exist; the repo's `shell/`
+  # is empty today but will fill up in Fase 1+).
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        files: \.rs$
+      - id: clippy
+        files: \.rs$
+        args: ['--', '-D', 'warnings']
+
+  # Markdown — markdownlint matches the CI lint-docs.yml workflow.
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.45.0
+    hooks:
+      - id: markdownlint
+        args: ['--config', '.markdownlint.yaml', '--ignore', 'third_party/']
+        files: \.(md|markdown)$

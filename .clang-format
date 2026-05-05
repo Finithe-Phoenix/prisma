@@ -1,0 +1,80 @@
+# F0-DX-019 — Prisma C++ style. Google base + Prisma adjustments.
+#
+# Sources of truth (CLAUDE.md):
+#   * 2-space indent
+#   * C++20, std::span, std::atomic_ref, concepts
+#   * Maximum line width: 100 columns (room for descriptive names
+#     without wrapping every line)
+
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+
+IndentWidth: 2
+ContinuationIndentWidth: 4
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 100
+
+# Brace placement — Google's "Attach" matches the existing codebase.
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# Pointer/reference style: align with the type, not the name.
+# `void* p`, `const T& r` — matches research-y / systems-y idiom.
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# Spacing.
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceInEmptyParentheses: false
+SpacesInAngles: false
+SpacesInContainerLiterals: false
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# Includes — keep groups stable so diffs stay clean.
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # 1. The .cpp's matching .hpp — handled by Google convention.
+  - Regex:    '^"prisma/'
+    Priority: 2
+  # 2. Other prisma headers.
+  - Regex:    '^".*"$'
+    Priority: 3
+  # 3. Third-party (vixl, Catch2, Zydis).
+  - Regex:    '^<(vixl|catch2|Zydis|Zycore)/'
+    Priority: 4
+  # 4. C system headers (lower-case .h).
+  - Regex:    '^<[a-z_]+\.h>$'
+    Priority: 5
+  # 5. C++ standard headers (no .h).
+  - Regex:    '^<[a-z_]+>$'
+    Priority: 6
+
+# Function / argument layout.
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackArguments: true
+BinPackParameters: true
+AllowAllArgumentsOnNextLine: false
+ExperimentalAutoDetectBinPacking: false
+AlignAfterOpenBracket: Align
+
+# Penalties — minor nudges so the formatter prefers the
+# Prisma-native shape on borderline cases.
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 100
+PenaltyReturnTypeOnItsOwnLine: 60
