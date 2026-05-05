@@ -349,6 +349,32 @@ target_link_libraries(prisma_emitter
 )
 
 # ---------------------------------------------------------------------------
+# prisma_run — CLI that executes a guest x86_64 byte blob end-to-end.
+# ---------------------------------------------------------------------------
+#
+# This is the user-facing demo of the whole pipeline: bytes →
+# decoder → IR → passes → lowerer → JIT execute → final state.
+# Built only on ARM64 hosts because the JIT can only run on the
+# host arch we lower to.
+
+if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
+    add_executable(prisma_run
+        src/runner/main.cpp
+    )
+    target_link_libraries(prisma_run
+        PRIVATE
+            prisma_translator
+            prisma_runtime
+            prisma_decoder
+            prisma_passes
+            prisma_emitter
+            prisma_cache
+            prisma_ir
+            prisma_warnings
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------
 
