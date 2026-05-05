@@ -443,6 +443,7 @@ struct VecShiftBytes {
     std::uint8_t count;
 };
 
+
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
@@ -488,6 +489,13 @@ struct RspAdjust {
 
 enum class FpSize     : std::uint8_t { F32 = 0, F64 };
 enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
+
+// F2-IR-016 — scalar int ↔ FP conversions (CVTSI2SS/SD + CVTTSS/SD2SI).
+//   IntToFpScalar: signed int (I32 or I64) → low-lane FP (F32 or F64).
+//                  Upper xmm bits are zeroed.
+//   FpToIntScalar: low-lane FP → signed int (truncating).
+struct IntToFpScalar { Ref value; OpSize int_size; FpSize fp_size; };
+struct FpToIntScalar { Ref value; FpSize fp_size; OpSize int_size; };
 
 // F2-IR-006 — scalar-form SSE FP. Result is a 128-bit value where the
 // low lane is `op(lhs.low, rhs.low)` and the upper bits are copied from
@@ -552,7 +560,8 @@ using Op = std::variant<
     XmmFromGpr, GprFromXmm,
     VecCmp, VecShuffle32x4,
     VecUnpack, VecShiftImm,
-    VecShiftBytes
+    VecShiftBytes,
+    IntToFpScalar, FpToIntScalar
 >;
 
 // ---------------------------------------------------------------------------
@@ -653,6 +662,8 @@ bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept;
 bool operator==(const VecUnpack&     a, const VecUnpack&     b) noexcept;
 bool operator==(const VecShiftImm&   a, const VecShiftImm&   b) noexcept;
 bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept;
+bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept;
+bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

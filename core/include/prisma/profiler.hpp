@@ -48,6 +48,7 @@ public:
         XmmFromGpr, GprFromXmm,
         VecCmp, VecShuffle32x4,
         VecUnpack, VecShiftImm, VecShiftBytes,
+        IntToFpScalar, FpToIntScalar,
         kCount  // sentinel
     };
 

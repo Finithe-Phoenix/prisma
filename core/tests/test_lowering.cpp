@@ -1040,6 +1040,31 @@ TEST_CASE("Lowerer: PADDD xmm0, [rcx] full IR sequence lowers") {
     REQUIRE(ok);
 }
 
+TEST_CASE("Lowerer: F2-IR-016 cvtsi2sd round-trip through pipeline") {
+    std::vector<ir::Stmt> stmts = {
+        {0u,           ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u,           ir::IntToFpScalar{0u, ir::OpSize::I64, ir::FpSize::F64}},
+        {std::nullopt, ir::StoreVecReg{0u, 1u}},
+        {2u,           ir::LoadVecReg{0u}},
+        {3u,           ir::FpToIntScalar{2u, ir::FpSize::F64, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto pm = passes::default_pipeline();
+    auto [opt, _stats] = pm.run(stmts);
+    std::string dump;
+    for (auto const& s : opt) {
+        dump += ir::pretty_print(s);
+        dump += "\n";
+    }
+    INFO("post-pipeline:\n" << dump);
+    bool ok;
+    const std::string d = lower_to_disasm(opt, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("scvtf") != std::string::npos);
+    REQUIRE(d.find("fcvtzs") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: PADDD via default pipeline still lowers") {
     std::vector<ir::Stmt> stmts = {
         {0u,           ir::LoadVecReg{0u}},

@@ -284,6 +284,10 @@ public:
     void fmov_v_from_x(FpReg rd, arm64::Reg rn, ir::FpSize sz);
     void fmov_x_from_v(arm64::Reg rd, FpReg rn, ir::FpSize sz);
 
+    // F2-IR-016. scvtf / fcvtzs scalar conversions.
+    void scvtf(FpReg rd, arm64::Reg rn, ir::OpSize int_sz, ir::FpSize fp_sz);
+    void fcvtzs(arm64::Reg rd, FpReg rn, ir::FpSize fp_sz, ir::OpSize int_sz);
+
     // --- 128-bit NEON SIMD (F1-BK-012) ------------------------------------
     //
     // Same V0..V31 register file as scalar FP, viewed as 16 bytes (B16),

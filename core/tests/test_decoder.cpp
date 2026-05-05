@@ -2193,6 +2193,30 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode CVTSI2SS xmm0, eax (F3 0F 2A C0) — F2-IR-016 int→FP F32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x2A, 0xC0}, r);
+    auto cv = std::get<ir::IntToFpScalar>(d.stmts[1].op);
+    REQUIRE(cv.fp_size  == ir::FpSize::F32);
+    REQUIRE(cv.int_size == ir::OpSize::I32);
+}
+
+TEST_CASE("decode CVTSI2SD xmm0, rax (F2 48 0F 2A C0) — int64→FP F64 via REX.W") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x48, 0x0F, 0x2A, 0xC0}, r);
+    auto cv = std::get<ir::IntToFpScalar>(d.stmts[1].op);
+    REQUIRE(cv.fp_size  == ir::FpSize::F64);
+    REQUIRE(cv.int_size == ir::OpSize::I64);
+}
+
+TEST_CASE("decode CVTTSS2SI eax, xmm0 (F3 0F 2C C0) — FP→int truncate I32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x2C, 0xC0}, r);
+    auto cv = std::get<ir::FpToIntScalar>(d.stmts[1].op);
+    REQUIRE(cv.fp_size  == ir::FpSize::F32);
+    REQUIRE(cv.int_size == ir::OpSize::I32);
+}
+
 TEST_CASE("decode MOVD xmm0, eax (66 0F 6E C0) — XmmFromGpr.I32") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x6E, 0xC0}, r);

@@ -3121,6 +3121,57 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-016: scalar int ↔ FP conversions, register-direct only.
+        //   F3 0F 2A /r — CVTSI2SS xmm, r/m32   (REX.W → r/m64)
+        //   F2 0F 2A /r — CVTSI2SD
+        //   F3 0F 2C /r — CVTTSS2SI r32, xmm    (truncating; REX.W → r64)
+        //   F2 0F 2C /r — CVTTSD2SI
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) &&
+            (subop == 0x2Au || subop == 0x2Cu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::OpSize int_sz =
+                rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const ir::FpSize fp_sz =
+                has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            Decoded d;
+            if (subop == 0x2Au) {
+                // int → FP: read GPR (m.base), produce 128-bit, store xmm[m.reg].
+                const ir::Ref r_int = next_ref++;
+                const ir::Ref r_xmm = next_ref++;
+                d.stmts.push_back({r_int, ir::LoadReg{m.base, int_sz}});
+                d.stmts.push_back({r_xmm,
+                    ir::IntToFpScalar{r_int, int_sz, fp_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+            } else {
+                // FP → int (truncate). Encoding: /r reg is GPR DEST,
+                // rm is XMM SOURCE. m.reg gives the reg field index;
+                // we need to convert it to a GPR enum. m.base names
+                // the rm-as-GPR but here rm is actually an XMM index —
+                // ir::Gpr happens to be 0..15 in the same order as
+                // raw rm so we extract the underlying index.
+                const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+                const unsigned src_xmm = static_cast<unsigned>(m.base);
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_int = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_int,
+                    ir::FpToIntScalar{r_xmm, fp_sz, int_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{dst_gpr, r_int, int_sz}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-008: MOVD / MOVQ between xmm and r/m32-or-r/m64.
         //   66 0F 6E /r — MOVD xmm, r/m32   (REX.W → MOVQ xmm, r/m64)
         //   66 0F 7E /r — MOVD r/m32, xmm   (REX.W → MOVQ r/m64, xmm)

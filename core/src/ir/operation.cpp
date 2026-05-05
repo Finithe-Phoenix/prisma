@@ -160,6 +160,12 @@ bool operator==(const VecShiftImm& a, const VecShiftImm& b) noexcept {
 bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept {
     return a.is_left == b.is_left && a.src == b.src && a.count == b.count;
 }
+bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept {
+    return a.value == b.value && a.int_size == b.int_size && a.fp_size == b.fp_size;
+}
+bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept {
+    return a.value == b.value && a.fp_size == b.fp_size && a.int_size == b.int_size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

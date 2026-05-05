@@ -270,6 +270,14 @@ std::string pretty_print(const Op& op) {
             os << (x.is_left ? "vshlb " : "vshrb ");
             print_ref(os, x.src);
             os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, IntToFpScalar>) {
+            os << "scvtf." << ((x.fp_size == FpSize::F32) ? "f32" : "f64")
+               << ((x.int_size == OpSize::I32) ? ".i32 " : ".i64 ");
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, FpToIntScalar>) {
+            os << "fcvtzs." << ((x.int_size == OpSize::I32) ? "i32" : "i64")
+               << ((x.fp_size == FpSize::F32) ? ".f32 " : ".f64 ");
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecShiftImm>) {
             const char* op_n = "?";
             switch (x.kind) {

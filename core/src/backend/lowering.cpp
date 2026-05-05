@@ -222,6 +222,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecUnpack>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecShiftImm>)   { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) { bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -960,6 +962,36 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecShiftKind::ArithShr:
                     emitter_.vsshr_imm_q(rd, rn, op.count, lane); break;
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "IntToFpScalar without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "IntToFpScalar.value"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "IntToFpScalar"};
+            }
+            emitter_.scvtf(rd, rn, op.int_size, op.fp_size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "FpToIntScalar without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "FpToIntScalar.value"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpToIntScalar"};
+            }
+            emitter_.fcvtzs(rd, rn, op.fp_size, op.int_size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) {

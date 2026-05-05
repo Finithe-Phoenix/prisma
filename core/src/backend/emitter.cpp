@@ -457,6 +457,25 @@ void Emitter::fmov_x_from_v(arm64::Reg rd, FpReg rn, ir::FpSize sz) {
     }
 }
 
+void Emitter::scvtf(FpReg rd, arm64::Reg rn, ir::OpSize int_sz, ir::FpSize fp_sz) {
+    const vixl_aa::Register r =
+        int_sz == ir::OpSize::I32 ? vixl_aa::Register(to_vixl_w(rn))
+                                  : vixl_aa::Register(to_vixl_x(rn));
+    const vixl_aa::VRegister v =
+        fp_sz == ir::FpSize::F32 ? vixl_aa::VRegister(to_vixl_s(rd))
+                                 : vixl_aa::VRegister(to_vixl_d(rd));
+    impl_->masm.Scvtf(v, r);
+}
+void Emitter::fcvtzs(arm64::Reg rd, FpReg rn, ir::FpSize fp_sz, ir::OpSize int_sz) {
+    const vixl_aa::Register r =
+        int_sz == ir::OpSize::I32 ? vixl_aa::Register(to_vixl_w(rd))
+                                  : vixl_aa::Register(to_vixl_x(rd));
+    const vixl_aa::VRegister v =
+        fp_sz == ir::FpSize::F32 ? vixl_aa::VRegister(to_vixl_s(rn))
+                                 : vixl_aa::VRegister(to_vixl_d(rn));
+    impl_->masm.Fcvtzs(r, v);
+}
+
 void Emitter::fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz) {
     if (sz == ir::FpSize::F32) {
         float f;

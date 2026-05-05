@@ -271,6 +271,31 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: CVTSI2SD + CVTTSD2SI — F2-IR-016 round-trip int→f64→int") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // mov rax, 42; cvtsi2sd xmm0, rax; cvttsd2si rcx, xmm0; ret.
+    // Round-trip: rcx ends up = 42.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF2, 0x48, 0x0F, 0x2A, 0xC0,  // cvtsi2sd xmm0, rax
+        0xF2, 0x48, 0x0F, 0x2C, 0xC8,  // cvttsd2si rcx, xmm0
+        0xC3,                           // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state()[ir::Gpr::Rax] = 42u;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch message: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rcx] == 42u);
+}
+
 TEST_CASE("e2e: PSRLDQ xmm0, 8 — F2-IR-014 byte-shift right by 8") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // psrldq xmm0, 8: bytes shift right by 8 → upper half moves into
