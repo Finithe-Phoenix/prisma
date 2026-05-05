@@ -371,7 +371,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (0da8c7b) F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode. (Python harness in `tools/diff-qemu/`; soft-skips when qemu-x86_64 absent. Probe validates the environment; corpus mode is next.)
 - [x] (pending commit) F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
 - [x] (pending commit) F1-TC-005: Coverage instrumentation (llvm-cov).
-- [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
+- [x] (98867bd) F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`. (Local generation via `tools/coverage/gen.sh`; the `prisma-emu.dev` upload step is gated on F0-LG-003 + active CI runner.)
 - [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
 - [x] (pending commit) F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
 - [x] (pending commit) F1-TC-009: Lean proof check added as a blocking CI step.
