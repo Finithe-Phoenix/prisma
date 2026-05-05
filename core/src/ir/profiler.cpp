@@ -46,6 +46,8 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ReadFlag>)      return OpCounter::Kind::ReadFlag;
         else if constexpr (std::is_same_v<T, CondJumpFlags>) return OpCounter::Kind::CondJumpFlags;
         else if constexpr (std::is_same_v<T, RspAdjust>)     return OpCounter::Kind::RspAdjust;
+        else if constexpr (std::is_same_v<T, VecConstant>)   return OpCounter::Kind::VecConstant;
+        else if constexpr (std::is_same_v<T, VecBinOp>)      return OpCounter::Kind::VecBinOp;
     }, op);
 }
 

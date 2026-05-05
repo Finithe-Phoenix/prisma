@@ -968,6 +968,82 @@ TEST_CASE("Lowerer(Function): CondJumpFlags emits b.cc + b") {
 }
 
 // ---------------------------------------------------------------------
+// F2-IR-001/002/003 SIMD lowering
+// ---------------------------------------------------------------------
+
+TEST_CASE("Lowerer: VecConstant + VecBinOp(Add, B16) emits NEON add v.16b") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::VecConstant{0x0102030405060708ull, 0x0900000000000000ull}},
+        {1u, ir::VecConstant{0x0102030405060708ull, 0x0000000000000000ull}},
+        {2u, ir::VecBinOp{ir::VecBinOpKind::Add, 0u, 1u, ir::VecLane::B16}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("16b") != std::string::npos);
+    REQUIRE(d.find("add") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: VecBinOp lanes (H8/S4/D2) emit the right arrangement") {
+    {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::VecConstant{0u, 0u}},
+            {1u, ir::VecConstant{0u, 0u}},
+            {2u, ir::VecBinOp{ir::VecBinOpKind::Sub, 0u, 1u, ir::VecLane::H8}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find("8h") != std::string::npos);
+    }
+    {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::VecConstant{0u, 0u}},
+            {1u, ir::VecConstant{0u, 0u}},
+            {2u, ir::VecBinOp{ir::VecBinOpKind::Add, 0u, 1u, ir::VecLane::S4}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find("4s") != std::string::npos);
+    }
+    {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::VecConstant{0u, 0u}},
+            {1u, ir::VecConstant{0u, 0u}},
+            {2u, ir::VecBinOp{ir::VecBinOpKind::Add, 0u, 1u, ir::VecLane::D2}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find("2d") != std::string::npos);
+    }
+}
+
+TEST_CASE("Lowerer: bitwise VecBinOp(And/Or/Xor) emits 16b NEON forms") {
+    for (auto op : {ir::VecBinOpKind::And, ir::VecBinOpKind::Or,
+                    ir::VecBinOpKind::Xor}) {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::VecConstant{0xFFFFFFFFFFFFFFFFull, 0x0u}},
+            {1u, ir::VecConstant{0u, 0u}},
+            {2u, ir::VecBinOp{op, 0u, 1u, ir::VecLane::B16}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        // vixl prints the bitwise vector ops as `and`, `orr`, `eor` — same
+        // mnemonics as the integer scalar forms, but disambiguated by the
+        // `.16b` suffix on the operand.
+        REQUIRE(d.find("16b") != std::string::npos);
+    }
+}
+
+// ---------------------------------------------------------------------
 // F1-BK-013 floating-point lowering
 // ---------------------------------------------------------------------
 

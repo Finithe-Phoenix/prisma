@@ -323,6 +323,41 @@ struct CondJumpFlags {
     std::uint32_t if_false;
 };
 
+// ---- 128-bit SIMD (F2-IR-001 / F2-IR-002 / F2-IR-003) ----------------
+//
+// SSE2-class integer + bitwise SIMD on 128-bit vectors. The lane
+// width (`VecLane`) decides how the bytes are interpreted by the
+// op:
+//
+//   VecLane::B16  — 16 × i8
+//   VecLane::H8   —  8 × i16
+//   VecLane::S4   —  4 × i32
+//   VecLane::D2   —  2 × i64
+//
+// The lowerer maps these directly to the `vadd_q / vsub_q / vand_q
+// / vorr_q / veor_q` emitter helpers landed in F1-BK-012, on V0..V7
+// from the FP scratch pool.
+
+enum class VecLane : std::uint8_t { B16 = 0, H8, S4, D2 };
+
+enum class VecBinOpKind : std::uint8_t {
+    Add = 0, Sub,
+    And, Or, Xor,
+};
+
+struct VecConstant {
+    // 128-bit immediate, as two little-endian u64 lanes.
+    std::uint64_t lo;
+    std::uint64_t hi;
+};
+
+struct VecBinOp {
+    VecBinOpKind op;
+    Ref          lhs;
+    Ref          rhs;
+    VecLane      lane;   // ignored for And/Or/Xor — they're bitwise.
+};
+
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
 // `RspAdjust{delta_bytes}` adds `delta_bytes` (signed, two's-complement
@@ -397,7 +432,8 @@ using Op = std::variant<
     GuestPc, InlineAsm,
     FpConstant, FpBinOp,
     WriteFlags, ReadFlag, CondJumpFlags,
-    RspAdjust
+    RspAdjust,
+    VecConstant, VecBinOp
 >;
 
 // ---------------------------------------------------------------------------
@@ -483,6 +519,8 @@ bool operator==(const WriteFlags& a, const WriteFlags& b) noexcept;
 bool operator==(const ReadFlag&   a, const ReadFlag&   b) noexcept;
 bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
 bool operator==(const RspAdjust&     a, const RspAdjust&     b) noexcept;
+bool operator==(const VecConstant&   a, const VecConstant&   b) noexcept;
+bool operator==(const VecBinOp&      a, const VecBinOp&      b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

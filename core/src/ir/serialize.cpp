@@ -69,11 +69,13 @@ enum class OpKind : std::uint8_t {
     kReadFlag    = 33,
     kCondJumpFlags = 34,
     kRspAdjust   = 35,
+    kVecConstant = 36,
+    kVecBinOp    = 37,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kRspAdjust);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecBinOp);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -164,6 +166,12 @@ struct Cursor {
 [[nodiscard]] bool is_valid_fence(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(FenceKind::Sfence);
 }
+[[nodiscard]] bool is_valid_veclane(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(VecLane::D2);
+}
+[[nodiscard]] bool is_valid_vecbinop(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(VecBinOpKind::Xor);
+}
 [[nodiscard]] bool is_valid_fpsize(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(FpSize::F64);
 }
@@ -214,6 +222,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, ReadFlag>)      return OpKind::kReadFlag;
         else if constexpr (std::is_same_v<T, CondJumpFlags>) return OpKind::kCondJumpFlags;
         else if constexpr (std::is_same_v<T, RspAdjust>)     return OpKind::kRspAdjust;
+        else if constexpr (std::is_same_v<T, VecConstant>)   return OpKind::kVecConstant;
+        else if constexpr (std::is_same_v<T, VecBinOp>)      return OpKind::kVecBinOp;
     }, op);
 }
 
@@ -366,6 +376,16 @@ void write_payload(std::vector<std::uint8_t>& out, const CondJumpFlags& x) {
 }
 void write_payload(std::vector<std::uint8_t>& out, const RspAdjust& x) {
     put_u64(out, static_cast<std::uint64_t>(x.delta_bytes));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecConstant& x) {
+    put_u64(out, x.lo);
+    put_u64(out, x.hi);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecBinOp& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.op));
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.lane));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -699,6 +719,27 @@ DeserializeError read_payload_rsp_adjust(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_constant(Cursor& c, Stmt& s) {
+    if (!c.remaining(16)) return DeserializeError::Truncated;
+    const std::uint64_t lo = c.take_u64();
+    const std::uint64_t hi = c.take_u64();
+    s.op = VecConstant{lo, hi};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_vec_binop(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  op   = c.take_u8();
+    const std::uint32_t lhs  = c.take_u32();
+    const std::uint32_t rhs  = c.take_u32();
+    const std::uint8_t  lane = c.take_u8();
+    if (!is_valid_vecbinop(op)) return DeserializeError::BadSize;
+    if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
+    s.op = VecBinOp{static_cast<VecBinOpKind>(op), lhs, rhs,
+                    static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -751,6 +792,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kReadFlag:    return read_payload_read_flag(c, s);
         case OpKind::kCondJumpFlags: return read_payload_cond_jump_flags(c, s);
         case OpKind::kRspAdjust:   return read_payload_rsp_adjust(c, s);
+        case OpKind::kVecConstant: return read_payload_vec_constant(c, s);
+        case OpKind::kVecBinOp:    return read_payload_vec_binop(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

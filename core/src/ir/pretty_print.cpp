@@ -205,6 +205,26 @@ std::string pretty_print(const Op& op) {
                << ", bb" << std::dec << x.if_false;
         } else if constexpr (std::is_same_v<T, RspAdjust>) {
             os << "rsp_adjust " << std::dec << x.delta_bytes;
+        } else if constexpr (std::is_same_v<T, VecConstant>) {
+            os << "vconst.128 0x" << std::hex << x.hi << ":0x" << std::hex << x.lo;
+        } else if constexpr (std::is_same_v<T, VecBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case VecBinOpKind::Add: op_n = "vadd"; break;
+                case VecBinOpKind::Sub: op_n = "vsub"; break;
+                case VecBinOpKind::And: op_n = "vand"; break;
+                case VecBinOpKind::Or:  op_n = "vorr"; break;
+                case VecBinOpKind::Xor: op_n = "veor"; break;
+            }
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << op_n << "." << lane_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         }
     }, op);
     return os.str();

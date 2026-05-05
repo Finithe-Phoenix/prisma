@@ -152,6 +152,16 @@ TEST_CASE("ir_serialize: GuestPc round-trip", "[ir_serialize]") {
         Op{GuestPc{0u}}});                         // edge: zero
 }
 
+TEST_CASE("ir_serialize: VecConstant + VecBinOp round-trip",
+          "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{1u},
+        Op{VecConstant{0x0102'0304'0506'0708ULL, 0x090A'0B0C'0D0E'0F10ULL}}});
+    check_single_stmt_roundtrip(Stmt{Ref{2u},
+        Op{VecBinOp{VecBinOpKind::Add, Ref{0u}, Ref{1u}, VecLane::B16}}});
+    check_single_stmt_roundtrip(Stmt{Ref{3u},
+        Op{VecBinOp{VecBinOpKind::Xor, Ref{0u}, Ref{0u}, VecLane::D2}}});
+}
+
 TEST_CASE("ir_serialize: RspAdjust round-trip preserves signed delta",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{-8}}});

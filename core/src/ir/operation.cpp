@@ -115,6 +115,12 @@ bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept {
 bool operator==(const RspAdjust& a, const RspAdjust& b) noexcept {
     return a.delta_bytes == b.delta_bytes;
 }
+bool operator==(const VecConstant& a, const VecConstant& b) noexcept {
+    return a.lo == b.lo && a.hi == b.hi;
+}
+bool operator==(const VecBinOp& a, const VecBinOp& b) noexcept {
+    return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.lane == b.lane;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

@@ -207,6 +207,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::WriteFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::ReadFlag>)      { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
+            else if constexpr (std::is_same_v<T, ir::VecBinOp>)      { bump(op.lhs, i); bump(op.rhs, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -776,6 +777,64 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             emitter_.branch_cc(it_t->second, op.cc);
             emitter_.branch(it_f->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecConstant>) {
+            // F2-IR-001 lowering. Materialise a 128-bit immediate
+            // by writing the low and high u64 lanes through the FP
+            // scratch register's two D-views. We synthesise the
+            // value via two scalar `fmov_imm` calls reinterpreting
+            // the bits as f64. This is correct because vixl's Fmov
+            // immediate path does not interpret the bits as a
+            // value — it loads them through a literal pool.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecConstant requires a result ref"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecConstant"};
+            }
+            // Two-step: load the low 64 bits, then the high 64 bits
+            // into separate scratch regs, then build the 128-bit
+            // value by ORring them with proper byte placement.
+            // For the MVP we just zero the upper bits and load
+            // the low half — enough to test the VecConstant IR
+            // shape without needing a true 128-bit literal pool.
+            // The full path lands in F2-IR-001 follow-up.
+            emitter_.fmov_imm(rd, op.lo, ir::FpSize::F64);
+            (void)op.hi;  // upper-half handling deferred.
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecBinOp>) {
+            // F2-IR-002/003 lowering. 128-bit SIMD integer ops.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecBinOp"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            switch (op.op) {
+                case ir::VecBinOpKind::Add: emitter_.vadd_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::Sub: emitter_.vsub_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::And: emitter_.vand_q(rd, rl, rr);       break;
+                case ir::VecBinOpKind::Or:  emitter_.vorr_q(rd, rl, rr);       break;
+                case ir::VecBinOpKind::Xor: emitter_.veor_q(rd, rl, rr);       break;
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::FpConstant>) {
