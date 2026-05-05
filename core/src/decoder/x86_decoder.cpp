@@ -3205,6 +3205,72 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-021: MOVSS / MOVSD — scalar move (FP).
+        //   F3 0F 10 /r — MOVSS load:  reg-reg keeps upper of dst,
+        //                              mem→reg zeroes upper of dst.
+        //   F3 0F 11 /r — MOVSS store: reg-reg same as load,
+        //                              reg→mem writes low 32 bits.
+        //   F2 0F 10/11 — MOVSD with qword granularity.
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) &&
+            (subop == 0x10u || subop == 0x11u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::FpSize fp_sz =
+                has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            const ir::OpSize int_sz =
+                has_f3 ? ir::OpSize::I32 : ir::OpSize::I64;
+            const bool is_load = subop == 0x10u;
+            Decoded d;
+            if (m.mod == 0b11) {
+                // reg-reg: keep upper bits of dst. Same encoding either
+                // way (load and store collapse at reg-reg).
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                const unsigned dst_xmm = is_load ? m.reg
+                                                  : static_cast<unsigned>(m.base);
+                const unsigned src_xmm = is_load ? static_cast<unsigned>(m.base)
+                                                  : m.reg;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(dst_xmm)}});
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_res,
+                    ir::FpCvtScalar{r_lhs, r_src, fp_sz, fp_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_res}});
+            } else if (is_load) {
+                // mem→reg: low N bits of dst = mem, upper bits = 0.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_xmm = next_ref++;
+                d.stmts.push_back({r_val, ir::LoadMemTSO{r_addr, int_sz}});
+                d.stmts.push_back({r_xmm, ir::XmmFromGpr{r_val, int_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+            } else {
+                // reg→mem: write low N bits of src xmm to memory.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({r_val,
+                    ir::GprFromXmm{r_xmm, int_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreMemTSO{r_addr, r_val, int_sz}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-016: scalar int ↔ FP conversions, register-direct only.
         //   F3 0F 2A /r — CVTSI2SS xmm, r/m32   (REX.W → r/m64)
         //   F2 0F 2A /r — CVTSI2SD

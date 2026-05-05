@@ -271,6 +271,34 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: MOVSS reg-reg preserves upper xmm bits") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0x0F, 0x10, 0xC1,  // movss xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    constexpr std::uint64_t kSentinelLoHi32 = 0xCAFEBABE'00000000ULL;
+    constexpr std::uint64_t kSentinelHi     = 0xDEADBEEFFEEDFACEULL;
+    disp.state().xmm[0].lo = 0x1111'2222ULL | kSentinelLoHi32;
+    disp.state().xmm[0].hi = kSentinelHi;
+    disp.state().xmm[1].lo = 0xAAAA'BBBBULL;
+    disp.state().xmm[1].hi = 0xFFFFFFFFFFFFFFFFULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Low 32 bits = xmm1 low; upper 96 bits = xmm0 sentinel.
+    REQUIRE(disp.state().xmm[0].lo == (0xAAAABBBBULL | kSentinelLoHi32));
+    REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
+}
+
 TEST_CASE("e2e: SHUFPS xmm0, xmm1, 0x4E — F2-IR-020 two-source FP shuffle") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // shufps xmm0, xmm1, 0x4E: control = 01_00_11_10

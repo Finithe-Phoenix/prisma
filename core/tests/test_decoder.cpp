@@ -2193,6 +2193,37 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode MOVSS xmm0, xmm1 (F3 0F 10 C1) — F2-IR-021 reg-reg upper-preserve") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x10, 0xC1}, r);
+    auto cv = std::get<ir::FpCvtScalar>(d.stmts[2].op);
+    REQUIRE(cv.src_size == ir::FpSize::F32);
+    REQUIRE(cv.dst_size == ir::FpSize::F32);
+}
+
+TEST_CASE("decode MOVSD xmm0, [rcx] (F2 0F 10 01) — mem load zeros upper") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x0F, 0x10, 0x01}, r);
+    bool saw_xmm_from_gpr = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::XmmFromGpr>(st.op)) saw_xmm_from_gpr = true;
+    }
+    REQUIRE(saw_xmm_from_gpr);
+}
+
+TEST_CASE("decode MOVSS [rcx], xmm0 (F3 0F 11 01) — store low 32 bits") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x11, 0x01}, r);
+    bool saw_gpr_from_xmm = false;
+    bool saw_storemem = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::GprFromXmm>(st.op)) saw_gpr_from_xmm = true;
+        if (std::holds_alternative<ir::StoreMemTSO>(st.op)) saw_storemem = true;
+    }
+    REQUIRE(saw_gpr_from_xmm);
+    REQUIRE(saw_storemem);
+}
+
 TEST_CASE("decode SHUFPS xmm0, xmm1, 0xE4 (0F C6 C1 E4) — F2-IR-020 FP shuffle") {
     ir::Ref r = 0;
     auto d = decode_ok({0x0F, 0xC6, 0xC1, 0xE4}, r);
