@@ -47,7 +47,7 @@ public:
         LoadVec, StoreVec,
         XmmFromGpr, GprFromXmm,
         VecCmp, VecShuffle32x4,
-        VecUnpack, VecShiftImm,
+        VecUnpack, VecShiftImm, VecShiftBytes,
         kCount  // sentinel
     };
 

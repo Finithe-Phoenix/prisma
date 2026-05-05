@@ -83,11 +83,12 @@ enum class OpKind : std::uint8_t {
     kVecShuffle32x4 = 47,
     kVecUnpack     = 48,
     kVecShiftImm   = 49,
+    kVecShiftBytes = 50,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecShiftImm);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecShiftBytes);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -254,6 +255,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecShuffle32x4>) return OpKind::kVecShuffle32x4;
         else if constexpr (std::is_same_v<T, VecUnpack>)     return OpKind::kVecUnpack;
         else if constexpr (std::is_same_v<T, VecShiftImm>)   return OpKind::kVecShiftImm;
+        else if constexpr (std::is_same_v<T, VecShiftBytes>) return OpKind::kVecShiftBytes;
     }, op);
 }
 
@@ -472,6 +474,11 @@ void write_payload(std::vector<std::uint8_t>& out, const VecShiftImm& x) {
     put_u32(out, x.src);
     put_u8(out, x.count);
     put_u8(out, static_cast<std::uint8_t>(x.lane));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecShiftBytes& x) {
+    put_u8(out, x.is_left ? 1u : 0u);
+    put_u32(out, x.src);
+    put_u8(out, x.count);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -856,6 +863,16 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_shift_bytes(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  is_left = c.take_u8();
+    const std::uint32_t src     = c.take_u32();
+    const std::uint8_t  count   = c.take_u8();
+    if (is_left > 1) return DeserializeError::BadSize;
+    s.op = VecShiftBytes{is_left == 1, src, count};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_unpack(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  is_high = c.take_u8();
@@ -1010,6 +1027,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecShuffle32x4: return read_payload_vec_shuffle32x4(c, s);
         case OpKind::kVecUnpack:   return read_payload_vec_unpack(c, s);
         case OpKind::kVecShiftImm: return read_payload_vec_shift_imm(c, s);
+        case OpKind::kVecShiftBytes: return read_payload_vec_shift_bytes(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

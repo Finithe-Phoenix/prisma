@@ -434,6 +434,15 @@ struct VecShiftImm {
     VecLane      lane;
 };
 
+// F2-IR-014 — whole-register byte shift (PSLLDQ / PSRLDQ).
+// Shifts the entire 128-bit value left or right by `count` bytes.
+// `count` >= 16 yields zero.
+struct VecShiftBytes {
+    bool         is_left;
+    Ref          src;
+    std::uint8_t count;
+};
+
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
@@ -542,7 +551,8 @@ using Op = std::variant<
     VecFpBinOp, VecFpScalarBinOp,
     XmmFromGpr, GprFromXmm,
     VecCmp, VecShuffle32x4,
-    VecUnpack, VecShiftImm
+    VecUnpack, VecShiftImm,
+    VecShiftBytes
 >;
 
 // ---------------------------------------------------------------------------
@@ -642,6 +652,7 @@ bool operator==(const VecCmp&        a, const VecCmp&        b) noexcept;
 bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept;
 bool operator==(const VecUnpack&     a, const VecUnpack&     b) noexcept;
 bool operator==(const VecShiftImm&   a, const VecShiftImm&   b) noexcept;
+bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

@@ -157,6 +157,9 @@ bool operator==(const VecUnpack& a, const VecUnpack& b) noexcept {
 bool operator==(const VecShiftImm& a, const VecShiftImm& b) noexcept {
     return a.kind == b.kind && a.src == b.src && a.count == b.count && a.lane == b.lane;
 }
+bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept {
+    return a.is_left == b.is_left && a.src == b.src && a.count == b.count;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

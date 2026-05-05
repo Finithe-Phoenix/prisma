@@ -60,6 +60,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, VecShuffle32x4>) return OpCounter::Kind::VecShuffle32x4;
         else if constexpr (std::is_same_v<T, VecUnpack>)     return OpCounter::Kind::VecUnpack;
         else if constexpr (std::is_same_v<T, VecShiftImm>)   return OpCounter::Kind::VecShiftImm;
+        else if constexpr (std::is_same_v<T, VecShiftBytes>) return OpCounter::Kind::VecShiftBytes;
     }, op);
 }
 

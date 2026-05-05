@@ -2119,6 +2119,22 @@ TEST_CASE("decode PUNPCKHQDQ xmm0, xmm1 (66 0F 6D C1) — VecUnpack high D2") {
     REQUIRE(vu.lane    == ir::VecLane::D2);
 }
 
+TEST_CASE("decode PSLLDQ xmm0, 4 (66 0F 73 F8 04) — VecShiftBytes left") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x73, 0xF8, 0x04}, r);
+    auto vsb = std::get<ir::VecShiftBytes>(d.stmts[1].op);
+    REQUIRE(vsb.is_left == true);
+    REQUIRE(vsb.count   == 4u);
+}
+
+TEST_CASE("decode PSRLDQ xmm0, 8 (66 0F 73 D8 08) — VecShiftBytes right") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x73, 0xD8, 0x08}, r);
+    auto vsb = std::get<ir::VecShiftBytes>(d.stmts[1].op);
+    REQUIRE(vsb.is_left == false);
+    REQUIRE(vsb.count   == 8u);
+}
+
 TEST_CASE("decode PSLLD xmm0, 4 (66 0F 72 F0 04) — VecShiftImm.ShiftL S4") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x72, 0xF0, 0x04}, r);

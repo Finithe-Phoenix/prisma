@@ -343,6 +343,11 @@ public:
     void vushr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
     void vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
 
+    // F2-IR-014. Whole-register byte shift (PSLLDQ / PSRLDQ).
+    // count >= 16 → result is zero.
+    void vshlb_imm_q(FpReg rd, FpReg rn, std::uint8_t count);
+    void vshrb_imm_q(FpReg rd, FpReg rn, std::uint8_t count);
+
     // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
     // already holding the effective address.
     void vld1_q(FpReg rd, arm64::Reg base);

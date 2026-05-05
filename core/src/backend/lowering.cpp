@@ -221,6 +221,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecUnpack>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecShiftImm>)   { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) { bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -959,6 +960,23 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecShiftKind::ArithShr:
                     emitter_.vsshr_imm_q(rd, rn, op.count, lane); break;
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) {
+            // F2-IR-014. PSLLDQ / PSRLDQ — whole-register byte shift.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShiftBytes without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) {
+                return {false, LowerError::DanglingRef, "VecShiftBytes.src"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShiftBytes"};
+            }
+            if (op.is_left) emitter_.vshlb_imm_q(rd, rn, op.count);
+            else            emitter_.vshrb_imm_q(rd, rn, op.count);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) {

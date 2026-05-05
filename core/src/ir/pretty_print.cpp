@@ -266,6 +266,10 @@ std::string pretty_print(const Op& op) {
             }
             os << op_n << "." << lane_n << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecShiftBytes>) {
+            os << (x.is_left ? "vshlb " : "vshrb ");
+            print_ref(os, x.src);
+            os << ", #" << static_cast<unsigned>(x.count);
         } else if constexpr (std::is_same_v<T, VecShiftImm>) {
             const char* op_n = "?";
             switch (x.kind) {

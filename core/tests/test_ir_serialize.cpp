@@ -182,6 +182,11 @@ TEST_CASE("ir_serialize: LoadVec + StoreVec round-trip", "[ir_serialize]") {
         Op{StoreVec{Ref{0u}, Ref{8u}}}});
 }
 
+TEST_CASE("ir_serialize: VecShiftBytes round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{21u}, Op{VecShiftBytes{true,  Ref{0u}, 4u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{22u}, Op{VecShiftBytes{false, Ref{0u}, 8u}}});
+}
+
 TEST_CASE("ir_serialize: VecUnpack + VecShiftImm round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{17u},
         Op{VecUnpack{false, Ref{0u}, Ref{1u}, VecLane::B16}}});

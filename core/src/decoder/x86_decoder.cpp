@@ -2944,6 +2944,27 @@ std::variant<Decoded, DecodeError> decode_one(
             const unsigned reg_op = (modrm_b >> 3) & 0x7u;  // /digit
             const unsigned rm     = (modrm_b & 0x7u) | (rex.b ? 0x8u : 0x0u);
             if (mod != 0b11) return DecodeError::UnsupportedEncoding;
+            // PSLLDQ /7 ib + PSRLDQ /3 ib only valid for subop == 0x73 —
+            // they shift the entire register by `count` BYTES.
+            if (subop == 0x73u && (reg_op == 7 || reg_op == 3)) {
+                auto imm_b = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm_b)) {
+                    return std::get<DecodeError>(imm_b);
+                }
+                const std::uint8_t cb =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm_b));
+                Decoded d2;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d2.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+                d2.stmts.push_back({r_res,
+                    ir::VecShiftBytes{reg_op == 7, r_src, cb}});
+                d2.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(rm), r_res}});
+                d2.bytes_consumed = cursor;
+                return d2;
+            }
             ir::VecShiftKind kind;
             switch (reg_op) {
                 case 6: kind = ir::VecShiftKind::ShiftL;     break;

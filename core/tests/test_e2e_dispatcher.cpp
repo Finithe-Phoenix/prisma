@@ -271,6 +271,32 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PSRLDQ xmm0, 8 — F2-IR-014 byte-shift right by 8") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // psrldq xmm0, 8: bytes shift right by 8 → upper half moves into
+    // lower half, upper half becomes zero.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x73, 0xD8, 0x08,  // psrldq xmm0, 8
+        0xC3,                            // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[0].lo = 0x1122334455667788ull;
+    disp.state().xmm[0].hi = 0xAABBCCDDEEFF0011ull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == 0xAABBCCDDEEFF0011ull);
+    REQUIRE(disp.state().xmm[0].hi == 0x0ull);
+}
+
 TEST_CASE("e2e: PMULLW xmm0, xmm1 — F2-IR-013 lane-wise i16 multiply") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // pmullw xmm0, xmm1: lane-wise low-16 of (xmm0[i] * xmm1[i]).

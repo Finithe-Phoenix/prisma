@@ -80,6 +80,7 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, VecShuffle32x4>) { visit(x.src); }
         else if constexpr (std::is_same_v<T, VecUnpack>)     { visit(x.lhs); visit(x.rhs); }
         else if constexpr (std::is_same_v<T, VecShiftImm>)   { visit(x.src); }
+        else if constexpr (std::is_same_v<T, VecShiftBytes>) { visit(x.src); }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg —
@@ -117,7 +118,8 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecCmp>
             || std::is_same_v<T, VecShuffle32x4>
             || std::is_same_v<T, VecUnpack>
-            || std::is_same_v<T, VecShiftImm>;
+            || std::is_same_v<T, VecShiftImm>
+            || std::is_same_v<T, VecShiftBytes>;
     }, op);
 }
 

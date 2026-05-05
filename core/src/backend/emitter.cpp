@@ -686,6 +686,37 @@ void Emitter::vushr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) 
     impl_->masm.Ushr(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
                      static_cast<int>(count));
 }
+void Emitter::vshlb_imm_q(FpReg rd, FpReg rn, std::uint8_t count) {
+    if (count >= 16) {
+        impl_->masm.Movi(to_vixl_q_bitwise(rd), 0);
+        return;
+    }
+    if (count == 0) {
+        impl_->masm.Mov(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn));
+        return;
+    }
+    // Build a zero scratch in V31 (movi clears it). Then ext with
+    // (16 - count) selects bytes from { zero, src }.
+    const vixl_aa::VRegister v_t(kInternalFpScratchV, vixl_aa::kFormat16B);
+    impl_->masm.Movi(v_t, 0);
+    impl_->masm.Ext(to_vixl_q_bitwise(rd), v_t, to_vixl_q_bitwise(rn),
+                    static_cast<int>(16 - count));
+}
+void Emitter::vshrb_imm_q(FpReg rd, FpReg rn, std::uint8_t count) {
+    if (count >= 16) {
+        impl_->masm.Movi(to_vixl_q_bitwise(rd), 0);
+        return;
+    }
+    if (count == 0) {
+        impl_->masm.Mov(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn));
+        return;
+    }
+    const vixl_aa::VRegister v_t(kInternalFpScratchV, vixl_aa::kFormat16B);
+    impl_->masm.Movi(v_t, 0);
+    impl_->masm.Ext(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rn), v_t,
+                    static_cast<int>(count));
+}
+
 void Emitter::vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) {
     const unsigned bits = lane_bits(lane);
     // PSRA semantics: count >= lane bits → result lane = sign-fill, i.e.
