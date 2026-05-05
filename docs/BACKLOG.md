@@ -368,7 +368,7 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [x] F1-TC-001: Catch2 test executable builds and runs.
 - [x] F1-TC-002: Integration test: translate + cache + execute + re-execute (hit).
-- [ ] F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode.
+- [x] (0da8c7b) F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode. (Python harness in `tools/diff-qemu/`; soft-skips when qemu-x86_64 absent. Probe validates the environment; corpus mode is next.)
 - [x] (pending commit) F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
 - [x] (pending commit) F1-TC-005: Coverage instrumentation (llvm-cov).
 - [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
