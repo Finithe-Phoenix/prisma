@@ -2880,6 +2880,40 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-004: SSE2 MOVDQA / MOVDQU register-to-register.
+        //   66 0F 6F /r — MOVDQA xmm1, xmm2/m128   (load: dst=reg, src=rm)
+        //   66 0F 7F /r — MOVDQA xmm2/m128, xmm1   (store: dst=rm,  src=reg)
+        //   F3 0F 6F /r — MOVDQU xmm1, xmm2/m128   (unaligned variant)
+        //   F3 0F 7F /r — MOVDQU xmm2/m128, xmm1
+        // For register-direct (mod==11) the alignment distinction
+        // collapses, so both 66- and F3-prefixed forms decode the same.
+        // Memory forms deferred (UnsupportedEncoding).
+        if ((has_operand_size_override || has_f3) && !has_lock && !has_f2 &&
+            !(has_operand_size_override && has_f3) &&
+            (subop == 0x6Fu || subop == 0x7Fu)) {
+            auto mr = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(mr)) {
+                return std::get<DecodeError>(mr);
+            }
+            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
+            const unsigned mod = (modrm >> 6) & 0x3u;
+            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
+            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
+            if (mod != 0b11) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            const unsigned src_xmm = (subop == 0x6Fu) ? rm  : reg;
+            const unsigned dst_xmm = (subop == 0x6Fu) ? reg : rm;
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_src}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // We currently consume LOCK/HLE only for the exchange-family atomics
         // added in this slice. Everywhere else they remain unsupported.
         if ((has_lock || has_f2) &&

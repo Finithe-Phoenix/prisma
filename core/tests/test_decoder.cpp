@@ -1980,6 +1980,40 @@ TEST_CASE("decode PADDB with REX.R/B selects xmm8/xmm15 correctly") {
     REQUIRE(std::get<ir::LoadVecReg>(d.stmts[1].op).xmm_index == 9u);
 }
 
+TEST_CASE("decode MOVDQA xmm1, xmm0 (66 0F 6F C8) — load form: dst=reg=xmm1, src=rm=xmm0") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x6F, 0xC8}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[0].op).xmm_index == 0u);
+    REQUIRE(std::get<ir::StoreVecReg>(d.stmts[1].op).xmm_index == 1u);
+}
+
+TEST_CASE("decode MOVDQA xmm0, xmm1 (66 0F 7F C8) — store form: dst=rm=xmm1, src=reg=xmm0") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x7F, 0xC8}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[0].op).xmm_index == 1u);
+    REQUIRE(std::get<ir::StoreVecReg>(d.stmts[1].op).xmm_index == 0u);
+}
+
+TEST_CASE("decode MOVDQU xmm1, xmm0 (F3 0F 6F C8) — unaligned variant decodes the same reg-direct") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x6F, 0xC8}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[0].op).xmm_index == 0u);
+    REQUIRE(std::get<ir::StoreVecReg>(d.stmts[1].op).xmm_index == 1u);
+}
+
+TEST_CASE("decode MOVDQA with memory operand (mod != 11) is UnsupportedEncoding") {
+    ir::Ref r = 0;
+    auto res = decode_any({0x66, 0x0F, 0x6F, 0x01}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
 TEST_CASE("decode PADDB with memory operand (mod != 11) is UnsupportedEncoding") {
     ir::Ref r = 0;
     // 66 0F FC 01 — paddb xmm0, [rcx]. mod=00, rm=001. We don't
