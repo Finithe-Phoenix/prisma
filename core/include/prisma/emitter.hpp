@@ -305,6 +305,15 @@ public:
     void vfmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
 
+    // F2-IR-006 — scalar SSE FP semantics: result.low = op(rn.low, rm.low),
+    // result.upper = rn.upper (untouched). `sz` selects S (32-bit) or D
+    // (64-bit) lane. Internally uses V31 as a fixed scratch — it must
+    // not appear in the SSA scratch pool (V0..V7).
+    void vfadd_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfsub_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfmul_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+
     // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
     // already holding the effective address.
     void vld1_q(FpReg rd, arm64::Reg base);

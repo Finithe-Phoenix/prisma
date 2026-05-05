@@ -531,6 +531,83 @@ void Emitter::vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
                      to_vixl_q_fp(rm, lane));
 }
 
+// F2-IR-006 — internal scratch V31, never used by the SSA scratch pool
+// (which only allocates V0..V7). Common impl for the four scalar SSE ops:
+//   1. mov  v31.16b, vn.16b               ; copy lhs into scratch (preserves upper)
+//   2. f<op> s31/d31, sn/dn, sm/dm        ; scalar op writes low lane only
+//                                          (zero-extends via INS in step 3)
+//   3. ins  v31.s/d[0], v_tmp.s/d[0]      ; not needed — step 2 wrote v31[0] directly
+//   4. mov  vd.16b, v31.16b               ; final result into rd
+//
+// vixl will fold (1)+(4) when rd == rn, but we keep the sequence simple
+// and let the assembler optimise. Using V31 as a stable scratch means
+// the SSA register allocator (which only uses V0..V7) never aliases it.
+namespace {
+constexpr int kInternalFpScratchV = 31;
+
+void emit_scalar_sse_op(vixl_aa::MacroAssembler& masm,
+                        int rd_c, int rn_c, int rm_c,
+                        ir::FpSize sz,
+                        char which) {
+    // Sequence (preserves upper bits of lhs):
+    //   1. f<op> s31/d31, sn/dn, sm/dm   — scalar result into V31's
+    //      low lane; ARMv8 zero-extends the upper 96/64 bits, but we
+    //      only care about V31's low lane.
+    //   2. mov   v_rd.16b, v_rn.16b      — full 128-bit copy of lhs.
+    //      vixl folds this away when rd == rn.
+    //   3. mov   v_rd.s[0], v31.s[0]     — INS lane 0 from V31; upper
+    //      lanes of v_rd are unchanged.
+    const vixl_aa::VRegister v_n_q (rn_c, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d_q (rd_c, vixl_aa::kFormat16B);
+    if (sz == ir::FpSize::F32) {
+        const vixl_aa::SRegister s_t(kInternalFpScratchV);
+        const vixl_aa::SRegister s_n(rn_c);
+        const vixl_aa::SRegister s_m(rm_c);
+        switch (which) {
+            case '+': masm.Fadd(s_t, s_n, s_m); break;
+            case '-': masm.Fsub(s_t, s_n, s_m); break;
+            case '*': masm.Fmul(s_t, s_n, s_m); break;
+            case '/': masm.Fdiv(s_t, s_n, s_m); break;
+        }
+        masm.Mov(v_d_q, v_n_q);
+        const vixl_aa::VRegister v_d_s4(rd_c,                vixl_aa::kFormat4S);
+        const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);
+        masm.Mov(v_d_s4, 0, v_t_s4, 0);
+    } else {
+        const vixl_aa::DRegister d_t(kInternalFpScratchV);
+        const vixl_aa::DRegister d_n(rn_c);
+        const vixl_aa::DRegister d_m(rm_c);
+        switch (which) {
+            case '+': masm.Fadd(d_t, d_n, d_m); break;
+            case '-': masm.Fsub(d_t, d_n, d_m); break;
+            case '*': masm.Fmul(d_t, d_n, d_m); break;
+            case '/': masm.Fdiv(d_t, d_n, d_m); break;
+        }
+        masm.Mov(v_d_q, v_n_q);
+        const vixl_aa::VRegister v_d_d2(rd_c,                vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_t_d2(kInternalFpScratchV, vixl_aa::kFormat2D);
+        masm.Mov(v_d_d2, 0, v_t_d2, 0);
+    }
+}
+}  // namespace
+
+void Emitter::vfadd_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '+');
+}
+void Emitter::vfsub_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '-');
+}
+void Emitter::vfmul_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '*');
+}
+void Emitter::vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '/');
+}
+
 void Emitter::vld1_q(FpReg rd, arm64::Reg base) {
     impl_->masm.Ldr(to_vixl_qreg(rd), vixl_aa::MemOperand(to_vixl_x(base)));
 }

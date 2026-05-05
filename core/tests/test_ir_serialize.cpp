@@ -169,6 +169,13 @@ TEST_CASE("ir_serialize: VecFpBinOp round-trip", "[ir_serialize]") {
         Op{VecFpBinOp{VecFpBinOpKind::Div, Ref{0u}, Ref{1u}, VecFpSize::D2}}});
 }
 
+TEST_CASE("ir_serialize: VecFpScalarBinOp round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{6u},
+        Op{VecFpScalarBinOp{VecFpBinOpKind::Add, Ref{0u}, Ref{1u}, FpSize::F32}}});
+    check_single_stmt_roundtrip(Stmt{Ref{7u},
+        Op{VecFpScalarBinOp{VecFpBinOpKind::Mul, Ref{0u}, Ref{1u}, FpSize::F64}}});
+}
+
 TEST_CASE("ir_serialize: RspAdjust round-trip preserves signed delta",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{-8}}});

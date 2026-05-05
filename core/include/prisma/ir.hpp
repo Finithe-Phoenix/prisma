@@ -383,6 +383,7 @@ struct VecFpBinOp {
     VecFpSize      size;
 };
 
+
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
 // `RspAdjust{delta_bytes}` adds `delta_bytes` (signed, two's-complement
@@ -412,6 +413,17 @@ struct RspAdjust {
 
 enum class FpSize     : std::uint8_t { F32 = 0, F64 };
 enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
+
+// F2-IR-006 — scalar-form SSE FP. Result is a 128-bit value where the
+// low lane is `op(lhs.low, rhs.low)` and the upper bits are copied from
+// `lhs`. Models ADDSS/SUBSS/MULSS/DIVSS (FpSize::F32) and the SD
+// variants (FpSize::F64). Re-uses VecFpBinOpKind for the op.
+struct VecFpScalarBinOp {
+    VecFpBinOpKind op;
+    Ref            lhs;
+    Ref            rhs;
+    FpSize         size;
+};
 
 struct FpConstant { std::uint64_t bits; FpSize size; };
 struct FpBinOp    { FpBinOpKind op; Ref lhs; Ref rhs; FpSize size; };
@@ -460,7 +472,7 @@ using Op = std::variant<
     RspAdjust,
     VecConstant, VecBinOp,
     LoadVecReg, StoreVecReg,
-    VecFpBinOp
+    VecFpBinOp, VecFpScalarBinOp
 >;
 
 // ---------------------------------------------------------------------------
@@ -551,6 +563,7 @@ bool operator==(const VecBinOp&      a, const VecBinOp&      b) noexcept;
 bool operator==(const LoadVecReg&    a, const LoadVecReg&    b) noexcept;
 bool operator==(const StoreVecReg&   a, const StoreVecReg&   b) noexcept;
 bool operator==(const VecFpBinOp&    a, const VecFpBinOp&    b) noexcept;
+bool operator==(const VecFpScalarBinOp& a, const VecFpScalarBinOp& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

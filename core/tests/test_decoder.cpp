@@ -2042,6 +2042,31 @@ TEST_CASE("decode DIVPD xmm0, xmm1 (66 0F 5E C1) — VecFpBinOp.Div D2") {
     REQUIRE(vfb.size == ir::VecFpSize::D2);
 }
 
+TEST_CASE("decode ADDSS xmm0, xmm1 (F3 0F 58 C1) — scalar Add F32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x58, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    auto vfb = std::get<ir::VecFpScalarBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Add);
+    REQUIRE(vfb.size == ir::FpSize::F32);
+}
+
+TEST_CASE("decode MULSD xmm0, xmm1 (F2 0F 59 C1) — scalar Mul F64") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x0F, 0x59, 0xC1}, r);
+    auto vfb = std::get<ir::VecFpScalarBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Mul);
+    REQUIRE(vfb.size == ir::FpSize::F64);
+}
+
+TEST_CASE("decode DIVSS xmm0, xmm1 (F3 0F 5E C1) — scalar Div F32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0x5E, 0xC1}, r);
+    auto vfb = std::get<ir::VecFpScalarBinOp>(d.stmts[2].op);
+    REQUIRE(vfb.op   == ir::VecFpBinOpKind::Div);
+    REQUIRE(vfb.size == ir::FpSize::F32);
+}
+
 TEST_CASE("decode ADDPS with memory operand (mod != 11) is UnsupportedEncoding") {
     ir::Ref r = 0;
     auto res = decode_any({0x0F, 0x58, 0x01}, r);

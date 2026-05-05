@@ -905,6 +905,32 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) {
+            // F2-IR-006. ADDSS/ADDSD style: low lane = scalar op,
+            // upper lanes preserved from lhs.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpScalarBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecFpScalarBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecFpScalarBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpScalarBinOp"};
+            }
+            switch (op.op) {
+                case ir::VecFpBinOpKind::Add: emitter_.vfadd_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Sub: emitter_.vfsub_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Mul: emitter_.vfmul_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Div: emitter_.vfdiv_scalar(rd, rl, rr, op.size); break;
+            }
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::FpConstant>) {
             // F1-BK-013. Materialise an FP constant in a scratch V reg.
             if (!s.result.has_value()) {

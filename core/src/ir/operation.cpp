@@ -130,6 +130,9 @@ bool operator==(const StoreVecReg& a, const StoreVecReg& b) noexcept {
 bool operator==(const VecFpBinOp& a, const VecFpBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const VecFpScalarBinOp& a, const VecFpScalarBinOp& b) noexcept {
+    return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

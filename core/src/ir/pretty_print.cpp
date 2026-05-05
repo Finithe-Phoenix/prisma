@@ -243,6 +243,17 @@ std::string pretty_print(const Op& op) {
             const char* size_n = (x.size == VecFpSize::S4) ? "s4" : "d2";
             os << op_n << "." << size_n << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case VecFpBinOpKind::Add: op_n = "vfadd_s"; break;
+                case VecFpBinOpKind::Sub: op_n = "vfsub_s"; break;
+                case VecFpBinOpKind::Mul: op_n = "vfmul_s"; break;
+                case VecFpBinOpKind::Div: op_n = "vfdiv_s"; break;
+            }
+            const char* size_n = (x.size == FpSize::F32) ? "f32" : "f64";
+            os << op_n << "." << size_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         }
     }, op);
     return os.str();

@@ -232,6 +232,45 @@ TEST_CASE("e2e: ADDPS xmm0, xmm1 — packed-FP add lanes-wise (4×f32)") {
     REQUIRE(disp.state().xmm[0].hi == pack2f(33.0f, 44.0f));
 }
 
+TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    // ADDSS only writes bits[31:0]; bits[127:32] of xmm0 must survive
+    // unchanged. We seed xmm0 with {3.0, sentinel_lo_hi32, sentinel_hi}
+    // and xmm1 with {4.0, ...}, run `addss xmm0, xmm1; ret`, expect the
+    // low f32 = 7.0 and the upper 96 bits = the original sentinel.
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xF3, 0x0F, 0x58, 0xC1,  // addss xmm0, xmm1
+        0xC3,                     // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+
+    auto enc_f32_lo = [](float v) -> std::uint64_t {
+        std::uint32_t bits;
+        std::memcpy(&bits, &v, 4);
+        return static_cast<std::uint64_t>(bits);
+    };
+    constexpr std::uint64_t kSentinelLoHi32 = 0xCAFEBABE'00000000ULL;
+    constexpr std::uint64_t kSentinelHi     = 0xDEADBEEFFEEDFACEULL;
+    disp.state().xmm[0].lo = enc_f32_lo(3.0f) | kSentinelLoHi32;
+    disp.state().xmm[0].hi = kSentinelHi;
+    disp.state().xmm[1].lo = enc_f32_lo(4.0f);
+    disp.state().xmm[1].hi = 0;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == (enc_f32_lo(7.0f) | kSentinelLoHi32));
+    REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
+}
+
 TEST_CASE("e2e: cache hit — running the same blob twice reuses the translation") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
 

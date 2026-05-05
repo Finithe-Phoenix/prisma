@@ -74,11 +74,12 @@ enum class OpKind : std::uint8_t {
     kLoadVecReg  = 38,
     kStoreVecReg = 39,
     kVecFpBinOp  = 40,
+    kVecFpScalarBinOp = 41,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpBinOp);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpScalarBinOp);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -236,6 +237,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, LoadVecReg>)    return OpKind::kLoadVecReg;
         else if constexpr (std::is_same_v<T, StoreVecReg>)   return OpKind::kStoreVecReg;
         else if constexpr (std::is_same_v<T, VecFpBinOp>)    return OpKind::kVecFpBinOp;
+        else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) return OpKind::kVecFpScalarBinOp;
     }, op);
 }
 
@@ -407,6 +409,12 @@ void write_payload(std::vector<std::uint8_t>& out, const StoreVecReg& x) {
     put_u32(out, x.value);
 }
 void write_payload(std::vector<std::uint8_t>& out, const VecFpBinOp& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.op));
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecFpScalarBinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
@@ -795,6 +803,19 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_fp_scalar_binop(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  op   = c.take_u8();
+    const std::uint32_t lhs  = c.take_u32();
+    const std::uint32_t rhs  = c.take_u32();
+    const std::uint8_t  size = c.take_u8();
+    if (!is_valid_vecfpbinop(op)) return DeserializeError::BadSize;
+    if (!is_valid_fpsize(size)) return DeserializeError::BadSize;
+    s.op = VecFpScalarBinOp{static_cast<VecFpBinOpKind>(op), lhs, rhs,
+                            static_cast<FpSize>(size)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_stmt(Cursor& c, Stmt& s) {
     if (!c.remaining(1)) return DeserializeError::Truncated;
     const std::uint8_t has_result = c.take_u8();
@@ -852,6 +873,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kLoadVecReg:  return read_payload_load_vec_reg(c, s);
         case OpKind::kStoreVecReg: return read_payload_store_vec_reg(c, s);
         case OpKind::kVecFpBinOp:  return read_payload_vec_fp_binop(c, s);
+        case OpKind::kVecFpScalarBinOp: return read_payload_vec_fp_scalar_binop(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

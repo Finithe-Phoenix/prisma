@@ -43,7 +43,7 @@ public:
         RspAdjust,
         VecConstant, VecBinOp,
         LoadVecReg, StoreVecReg,
-        VecFpBinOp,
+        VecFpBinOp, VecFpScalarBinOp,
         kCount  // sentinel
     };
 
