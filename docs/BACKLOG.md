@@ -229,7 +229,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-078: Use a table-driven decoder for opcode dispatch.
 - [x] F1-DC-079: Instruction length validator (reject 16+ byte oversized encodings).
 - [x] F1-DC-080: Decoder fuzz harness (AFL++) seeded with coreutils disassembly.
-- [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
+- [x] (cd59ba5) F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics. (Length parity: 16 cases. Mnemonic check deferred to F1-DC-087.)
 - [x] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
 - [x] F1-DC-083: HLT (F4) — reject (privileged).
 - [x] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
