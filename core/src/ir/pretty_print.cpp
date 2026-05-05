@@ -207,6 +207,13 @@ std::string pretty_print(const Op& op) {
             os << "rsp_adjust " << std::dec << x.delta_bytes;
         } else if constexpr (std::is_same_v<T, VecConstant>) {
             os << "vconst.128 0x" << std::hex << x.hi << ":0x" << std::hex << x.lo;
+        } else if constexpr (std::is_same_v<T, LoadVecReg>) {
+            os << "loadxmm xmm" << std::dec
+               << static_cast<unsigned>(x.xmm_index);
+        } else if constexpr (std::is_same_v<T, StoreVecReg>) {
+            os << "storexmm xmm" << std::dec
+               << static_cast<unsigned>(x.xmm_index) << ", ";
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

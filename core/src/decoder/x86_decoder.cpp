@@ -2812,6 +2812,74 @@ std::variant<Decoded, DecodeError> decode_one(
         }
         const Byte subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
 
+        // F2-IR-003: SSE2 integer SIMD register-direct.
+        //   66 0F FC /r — PADDB xmm1, xmm2   (16 × i8)
+        //   66 0F FD /r — PADDW xmm1, xmm2   ( 8 × i16)
+        //   66 0F FE /r — PADDD xmm1, xmm2   ( 4 × i32)
+        //   66 0F D4 /r — PADDQ xmm1, xmm2   ( 2 × i64)
+        //   66 0F F8 /r — PSUBB xmm1, xmm2
+        //   66 0F F9 /r — PSUBW xmm1, xmm2
+        //   66 0F FA /r — PSUBD xmm1, xmm2
+        //   66 0F FB /r — PSUBQ xmm1, xmm2
+        //   66 0F EB /r — POR   xmm1, xmm2   (bitwise; lane-agnostic)
+        //   66 0F DB /r — PAND  xmm1, xmm2
+        //   66 0F EF /r — PXOR  xmm1, xmm2
+        // Memory operands (mod != 11) are deferred — emit
+        // UnsupportedEncoding for now so callers know to fall back.
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xFCu || subop == 0xFDu || subop == 0xFEu ||
+             subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
+             subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
+             subop == 0xDBu || subop == 0xEFu)) {
+            // Need ModR/M byte.
+            auto mr = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(mr)) {
+                return std::get<DecodeError>(mr);
+            }
+            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
+            const unsigned mod = (modrm >> 6) & 0x3u;
+            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
+            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
+            if (mod != 0b11) {
+                // Memory form — deferred to follow-up.
+                return DecodeError::UnsupportedEncoding;
+            }
+            // Map opcode → (VecBinOpKind, lane).
+            ir::VecBinOpKind vop = ir::VecBinOpKind::Add;
+            ir::VecLane      lane = ir::VecLane::B16;
+            switch (subop) {
+                case 0xFCu: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::B16; break;
+                case 0xFDu: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::H8;  break;
+                case 0xFEu: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::S4;  break;
+                case 0xD4u: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::D2;  break;
+                case 0xF8u: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::B16; break;
+                case 0xF9u: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::H8;  break;
+                case 0xFAu: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::S4;  break;
+                case 0xFBu: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::D2;  break;
+                case 0xDBu: vop = ir::VecBinOpKind::And; break;
+                case 0xEBu: vop = ir::VecBinOpKind::Or;  break;
+                case 0xEFu: vop = ir::VecBinOpKind::Xor; break;
+                default: break;  // unreachable; gated above.
+            }
+            // Emit: %dst_old = LoadVecReg{reg}; %src = LoadVecReg{rm};
+            //       %res = VecBinOp{vop, dst_old, src, lane};
+            //       StoreVecReg{reg, res}.
+            Decoded d;
+            const ir::Ref r_dst_old = next_ref++;
+            const ir::Ref r_src     = next_ref++;
+            const ir::Ref r_res     = next_ref++;
+            d.stmts.push_back({r_dst_old,
+                ir::LoadVecReg{static_cast<std::uint8_t>(reg)}});
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+            d.stmts.push_back({r_res,
+                ir::VecBinOp{vop, r_dst_old, r_src, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // We currently consume LOCK/HLE only for the exchange-family atomics
         // added in this slice. Everywhere else they remain unsupported.
         if ((has_lock || has_f2) &&

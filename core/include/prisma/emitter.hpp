@@ -303,6 +303,12 @@ public:
     void vld1_q(FpReg rd, arm64::Reg base);
     void vst1_q(FpReg rs, arm64::Reg base);
 
+    // [base, #imm] forms — used by SSE2 lowering to read/write the
+    // CpuStateFrame's xmm[] table. The immediate is signed 32-bit;
+    // vixl picks the cheapest encoding or falls back to a scratch.
+    void vld1_q_offset(FpReg rd, arm64::Reg base, std::int32_t imm);
+    void vst1_q_offset(FpReg rs, arm64::Reg base, std::int32_t imm);
+
     // --- Memory fences (F1-BK-023) ----------------------------------------
     //
     // ARM64 DMB / DSB barrier emission. In our IR:

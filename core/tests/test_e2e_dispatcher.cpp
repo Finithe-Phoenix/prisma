@@ -164,6 +164,34 @@ TEST_CASE("e2e: stats — single-block program reports blocks_executed = 1") {
     REQUIRE(disp.state()[ir::Gpr::Rax] == 0x42u);
 }
 
+TEST_CASE("e2e: PXOR xmm0, xmm0 zeroes xmm0 (idiomatic SSE2 zero)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    // Pre-load xmm0 with a known non-zero pattern via the
+    // CpuStateFrame, run `pxor xmm0, xmm0; ret`, and read the
+    // low lane back. Expect the lane to be zero — this is the
+    // canonical "PXOR sets register to zero" idiom every SSE2
+    // binary uses dozens of times.
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0x66, 0x0F, 0xEF, 0xC0,  // pxor xmm0, xmm0
+        0xC3,                     // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[0].lo = 0xDEADBEEFCAFEBABEull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == 0u);
+}
+
 TEST_CASE("e2e: cache hit — running the same blob twice reuses the translation") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
 

@@ -1902,6 +1902,93 @@ TEST_CASE("decode REP STOSB (F3 AA) is accepted as InlineAsm placeholder") {
     REQUIRE(std::holds_alternative<Decoded>(res));
 }
 
+// ---------------------------------------------------------------------
+// F2-IR-003 SSE2 integer SIMD decoder
+// ---------------------------------------------------------------------
+
+TEST_CASE("decode PADDB xmm0, xmm1 (66 0F FC C1) — Add + B16 lane") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xFC, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    // 4 IR stmts: load dst, load src, vbinop, store dst.
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(std::holds_alternative<ir::LoadVecReg>(d.stmts[0].op));
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[0].op).xmm_index == 0u);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[1].op).xmm_index == 1u);
+    REQUIRE(std::holds_alternative<ir::VecBinOp>(d.stmts[2].op));
+    const auto& vop = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vop.op == ir::VecBinOpKind::Add);
+    REQUIRE(vop.lane == ir::VecLane::B16);
+    REQUIRE(std::holds_alternative<ir::StoreVecReg>(d.stmts[3].op));
+}
+
+TEST_CASE("decode PADDW xmm0, xmm1 (66 0F FD C1) — H8 lane") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xFD, 0xC1}, r);
+    REQUIRE(std::get<ir::VecBinOp>(d.stmts[2].op).lane == ir::VecLane::H8);
+}
+
+TEST_CASE("decode PADDD xmm0, xmm1 (66 0F FE C1) — S4 lane") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xFE, 0xC1}, r);
+    REQUIRE(std::get<ir::VecBinOp>(d.stmts[2].op).lane == ir::VecLane::S4);
+}
+
+TEST_CASE("decode PADDQ xmm0, xmm1 (66 0F D4 C1) — D2 lane") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xD4, 0xC1}, r);
+    REQUIRE(std::get<ir::VecBinOp>(d.stmts[2].op).lane == ir::VecLane::D2);
+}
+
+TEST_CASE("decode PSUBB xmm0, xmm1 (66 0F F8 C1) — Sub + B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xF8, 0xC1}, r);
+    const auto& vop = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vop.op == ir::VecBinOpKind::Sub);
+    REQUIRE(vop.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PXOR xmm0, xmm0 (66 0F EF C0) — idiomatic zero, Xor") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xEF, 0xC0}, r);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[0].op).xmm_index == 0u);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[1].op).xmm_index == 0u);
+    REQUIRE(std::get<ir::VecBinOp>(d.stmts[2].op).op == ir::VecBinOpKind::Xor);
+    REQUIRE(std::get<ir::StoreVecReg>(d.stmts[3].op).xmm_index == 0u);
+}
+
+TEST_CASE("decode PAND xmm0, xmm1 (66 0F DB C1) — And") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xDB, 0xC1}, r);
+    REQUIRE(std::get<ir::VecBinOp>(d.stmts[2].op).op == ir::VecBinOpKind::And);
+}
+
+TEST_CASE("decode POR xmm0, xmm1 (66 0F EB C1) — Or") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xEB, 0xC1}, r);
+    REQUIRE(std::get<ir::VecBinOp>(d.stmts[2].op).op == ir::VecBinOpKind::Or);
+}
+
+TEST_CASE("decode PADDB with REX.R/B selects xmm8/xmm15 correctly") {
+    ir::Ref r = 0;
+    // 41 = REX.B — extends rm to xmm8..15. 44 = REX.R — extends reg.
+    // Use 0x45 = REX.R+B → both extended. paddb xmm8, xmm9 → 66 45 0F FC C1
+    auto d = decode_ok({0x66, 0x45, 0x0F, 0xFC, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[0].op).xmm_index == 8u);
+    REQUIRE(std::get<ir::LoadVecReg>(d.stmts[1].op).xmm_index == 9u);
+}
+
+TEST_CASE("decode PADDB with memory operand (mod != 11) is UnsupportedEncoding") {
+    ir::Ref r = 0;
+    // 66 0F FC 01 — paddb xmm0, [rcx]. mod=00, rm=001. We don't
+    // support memory operands for SSE2 yet.
+    auto res = decode_any({0x66, 0x0F, 0xFC, 0x01}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
 TEST_CASE("Error: HLT (F4) is rejected as UnsupportedEncoding") {
     ir::Ref r = 0;
     auto res = decode_any({0xF4}, r);

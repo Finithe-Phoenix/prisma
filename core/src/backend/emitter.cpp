@@ -506,6 +506,14 @@ void Emitter::vld1_q(FpReg rd, arm64::Reg base) {
 void Emitter::vst1_q(FpReg rs, arm64::Reg base) {
     impl_->masm.Str(to_vixl_qreg(rs), vixl_aa::MemOperand(to_vixl_x(base)));
 }
+void Emitter::vld1_q_offset(FpReg rd, arm64::Reg base, std::int32_t imm) {
+    impl_->masm.Ldr(to_vixl_qreg(rd),
+                    vixl_aa::MemOperand(to_vixl_x(base), imm));
+}
+void Emitter::vst1_q_offset(FpReg rs, arm64::Reg base, std::int32_t imm) {
+    impl_->masm.Str(to_vixl_qreg(rs),
+                    vixl_aa::MemOperand(to_vixl_x(base), imm));
+}
 
 // --- Memory fences (F1-BK-023) --------------------------------------------
 

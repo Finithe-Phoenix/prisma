@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <variant>
 
+#include "prisma/cpu_state.hpp"
+
 namespace prisma::backend {
 
 namespace {
@@ -208,6 +210,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::ReadFlag>)      { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::VecBinOp>)      { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreVecReg>)   { bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -777,6 +780,42 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             emitter_.branch_cc(it_t->second, op.cc);
             emitter_.branch(it_f->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadVecReg>) {
+            // Read CpuStateFrame::xmm[idx] into a fresh V scratch. The
+            // base register is the pinned state pointer
+            // (`backend::abi::kStatePtrReg` = x27); the offset comes
+            // from the layout-stable `xmm_offset_bytes(idx)`.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadVecReg requires a result ref"};
+            }
+            if (op.xmm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "LoadVecReg: xmm_index out of range"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadVecReg"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::xmm_offset_bytes(op.xmm_index));
+            emitter_.vld1_q_offset(rd, arm64::Reg::X27, off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreVecReg>) {
+            if (op.xmm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "StoreVecReg: xmm_index out of range"};
+            }
+            Emitter::FpReg rv;
+            if (!fp_reg_of(op.value, rv)) {
+                return {false, LowerError::DanglingRef, "StoreVecReg.value"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::xmm_offset_bytes(op.xmm_index));
+            emitter_.vst1_q_offset(rv, arm64::Reg::X27, off);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecConstant>) {

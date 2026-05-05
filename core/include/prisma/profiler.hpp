@@ -42,6 +42,7 @@ public:
         WriteFlags, ReadFlag, CondJumpFlags,
         RspAdjust,
         VecConstant, VecBinOp,
+        LoadVecReg, StoreVecReg,
         kCount  // sentinel
     };
 

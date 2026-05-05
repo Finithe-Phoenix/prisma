@@ -358,6 +358,16 @@ struct VecBinOp {
     VecLane      lane;   // ignored for And/Or/Xor — they're bitwise.
 };
 
+// SSE2 register file: 16 × 128-bit XMM registers, mapped onto the
+// CpuStateFrame's `xmm[16]` slots. The decoder emits LoadVecReg /
+// StoreVecReg pairs around `VecBinOp` to materialise SSE2 register
+// semantics into our SSA IR. The lowerer translates these to vld1.16b
+// / vst1.16b reads/writes against the state pointer + offset table.
+inline constexpr std::size_t kXmmCount = 16;
+
+struct LoadVecReg  { std::uint8_t xmm_index; };  // 0..15
+struct StoreVecReg { std::uint8_t xmm_index; Ref value; };  // 0..15
+
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
 // `RspAdjust{delta_bytes}` adds `delta_bytes` (signed, two's-complement
@@ -433,7 +443,8 @@ using Op = std::variant<
     FpConstant, FpBinOp,
     WriteFlags, ReadFlag, CondJumpFlags,
     RspAdjust,
-    VecConstant, VecBinOp
+    VecConstant, VecBinOp,
+    LoadVecReg, StoreVecReg
 >;
 
 // ---------------------------------------------------------------------------
@@ -521,6 +532,8 @@ bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
 bool operator==(const RspAdjust&     a, const RspAdjust&     b) noexcept;
 bool operator==(const VecConstant&   a, const VecConstant&   b) noexcept;
 bool operator==(const VecBinOp&      a, const VecBinOp&      b) noexcept;
+bool operator==(const LoadVecReg&    a, const LoadVecReg&    b) noexcept;
+bool operator==(const StoreVecReg&   a, const StoreVecReg&   b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 
