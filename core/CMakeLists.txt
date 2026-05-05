@@ -426,6 +426,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_cpu_state.cpp
         tests/test_property.cpp
         tests/test_zydis_differential.cpp
+        tests/test_e2e_dispatcher.cpp
         tests/test_signal_handler.cpp
         tests/test_smc_guard.cpp
         tests/test_translator.cpp
