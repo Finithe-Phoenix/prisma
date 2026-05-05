@@ -399,6 +399,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_guest_signal.cpp
         tests/test_cpu_state.cpp
         tests/test_property.cpp
+        tests/test_zydis_differential.cpp
         tests/test_signal_handler.cpp
         tests/test_smc_guard.cpp
         tests/test_translator.cpp
@@ -425,5 +426,26 @@ if(PRISMA_BUILD_TESTS)
             prisma_warnings
             Catch2::Catch2WithMain
     )
+
+    # F1-DC-081: optional Zydis dependency for the differential
+    # decoder test. Off by default; enable with
+    # `-DPRISMA_ENABLE_ZYDIS=ON` when Zydis is available on the
+    # system (`brew install zydis` on macOS).
+    option(PRISMA_ENABLE_ZYDIS "Enable Zydis differential decoder test" OFF)
+    if(PRISMA_ENABLE_ZYDIS)
+        find_package(Zycore CONFIG REQUIRED)
+        find_package(Zydis  CONFIG REQUIRED)
+        target_compile_definitions(prisma_core_tests PRIVATE PRISMA_HAVE_ZYDIS=1)
+        target_link_libraries(prisma_core_tests
+            PRIVATE Zydis::Zydis Zycore::Zycore)
+        # Zydis's exported config emits an unqualified `-lZycore` that
+        # the macOS linker can't find without an explicit -L. Forward
+        # the install prefix from `find_package(Zycore)`.
+        get_target_property(_zycore_loc Zycore::Zycore IMPORTED_LOCATION_RELEASE)
+        get_filename_component(_zycore_dir "${_zycore_loc}" DIRECTORY)
+        target_link_directories(prisma_core_tests PRIVATE "${_zycore_dir}")
+        message(STATUS "Prisma: Zydis differential decoder test enabled")
+    endif()
+
     catch_discover_tests(prisma_core_tests)
 endif()
