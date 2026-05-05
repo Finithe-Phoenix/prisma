@@ -368,6 +368,13 @@ inline constexpr std::size_t kXmmCount = 16;
 struct LoadVecReg  { std::uint8_t xmm_index; };  // 0..15
 struct StoreVecReg { std::uint8_t xmm_index; Ref value; };  // 0..15
 
+// F2-IR-007 — 128-bit memory load/store for SSE memory operands.
+// `addr` is a 64-bit guest virtual address (already computed via the
+// usual ModR/M EA Ref chain). Produces / consumes a 128-bit value in
+// the same Ref namespace as LoadVecReg.
+struct LoadVec  { Ref addr; };
+struct StoreVec { Ref addr; Ref value; };
+
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
@@ -472,6 +479,7 @@ using Op = std::variant<
     RspAdjust,
     VecConstant, VecBinOp,
     LoadVecReg, StoreVecReg,
+    LoadVec, StoreVec,
     VecFpBinOp, VecFpScalarBinOp
 >;
 
@@ -564,6 +572,8 @@ bool operator==(const LoadVecReg&    a, const LoadVecReg&    b) noexcept;
 bool operator==(const StoreVecReg&   a, const StoreVecReg&   b) noexcept;
 bool operator==(const VecFpBinOp&    a, const VecFpBinOp&    b) noexcept;
 bool operator==(const VecFpScalarBinOp& a, const VecFpScalarBinOp& b) noexcept;
+bool operator==(const LoadVec&       a, const LoadVec&       b) noexcept;
+bool operator==(const StoreVec&      a, const StoreVec&      b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

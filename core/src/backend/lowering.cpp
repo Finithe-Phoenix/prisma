@@ -211,6 +211,10 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::VecBinOp>)      { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVecReg>)   { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -903,6 +907,36 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Mul: emitter_.vfmul_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Div: emitter_.vfdiv_q(rd, rl, rr, lane); break;
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadVec>) {
+            // F2-IR-007. 128-bit aligned/unaligned load from guest mem.
+            // ARM64 `ldr Q, [Xn]` accepts both — alignment fault only on
+            // strict-alignment systems we don't target.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "LoadVec without result"};
+            }
+            arm64::Reg raddr;
+            if (!reg_of(op.addr, raddr)) {
+                return {false, LowerError::DanglingRef, "LoadVec.addr"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadVec"};
+            }
+            emitter_.vld1_q(rd, raddr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreVec>) {
+            arm64::Reg raddr;
+            if (!reg_of(op.addr, raddr)) {
+                return {false, LowerError::DanglingRef, "StoreVec.addr"};
+            }
+            Emitter::FpReg rv;
+            if (!fp_reg_of(op.value, rv)) {
+                return {false, LowerError::DanglingRef, "StoreVec.value"};
+            }
+            emitter_.vst1_q(rv, raddr);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) {

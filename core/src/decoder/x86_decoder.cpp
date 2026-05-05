@@ -2831,20 +2831,12 @@ std::variant<Decoded, DecodeError> decode_one(
              subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
              subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
              subop == 0xDBu || subop == 0xEFu)) {
-            // Need ModR/M byte.
-            auto mr = consume_le<1>(bytes, cursor);
-            if (std::holds_alternative<DecodeError>(mr)) {
-                return std::get<DecodeError>(mr);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
             }
-            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
-            const unsigned mod = (modrm >> 6) & 0x3u;
-            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
-            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
-            if (mod != 0b11) {
-                // Memory form — deferred to follow-up.
-                return DecodeError::UnsupportedEncoding;
-            }
-            // Map opcode → (VecBinOpKind, lane).
+            const auto& m = std::get<ModRmOperand>(modrm);
             ir::VecBinOpKind vop = ir::VecBinOpKind::Add;
             ir::VecLane      lane = ir::VecLane::B16;
             switch (subop) {
@@ -2859,23 +2851,27 @@ std::variant<Decoded, DecodeError> decode_one(
                 case 0xDBu: vop = ir::VecBinOpKind::And; break;
                 case 0xEBu: vop = ir::VecBinOpKind::Or;  break;
                 case 0xEFu: vop = ir::VecBinOpKind::Xor; break;
-                default: break;  // unreachable; gated above.
+                default: break;
             }
-            // Emit: %dst_old = LoadVecReg{reg}; %src = LoadVecReg{rm};
-            //       %res = VecBinOp{vop, dst_old, src, lane};
-            //       StoreVecReg{reg, res}.
             Decoded d;
             const ir::Ref r_dst_old = next_ref++;
             const ir::Ref r_src     = next_ref++;
             const ir::Ref r_res     = next_ref++;
             d.stmts.push_back({r_dst_old,
-                ir::LoadVecReg{static_cast<std::uint8_t>(reg)}});
-            d.stmts.push_back({r_src,
-                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+            }
             d.stmts.push_back({r_res,
                 ir::VecBinOp{vop, r_dst_old, r_src, lane}});
             d.stmts.push_back({std::nullopt,
-                ir::StoreVecReg{static_cast<std::uint8_t>(reg), r_res}});
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
             d.bytes_consumed = cursor;
             return d;
         }
@@ -2891,25 +2887,41 @@ std::variant<Decoded, DecodeError> decode_one(
         if ((has_operand_size_override || has_f3) && !has_lock && !has_f2 &&
             !(has_operand_size_override && has_f3) &&
             (subop == 0x6Fu || subop == 0x7Fu)) {
-            auto mr = consume_le<1>(bytes, cursor);
-            if (std::holds_alternative<DecodeError>(mr)) {
-                return std::get<DecodeError>(mr);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
             }
-            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
-            const unsigned mod = (modrm >> 6) & 0x3u;
-            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
-            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
-            if (mod != 0b11) {
-                return DecodeError::UnsupportedEncoding;
-            }
-            const unsigned src_xmm = (subop == 0x6Fu) ? rm  : reg;
-            const unsigned dst_xmm = (subop == 0x6Fu) ? reg : rm;
+            const auto& m = std::get<ModRmOperand>(modrm);
             Decoded d;
-            const ir::Ref r_src = next_ref++;
-            d.stmts.push_back({r_src,
-                ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
-            d.stmts.push_back({std::nullopt,
-                ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_src}});
+            const bool is_load = (subop == 0x6Fu);
+            if (m.mod == 0b11) {
+                const unsigned src_xmm =
+                    is_load ? static_cast<unsigned>(m.base) : m.reg;
+                const unsigned dst_xmm =
+                    is_load ? m.reg : static_cast<unsigned>(m.base);
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_src}});
+            } else if (is_load) {
+                // 6F: load 128 bits from memory into xmm[reg].
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_src}});
+            } else {
+                // 7F: store xmm[reg] to memory.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_val,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({std::nullopt, ir::StoreVec{r_addr, r_val}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }
@@ -2928,24 +2940,19 @@ std::variant<Decoded, DecodeError> decode_one(
         if (!has_lock && !has_f2 && !has_f3 &&
             (subop == 0x58u || subop == 0x59u ||
              subop == 0x5Cu || subop == 0x5Eu)) {
-            auto mr = consume_le<1>(bytes, cursor);
-            if (std::holds_alternative<DecodeError>(mr)) {
-                return std::get<DecodeError>(mr);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
             }
-            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
-            const unsigned mod = (modrm >> 6) & 0x3u;
-            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
-            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
-            if (mod != 0b11) {
-                return DecodeError::UnsupportedEncoding;
-            }
+            const auto& m = std::get<ModRmOperand>(modrm);
             ir::VecFpBinOpKind vop = ir::VecFpBinOpKind::Add;
             switch (subop) {
                 case 0x58u: vop = ir::VecFpBinOpKind::Add; break;
                 case 0x59u: vop = ir::VecFpBinOpKind::Mul; break;
                 case 0x5Cu: vop = ir::VecFpBinOpKind::Sub; break;
                 case 0x5Eu: vop = ir::VecFpBinOpKind::Div; break;
-                default: break;  // unreachable
+                default: break;
             }
             const ir::VecFpSize size = has_operand_size_override
                                            ? ir::VecFpSize::D2
@@ -2955,13 +2962,20 @@ std::variant<Decoded, DecodeError> decode_one(
             const ir::Ref r_src     = next_ref++;
             const ir::Ref r_res     = next_ref++;
             d.stmts.push_back({r_dst_old,
-                ir::LoadVecReg{static_cast<std::uint8_t>(reg)}});
-            d.stmts.push_back({r_src,
-                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+            }
             d.stmts.push_back({r_res,
                 ir::VecFpBinOp{vop, r_dst_old, r_src, size}});
             d.stmts.push_back({std::nullopt,
-                ir::StoreVecReg{static_cast<std::uint8_t>(reg), r_res}});
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
             d.bytes_consumed = cursor;
             return d;
         }
@@ -2979,17 +2993,12 @@ std::variant<Decoded, DecodeError> decode_one(
             !(has_f2 && has_f3) &&
             (subop == 0x58u || subop == 0x59u ||
              subop == 0x5Cu || subop == 0x5Eu)) {
-            auto mr = consume_le<1>(bytes, cursor);
-            if (std::holds_alternative<DecodeError>(mr)) {
-                return std::get<DecodeError>(mr);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
             }
-            const Byte modrm = static_cast<Byte>(std::get<std::uint64_t>(mr));
-            const unsigned mod = (modrm >> 6) & 0x3u;
-            const unsigned reg = ((modrm >> 3) & 0x7u) | (rex.r ? 0x8u : 0x0u);
-            const unsigned rm  = (modrm & 0x7u)        | (rex.b ? 0x8u : 0x0u);
-            if (mod != 0b11) {
-                return DecodeError::UnsupportedEncoding;
-            }
+            const auto& m = std::get<ModRmOperand>(modrm);
             ir::VecFpBinOpKind vop = ir::VecFpBinOpKind::Add;
             switch (subop) {
                 case 0x58u: vop = ir::VecFpBinOpKind::Add; break;
@@ -3004,13 +3013,20 @@ std::variant<Decoded, DecodeError> decode_one(
             const ir::Ref r_src     = next_ref++;
             const ir::Ref r_res     = next_ref++;
             d.stmts.push_back({r_dst_old,
-                ir::LoadVecReg{static_cast<std::uint8_t>(reg)}});
-            d.stmts.push_back({r_src,
-                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+            }
             d.stmts.push_back({r_res,
                 ir::VecFpScalarBinOp{vop, r_dst_old, r_src, size}});
             d.stmts.push_back({std::nullopt,
-                ir::StoreVecReg{static_cast<std::uint8_t>(reg), r_res}});
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
             d.bytes_consumed = cursor;
             return d;
         }

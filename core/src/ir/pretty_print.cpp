@@ -243,6 +243,11 @@ std::string pretty_print(const Op& op) {
             const char* size_n = (x.size == VecFpSize::S4) ? "s4" : "d2";
             os << op_n << "." << size_n << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, LoadVec>) {
+            os << "loadvec ["; print_ref(os, x.addr); os << "]";
+        } else if constexpr (std::is_same_v<T, StoreVec>) {
+            os << "storevec ["; print_ref(os, x.addr); os << "], ";
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

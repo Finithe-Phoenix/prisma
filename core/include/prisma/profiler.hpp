@@ -44,6 +44,7 @@ public:
         VecConstant, VecBinOp,
         LoadVecReg, StoreVecReg,
         VecFpBinOp, VecFpScalarBinOp,
+        LoadVec, StoreVec,
         kCount  // sentinel
     };
 

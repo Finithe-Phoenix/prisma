@@ -2067,27 +2067,45 @@ TEST_CASE("decode DIVSS xmm0, xmm1 (F3 0F 5E C1) — scalar Div F32") {
     REQUIRE(vfb.size == ir::FpSize::F32);
 }
 
-TEST_CASE("decode ADDPS with memory operand (mod != 11) is UnsupportedEncoding") {
+TEST_CASE("decode ADDPS xmm0, [rcx] (0F 58 01) — F2-IR-007 memory form via LoadVec") {
     ir::Ref r = 0;
-    auto res = decode_any({0x0F, 0x58, 0x01}, r);
-    REQUIRE(std::holds_alternative<DecodeError>(res));
-    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+    auto d = decode_ok({0x0F, 0x58, 0x01}, r);
+    REQUIRE(d.bytes_consumed == 3);
+    bool saw_loadvec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(st.op)) saw_loadvec = true;
+    }
+    REQUIRE(saw_loadvec);
 }
 
-TEST_CASE("decode MOVDQA with memory operand (mod != 11) is UnsupportedEncoding") {
+TEST_CASE("decode MOVDQA xmm0, [rcx] (66 0F 6F 01) — memory load form") {
     ir::Ref r = 0;
-    auto res = decode_any({0x66, 0x0F, 0x6F, 0x01}, r);
-    REQUIRE(std::holds_alternative<DecodeError>(res));
-    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+    auto d = decode_ok({0x66, 0x0F, 0x6F, 0x01}, r);
+    bool saw_loadvec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(st.op)) saw_loadvec = true;
+    }
+    REQUIRE(saw_loadvec);
 }
 
-TEST_CASE("decode PADDB with memory operand (mod != 11) is UnsupportedEncoding") {
+TEST_CASE("decode MOVDQA [rcx], xmm0 (66 0F 7F 01) — memory store form") {
     ir::Ref r = 0;
-    // 66 0F FC 01 — paddb xmm0, [rcx]. mod=00, rm=001. We don't
-    // support memory operands for SSE2 yet.
-    auto res = decode_any({0x66, 0x0F, 0xFC, 0x01}, r);
-    REQUIRE(std::holds_alternative<DecodeError>(res));
-    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+    auto d = decode_ok({0x66, 0x0F, 0x7F, 0x01}, r);
+    bool saw_storevec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::StoreVec>(st.op)) saw_storevec = true;
+    }
+    REQUIRE(saw_storevec);
+}
+
+TEST_CASE("decode PADDB xmm0, [rcx] (66 0F FC 01) — memory operand via LoadVec") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xFC, 0x01}, r);
+    bool saw_loadvec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(st.op)) saw_loadvec = true;
+    }
+    REQUIRE(saw_loadvec);
 }
 
 TEST_CASE("Error: HLT (F4) is rejected as UnsupportedEncoding") {

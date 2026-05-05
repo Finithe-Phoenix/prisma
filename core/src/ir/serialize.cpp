@@ -75,11 +75,13 @@ enum class OpKind : std::uint8_t {
     kStoreVecReg = 39,
     kVecFpBinOp  = 40,
     kVecFpScalarBinOp = 41,
+    kLoadVec     = 42,
+    kStoreVec    = 43,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpScalarBinOp);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kStoreVec);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -238,6 +240,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, StoreVecReg>)   return OpKind::kStoreVecReg;
         else if constexpr (std::is_same_v<T, VecFpBinOp>)    return OpKind::kVecFpBinOp;
         else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) return OpKind::kVecFpScalarBinOp;
+        else if constexpr (std::is_same_v<T, LoadVec>)       return OpKind::kLoadVec;
+        else if constexpr (std::is_same_v<T, StoreVec>)      return OpKind::kStoreVec;
     }, op);
 }
 
@@ -419,6 +423,13 @@ void write_payload(std::vector<std::uint8_t>& out, const VecFpScalarBinOp& x) {
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
     put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const LoadVec& x) {
+    put_u32(out, x.addr);
+}
+void write_payload(std::vector<std::uint8_t>& out, const StoreVec& x) {
+    put_u32(out, x.addr);
+    put_u32(out, x.value);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -803,6 +814,19 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_load_vec(Cursor& c, Stmt& s) {
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    s.op = LoadVec{c.take_u32()};
+    return DeserializeError::Ok;
+}
+DeserializeError read_payload_store_vec(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4)) return DeserializeError::Truncated;
+    const std::uint32_t addr = c.take_u32();
+    const std::uint32_t val  = c.take_u32();
+    s.op = StoreVec{addr, val};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_scalar_binop(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  op   = c.take_u8();
@@ -874,6 +898,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kStoreVecReg: return read_payload_store_vec_reg(c, s);
         case OpKind::kVecFpBinOp:  return read_payload_vec_fp_binop(c, s);
         case OpKind::kVecFpScalarBinOp: return read_payload_vec_fp_scalar_binop(c, s);
+        case OpKind::kLoadVec:     return read_payload_load_vec(c, s);
+        case OpKind::kStoreVec:    return read_payload_store_vec(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;
