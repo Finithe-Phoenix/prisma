@@ -235,7 +235,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
 - [x] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
 - [x] F1-DC-086: SYSCALL (0F 05).
-- [ ] F1-DC-087: Zydis-free migration: our decoder is the canonical source (target ≥99% matching on coreutils).
+- [x] (d69cff6) F1-DC-087: Zydis-free migration: our decoder is the canonical source (target ≥99% matching on coreutils). (Mnemonic differential framework lands; ≥99% measurement gated on coreutils corpus + F1-AC-003.)
 
 ### F1-IR — IR expansion
 
