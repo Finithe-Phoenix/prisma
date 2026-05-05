@@ -2826,12 +2826,20 @@ std::variant<Decoded, DecodeError> decode_one(
         //   66 0F EF /r — PXOR  xmm1, xmm2
         // Memory operands (mod != 11) are deferred — emit
         // UnsupportedEncoding for now so callers know to fall back.
-        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+        // Also: 0F 54 (ANDPS), 0F 56 (ORPS), 0F 57 (XORPS), no prefix.
+        //       66 0F 54 (ANDPD), 66 0F 56 (ORPD), 66 0F 57 (XORPD).
+        // These are bitwise — lane-agnostic — so we map them to the
+        // same VecBinOp kinds as PAND/POR/PXOR with B16 lane.
+        const bool is_andps_family =
+            !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x54u || subop == 0x56u || subop == 0x57u);
+        if ((has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
             (subop == 0xFCu || subop == 0xFDu || subop == 0xFEu ||
              subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
              subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
              subop == 0xDBu || subop == 0xEFu ||
-             subop == 0xD5u)) {
+             subop == 0xD5u))
+            || is_andps_family) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -2853,6 +2861,9 @@ std::variant<Decoded, DecodeError> decode_one(
                 case 0xEBu: vop = ir::VecBinOpKind::Or;  break;
                 case 0xEFu: vop = ir::VecBinOpKind::Xor; break;
                 case 0xD5u: vop = ir::VecBinOpKind::Mul; lane = ir::VecLane::H8; break;
+                case 0x54u: vop = ir::VecBinOpKind::And; break;  // ANDPS/ANDPD
+                case 0x56u: vop = ir::VecBinOpKind::Or;  break;  // ORPS/ORPD
+                case 0x57u: vop = ir::VecBinOpKind::Xor; break;  // XORPS/XORPD
                 default: break;
             }
             Decoded d;

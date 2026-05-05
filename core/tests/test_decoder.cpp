@@ -2193,6 +2193,20 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode XORPS xmm0, xmm0 (0F 57 C0) — F2-IR-018 bitwise FP zero") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x57, 0xC0}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op == ir::VecBinOpKind::Xor);
+}
+
+TEST_CASE("decode ANDPD xmm0, xmm1 (66 0F 54 C1) — bitwise FP and") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x54, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op == ir::VecBinOpKind::And);
+}
+
 TEST_CASE("decode CVTSS2SD xmm0, xmm1 (F3 0F 5A C1) — F2-IR-017 single→double") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x0F, 0x5A, 0xC1}, r);
