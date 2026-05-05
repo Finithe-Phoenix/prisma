@@ -271,6 +271,59 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: SQRTSD round-trip — F2-IR-019 sqrt(16.0) == 4.0") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // mov rax, 16; cvtsi2sd xmm0, rax; sqrtsd xmm0, xmm0; cvttsd2si rcx, xmm0; ret.
+    // Round-trip: rcx = 4.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF2, 0x48, 0x0F, 0x2A, 0xC0,    // cvtsi2sd xmm0, rax
+        0xF2, 0x0F, 0x51, 0xC0,          // sqrtsd xmm0, xmm0
+        0xF2, 0x48, 0x0F, 0x2C, 0xC8,    // cvttsd2si rcx, xmm0
+        0xC3,                             // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state()[ir::Gpr::Rax] = 16u;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch message: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rcx] == 4u);
+}
+
+TEST_CASE("e2e: MAXSD selects the larger double") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF2, 0x0F, 0x5F, 0xC1,    // maxsd xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto bits_of = [](double v) -> std::uint64_t {
+        std::uint64_t b; std::memcpy(&b, &v, 8); return b;
+    };
+    disp.state().xmm[0].lo = bits_of(3.0);
+    disp.state().xmm[0].hi = 0;
+    disp.state().xmm[1].lo = bits_of(7.5);
+    disp.state().xmm[1].hi = 0;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == bits_of(7.5));
+}
+
 TEST_CASE("e2e: XORPS xmm0, xmm0 — F2-IR-018 idiomatic FP zero") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

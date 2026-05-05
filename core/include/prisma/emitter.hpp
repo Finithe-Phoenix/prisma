@@ -322,6 +322,9 @@ public:
     void vfsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vfmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfsqrt_q(FpReg rd, FpReg rn, VecLane lane);
 
     // F2-IR-006 — scalar SSE FP semantics: result.low = op(rn.low, rm.low),
     // result.upper = rn.upper (untouched). `sz` selects S (32-bit) or D
@@ -331,6 +334,9 @@ public:
     void vfsub_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
     void vfmul_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
     void vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfmin_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfmax_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfsqrt_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);  // unary; rm is the source.
 
     // F2-IR-009. Lane-wise integer compare (cmeq / cmgt).
     void vcmeq_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

@@ -917,6 +917,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Sub: emitter_.vfsub_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Mul: emitter_.vfmul_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Div: emitter_.vfdiv_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Min: emitter_.vfmin_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Max: emitter_.vfmax_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Sqrt: emitter_.vfsqrt_q(rd, rr, lane); break;
             }
             return {};
         }
@@ -1161,6 +1164,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Sub: emitter_.vfsub_scalar(rd, rl, rr, op.size); break;
                 case ir::VecFpBinOpKind::Mul: emitter_.vfmul_scalar(rd, rl, rr, op.size); break;
                 case ir::VecFpBinOpKind::Div: emitter_.vfdiv_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Min:  emitter_.vfmin_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Max:  emitter_.vfmax_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Sqrt: emitter_.vfsqrt_scalar(rd, rl, rr, op.size); break;
             }
             return {};
         }

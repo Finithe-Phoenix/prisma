@@ -611,6 +611,17 @@ void Emitter::vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
     impl_->masm.Fdiv(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
                      to_vixl_q_fp(rm, lane));
 }
+void Emitter::vfmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fmin(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fmax(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfsqrt_q(FpReg rd, FpReg rn, VecLane lane) {
+    impl_->masm.Fsqrt(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane));
+}
 
 // F2-IR-006 — internal scratch V31, never used by the SSA scratch pool
 // (which only allocates V0..V7). Common impl for the four scalar SSE ops:
@@ -624,6 +635,8 @@ void Emitter::vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
 // and let the assembler optimise. Using V31 as a stable scratch means
 // the SSA register allocator (which only uses V0..V7) never aliases it.
 namespace {
+// `which` codes:
+//   '+' Add  '-' Sub  '*' Mul  '/' Div  'm' Min  'M' Max  's' Sqrt (unary, uses rm only)
 void emit_scalar_sse_op(vixl_aa::MacroAssembler& masm,
                         int rd_c, int rn_c, int rm_c,
                         ir::FpSize sz,
@@ -647,6 +660,9 @@ void emit_scalar_sse_op(vixl_aa::MacroAssembler& masm,
             case '-': masm.Fsub(s_t, s_n, s_m); break;
             case '*': masm.Fmul(s_t, s_n, s_m); break;
             case '/': masm.Fdiv(s_t, s_n, s_m); break;
+            case 'm': masm.Fmin(s_t, s_n, s_m); break;
+            case 'M': masm.Fmax(s_t, s_n, s_m); break;
+            case 's': masm.Fsqrt(s_t, s_m);     break;
         }
         masm.Mov(v_d_q, v_n_q);
         const vixl_aa::VRegister v_d_s4(rd_c,                vixl_aa::kFormat4S);
@@ -661,6 +677,9 @@ void emit_scalar_sse_op(vixl_aa::MacroAssembler& masm,
             case '-': masm.Fsub(d_t, d_n, d_m); break;
             case '*': masm.Fmul(d_t, d_n, d_m); break;
             case '/': masm.Fdiv(d_t, d_n, d_m); break;
+            case 'm': masm.Fmin(d_t, d_n, d_m); break;
+            case 'M': masm.Fmax(d_t, d_n, d_m); break;
+            case 's': masm.Fsqrt(d_t, d_m);     break;
         }
         masm.Mov(v_d_q, v_n_q);
         const vixl_aa::VRegister v_d_d2(rd_c,                vixl_aa::kFormat2D);
@@ -685,6 +704,18 @@ void Emitter::vfmul_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
 void Emitter::vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
     emit_scalar_sse_op(impl_->masm,
         static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '/');
+}
+void Emitter::vfmin_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, 'm');
+}
+void Emitter::vfmax_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, 'M');
+}
+void Emitter::vfsqrt_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
+    emit_scalar_sse_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, 's');
 }
 
 void Emitter::vcmeq_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {

@@ -3382,7 +3382,10 @@ std::variant<Decoded, DecodeError> decode_one(
         if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
             !(has_f2 && has_f3) &&
             (subop == 0x58u || subop == 0x59u ||
-             subop == 0x5Cu || subop == 0x5Eu)) {
+             subop == 0x5Cu || subop == 0x5Eu ||
+             subop == 0x5Du || subop == 0x5Fu ||  // MINSS/MINSD, MAXSS/MAXSD
+             subop == 0x51u                       // SQRTSS / SQRTSD
+            )) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3395,6 +3398,9 @@ std::variant<Decoded, DecodeError> decode_one(
                 case 0x59u: vop = ir::VecFpBinOpKind::Mul; break;
                 case 0x5Cu: vop = ir::VecFpBinOpKind::Sub; break;
                 case 0x5Eu: vop = ir::VecFpBinOpKind::Div; break;
+                case 0x5Du: vop = ir::VecFpBinOpKind::Min; break;
+                case 0x5Fu: vop = ir::VecFpBinOpKind::Max; break;
+                case 0x51u: vop = ir::VecFpBinOpKind::Sqrt; break;
                 default: break;
             }
             const ir::FpSize size = has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;

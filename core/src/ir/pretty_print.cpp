@@ -240,6 +240,9 @@ std::string pretty_print(const Op& op) {
                 case VecFpBinOpKind::Sub: op_n = "vfsub"; break;
                 case VecFpBinOpKind::Mul: op_n = "vfmul"; break;
                 case VecFpBinOpKind::Div: op_n = "vfdiv"; break;
+                case VecFpBinOpKind::Min: op_n = "vfmin"; break;
+                case VecFpBinOpKind::Max: op_n = "vfmax"; break;
+                case VecFpBinOpKind::Sqrt: op_n = "vfsqrt"; break;
             }
             const char* size_n = (x.size == VecFpSize::S4) ? "s4" : "d2";
             os << op_n << "." << size_n << " ";
@@ -322,6 +325,9 @@ std::string pretty_print(const Op& op) {
                 case VecFpBinOpKind::Sub: op_n = "vfsub_s"; break;
                 case VecFpBinOpKind::Mul: op_n = "vfmul_s"; break;
                 case VecFpBinOpKind::Div: op_n = "vfdiv_s"; break;
+                case VecFpBinOpKind::Min: op_n = "vfmin_s"; break;
+                case VecFpBinOpKind::Max: op_n = "vfmax_s"; break;
+                case VecFpBinOpKind::Sqrt: op_n = "vfsqrt_s"; break;
             }
             const char* size_n = (x.size == FpSize::F32) ? "f32" : "f64";
             os << op_n << "." << size_n << " ";

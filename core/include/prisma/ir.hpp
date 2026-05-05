@@ -449,6 +449,8 @@ struct VecShiftBytes {
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
 enum class VecFpBinOpKind : std::uint8_t {
     Add = 0, Sub, Mul, Div,
+    Min, Max,
+    Sqrt,            // F2-IR-019 — unary; uses rhs only (lhs supplies upper bits in scalar form).
 };
 enum class VecFpSize : std::uint8_t { S4 = 0, D2 };
 
