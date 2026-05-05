@@ -3329,7 +3329,10 @@ std::variant<Decoded, DecodeError> decode_one(
         // (ADDSS/ADDSD) and are left for a follow-up.
         if (!has_lock && !has_f2 && !has_f3 &&
             (subop == 0x58u || subop == 0x59u ||
-             subop == 0x5Cu || subop == 0x5Eu)) {
+             subop == 0x5Cu || subop == 0x5Eu ||
+             subop == 0x51u ||                    // SQRTPS/PD
+             subop == 0x5Du || subop == 0x5Fu     // MINPS/PD, MAXPS/PD
+            )) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3338,10 +3341,13 @@ std::variant<Decoded, DecodeError> decode_one(
             const auto& m = std::get<ModRmOperand>(modrm);
             ir::VecFpBinOpKind vop = ir::VecFpBinOpKind::Add;
             switch (subop) {
-                case 0x58u: vop = ir::VecFpBinOpKind::Add; break;
-                case 0x59u: vop = ir::VecFpBinOpKind::Mul; break;
-                case 0x5Cu: vop = ir::VecFpBinOpKind::Sub; break;
-                case 0x5Eu: vop = ir::VecFpBinOpKind::Div; break;
+                case 0x58u: vop = ir::VecFpBinOpKind::Add;  break;
+                case 0x59u: vop = ir::VecFpBinOpKind::Mul;  break;
+                case 0x5Cu: vop = ir::VecFpBinOpKind::Sub;  break;
+                case 0x5Eu: vop = ir::VecFpBinOpKind::Div;  break;
+                case 0x5Du: vop = ir::VecFpBinOpKind::Min;  break;
+                case 0x5Fu: vop = ir::VecFpBinOpKind::Max;  break;
+                case 0x51u: vop = ir::VecFpBinOpKind::Sqrt; break;
                 default: break;
             }
             const ir::VecFpSize size = has_operand_size_override
