@@ -2193,6 +2193,29 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode PADDSB xmm0, xmm1 (66 0F EC C1) — F2-IR-023 signed sat add B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xEC, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::SqAdd);
+    REQUIRE(vb.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PADDUSW xmm0, xmm1 (66 0F DD C1) — unsigned sat add H8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xDD, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::UqAdd);
+    REQUIRE(vb.lane == ir::VecLane::H8);
+}
+
+TEST_CASE("decode PSUBUSB xmm0, xmm1 (66 0F D8 C1) — unsigned sat sub B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xD8, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op == ir::VecBinOpKind::UqSub);
+}
+
 TEST_CASE("decode PINSRW xmm0, eax, 3 (66 0F C4 C0 03) — F2-IR-022 insert word") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0xC4, 0xC0, 0x03}, r);

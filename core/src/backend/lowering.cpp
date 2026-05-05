@@ -891,6 +891,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecBinOpKind::Or:  emitter_.vorr_q(rd, rl, rr);       break;
                 case ir::VecBinOpKind::Xor: emitter_.veor_q(rd, rl, rr);       break;
                 case ir::VecBinOpKind::Mul: emitter_.vmul_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SqAdd: emitter_.vsqadd_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::UqAdd: emitter_.vuqadd_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SqSub: emitter_.vsqsub_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::UqSub: emitter_.vuqsub_q(rd, rl, rr, lane); break;
             }
             return {};
         }

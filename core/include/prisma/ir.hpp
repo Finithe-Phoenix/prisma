@@ -344,6 +344,10 @@ enum class VecBinOpKind : std::uint8_t {
     Add = 0, Sub,
     And, Or, Xor,
     Mul,            // F2-IR-013 — lane-wise integer multiply (PMULLW etc.)
+    SqAdd,          // F2-IR-023 — signed saturating add (PADDSB/W).
+    UqAdd,          //              unsigned saturating add (PADDUSB/W).
+    SqSub,          //              signed saturating sub  (PSUBSB/W).
+    UqSub,          //              unsigned saturating sub (PSUBUSB/W).
 };
 
 struct VecConstant {

@@ -2833,13 +2833,19 @@ std::variant<Decoded, DecodeError> decode_one(
         const bool is_andps_family =
             !has_lock && !has_f2 && !has_f3 &&
             (subop == 0x54u || subop == 0x56u || subop == 0x57u);
+        const bool is_sat_arith =
+            has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xECu || subop == 0xEDu ||  // PADDSB/W
+             subop == 0xDCu || subop == 0xDDu ||  // PADDUSB/W
+             subop == 0xE8u || subop == 0xE9u ||  // PSUBSB/W
+             subop == 0xD8u || subop == 0xD9u);   // PSUBUSB/W
         if ((has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
             (subop == 0xFCu || subop == 0xFDu || subop == 0xFEu ||
              subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
              subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
              subop == 0xDBu || subop == 0xEFu ||
              subop == 0xD5u))
-            || is_andps_family) {
+            || is_andps_family || is_sat_arith) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -2864,6 +2870,14 @@ std::variant<Decoded, DecodeError> decode_one(
                 case 0x54u: vop = ir::VecBinOpKind::And; break;  // ANDPS/ANDPD
                 case 0x56u: vop = ir::VecBinOpKind::Or;  break;  // ORPS/ORPD
                 case 0x57u: vop = ir::VecBinOpKind::Xor; break;  // XORPS/XORPD
+                case 0xECu: vop = ir::VecBinOpKind::SqAdd; lane = ir::VecLane::B16; break;
+                case 0xEDu: vop = ir::VecBinOpKind::SqAdd; lane = ir::VecLane::H8;  break;
+                case 0xDCu: vop = ir::VecBinOpKind::UqAdd; lane = ir::VecLane::B16; break;
+                case 0xDDu: vop = ir::VecBinOpKind::UqAdd; lane = ir::VecLane::H8;  break;
+                case 0xE8u: vop = ir::VecBinOpKind::SqSub; lane = ir::VecLane::B16; break;
+                case 0xE9u: vop = ir::VecBinOpKind::SqSub; lane = ir::VecLane::H8;  break;
+                case 0xD8u: vop = ir::VecBinOpKind::UqSub; lane = ir::VecLane::B16; break;
+                case 0xD9u: vop = ir::VecBinOpKind::UqSub; lane = ir::VecLane::H8;  break;
                 default: break;
             }
             Decoded d;

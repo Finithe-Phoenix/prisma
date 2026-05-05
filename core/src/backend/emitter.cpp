@@ -580,6 +580,22 @@ void Emitter::vmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
     impl_->masm.Mul(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
                     to_vixl_q(rm, lane));
 }
+void Emitter::vsqadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Sqadd(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                      to_vixl_q(rm, lane));
+}
+void Emitter::vuqadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Uqadd(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                      to_vixl_q(rm, lane));
+}
+void Emitter::vsqsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Sqsub(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                      to_vixl_q(rm, lane));
+}
+void Emitter::vuqsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Uqsub(to_vixl_q(rd, lane), to_vixl_q(rn, lane),
+                      to_vixl_q(rm, lane));
+}
 
 namespace {
 vixl_aa::VRegister to_vixl_q_fp(Emitter::FpReg r, Emitter::VecLane lane) noexcept {

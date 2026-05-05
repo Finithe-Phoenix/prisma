@@ -271,6 +271,32 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PADDUSB clamps at 0xFF — F2-IR-023 unsigned sat add") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xDC, 0xC1,  // paddusb xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // Each byte: 0xF0 + 0x20 = 0x110 → clamp to 0xFF.
+    disp.state().xmm[0].lo = 0xF0F0F0F0F0F0F0F0ULL;
+    disp.state().xmm[0].hi = 0xF0F0F0F0F0F0F0F0ULL;
+    disp.state().xmm[1].lo = 0x2020202020202020ULL;
+    disp.state().xmm[1].hi = 0x2020202020202020ULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == 0xFFFFFFFFFFFFFFFFULL);
+    REQUIRE(disp.state().xmm[0].hi == 0xFFFFFFFFFFFFFFFFULL);
+}
+
 TEST_CASE("e2e: PEXTRW eax, xmm0, 3 — F2-IR-022 word extract from lane 3") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;
