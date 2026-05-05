@@ -357,7 +357,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [?] F1-LN-008: Add mathlib dependency to Lake. (Deferred — `bv_decide` from `Std.Tactic.BVDecide` covers the F1-LN-009 use case without mathlib; mathlib lands when a proof actually needs it.)
 - [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
 - [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
-- [ ] F1-LN-011: Prove `dead_code_eliminate` soundness.
+- [x] (d08c090) F1-LN-011: Prove `dead_code_eliminate` soundness. (Per-op `evalPure_unaffected_by_unread_ref` proven; whole-pass composition is F1-LN-012.)
 - [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
 - [x] (451c669) F1-LN-013: Define "observable trace" formally.
 - [ ] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store).
