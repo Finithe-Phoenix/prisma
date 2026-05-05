@@ -26,6 +26,7 @@ pub mod container;
 pub mod config;
 pub mod integrity;
 pub mod cache_proto;
+pub mod pe_loader;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
