@@ -1,0 +1,36 @@
+# Prisma Rust workspace.
+# Status: skeleton. Real container / FFI / networking work lands
+# Fase 1+ as the C++ core stabilises.
+
+[workspace]
+resolver = "2"
+members = [
+    "orchestrator",
+]
+
+[workspace.package]
+version       = "0.0.1"
+edition       = "2021"  # bump to 2024 once it's stable.
+license       = "Apache-2.0"
+repository    = "https://github.com/prisma-emu/prisma"
+authors       = ["Danny <danny@prisma-emu.dev>"]
+rust-version  = "1.75"
+
+[workspace.dependencies]
+serde      = { version = "1.0",  features = ["derive"] }
+toml       = "0.8"
+sha2       = "0.10"
+zstd       = "0.13"
+thiserror  = "1.0"
+anyhow     = "1.0"
+
+[profile.release]
+lto             = "thin"
+codegen-units   = 1
+panic           = "abort"
+strip           = true
+
+[profile.release-dbg]
+inherits        = "release"
+strip           = false
+debug           = "limited"
