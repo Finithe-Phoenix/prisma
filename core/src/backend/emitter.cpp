@@ -815,6 +815,31 @@ void Emitter::vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane) 
                      static_cast<int>(eff));
 }
 
+void Emitter::vshuffle_2src_s4(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control) {
+    const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_n_s4(static_cast<int>(rn), vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_m_s4(static_cast<int>(rm), vixl_aa::kFormat4S);
+    // Lanes 0,1 from rn; 2,3 from rm.
+    impl_->masm.Mov(v_t_s4, 0, v_n_s4, (control >> 0) & 0x3);
+    impl_->masm.Mov(v_t_s4, 1, v_n_s4, (control >> 2) & 0x3);
+    impl_->masm.Mov(v_t_s4, 2, v_m_s4, (control >> 4) & 0x3);
+    impl_->masm.Mov(v_t_s4, 3, v_m_s4, (control >> 6) & 0x3);
+    const vixl_aa::VRegister v_t_q(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
+void Emitter::vshuffle_2src_d2(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control) {
+    const vixl_aa::VRegister v_t_d2(kInternalFpScratchV, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_n_d2(static_cast<int>(rn), vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_m_d2(static_cast<int>(rm), vixl_aa::kFormat2D);
+    impl_->masm.Mov(v_t_d2, 0, v_n_d2, (control >> 0) & 0x1);
+    impl_->masm.Mov(v_t_d2, 1, v_m_d2, (control >> 1) & 0x1);
+    const vixl_aa::VRegister v_t_q(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
 void Emitter::vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control) {
     // Build the result in V31 first to handle the rd == rn case.
     const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);

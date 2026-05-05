@@ -130,6 +130,7 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{27u, IntToFpScalar{0u, OpSize::I32, FpSize::F32}});
     c.visit(Stmt{28u, FpToIntScalar{14u, FpSize::F64, OpSize::I64}});
     c.visit(Stmt{29u, FpCvtScalar{14u, 14u, FpSize::F32, FpSize::F64}});
+    c.visit(Stmt{30u, VecShuffle2Src{false, 14u, 14u, 0x1B}});
 
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));

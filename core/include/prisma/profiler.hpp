@@ -49,6 +49,7 @@ public:
         VecCmp, VecShuffle32x4,
         VecUnpack, VecShiftImm, VecShiftBytes,
         IntToFpScalar, FpToIntScalar, FpCvtScalar,
+        VecShuffle2Src,
         kCount  // sentinel
     };
 

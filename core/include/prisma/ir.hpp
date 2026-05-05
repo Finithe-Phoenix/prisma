@@ -407,6 +407,19 @@ struct VecShuffle32x4 {
     std::uint8_t control;
 };
 
+// F2-IR-020 — SHUFPS / SHUFPD (two-source FP shuffle).
+//   SHUFPS: result lanes 0,1 from lhs (using control[0:1], [2:3]),
+//           result lanes 2,3 from rhs (using control[4:5], [6:7]).
+//   SHUFPD: result lane 0 from lhs (control[0] picks lane 0/1),
+//           result lane 1 from rhs (control[1] picks lane 0/1).
+// `is_pd` selects the D2 (SHUFPD) form; otherwise S4 (SHUFPS).
+struct VecShuffle2Src {
+    bool         is_pd;
+    Ref          lhs;
+    Ref          rhs;
+    std::uint8_t control;
+};
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -574,7 +587,8 @@ using Op = std::variant<
     VecUnpack, VecShiftImm,
     VecShiftBytes,
     IntToFpScalar, FpToIntScalar,
-    FpCvtScalar
+    FpCvtScalar,
+    VecShuffle2Src
 >;
 
 // ---------------------------------------------------------------------------
@@ -678,6 +692,7 @@ bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept;
 bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept;
 bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept;
 bool operator==(const FpCvtScalar&   a, const FpCvtScalar&   b) noexcept;
+bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

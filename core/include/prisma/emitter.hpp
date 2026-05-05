@@ -347,6 +347,11 @@ public:
     // (mov v.s[i], src.s[lane]) into V31 scratch, then mov to dst.
     void vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control);
 
+    // F2-IR-020. SHUFPS / SHUFPD lowering — picks lanes from rn for
+    // the first half of the result and from rm for the second half.
+    void vshuffle_2src_s4(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control);
+    void vshuffle_2src_d2(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

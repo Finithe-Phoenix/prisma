@@ -64,6 +64,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, IntToFpScalar>) return OpCounter::Kind::IntToFpScalar;
         else if constexpr (std::is_same_v<T, FpToIntScalar>) return OpCounter::Kind::FpToIntScalar;
         else if constexpr (std::is_same_v<T, FpCvtScalar>)   return OpCounter::Kind::FpCvtScalar;
+        else if constexpr (std::is_same_v<T, VecShuffle2Src>) return OpCounter::Kind::VecShuffle2Src;
     }, op);
 }
 

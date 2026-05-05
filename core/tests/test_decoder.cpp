@@ -2193,6 +2193,21 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode SHUFPS xmm0, xmm1, 0xE4 (0F C6 C1 E4) — F2-IR-020 FP shuffle") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0xC6, 0xC1, 0xE4}, r);
+    auto vs = std::get<ir::VecShuffle2Src>(d.stmts[2].op);
+    REQUIRE(vs.is_pd   == false);
+    REQUIRE(vs.control == 0xE4);
+}
+
+TEST_CASE("decode SHUFPD xmm0, xmm1, 0x01 (66 0F C6 C1 01) — D2 form") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xC6, 0xC1, 0x01}, r);
+    auto vs = std::get<ir::VecShuffle2Src>(d.stmts[2].op);
+    REQUIRE(vs.is_pd == true);
+}
+
 TEST_CASE("decode XORPS xmm0, xmm0 (0F 57 C0) — F2-IR-018 bitwise FP zero") {
     ir::Ref r = 0;
     auto d = decode_ok({0x0F, 0x57, 0xC0}, r);

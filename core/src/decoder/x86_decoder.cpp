@@ -3050,6 +3050,46 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-020: SHUFPS / SHUFPD (two-source FP shuffle).
+        //   0F C6 /r ib — SHUFPS xmm1, xmm2/m128, imm8 (S4 lanes)
+        //   66 0F C6 /r ib — SHUFPD                    (D2 lanes)
+        if (!has_lock && !has_f2 && !has_f3 && subop == 0xC6u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t control =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            const bool is_pd = has_operand_size_override;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecShuffle2Src{is_pd, r_lhs, r_rhs, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-010: PSHUFD xmm1, xmm2/m128, imm8 (66 0F 70 /r ib).
         // Permutes 4 32-bit lanes of source per immediate control byte.
         if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&

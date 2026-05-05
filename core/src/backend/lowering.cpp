@@ -225,6 +225,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::FpCvtScalar>)   { bump(op.lhs, i); bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShuffle2Src>) { bump(op.lhs, i); bump(op.rhs, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -966,6 +967,21 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecShiftKind::ArithShr:
                     emitter_.vsshr_imm_q(rd, rn, op.count, lane); break;
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShuffle2Src>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShuffle2Src without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecShuffle2Src.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecShuffle2Src.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShuffle2Src"};
+            }
+            if (op.is_pd) emitter_.vshuffle_2src_d2(rd, rl, rr, op.control);
+            else          emitter_.vshuffle_2src_s4(rd, rl, rr, op.control);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::FpCvtScalar>) {

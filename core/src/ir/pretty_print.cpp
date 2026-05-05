@@ -281,6 +281,10 @@ std::string pretty_print(const Op& op) {
             os << "fcvtzs." << ((x.int_size == OpSize::I32) ? "i32" : "i64")
                << ((x.fp_size == FpSize::F32) ? ".f32 " : ".f64 ");
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
+            os << (x.is_pd ? "vshufpd " : "vshufps ");
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
         } else if constexpr (std::is_same_v<T, FpCvtScalar>) {
             os << "fcvt_s."
                << ((x.src_size == FpSize::F32) ? "f32" : "f64") << "->"

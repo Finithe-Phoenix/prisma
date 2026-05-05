@@ -271,6 +271,40 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: SHUFPS xmm0, xmm1, 0x4E — F2-IR-020 two-source FP shuffle") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // shufps xmm0, xmm1, 0x4E: control = 01_00_11_10
+    //   result.s[0] = xmm0.s[(0x4E >> 0) & 3] = xmm0.s[2]
+    //   result.s[1] = xmm0.s[(0x4E >> 2) & 3] = xmm0.s[3]
+    //   result.s[2] = xmm1.s[(0x4E >> 4) & 3] = xmm1.s[0]
+    //   result.s[3] = xmm1.s[(0x4E >> 6) & 3] = xmm1.s[1]
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x0F, 0xC6, 0xC1, 0x4E,  // shufps xmm0, xmm1, 0x4E
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[0].lo = pack4(0xA0u, 0xA1u);
+    disp.state().xmm[0].hi = pack4(0xA2u, 0xA3u);
+    disp.state().xmm[1].lo = pack4(0xB0u, 0xB1u);
+    disp.state().xmm[1].hi = pack4(0xB2u, 0xB3u);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Expected: {a2, a3, b0, b1}
+    REQUIRE(disp.state().xmm[0].lo == pack4(0xA2u, 0xA3u));
+    REQUIRE(disp.state().xmm[0].hi == pack4(0xB0u, 0xB1u));
+}
+
 TEST_CASE("e2e: SQRTPS — packed sqrt of 4 floats") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

@@ -170,6 +170,10 @@ bool operator==(const FpCvtScalar& a, const FpCvtScalar& b) noexcept {
     return a.lhs == b.lhs && a.src == b.src
         && a.src_size == b.src_size && a.dst_size == b.dst_size;
 }
+bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept {
+    return a.is_pd == b.is_pd && a.lhs == b.lhs && a.rhs == b.rhs
+        && a.control == b.control;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;
