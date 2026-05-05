@@ -2103,6 +2103,22 @@ TEST_CASE("decode PMULLW xmm0, xmm1 (66 0F D5 C1) — VecBinOp.Mul H8") {
     REQUIRE(vb.lane == ir::VecLane::H8);
 }
 
+TEST_CASE("decode UNPCKLPS xmm0, xmm1 (0F 14 C1) — F2-IR-015 FP unpack low S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x14, 0xC1}, r);
+    auto vu = std::get<ir::VecUnpack>(d.stmts[2].op);
+    REQUIRE(vu.is_high == false);
+    REQUIRE(vu.lane    == ir::VecLane::S4);
+}
+
+TEST_CASE("decode UNPCKHPD xmm0, xmm1 (66 0F 15 C1) — FP unpack high D2") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x15, 0xC1}, r);
+    auto vu = std::get<ir::VecUnpack>(d.stmts[2].op);
+    REQUIRE(vu.is_high == true);
+    REQUIRE(vu.lane    == ir::VecLane::D2);
+}
+
 TEST_CASE("decode PUNPCKLBW xmm0, xmm1 (66 0F 60 C1) — VecUnpack low B16") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x60, 0xC1}, r);

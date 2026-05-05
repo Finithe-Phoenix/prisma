@@ -2878,6 +2878,46 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-015: FP UNPCKLPS/HPS/LPD/HPD share VecUnpack with the
+        // integer lane forms.
+        //   0F 14 /r — UNPCKLPS  (S4 low)
+        //   0F 15 /r — UNPCKHPS  (S4 high)
+        //   66 0F 14 /r — UNPCKLPD (D2 low)
+        //   66 0F 15 /r — UNPCKHPD (D2 high)
+        if (!has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x14u || subop == 0x15u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::VecLane lane = has_operand_size_override
+                                         ? ir::VecLane::D2
+                                         : ir::VecLane::S4;
+            const bool is_high = subop == 0x15u;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res, ir::VecUnpack{is_high, r_lhs, r_rhs, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-011: UNPCKL/UNPCKH — interleave lanes.
         //   66 0F 60/61/62/6C — PUNPCKL{BW,WD,DQ,QDQ}
         //   66 0F 68/69/6A/6D — PUNPCKH{BW,WD,DQ,QDQ}
