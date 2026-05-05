@@ -51,14 +51,25 @@ El manifiesto técnico y las decisiones estratégicas están en [PROYECTO_PLAN_E
 
 ## Subsistemas activos
 
-Estado al **2026-04-20** (fin de Fase 0, comienzo de Fase 1).
+Estado al **2026-05-05** (mediados de Fase 2 — SSE/SSE2 substantialmente
+cubierto, ejecutando en hardware ARM64).
 
 - **`core/`** (C++20) — DBT engine. Ya existe y compila con
   `cmake --build core/build`. Subdivisiones:
   - `prisma_ir` — IR SSA + pretty-print + validator (F1-IR-016).
   - `prisma_decoder` — x86_64 → IR. SIB, RIP-relative, REX.R/X/B,
     prefijo 0x67 address-size override, segment overrides aceptados,
-    `Cpuid` pseudo-op.
+    `Cpuid` pseudo-op. SSE/SSE2 cobertura amplia (F2-IR-001..022):
+    PADDx/PSUBx/PAND/POR/PXOR/PMULLW (reg+mem),
+    MOVDQA/MOVDQU/MOVAPS/MOVUPS/MOVAPD/MOVUPD,
+    MOVD/MOVQ (GPR↔XMM), MOVSS/MOVSD,
+    ADDPS/SUBPS/MULPS/DIVPS/MAXPS/MINPS/SQRTPS + PD variants,
+    ADDSS/SUBSS/MULSS/DIVSS/MAXSS/MINSS/SQRTSS + SD variants,
+    PCMPEQB/W/D + PCMPGTB/W/D, PSHUFD, SHUFPS/SHUFPD,
+    PUNPCKL/H{BW,WD,DQ,QDQ} + UNPCKL/HPS/PD,
+    PSLLW/D/Q + PSRLW/D/Q + PSRAW/D + PSLLDQ/PSRLDQ,
+    CVTSI2SS/SD + CVTTSS/SD2SI + CVTSS2SD/CVTSD2SS,
+    PINSRW/PEXTRW, ANDPS/ORPS/XORPS + PD variants.
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -78,7 +89,9 @@ Estado al **2026-04-20** (fin de Fase 0, comienzo de Fase 1).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 400+ Catch2 tests. Benchmarks opt-in vía
+  - `prisma_core_tests` — 690+ Catch2 tests / 4500+ assertions.
+    E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
+    Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
 - **`ir-spec/`** (Lean 4) — Spec formal del IR. Sintaxis,
   semánticas puras, 3 lemmas base. Un único `sorry` pendiente (budget
