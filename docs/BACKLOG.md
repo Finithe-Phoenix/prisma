@@ -356,7 +356,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (ff57d65) F1-LN-007: Step relation for CondJumpFlags.
 - [?] F1-LN-008: Add mathlib dependency to Lake. (Deferred — `bv_decide` from `Std.Tactic.BVDecide` covers the F1-LN-009 use case without mathlib; mathlib lands when a proof actually needs it.)
 - [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
-- [ ] F1-LN-010: Prove `constant_propagate` soundness (observable equivalence).
+- [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
 - [ ] F1-LN-011: Prove `dead_code_eliminate` soundness.
 - [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
 - [x] (451c669) F1-LN-013: Define "observable trace" formally.
