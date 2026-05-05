@@ -271,6 +271,38 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PADDD xmm0, [rcx] — F2-IR-007 SSE2 memory operand") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xFE, 0x01,  // paddd xmm0, [rcx]
+        0xC3,                     // ret
+    };
+    alignas(16) std::uint32_t mem_operand[4] = {10u, 20u, 30u, 40u};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) |
+               (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[0].lo = pack4(1u, 2u);
+    disp.state().xmm[0].hi = pack4(3u, 4u);
+    disp.state()[ir::Gpr::Rcx] =
+        reinterpret_cast<std::uint64_t>(&mem_operand[0]);
+
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch message: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack4(11u, 22u));
+    REQUIRE(disp.state().xmm[0].hi == pack4(33u, 44u));
+}
+
 TEST_CASE("e2e: cache hit — running the same blob twice reuses the translation") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
 

@@ -88,6 +88,18 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
             (void)x;  // no SSA operands; cc + PCs are constants.
+        } else if constexpr (std::is_same_v<T, ir::VecBinOp>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::VecFpBinOp>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::StoreVecReg>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::LoadVec>) {
+            into.insert(x.addr);
+        } else if constexpr (std::is_same_v<T, ir::StoreVec>) {
+            into.insert(x.addr); into.insert(x.value);
         }
     }, op);
 }

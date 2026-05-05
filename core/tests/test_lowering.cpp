@@ -11,6 +11,7 @@
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
 #include "prisma/lowering.hpp"
+#include "prisma/passes.hpp"
 
 using namespace prisma;
 
@@ -1022,6 +1023,58 @@ TEST_CASE("Lowerer: VecBinOp lanes (H8/S4/D2) emit the right arrangement") {
         REQUIRE(ok);
         REQUIRE(d.find("2d") != std::string::npos);
     }
+}
+
+TEST_CASE("Lowerer: PADDD xmm0, [rcx] full IR sequence lowers") {
+    std::vector<ir::Stmt> stmts = {
+        {0u,           ir::LoadVecReg{0u}},
+        {1u,           ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {2u,           ir::LoadVec{1u}},
+        {3u,           ir::VecBinOp{ir::VecBinOpKind::Add, 0u, 2u, ir::VecLane::S4}},
+        {std::nullopt, ir::StoreVecReg{0u, 3u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+}
+
+TEST_CASE("Lowerer: PADDD via default pipeline still lowers") {
+    std::vector<ir::Stmt> stmts = {
+        {0u,           ir::LoadVecReg{0u}},
+        {1u,           ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {2u,           ir::LoadVec{1u}},
+        {3u,           ir::VecBinOp{ir::VecBinOpKind::Add, 0u, 2u, ir::VecLane::S4}},
+        {std::nullopt, ir::StoreVecReg{0u, 3u}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto pm = passes::default_pipeline();
+    auto [opt, _stats] = pm.run(stmts);
+    std::string dump;
+    for (auto const& s : opt) {
+        dump += ir::pretty_print(s);
+        dump += "\n";
+    }
+    INFO("post-pipeline:\n" << dump);
+    bool ok;
+    const std::string d = lower_to_disasm(opt, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+}
+
+TEST_CASE("Lowerer: LoadVec + StoreVec emit ldr/str Q forms") {
+    std::vector<ir::Stmt> stmts = {
+        {0u,           ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {1u,           ir::LoadVec{0u}},
+        {std::nullopt, ir::StoreVec{0u, 1u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldr") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
 }
 
 TEST_CASE("Lowerer: bitwise VecBinOp(And/Or/Xor) emits 16b NEON forms") {
