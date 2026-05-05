@@ -2067,6 +2067,37 @@ TEST_CASE("decode DIVSS xmm0, xmm1 (F3 0F 5E C1) — scalar Div F32") {
     REQUIRE(vfb.size == ir::FpSize::F32);
 }
 
+TEST_CASE("decode MOVD xmm0, eax (66 0F 6E C0) — XmmFromGpr.I32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x6E, 0xC0}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    auto x = std::get<ir::XmmFromGpr>(d.stmts[1].op);
+    REQUIRE(x.size == ir::OpSize::I32);
+}
+
+TEST_CASE("decode MOVQ xmm0, rax (66 48 0F 6E C0) — XmmFromGpr.I64 via REX.W") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x48, 0x0F, 0x6E, 0xC0}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    auto x = std::get<ir::XmmFromGpr>(d.stmts[1].op);
+    REQUIRE(x.size == ir::OpSize::I64);
+}
+
+TEST_CASE("decode MOVD eax, xmm0 (66 0F 7E C0) — GprFromXmm.I32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x7E, 0xC0}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    auto x = std::get<ir::GprFromXmm>(d.stmts[1].op);
+    REQUIRE(x.size == ir::OpSize::I32);
+}
+
+TEST_CASE("decode MOVQ rax, xmm0 (66 48 0F 7E C0) — GprFromXmm.I64") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x48, 0x0F, 0x7E, 0xC0}, r);
+    auto x = std::get<ir::GprFromXmm>(d.stmts[1].op);
+    REQUIRE(x.size == ir::OpSize::I64);
+}
+
 TEST_CASE("decode ADDPS xmm0, [rcx] (0F 58 01) — F2-IR-007 memory form via LoadVec") {
     ir::Ref r = 0;
     auto d = decode_ok({0x0F, 0x58, 0x01}, r);

@@ -100,6 +100,10 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.addr);
         } else if constexpr (std::is_same_v<T, ir::StoreVec>) {
             into.insert(x.addr); into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::XmmFromGpr>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
+            into.insert(x.value);
         }
     }, op);
 }

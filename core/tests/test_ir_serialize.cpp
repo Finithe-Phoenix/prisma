@@ -182,6 +182,17 @@ TEST_CASE("ir_serialize: LoadVec + StoreVec round-trip", "[ir_serialize]") {
         Op{StoreVec{Ref{0u}, Ref{8u}}}});
 }
 
+TEST_CASE("ir_serialize: XmmFromGpr + GprFromXmm round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{9u},
+        Op{XmmFromGpr{Ref{0u}, OpSize::I32}}});
+    check_single_stmt_roundtrip(Stmt{Ref{10u},
+        Op{XmmFromGpr{Ref{0u}, OpSize::I64}}});
+    check_single_stmt_roundtrip(Stmt{Ref{11u},
+        Op{GprFromXmm{Ref{0u}, OpSize::I32}}});
+    check_single_stmt_roundtrip(Stmt{Ref{12u},
+        Op{GprFromXmm{Ref{0u}, OpSize::I64}}});
+}
+
 TEST_CASE("ir_serialize: RspAdjust round-trip preserves signed delta",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{RspAdjust{-8}}});

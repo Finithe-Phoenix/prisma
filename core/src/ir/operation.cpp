@@ -139,6 +139,12 @@ bool operator==(const LoadVec& a, const LoadVec& b) noexcept {
 bool operator==(const StoreVec& a, const StoreVec& b) noexcept {
     return a.addr == b.addr && a.value == b.value;
 }
+bool operator==(const XmmFromGpr& a, const XmmFromGpr& b) noexcept {
+    return a.value == b.value && a.size == b.size;
+}
+bool operator==(const GprFromXmm& a, const GprFromXmm& b) noexcept {
+    return a.value == b.value && a.size == b.size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

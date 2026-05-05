@@ -436,6 +436,27 @@ void Emitter::fdiv(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
     }
 }
 
+void Emitter::fmov_v_from_x(FpReg rd, arm64::Reg rn, ir::FpSize sz) {
+    const vixl_aa::Register r =
+        sz == ir::FpSize::F32 ? vixl_aa::Register(to_vixl_w(rn))
+                              : vixl_aa::Register(to_vixl_x(rn));
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fmov(vixl_aa::VRegister(to_vixl_s(rd)), r);
+    } else {
+        impl_->masm.Fmov(vixl_aa::VRegister(to_vixl_d(rd)), r);
+    }
+}
+void Emitter::fmov_x_from_v(arm64::Reg rd, FpReg rn, ir::FpSize sz) {
+    const vixl_aa::Register r =
+        sz == ir::FpSize::F32 ? vixl_aa::Register(to_vixl_w(rd))
+                              : vixl_aa::Register(to_vixl_x(rd));
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fmov(r, vixl_aa::VRegister(to_vixl_s(rn)));
+    } else {
+        impl_->masm.Fmov(r, vixl_aa::VRegister(to_vixl_d(rn)));
+    }
+}
+
 void Emitter::fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz) {
     if (sz == ir::FpSize::F32) {
         float f;

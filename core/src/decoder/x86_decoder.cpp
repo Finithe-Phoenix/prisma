@@ -2876,6 +2876,47 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-008: MOVD / MOVQ between xmm and r/m32-or-r/m64.
+        //   66 0F 6E /r — MOVD xmm, r/m32   (REX.W → MOVQ xmm, r/m64)
+        //   66 0F 7E /r — MOVD r/m32, xmm   (REX.W → MOVQ r/m64, xmm)
+        // Register-direct only (mod==11) for now; memory form deferred.
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x6Eu || subop == 0x7Eu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            Decoded d;
+            if (subop == 0x6Eu) {
+                // GPR -> XMM (load form).
+                const ir::Ref r_gpr = next_ref++;
+                const ir::Ref r_xmm = next_ref++;
+                d.stmts.push_back({r_gpr, ir::LoadReg{m.base, size}});
+                d.stmts.push_back({r_xmm, ir::XmmFromGpr{r_gpr, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+            } else {
+                // XMM -> GPR (store form): 7E moves xmm[reg] low lane
+                // into r/m operand. With mod==11 the destination is a
+                // register; m.base names the GPR.
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_gpr = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({r_gpr, ir::GprFromXmm{r_xmm, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{m.base, r_gpr, size}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-004: SSE2 MOVDQA / MOVDQU register-to-register.
         //   66 0F 6F /r — MOVDQA xmm1, xmm2/m128   (load: dst=reg, src=rm)
         //   66 0F 7F /r — MOVDQA xmm2/m128, xmm1   (store: dst=rm,  src=reg)

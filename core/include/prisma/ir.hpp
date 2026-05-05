@@ -375,6 +375,16 @@ struct StoreVecReg { std::uint8_t xmm_index; Ref value; };  // 0..15
 struct LoadVec  { Ref addr; };
 struct StoreVec { Ref addr; Ref value; };
 
+// F2-IR-008 — GPR ↔ XMM transfers (MOVD/MOVQ family).
+//   XmmFromGpr{value, size}: produces a 128-bit value with the low
+//     `size` bits = `value` and the upper bits zeroed. `size` must be
+//     I32 or I64.
+//   GprFromXmm{value, size}: extracts the low `size` bits of an
+//     128-bit Ref into a GPR-shaped Ref. For I32 the upper 32 bits
+//     are zero-extended.
+struct XmmFromGpr { Ref value; OpSize size; };
+struct GprFromXmm { Ref value; OpSize size; };
+
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
@@ -480,7 +490,8 @@ using Op = std::variant<
     VecConstant, VecBinOp,
     LoadVecReg, StoreVecReg,
     LoadVec, StoreVec,
-    VecFpBinOp, VecFpScalarBinOp
+    VecFpBinOp, VecFpScalarBinOp,
+    XmmFromGpr, GprFromXmm
 >;
 
 // ---------------------------------------------------------------------------
@@ -574,6 +585,8 @@ bool operator==(const VecFpBinOp&    a, const VecFpBinOp&    b) noexcept;
 bool operator==(const VecFpScalarBinOp& a, const VecFpScalarBinOp& b) noexcept;
 bool operator==(const LoadVec&       a, const LoadVec&       b) noexcept;
 bool operator==(const StoreVec&      a, const StoreVec&      b) noexcept;
+bool operator==(const XmmFromGpr&    a, const XmmFromGpr&    b) noexcept;
+bool operator==(const GprFromXmm&    a, const GprFromXmm&    b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

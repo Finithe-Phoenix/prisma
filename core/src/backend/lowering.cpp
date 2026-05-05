@@ -215,6 +215,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::XmmFromGpr>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::GprFromXmm>)    { bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -907,6 +909,45 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Mul: emitter_.vfmul_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Div: emitter_.vfdiv_q(rd, rl, rr, lane); break;
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::XmmFromGpr>) {
+            // F2-IR-008. fmov d/s_rd, x/w_rn — moves GPR low into V_rd
+            // and zero-extends the upper 96/64 bits (fmov on
+            // S/D register encodings).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "XmmFromGpr without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "XmmFromGpr.value"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "XmmFromGpr"};
+            }
+            const ir::FpSize fp_sz =
+                op.size == ir::OpSize::I32 ? ir::FpSize::F32 : ir::FpSize::F64;
+            emitter_.fmov_v_from_x(rd, rn, fp_sz);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
+            // F2-IR-008. fmov w/x_rd, s/d_rn — copies V_rn low lane to
+            // GPR with zero-extension when size is I32.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "GprFromXmm without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "GprFromXmm.value"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "GprFromXmm"};
+            }
+            const ir::FpSize fp_sz =
+                op.size == ir::OpSize::I32 ? ir::FpSize::F32 : ir::FpSize::F64;
+            emitter_.fmov_x_from_v(rd, rn, fp_sz);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::LoadVec>) {

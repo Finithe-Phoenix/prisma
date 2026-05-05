@@ -54,6 +54,8 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) return OpCounter::Kind::VecFpScalarBinOp;
         else if constexpr (std::is_same_v<T, LoadVec>)       return OpCounter::Kind::LoadVec;
         else if constexpr (std::is_same_v<T, StoreVec>)      return OpCounter::Kind::StoreVec;
+        else if constexpr (std::is_same_v<T, XmmFromGpr>)    return OpCounter::Kind::XmmFromGpr;
+        else if constexpr (std::is_same_v<T, GprFromXmm>)    return OpCounter::Kind::GprFromXmm;
     }, op);
 }
 

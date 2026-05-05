@@ -276,6 +276,14 @@ public:
     // picks fmov-immediate / ldr-literal as appropriate.
     void fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz);
 
+    // F2-IR-008. GPR ↔ FP register transfers (fmov x_d, d_s and inverse).
+    //   fmov_v_from_x(rd, rn, sz): writes low lane of V_rd from X_rn,
+    //     zero-extending the upper bits of the V register. sz is F32 or F64.
+    //   fmov_x_from_v(rd, rn, sz): writes X_rd from low lane of V_rn.
+    //     For F32, the upper 32 bits of X_rd are zero-extended.
+    void fmov_v_from_x(FpReg rd, arm64::Reg rn, ir::FpSize sz);
+    void fmov_x_from_v(arm64::Reg rd, FpReg rn, ir::FpSize sz);
+
     // --- 128-bit NEON SIMD (F1-BK-012) ------------------------------------
     //
     // Same V0..V31 register file as scalar FP, viewed as 16 bytes (B16),

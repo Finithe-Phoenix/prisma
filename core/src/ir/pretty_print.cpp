@@ -248,6 +248,12 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, StoreVec>) {
             os << "storevec ["; print_ref(os, x.addr); os << "], ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, XmmFromGpr>) {
+            os << "xmm_from_gpr." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, GprFromXmm>) {
+            os << "gpr_from_xmm." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) {
             const char* op_n = "?";
             switch (x.op) {
