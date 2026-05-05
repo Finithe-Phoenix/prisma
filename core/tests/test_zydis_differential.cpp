@@ -257,6 +257,150 @@ TEST_CASE("zydis-diff: prisma_mnemonic_for sanity") {
     REQUIRE(prisma_mnemonic_for(Op{CmpFlags{0u, 1u, OpSize::I64}}) == "cmp");
 }
 
+// ---------------------------------------------------------------------
+// F1-DC-087 corpus expansion — broader coverage of length / mnemonic
+// agreement. Each case is a real x86_64 byte sequence representative
+// of the opcode family; the differential pin catches regressions in
+// either side's decoder when these binaries are exercised end-to-end.
+// ---------------------------------------------------------------------
+
+TEST_CASE("zydis-diff(corpus): conditional branches Jcc rel8 family",
+          "[zydis][differential][corpus]") {
+    check_one({0x70, 0x10});  // JO  rel8
+    check_one({0x71, 0x10});  // JNO rel8
+    check_one({0x72, 0x10});  // JC  rel8
+    check_one({0x73, 0x10});  // JNC rel8
+    check_one({0x74, 0x10});  // JE  rel8
+    check_one({0x75, 0x10});  // JNE rel8
+    check_one({0x76, 0x10});  // JBE rel8
+    check_one({0x77, 0x10});  // JA  rel8
+    check_one({0x78, 0x10});  // JS  rel8
+    check_one({0x79, 0x10});  // JNS rel8
+    check_one({0x7C, 0x10});  // JL  rel8
+    check_one({0x7D, 0x10});  // JGE rel8
+    check_one({0x7E, 0x10});  // JLE rel8
+    check_one({0x7F, 0x10});  // JG  rel8
+}
+
+TEST_CASE("zydis-diff(corpus): conditional branches Jcc rel32 family",
+          "[zydis][differential][corpus]") {
+    check_one({0x0F, 0x80, 0x00, 0x01, 0x00, 0x00});  // JO  rel32
+    check_one({0x0F, 0x82, 0x00, 0x01, 0x00, 0x00});  // JC  rel32
+    check_one({0x0F, 0x83, 0x00, 0x01, 0x00, 0x00});  // JNC rel32
+    check_one({0x0F, 0x85, 0x00, 0x01, 0x00, 0x00});  // JNE rel32
+    check_one({0x0F, 0x8C, 0x00, 0x01, 0x00, 0x00});  // JL  rel32
+    check_one({0x0F, 0x8E, 0x00, 0x01, 0x00, 0x00});  // JLE rel32
+}
+
+TEST_CASE("zydis-diff(corpus): MOV variants (REX, imm, reg-reg, mem)",
+          "[zydis][differential][corpus]") {
+    check_one({0x48, 0xC7, 0xC0, 0x2A, 0, 0, 0});  // mov rax, 0x2A (sign-ext imm32)
+    check_one({0x48, 0x89, 0xC1});                  // mov rcx, rax
+    check_one({0x48, 0x8B, 0x07});                  // mov rax, [rdi]
+    check_one({0x48, 0x89, 0x07});                  // mov [rdi], rax
+    check_one({0x4C, 0x89, 0xC0});                  // mov rax, r8
+    check_one({0x49, 0x89, 0xC0});                  // mov r8,  rax
+    check_one({0xB8, 0x2A, 0x00, 0x00, 0x00});      // mov eax, 0x2A
+    check_one({0x66, 0xB8, 0x2A, 0x00});            // mov ax,  0x2A
+}
+
+TEST_CASE("zydis-diff(corpus): ADD/SUB/AND/OR/XOR variants",
+          "[zydis][differential][corpus]") {
+    check_one({0x48, 0x01, 0xC8});  // add rax, rcx
+    check_one({0x48, 0x29, 0xC8});  // sub rax, rcx
+    check_one({0x48, 0x21, 0xC8});  // and rax, rcx
+    check_one({0x48, 0x09, 0xC8});  // or  rax, rcx
+    check_one({0x48, 0x31, 0xC8});  // xor rax, rcx
+    check_one({0x48, 0x83, 0xC0, 0x10});  // add rax, 0x10 (imm8 sign-ext)
+    check_one({0x48, 0x83, 0xE8, 0x10});  // sub rax, 0x10
+    check_one({0x48, 0x05, 0x00, 0x10, 0x00, 0x00});  // add rax, 0x1000 (imm32)
+}
+
+TEST_CASE("zydis-diff(corpus): shifts (SHL/SHR/SAR/ROL/ROR)",
+          "[zydis][differential][corpus]") {
+    check_one({0x48, 0xD1, 0xE0});        // shl rax, 1
+    check_one({0x48, 0xD1, 0xE8});        // shr rax, 1
+    check_one({0x48, 0xD1, 0xF8});        // sar rax, 1
+    check_one({0x48, 0xC1, 0xE0, 0x04});  // shl rax, 4
+    check_one({0x48, 0xC1, 0xE8, 0x08});  // shr rax, 8
+    check_one({0x48, 0xD1, 0xC0});        // rol rax, 1
+    check_one({0x48, 0xD1, 0xC8});        // ror rax, 1
+}
+
+TEST_CASE("zydis-diff(corpus): TEST / CMP / NEG / NOT family",
+          "[zydis][differential][corpus]") {
+    check_one({0x48, 0x85, 0xC0});                  // test rax, rax
+    check_one({0x48, 0xF7, 0xC0, 0xFF, 0, 0, 0});   // test rax, 0xFF
+    check_one({0x48, 0x39, 0xC8});                  // cmp rax, rcx
+    check_one({0x48, 0x83, 0xF8, 0x00});            // cmp rax, 0
+    check_one({0x48, 0xF7, 0xD8});                  // neg rax
+    check_one({0x48, 0xF7, 0xD0});                  // not rax
+}
+
+TEST_CASE("zydis-diff(corpus): MUL / IMUL / DIV / IDIV",
+          "[zydis][differential][corpus]") {
+    check_one({0x48, 0xF7, 0xE0});  // mul rax        — RDX:RAX = RAX * RAX
+    check_one({0x48, 0xF7, 0xE8});  // imul rax
+    check_one({0x48, 0xF7, 0xF0});  // div rax
+    check_one({0x48, 0xF7, 0xF8});  // idiv rax
+    check_one({0x48, 0x0F, 0xAF, 0xC1});  // imul rax, rcx (3-op short form)
+}
+
+TEST_CASE("zydis-diff(corpus): PUSH / POP all-reg",
+          "[zydis][differential][corpus]") {
+    check_one({0x50});  // push rax
+    check_one({0x51});  // push rcx
+    check_one({0x52});  // push rdx
+    check_one({0x53});  // push rbx
+    check_one({0x54});  // push rsp
+    check_one({0x55});  // push rbp
+    check_one({0x56});  // push rsi
+    check_one({0x57});  // push rdi
+    check_one({0x58});  // pop  rax
+    check_one({0x59});  // pop  rcx
+    check_one({0x5F});  // pop  rdi
+    check_one({0x41, 0x50});  // push r8
+    check_one({0x41, 0x57});  // push r15
+    check_one({0x6A, 0x10});             // push imm8
+    check_one({0x68, 0x00, 0x10, 0, 0}); // push imm32
+}
+
+TEST_CASE("zydis-diff(corpus): CALL / RET",
+          "[zydis][differential][corpus]") {
+    check_one({0xE8, 0x00, 0x01, 0x00, 0x00});  // call rel32
+    check_one({0xC3});                          // ret
+    check_one({0xC2, 0x10, 0x00});              // ret imm16 (pop 16 bytes)
+    check_one({0xFF, 0xD0});                    // call rax (indirect)
+    check_one({0xFF, 0xE0});                    // jmp  rax (indirect)
+}
+
+TEST_CASE("zydis-diff(corpus): LEA addressing modes",
+          "[zydis][differential][corpus]") {
+    check_one({0x48, 0x8D, 0x07});                       // lea rax, [rdi]
+    check_one({0x48, 0x8D, 0x47, 0x10});                 // lea rax, [rdi+0x10]
+    check_one({0x48, 0x8D, 0x87, 0x00, 0x10, 0, 0});     // lea rax, [rdi+0x1000]
+    check_one({0x48, 0x8D, 0x04, 0x37});                 // lea rax, [rdi+rsi]
+    check_one({0x48, 0x8D, 0x04, 0x77});                 // lea rax, [rdi+rsi*2]
+}
+
+TEST_CASE("zydis-diff(corpus): NOP forms",
+          "[zydis][differential][corpus]") {
+    check_one({0x90});                                  // nop
+    check_one({0x66, 0x90});                            // 66 nop (operand-size)
+    check_one({0x0F, 0x1F, 0x00});                      // nop [rax]
+    check_one({0x0F, 0x1F, 0x40, 0x00});                // nop [rax+0]
+    check_one({0x0F, 0x1F, 0x44, 0x00, 0x00});          // nop [rax+rax+0]
+}
+
+TEST_CASE("zydis-diff(corpus): atomic / fence",
+          "[zydis][differential][corpus]") {
+    check_one({0xF0, 0x48, 0x01, 0x07});  // lock add [rdi], rax
+    check_one({0xF0, 0x48, 0x0F, 0xC1, 0x07});  // lock xadd [rdi], rax
+    check_one({0x0F, 0xAE, 0xF0});  // mfence
+    check_one({0x0F, 0xAE, 0xE8});  // lfence
+    check_one({0x0F, 0xAE, 0xF8});  // sfence
+}
+
 #else  // !PRISMA_HAVE_ZYDIS
 
 TEST_CASE("zydis-diff: skipped (build with -DPRISMA_ENABLE_ZYDIS=ON)",
