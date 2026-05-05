@@ -65,10 +65,30 @@ prisma_decode_length(std::span<const std::uint8_t> bytes) {
     return {true, std::get<decoder::Decoded>(r).bytes_consumed};
 }
 
+// F1-DC-087: map a Prisma IR Op to the x86 mnemonic Zydis would
+// report for the originating instruction, when the mapping is clear.
+// Returns empty string for ops where no obvious 1:1 mapping exists
+// (compound IR, placeholders, multi-op decompositions). Caller
+// treats empty as "skip the mnemonic check, length only."
+std::string prisma_mnemonic_for(const ir::Op& op) {
+    if (std::holds_alternative<ir::Return>(op))      return "ret";
+    if (std::holds_alternative<ir::Cpuid>(op))       return "cpuid";
+    if (std::holds_alternative<ir::Syscall>(op))     return "syscall";
+    if (std::holds_alternative<ir::Trap>(op)) {
+        const auto& t = std::get<ir::Trap>(op);
+        return t.kind == ir::TrapKind::Sigtrap ? "int3" : "";
+    }
+    if (std::holds_alternative<ir::JumpRel>(op))     return "jmp";
+    if (std::holds_alternative<ir::CondJumpRel>(op)) return "";  // many Jcc mnemonics
+    if (std::holds_alternative<ir::CmpFlags>(op))    return "cmp";
+    return "";
+}
+
 // Run one cross-check. Pass = either both decoded with the same
 // length, or Prisma declined (DecodeError) — which is acceptable
 // for opcodes outside our MVP set.
-void check_one(std::vector<std::uint8_t> bytes) {
+void check_one(std::vector<std::uint8_t> bytes,
+               std::string expected_mnemonic = "") {
     const auto z = zydis_decode_length(std::span<const std::uint8_t>(bytes));
     const auto p = prisma_decode_length(std::span<const std::uint8_t>(bytes));
 
@@ -89,6 +109,13 @@ void check_one(std::vector<std::uint8_t> bytes) {
     // length or decline.
     if (p.first) {
         REQUIRE(p.second == z.length);
+        // F1-DC-087: when the caller pinned an expected mnemonic,
+        // Zydis must agree. This is the cross-check that lets us
+        // measure "≥99% matching on coreutils" once we feed real
+        // binaries through.
+        if (!expected_mnemonic.empty()) {
+            REQUIRE(z.mnemonic == expected_mnemonic);
+        }
     }
 }
 #endif
@@ -177,6 +204,57 @@ TEST_CASE("zydis-diff: SYSCALL (0F 05) length agreement",
 TEST_CASE("zydis-diff: INT3 (CC) length agreement",
           "[zydis][differential]") {
     check_one({0xCC});
+}
+
+// ---------------------------------------------------------------------
+// F1-DC-087 mnemonic-level cross-check on the subset where Prisma's
+// IR has a 1:1 mapping to an x86 mnemonic.
+// ---------------------------------------------------------------------
+
+TEST_CASE("zydis-diff: RET (C3) mnemonic = ret",
+          "[zydis][differential][mnemonic]") {
+    check_one({0xC3}, "ret");
+}
+
+TEST_CASE("zydis-diff: NOP (90) mnemonic = nop",
+          "[zydis][differential][mnemonic]") {
+    check_one({0x90}, "nop");
+}
+
+TEST_CASE("zydis-diff: CPUID (0F A2) mnemonic = cpuid",
+          "[zydis][differential][mnemonic]") {
+    check_one({0x0F, 0xA2}, "cpuid");
+}
+
+TEST_CASE("zydis-diff: SYSCALL (0F 05) mnemonic = syscall",
+          "[zydis][differential][mnemonic]") {
+    check_one({0x0F, 0x05}, "syscall");
+}
+
+TEST_CASE("zydis-diff: INT3 (CC) mnemonic = int3",
+          "[zydis][differential][mnemonic]") {
+    check_one({0xCC}, "int3");
+}
+
+TEST_CASE("zydis-diff: JMP rel8 (EB) mnemonic = jmp",
+          "[zydis][differential][mnemonic]") {
+    check_one({0xEB, 0x10}, "jmp");
+}
+
+TEST_CASE("zydis-diff: MOV r64, imm64 (48 B8) mnemonic = mov",
+          "[zydis][differential][mnemonic]") {
+    check_one({0x48, 0xB8, 0x01, 0, 0, 0, 0, 0, 0, 0}, "mov");
+}
+
+TEST_CASE("zydis-diff: prisma_mnemonic_for sanity") {
+    using namespace prisma::ir;
+    REQUIRE(prisma_mnemonic_for(Op{Return{}}) == "ret");
+    REQUIRE(prisma_mnemonic_for(Op{Cpuid{}}) == "cpuid");
+    REQUIRE(prisma_mnemonic_for(Op{Syscall{}}) == "syscall");
+    REQUIRE(prisma_mnemonic_for(Op{Trap{TrapKind::Sigtrap}}) == "int3");
+    REQUIRE(prisma_mnemonic_for(Op{Trap{TrapKind::Sigill}}).empty());
+    REQUIRE(prisma_mnemonic_for(Op{JumpRel{0x100}}) == "jmp");
+    REQUIRE(prisma_mnemonic_for(Op{CmpFlags{0u, 1u, OpSize::I64}}) == "cmp");
 }
 
 #else  // !PRISMA_HAVE_ZYDIS
