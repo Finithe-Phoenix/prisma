@@ -187,6 +187,9 @@ bool operator==(const VecMaskMsb& a, const VecMaskMsb& b) noexcept {
 bool operator==(const WriteFlagsFp& a, const WriteFlagsFp& b) noexcept {
     return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const VecShuffleH4& a, const VecShuffleH4& b) noexcept {
+    return a.is_high == b.is_high && a.src == b.src && a.control == b.control;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

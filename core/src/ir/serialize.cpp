@@ -92,11 +92,12 @@ enum class OpKind : std::uint8_t {
     kVecExtractLaneU = 56,
     kVecMaskMsb    = 57,
     kWriteFlagsFp  = 58,
+    kVecShuffleH4  = 59,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kWriteFlagsFp);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecShuffleH4);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -272,6 +273,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecExtractLaneU>) return OpKind::kVecExtractLaneU;
         else if constexpr (std::is_same_v<T, VecMaskMsb>)    return OpKind::kVecMaskMsb;
         else if constexpr (std::is_same_v<T, WriteFlagsFp>)  return OpKind::kWriteFlagsFp;
+        else if constexpr (std::is_same_v<T, VecShuffleH4>)  return OpKind::kVecShuffleH4;
     }, op);
 }
 
@@ -536,6 +538,11 @@ void write_payload(std::vector<std::uint8_t>& out, const WriteFlagsFp& x) {
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
     put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecShuffleH4& x) {
+    put_u8(out, x.is_high ? 1u : 0u);
+    put_u32(out, x.src);
+    put_u8(out, x.control);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -920,6 +927,16 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_shuffle_h4(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  is_high = c.take_u8();
+    const std::uint32_t src     = c.take_u32();
+    const std::uint8_t  control = c.take_u8();
+    if (is_high > 1) return DeserializeError::BadSize;
+    s.op = VecShuffleH4{is_high == 1, src, control};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_write_flags_fp(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint32_t lhs  = c.take_u32();
@@ -1172,6 +1189,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecExtractLaneU: return read_payload_vec_extract_lane_u(c, s);
         case OpKind::kVecMaskMsb:  return read_payload_vec_mask_msb(c, s);
         case OpKind::kWriteFlagsFp: return read_payload_write_flags_fp(c, s);
+        case OpKind::kVecShuffleH4: return read_payload_vec_shuffle_h4(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

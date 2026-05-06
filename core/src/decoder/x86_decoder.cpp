@@ -3235,6 +3235,41 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-028: PSHUFLW (F2 0F 70 /r ib) / PSHUFHW (F3 0F 70 /r ib)
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) && subop == 0x70u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t control =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            const bool is_high = has_f3;
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res, ir::VecShuffleH4{is_high, r_src, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-010: PSHUFD xmm1, xmm2/m128, imm8 (66 0F 70 /r ib).
         // Permutes 4 32-bit lanes of source per immediate control byte.
         if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&

@@ -377,6 +377,9 @@ public:
     // F2-IR-026. fcmp s/d_lhs.low, s/d_rhs.low — sets NZCV.
     void fcmp_scalar(FpReg rn, FpReg rm, ir::FpSize sz);
 
+    // F2-IR-028. PSHUFLW / PSHUFHW — 4-way H8 shuffle of one half.
+    void vshuffle_h4(FpReg rd, FpReg rn, std::uint8_t control, bool is_high);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

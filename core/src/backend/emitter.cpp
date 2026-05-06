@@ -901,6 +901,23 @@ void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
     impl_->masm.Mov(v_d_q, v_t_q);
 }
 
+void Emitter::vshuffle_h4(FpReg rd, FpReg rn, std::uint8_t control, bool is_high) {
+    // Build the result in V31 starting from a full copy of src so the
+    // passthrough half is preserved when rd == rn.
+    const vixl_aa::VRegister v_t_q (kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_n_q (static_cast<int>(rn), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_t_q, v_n_q);
+    const vixl_aa::VRegister v_t_h (kInternalFpScratchV, vixl_aa::kFormat8H);
+    const vixl_aa::VRegister v_n_h (static_cast<int>(rn), vixl_aa::kFormat8H);
+    const int base = is_high ? 4 : 0;
+    for (int i = 0; i < 4; ++i) {
+        const int src_lane = base + ((control >> (2 * i)) & 0x3);
+        impl_->masm.Mov(v_t_h, base + i, v_n_h, src_lane);
+    }
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
 void Emitter::fcmp_scalar(FpReg rn, FpReg rm, ir::FpSize sz) {
     if (sz == ir::FpSize::F32) {
         impl_->masm.Fcmp(to_vixl_s(rn), to_vixl_s(rm));

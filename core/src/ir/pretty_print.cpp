@@ -303,6 +303,10 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, WriteFlagsFp>) {
             os << "wrflags.fp." << ((x.size == FpSize::F32) ? "f32" : "f64") << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecShuffleH4>) {
+            os << (x.is_high ? "vshufhw " : "vshuflw ");
+            print_ref(os, x.src);
+            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
         } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
             os << (x.is_pd ? "vshufpd " : "vshufps ");
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);

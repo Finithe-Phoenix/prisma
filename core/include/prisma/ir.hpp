@@ -418,6 +418,15 @@ struct VecShuffle32x4 {
     std::uint8_t control;
 };
 
+// F2-IR-028 — PSHUFLW / PSHUFHW (4-way 16-bit lane shuffle of one half).
+//   !is_high: result.h[0..3] = src.h[ctrl_lane(i)], h[4..7] passthrough.
+//   is_high : result.h[4..7] = src.h[4+ctrl_lane(i)], h[0..3] passthrough.
+struct VecShuffleH4 {
+    bool         is_high;
+    Ref          src;
+    std::uint8_t control;
+};
+
 // F2-IR-020 — SHUFPS / SHUFPD (two-source FP shuffle).
 //   SHUFPS: result lanes 0,1 from lhs (using control[0:1], [2:3]),
 //           result lanes 2,3 from rhs (using control[4:5], [6:7]).
@@ -634,7 +643,8 @@ using Op = std::variant<
     VecShuffle2Src,
     VecInsertLane, VecExtractLaneU,
     VecMaskMsb,
-    WriteFlagsFp
+    WriteFlagsFp,
+    VecShuffleH4
 >;
 
 // ---------------------------------------------------------------------------
@@ -743,6 +753,7 @@ bool operator==(const VecInsertLane& a, const VecInsertLane& b) noexcept;
 bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept;
 bool operator==(const VecMaskMsb&    a, const VecMaskMsb&    b) noexcept;
 bool operator==(const WriteFlagsFp&  a, const WriteFlagsFp&  b) noexcept;
+bool operator==(const VecShuffleH4&  a, const VecShuffleH4&  b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

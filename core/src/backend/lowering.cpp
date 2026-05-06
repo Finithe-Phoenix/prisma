@@ -230,6 +230,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecExtractLaneU>){ bump(op.src_xmm, i); }
             else if constexpr (std::is_same_v<T, ir::VecMaskMsb>)    { bump(op.src_xmm, i); }
             else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>)  { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShuffleH4>)  { bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1066,6 +1067,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
                                               Emitter::VecLane::D2;
             emitter_.vins_lane_from_w(rd, rl, op.lane_idx, rv, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShuffleH4>) {
+            // F2-IR-028. PSHUFLW / PSHUFHW.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShuffleH4 without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecShuffleH4.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShuffleH4"};
+            }
+            emitter_.vshuffle_h4(rd, rn, op.control, op.is_high);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecMaskMsb>) {

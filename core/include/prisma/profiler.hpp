@@ -53,6 +53,7 @@ public:
         VecInsertLane, VecExtractLaneU,
         VecMaskMsb,
         WriteFlagsFp,
+        VecShuffleH4,
         kCount  // sentinel
     };
 

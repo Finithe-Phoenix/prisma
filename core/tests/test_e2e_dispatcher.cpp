@@ -271,6 +271,36 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PSHUFLW reverses low 4 words, high half passes through") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF2, 0x0F, 0x70, 0xC1, 0x1B,  // pshuflw xmm0, xmm1, 0x1B = lanes [3,2,1,0]
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint16_t a, std::uint16_t b,
+                    std::uint16_t c, std::uint16_t d) -> std::uint64_t {
+        return  static_cast<std::uint64_t>(a)
+              | (static_cast<std::uint64_t>(b) << 16)
+              | (static_cast<std::uint64_t>(c) << 32)
+              | (static_cast<std::uint64_t>(d) << 48);
+    };
+    disp.state().xmm[1].lo = pack4(0x1111, 0x2222, 0x3333, 0x4444);
+    disp.state().xmm[1].hi = pack4(0x5555, 0x6666, 0x7777, 0x8888);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack4(0x4444, 0x3333, 0x2222, 0x1111));
+    REQUIRE(disp.state().xmm[0].hi == pack4(0x5555, 0x6666, 0x7777, 0x8888));
+}
+
 TEST_CASE("e2e: PMOVMSKB eax, xmm0 — F2-IR-027 byte-MSB extraction") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

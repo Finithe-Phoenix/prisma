@@ -69,6 +69,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, VecExtractLaneU>) return OpCounter::Kind::VecExtractLaneU;
         else if constexpr (std::is_same_v<T, VecMaskMsb>)    return OpCounter::Kind::VecMaskMsb;
         else if constexpr (std::is_same_v<T, WriteFlagsFp>)  return OpCounter::Kind::WriteFlagsFp;
+        else if constexpr (std::is_same_v<T, VecShuffleH4>)  return OpCounter::Kind::VecShuffleH4;
     }, op);
 }
 
