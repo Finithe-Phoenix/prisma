@@ -3158,17 +3158,25 @@ std::variant<Decoded, DecodeError> decode_one(
             }
 
             // F2-IR-006 — FMA3 (66 0F 38, VEX-only). Even low-nibble =
-            // packed PS/PD (W=0/1); odd low-nibble would be scalar SS/SD
-            // and is deferred. High-nibble selects family + ordering:
-            //   9x → 132 (b=r_dst,  c=r_rm,  a=r_v )
-            //   Ax → 213 (b=r_v,    c=r_dst, a=r_rm)
-            //   Bx → 231 (b=r_v,    c=r_rm,  a=r_dst)
-            // Within a family: 8/9 = MADD, A/B = MSUB, C/D = NMADD, E/F = NMSUB.
-            // For C-1 we ship VFMADD only; subsequent commits add MSUB/
-            // NMADD/NMSUB. MADDSUB/MSUBADD (96/97/A6/A7/B6/B7) are deferred.
-            if (vex.present &&
-                (sub3 == 0x98u || sub3 == 0xA8u || sub3 == 0xB8u ||  // MADD packed PS
-                 sub3 == 0x99u || sub3 == 0xA9u || sub3 == 0xB9u)) { // MADD packed PD
+            // packed PS, odd = packed PD (W picks PS/PD via opcode parity).
+            // High-nibble selects ordering: 9x=132, Ax=213, Bx=231.
+            // Low nibble picks family (× 2 packed forms each):
+            //   8/9 → VFMADD   (neg_addend=F, neg_mul=F)
+            //   A/B → VFMSUB   (neg_addend=T, neg_mul=F)
+            //   C/D → VFNMADD  (neg_addend=F, neg_mul=T)
+            //   E/F → VFNMSUB  (neg_addend=T, neg_mul=T)
+            // Scalar (SS/SD) and MADDSUB/MSUBADD (96/97/A6/A7/B6/B7)
+            // are deferred to follow-ups.
+            const std::uint8_t fma_hi = sub3 & 0xF0u;
+            const std::uint8_t fma_lo = sub3 & 0x0Fu;
+            const bool fma_packed_lo =
+                (fma_lo == 0x8u || fma_lo == 0x9u ||
+                 fma_lo == 0xAu || fma_lo == 0xBu ||
+                 fma_lo == 0xCu || fma_lo == 0xDu ||
+                 fma_lo == 0xEu || fma_lo == 0xFu);
+            const bool fma_high_ok =
+                (fma_hi == 0x90u || fma_hi == 0xA0u || fma_hi == 0xB0u);
+            if (vex.present && fma_packed_lo && fma_high_ok) {
                 if (vex.L) return DecodeError::UnsupportedEncoding;  // ymm FMA in follow-up.
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
@@ -3180,7 +3188,19 @@ std::variant<Decoded, DecodeError> decode_one(
                 const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
                 const ir::VecFpSize size = (sub3 & 0x01u) ? ir::VecFpSize::D2
                                                           : ir::VecFpSize::S4;
-                const std::uint8_t high_nibble = sub3 & 0xF0u;
+                const std::uint8_t high_nibble = fma_hi;
+                // family — keyed by the low-nibble pair (ignoring W bit
+                // selecting PS vs PD).
+                const std::uint8_t family_lo = (fma_lo & 0xEu);
+                bool neg_addend = false;
+                bool neg_mul    = false;
+                switch (family_lo) {
+                    case 0x8u: /* MADD  */ neg_addend = false; neg_mul = false; break;
+                    case 0xAu: /* MSUB  */ neg_addend = true;  neg_mul = false; break;
+                    case 0xCu: /* NMADD */ neg_addend = false; neg_mul = true;  break;
+                    case 0xEu: /* NMSUB */ neg_addend = true;  neg_mul = true;  break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
                 Decoded d;
                 std::optional<ir::Ref> r_addr_lo;
                 if (m.mod != 0b11) {
@@ -3221,10 +3241,7 @@ std::variant<Decoded, DecodeError> decode_one(
                 (void)r_a; (void)r_b; (void)r_c;
                 const ir::Ref r_res = next_ref++;
                 d.stmts.push_back({r_res,
-                    ir::VecFpFma{ra, rb, rc,
-                                 /*neg_addend=*/false,
-                                 /*neg_mul=*/false,
-                                 size}});
+                    ir::VecFpFma{ra, rb, rc, neg_addend, neg_mul, size}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecReg{r_dst, r_res}});
                 d.bytes_consumed = cursor;

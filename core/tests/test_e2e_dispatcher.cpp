@@ -1657,6 +1657,80 @@ TEST_CASE("e2e: VFMADD231PS xmm2, xmm0, xmm1 — F2-IR-006 fused multiply-add") 
     REQUIRE(disp.state().xmm[2].hi == pack2f(121.0f, 201.0f));
 }
 
+TEST_CASE("e2e: VFMSUB231PS xmm2, xmm0, xmm1 — F2-IR-006 b*c - a") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VFMSUB231PS: xmm2 = (xmm0 * xmm1) - xmm2
+    // Opcode 0xBA (231 PS = MSUB packed). C4 byte2 = 0x79 (W=0, vvvv=0xF, L=0, pp=01).
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x79, 0xBA, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // xmm0 = [2, 3, 4, 5]   xmm1 = [10, 20, 30, 40]   xmm2 = [1, 1, 1, 1]
+    // result = (xmm0*xmm1) - xmm2 = [19, 59, 119, 199]
+    disp.state().xmm[0].lo = pack2f(2.0f, 3.0f);
+    disp.state().xmm[0].hi = pack2f(4.0f, 5.0f);
+    disp.state().xmm[1].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi = pack2f(30.0f, 40.0f);
+    disp.state().xmm[2].lo = pack2f(1.0f, 1.0f);
+    disp.state().xmm[2].hi = pack2f(1.0f, 1.0f);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo == pack2f(19.0f, 59.0f));
+    REQUIRE(disp.state().xmm[2].hi == pack2f(119.0f, 199.0f));
+}
+
+TEST_CASE("e2e: VFNMADD231PS xmm2, xmm0, xmm1 — F2-IR-006 a - b*c") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VFNMADD231PS: xmm2 = -(xmm0 * xmm1) + xmm2 = xmm2 - (xmm0*xmm1)
+    // Opcode 0xBC. byte2 = 0x79 (W=0, vvvv=0xF, L=0, pp=01).
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x79, 0xBC, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // xmm0 = [2, 3, 4, 5]   xmm1 = [10, 20, 30, 40]   xmm2 = [100, 200, 300, 400]
+    // result = xmm2 - (xmm0*xmm1) = [80, 140, 180, 200]
+    disp.state().xmm[0].lo = pack2f(2.0f, 3.0f);
+    disp.state().xmm[0].hi = pack2f(4.0f, 5.0f);
+    disp.state().xmm[1].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi = pack2f(30.0f, 40.0f);
+    disp.state().xmm[2].lo = pack2f(100.0f, 200.0f);
+    disp.state().xmm[2].hi = pack2f(300.0f, 400.0f);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo == pack2f(80.0f, 140.0f));
+    REQUIRE(disp.state().xmm[2].hi == pack2f(180.0f, 200.0f));
+}
+
 TEST_CASE("e2e: VFMADD132PD xmm2, xmm0, xmm1 — F2-IR-006 132-form FMA double") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VFMADD132PD xmm2, xmm0, xmm1 → xmm2 = (xmm2 * xmm1) + xmm0
