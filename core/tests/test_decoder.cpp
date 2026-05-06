@@ -630,22 +630,20 @@ TEST_CASE("decode TZCNT rax, rax placeholder via F3 48 0F BC C0") {
     REQUIRE(r == 2);
 }
 
-TEST_CASE("decode POPCNT rax, rax placeholder via F3 48 0F B8 C0") {
+TEST_CASE("decode POPCNT rax, rax via F3 48 0F B8 C0 — real POPCNT (F2-IR-044)") {
     // Encoding: F3 48 0F B8 C0
     //   F3 prefix for POPCNT
     //   48 REX.W
-    //   0F B8 opcode B8 /r (normally not in the base set, with F3 => POPCNT)
+    //   0F B8 opcode B8 /r (with F3 prefix → POPCNT)
     //   C0 mod=11, reg=000 (rax destination), rm=000 (rax source)
+    // Now produces 3-stmt sequence: LoadReg → Popcnt → StoreReg.
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x48, 0x0F, 0xB8, 0xC0}, r);
     REQUIRE(d.bytes_consumed == 5);
-    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts.size() == 3);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
-    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[2].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 1u, ir::OpSize::I64}});
-    REQUIRE(r == 2);
+    REQUIRE(std::holds_alternative<ir::Popcnt>(d.stmts[1].op));
+    REQUIRE(std::holds_alternative<ir::StoreReg>(d.stmts[2].op));
 }
 
 TEST_CASE("decode PUSH rax placeholder via 50") {
@@ -2332,6 +2330,20 @@ TEST_CASE("decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte c
     auto d = decode_ok({0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x04}, r);
     auto va = std::get<ir::VecAlignr>(d.stmts[2].op);
     REQUIRE(va.count == 4);
+}
+
+TEST_CASE("decode POPCNT eax, ecx (F3 0F B8 C1) — F2-IR-044 SSE4.2 popcount I32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0xB8, 0xC1}, r);
+    auto pc = std::get<ir::Popcnt>(d.stmts[1].op);
+    REQUIRE(pc.size == ir::OpSize::I32);
+}
+
+TEST_CASE("decode POPCNT rax, rcx (F3 48 0F B8 C1) — popcount I64") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x48, 0x0F, 0xB8, 0xC1}, r);
+    auto pc = std::get<ir::Popcnt>(d.stmts[1].op);
+    REQUIRE(pc.size == ir::OpSize::I64);
 }
 
 TEST_CASE("decode PCMPGTQ xmm0, xmm1 (66 0F 38 37 C1) — F2-IR-043 SSE4.2 D2 signed >") {

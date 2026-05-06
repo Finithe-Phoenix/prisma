@@ -238,6 +238,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecAlignr>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecExtend>)     { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpRound>)    { bump(op.lhs, i); bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::Popcnt>)        { bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1094,6 +1095,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
             }
             emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Popcnt>) {
+            // F2-IR-044 POPCNT.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Popcnt without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Popcnt.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Popcnt"};
+            }
+            emitter_.popcnt_gpr(rd, rn, op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecFpRound>) {

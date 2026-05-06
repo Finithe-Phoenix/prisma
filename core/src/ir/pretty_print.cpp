@@ -322,6 +322,9 @@ std::string pretty_print(const Op& op) {
             os << "valignr ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
             os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, Popcnt>) {
+            os << "popcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecFpRound>) {
             const char* modes[] = {"rn","rm","rp","rz","rn","rn","rn","rn"};
             os << "vfrint." << modes[x.mode & 0x7]

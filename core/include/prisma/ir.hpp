@@ -591,6 +591,10 @@ struct RspAdjust {
 enum class FpSize     : std::uint8_t { F32 = 0, F64 };
 enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
 
+// F2-IR-044 — POPCNT (F3 0F B8 /r). Lane-agnostic; size selects 32 or 64-bit
+// width. Result Ref is the population count value.
+struct Popcnt { Ref value; OpSize size; };
+
 // F2-IR-026 — FP compare → flags (UCOMISS / UCOMISD).
 struct WriteFlagsFp {
     Ref    lhs;        // 128-bit xmm; only the low FP lane participates.
@@ -720,7 +724,8 @@ using Op = std::variant<
     VecPshufb, VecAbs,
     VecAlignr,
     VecExtend,
-    VecFpRound
+    VecFpRound,
+    Popcnt
 >;
 
 // ---------------------------------------------------------------------------
@@ -837,6 +842,7 @@ bool operator==(const VecAbs&        a, const VecAbs&        b) noexcept;
 bool operator==(const VecAlignr&     a, const VecAlignr&     b) noexcept;
 bool operator==(const VecExtend&     a, const VecExtend&     b) noexcept;
 bool operator==(const VecFpRound&    a, const VecFpRound&    b) noexcept;
+bool operator==(const Popcnt&        a, const Popcnt&        b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

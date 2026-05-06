@@ -77,6 +77,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, VecAlignr>)     return OpCounter::Kind::VecAlignr;
         else if constexpr (std::is_same_v<T, VecExtend>)     return OpCounter::Kind::VecExtend;
         else if constexpr (std::is_same_v<T, VecFpRound>)    return OpCounter::Kind::VecFpRound;
+        else if constexpr (std::is_same_v<T, Popcnt>)        return OpCounter::Kind::Popcnt;
     }, op);
 }
 

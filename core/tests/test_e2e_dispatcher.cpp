@@ -271,6 +271,29 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: POPCNT 0xCAFEBABE counts the bits") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0x48, 0x0F, 0xB8, 0xC1,  // popcnt rax, rcx
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // popcount(0xCAFEBABEDEADBEEF) = 42.
+    disp.state()[ir::Gpr::Rcx] = 0xCAFEBABEDEADBEEFULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    int expected = __builtin_popcountll(0xCAFEBABEDEADBEEFULL);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == static_cast<std::uint64_t>(expected));
+}
+
 TEST_CASE("e2e: ROUNDSD truncates 7.9 to 7.0 (mode=3)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

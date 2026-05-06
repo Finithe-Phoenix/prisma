@@ -214,6 +214,9 @@ bool operator==(const VecFpRound& a, const VecFpRound& b) noexcept {
     return a.lhs == b.lhs && a.src == b.src && a.size == b.size
         && a.mode == b.mode && a.is_packed == b.is_packed;
 }
+bool operator==(const Popcnt& a, const Popcnt& b) noexcept {
+    return a.value == b.value && a.size == b.size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

@@ -420,6 +420,9 @@ public:
     void vfrint_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
                                   ir::FpSize sz, std::uint8_t mode);
 
+    // F2-IR-044. Population count of a GPR's value into another GPR.
+    void popcnt_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

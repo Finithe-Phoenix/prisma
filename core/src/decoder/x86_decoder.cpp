@@ -3939,6 +3939,30 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-044: POPCNT (F3 0F B8 /r).
+        //   F3 0F B8 /r — POPCNT r32, r/m32  (REX.W → r64, r/m64).
+        if (has_f3 && !has_lock && !has_f2 && !has_operand_size_override &&
+            subop == 0xB8u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_src, ir::LoadReg{m.base, size}});
+            d.stmts.push_back({r_res, ir::Popcnt{r_src, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_gpr, r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-016: scalar int ↔ FP conversions, register-direct only.
         //   F3 0F 2A /r — CVTSI2SS xmm, r/m32   (REX.W → r/m64)
         //   F2 0F 2A /r — CVTSI2SD

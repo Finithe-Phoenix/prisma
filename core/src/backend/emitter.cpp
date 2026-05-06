@@ -1065,6 +1065,33 @@ void emit_vfrint(vixl_aa::MacroAssembler& masm,
 
 }  // namespace
 
+void Emitter::popcnt_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
+    // Sequence:
+    //   fmov  d31, x_n       ; copy 64-bit input into V31 low half
+    //   cnt   v31.8b, v31.8b ; per-byte popcount (counts 8 bytes)
+    //   addv  b31, v31.8b    ; horizontal sum of bytes (max 64 fits in 7 bits)
+    //   fmov  w_d, s31       ; move byte sum back to GPR
+    // For I32 we mask the upper 32 bits to zero first; the simplest is
+    // `mov w_t, w_n` which zero-extends, then fmov d31, x_t.
+    const vixl_aa::DRegister d_t(kInternalFpScratchV);
+    const vixl_aa::VRegister v_t_8b(kInternalFpScratchV, vixl_aa::kFormat8B);
+    const vixl_aa::BRegister b_t(kInternalFpScratchV);
+    if (sz == ir::OpSize::I32) {
+        // Move w_n (zero-extends to 64) into V31 low half via fmov d, x.
+        // We can move via an X scratch first to ensure zero-extension.
+        vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+        const vixl_aa::Register x_t = temps.AcquireX();
+        const vixl_aa::WRegister w_t(static_cast<int>(x_t.GetCode()));
+        impl_->masm.Mov(w_t, to_vixl_w(rn));  // zero-extends to x_t
+        impl_->masm.Fmov(d_t, vixl_aa::Register(x_t));
+    } else {
+        impl_->masm.Fmov(d_t, vixl_aa::Register(to_vixl_x(rn)));
+    }
+    impl_->masm.Cnt(v_t_8b, v_t_8b);
+    impl_->masm.Addv(b_t, v_t_8b);
+    impl_->masm.Fmov(to_vixl_w(rd), vixl_aa::SRegister(kInternalFpScratchV));
+}
+
 void Emitter::vfrint_q(FpReg rd, FpReg rn, ir::FpSize sz, std::uint8_t mode) {
     const auto fmt = (sz == ir::FpSize::F32) ? vixl_aa::kFormat4S
                                               : vixl_aa::kFormat2D;

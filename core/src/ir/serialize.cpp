@@ -100,11 +100,12 @@ enum class OpKind : std::uint8_t {
     kVecAlignr     = 64,
     kVecExtend     = 65,
     kVecFpRound    = 66,
+    kPopcnt        = 67,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpRound);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kPopcnt);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -288,6 +289,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecAlignr>)     return OpKind::kVecAlignr;
         else if constexpr (std::is_same_v<T, VecExtend>)     return OpKind::kVecExtend;
         else if constexpr (std::is_same_v<T, VecFpRound>)    return OpKind::kVecFpRound;
+        else if constexpr (std::is_same_v<T, Popcnt>)        return OpKind::kPopcnt;
     }, op);
 }
 
@@ -594,6 +596,10 @@ void write_payload(std::vector<std::uint8_t>& out, const VecFpRound& x) {
     put_u8(out, static_cast<std::uint8_t>(x.size));
     put_u8(out, x.mode);
     put_u8(out, x.is_packed ? 1u : 0u);
+}
+void write_payload(std::vector<std::uint8_t>& out, const Popcnt& x) {
+    put_u32(out, x.value);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -985,6 +991,15 @@ DeserializeError read_payload_vec_pshufb(Cursor& c, Stmt& s) {
     s.op = VecPshufb{src, mask};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_popcnt(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t v  = c.take_u32();
+    const std::uint8_t  sz = c.take_u8();
+    if (!is_valid_size(sz)) return DeserializeError::BadSize;
+    s.op = Popcnt{v, static_cast<OpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_round(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 1 + 1 + 1)) return DeserializeError::Truncated;
     const std::uint32_t lhs    = c.take_u32();
@@ -1324,6 +1339,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecAlignr:   return read_payload_vec_alignr(c, s);
         case OpKind::kVecExtend:   return read_payload_vec_extend(c, s);
         case OpKind::kVecFpRound:  return read_payload_vec_fp_round(c, s);
+        case OpKind::kPopcnt:      return read_payload_popcnt(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;
