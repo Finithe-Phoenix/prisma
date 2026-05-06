@@ -271,6 +271,38 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PMULUDQ — F2-IR-030 unsigned 32x32→64 lane mul") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xF4, 0xC1,  // pmuludq xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    // xmm0 lanes (S4): {0x10000, 0xDEAD, 0x100, 0xBEEF}.
+    // xmm1 lanes (S4): {0x100,   0xDEAD, 0x200, 0xBEEF}.
+    // Expected: result.d2[0] = 0x10000 * 0x100 = 0x01000000.
+    //           result.d2[1] = 0x100   * 0x200 = 0x00020000.
+    disp.state().xmm[0].lo = pack4(0x10000u, 0xDEADu);
+    disp.state().xmm[0].hi = pack4(0x100u,   0xBEEFu);
+    disp.state().xmm[1].lo = pack4(0x100u,   0xDEADu);
+    disp.state().xmm[1].hi = pack4(0x200u,   0xBEEFu);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == 0x01000000ULL);
+    REQUIRE(disp.state().xmm[0].hi == 0x00020000ULL);
+}
+
 TEST_CASE("e2e: MOVMSKPS extracts 4 sign bits from S4 lanes") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

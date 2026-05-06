@@ -609,6 +609,24 @@ void Emitter::vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
     impl_->masm.Smax(to_vixl_q(rd, lane), to_vixl_q(rn, lane), to_vixl_q(rm, lane));
 }
 
+void Emitter::vmul_u32_to_64(FpReg rd, FpReg rn, FpReg rm) {
+    // PMULUDQ: result.d2[0] = (u64)vn.s4[0] * (u64)vm.s4[0]
+    //          result.d2[1] = (u64)vn.s4[2] * (u64)vm.s4[2]
+    // NEON: uzp1 picks even lanes (0, 2) into low half. Then umull
+    // multiplies low 2S → 2D.
+    constexpr int kAuxV = 30;  // alongside V31 (kInternalFpScratchV).
+    const vixl_aa::VRegister v_a_4s(kInternalFpScratchV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_b_4s(kAuxV,               vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_n_4s(static_cast<int>(rn), vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_m_4s(static_cast<int>(rm), vixl_aa::kFormat4S);
+    impl_->masm.Uzp1(v_a_4s, v_n_4s, v_n_4s);
+    impl_->masm.Uzp1(v_b_4s, v_m_4s, v_m_4s);
+    const vixl_aa::VRegister v_d_2d(static_cast<int>(rd), vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_a_2s(kInternalFpScratchV, vixl_aa::kFormat2S);
+    const vixl_aa::VRegister v_b_2s(kAuxV,               vixl_aa::kFormat2S);
+    impl_->masm.Umull(v_d_2d, v_a_2s, v_b_2s);
+}
+
 void Emitter::vmulhi_h8(FpReg rd, FpReg rn, FpReg rm, bool is_signed) {
     // Sequence:
     //   smull/umull v31.4s, vn.4h, vm.4h        ; lower 4 i32 results

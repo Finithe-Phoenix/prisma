@@ -233,6 +233,7 @@ std::string pretty_print(const Op& op) {
                 case VecBinOpKind::SMax:  op_n = "vsmax"; break;
                 case VecBinOpKind::SMulHi: op_n = "vsmulhi"; break;
                 case VecBinOpKind::UMulHi: op_n = "vumulhi"; break;
+                case VecBinOpKind::UMul32To64: op_n = "vumul32to64"; break;
             }
             const char* lane_n = "?";
             switch (x.lane) {

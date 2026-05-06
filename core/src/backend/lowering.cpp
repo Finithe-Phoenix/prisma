@@ -954,6 +954,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecBinOpKind::SMax:  emitter_.vsmax_q(rd, rl, rr, lane); break;
                 case ir::VecBinOpKind::SMulHi: emitter_.vmulhi_h8(rd, rl, rr, /*signed=*/true); break;
                 case ir::VecBinOpKind::UMulHi: emitter_.vmulhi_h8(rd, rl, rr, /*signed=*/false); break;
+                case ir::VecBinOpKind::UMul32To64: emitter_.vmul_u32_to_64(rd, rl, rr); break;
             }
             return {};
         }
