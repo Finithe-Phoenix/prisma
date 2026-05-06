@@ -241,6 +241,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Popcnt>)        { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Lzcnt>)         { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Tzcnt>)         { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecBlend>)      { bump(op.dst, i); bump(op.src, i); bump(op.mask, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1097,6 +1098,27 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
             }
             emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecBlend>) {
+            // F2-IR-046 PBLENDVB / BLENDVPS / BLENDVPD.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecBlend without result"};
+            }
+            Emitter::FpReg rdst, rsrc, rmask;
+            if (!fp_reg_of(op.dst,  rdst))  return {false, LowerError::DanglingRef, "VecBlend.dst"};
+            if (!fp_reg_of(op.src,  rsrc))  return {false, LowerError::DanglingRef, "VecBlend.src"};
+            if (!fp_reg_of(op.mask, rmask)) return {false, LowerError::DanglingRef, "VecBlend.mask"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecBlend"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vblend(rd, rdst, rsrc, rmask, lane);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Lzcnt>) {

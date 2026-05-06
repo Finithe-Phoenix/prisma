@@ -271,6 +271,45 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PBLENDVB — variable byte blend selected by xmm0 MSB (SSE4.1)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x38, 0x10, 0xCA,  // pblendvb xmm1, xmm2 (mask = xmm0)
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // xmm1 = dst (preserved where mask MSB == 0)
+    // xmm2 = src (selected where mask MSB == 1)
+    // xmm0 = mask (per byte: 0xFF picks src, 0x00 picks dst)
+    auto pack = [](std::uint8_t* b) {
+        std::uint64_t v = 0;
+        for (int i = 0; i < 8; ++i) v |= static_cast<std::uint64_t>(b[i]) << (i*8);
+        return v;
+    };
+    std::uint8_t dst_lo[8] = {0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7};
+    std::uint8_t src_lo[8] = {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17};
+    std::uint8_t msk_lo[8] = {0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00};
+    disp.state().xmm[1].lo = pack(dst_lo);
+    disp.state().xmm[1].hi = pack(dst_lo);
+    disp.state().xmm[2].lo = pack(src_lo);
+    disp.state().xmm[2].hi = pack(src_lo);
+    disp.state().xmm[0].lo = pack(msk_lo);
+    disp.state().xmm[0].hi = pack(msk_lo);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    std::uint8_t exp[8] = {0x10,0xD1,0x12,0xD3,0x14,0xD5,0x16,0xD7};
+    REQUIRE(disp.state().xmm[1].lo == pack(exp));
+    REQUIRE(disp.state().xmm[1].hi == pack(exp));
+}
+
 TEST_CASE("e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

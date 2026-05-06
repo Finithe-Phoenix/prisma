@@ -2979,6 +2979,46 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // SSE4.1 BLEND* with implicit XMM0 mask:
+            //   66 0F 38 10 — PBLENDVB  (B16 lane)
+            //   66 0F 38 14 — BLENDVPS (S4 lane)
+            //   66 0F 38 15 — BLENDVPD (D2 lane)
+            if (sub3 == 0x10u || sub3 == 0x14u || sub3 == 0x15u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const ir::VecLane lane =
+                    sub3 == 0x10u ? ir::VecLane::B16 :
+                    sub3 == 0x14u ? ir::VecLane::S4  :
+                                    ir::VecLane::D2;
+                Decoded d;
+                const ir::Ref r_dst  = next_ref++;
+                const ir::Ref r_src  = next_ref++;
+                const ir::Ref r_mask = next_ref++;
+                const ir::Ref r_res  = next_ref++;
+                d.stmts.push_back({r_dst,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({r_mask, ir::LoadVecReg{0u}});  // implicit XMM0
+                d.stmts.push_back({r_res,
+                    ir::VecBlend{r_dst, r_src, r_mask, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 PMOVZX/SX widening converts (66 0F 38 20..25, 30..35).
             if ((sub3 >= 0x20u && sub3 <= 0x25u) ||
                 (sub3 >= 0x30u && sub3 <= 0x35u)) {

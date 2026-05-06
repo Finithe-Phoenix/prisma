@@ -331,6 +331,18 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, Tzcnt>) {
             os << "tzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecBlend>) {
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << "vblend." << lane_n << " ";
+            print_ref(os, x.dst); os << ", ";
+            print_ref(os, x.src); os << ", ";
+            print_ref(os, x.mask);
         } else if constexpr (std::is_same_v<T, VecFpRound>) {
             const char* modes[] = {"rn","rm","rp","rz","rn","rn","rn","rn"};
             os << "vfrint." << modes[x.mode & 0x7]

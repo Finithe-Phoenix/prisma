@@ -600,6 +600,16 @@ struct Popcnt { Ref value; OpSize size; };
 struct Lzcnt  { Ref value; OpSize size; };
 struct Tzcnt  { Ref value; OpSize size; };
 
+// F2-IR-046 — variable blend by implicit XMM0 mask (PBLENDVB / BLENDVPS / BLENDVPD).
+// For each lane i: result[i] = mask[i].MSB ? src[i] : dst[i].
+// Lane B16 / S4 / D2 sets the granularity.
+struct VecBlend {
+    Ref     dst;
+    Ref     src;
+    Ref     mask;
+    VecLane lane;
+};
+
 // F2-IR-026 — FP compare → flags (UCOMISS / UCOMISD).
 struct WriteFlagsFp {
     Ref    lhs;        // 128-bit xmm; only the low FP lane participates.
@@ -731,7 +741,8 @@ using Op = std::variant<
     VecExtend,
     VecFpRound,
     Popcnt,
-    Lzcnt, Tzcnt
+    Lzcnt, Tzcnt,
+    VecBlend
 >;
 
 // ---------------------------------------------------------------------------
@@ -851,6 +862,7 @@ bool operator==(const VecFpRound&    a, const VecFpRound&    b) noexcept;
 bool operator==(const Popcnt&        a, const Popcnt&        b) noexcept;
 bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
 bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
+bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

@@ -59,6 +59,7 @@ public:
         VecPshufb, VecAbs,
         VecAlignr, VecExtend, VecFpRound,
         Popcnt, Lzcnt, Tzcnt,
+        VecBlend,
         kCount  // sentinel
     };
 

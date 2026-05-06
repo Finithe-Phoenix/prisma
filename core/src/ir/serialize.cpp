@@ -103,11 +103,12 @@ enum class OpKind : std::uint8_t {
     kPopcnt        = 67,
     kLzcnt         = 68,
     kTzcnt         = 69,
+    kVecBlend      = 70,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kTzcnt);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecBlend);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -294,6 +295,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Popcnt>)        return OpKind::kPopcnt;
         else if constexpr (std::is_same_v<T, Lzcnt>)         return OpKind::kLzcnt;
         else if constexpr (std::is_same_v<T, Tzcnt>)         return OpKind::kTzcnt;
+        else if constexpr (std::is_same_v<T, VecBlend>)      return OpKind::kVecBlend;
     }, op);
 }
 
@@ -612,6 +614,12 @@ void write_payload(std::vector<std::uint8_t>& out, const Lzcnt& x) {
 void write_payload(std::vector<std::uint8_t>& out, const Tzcnt& x) {
     put_u32(out, x.value);
     put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecBlend& x) {
+    put_u32(out, x.dst);
+    put_u32(out, x.src);
+    put_u32(out, x.mask);
+    put_u8(out, static_cast<std::uint8_t>(x.lane));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -1011,6 +1019,17 @@ DeserializeError read_payload_popcnt(Cursor& c, Stmt& s) {
     s.op = Popcnt{v, static_cast<OpSize>(sz)};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_vec_blend(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t dst  = c.take_u32();
+    const std::uint32_t src  = c.take_u32();
+    const std::uint32_t mask = c.take_u32();
+    const std::uint8_t  lane = c.take_u8();
+    if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
+    s.op = VecBlend{dst, src, mask, static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_lzcnt(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
     const std::uint32_t v  = c.take_u32();
@@ -1370,6 +1389,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kPopcnt:      return read_payload_popcnt(c, s);
         case OpKind::kLzcnt:       return read_payload_lzcnt(c, s);
         case OpKind::kTzcnt:       return read_payload_tzcnt(c, s);
+        case OpKind::kVecBlend:    return read_payload_vec_blend(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

@@ -1065,6 +1065,26 @@ void emit_vfrint(vixl_aa::MacroAssembler& masm,
 
 }  // namespace
 
+void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
+    // Sequence:
+    //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set
+    //   bsl  v_t.16b,    vsrc.16b, vdst.16b   ; result = (t & src) | (~t & dst)
+    //   mov  vd.16b,     v_t.16b
+    const auto fmt = (lane == VecLane::B16) ? vixl_aa::kFormat16B
+                  : (lane == VecLane::H8 ) ? vixl_aa::kFormat8H
+                  : (lane == VecLane::S4 ) ? vixl_aa::kFormat4S
+                                           : vixl_aa::kFormat2D;
+    const vixl_aa::VRegister v_t   (kInternalFpScratchV, fmt);
+    const vixl_aa::VRegister v_mask(static_cast<int>(rmask), fmt);
+    impl_->masm.Cmlt(v_t, v_mask, 0);
+    const vixl_aa::VRegister v_t_q   (kInternalFpScratchV,    vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_src_q (static_cast<int>(rsrc), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst_q (static_cast<int>(rdst), vixl_aa::kFormat16B);
+    impl_->masm.Bsl(v_t_q, v_src_q, v_dst_q);
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
 void Emitter::clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
     if (sz == ir::OpSize::I32) {
         impl_->masm.Clz(to_vixl_w(rd), to_vixl_w(rn));

@@ -2243,6 +2243,20 @@ TEST_CASE("decode ROUNDSD xmm0, xmm1, 3 (66 0F 3A 0B C1 03) — scalar truncate 
     REQUIRE(vr.mode      == 3);
 }
 
+TEST_CASE("decode PBLENDVB xmm0, xmm1 (66 0F 38 10 C1) — F2-IR-046 byte blend") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x10, 0xC1}, r);
+    auto vb = std::get<ir::VecBlend>(d.stmts[3].op);
+    REQUIRE(vb.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode BLENDVPS xmm0, xmm1 (66 0F 38 14 C1) — float blend") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x14, 0xC1}, r);
+    auto vb = std::get<ir::VecBlend>(d.stmts[3].op);
+    REQUIRE(vb.lane == ir::VecLane::S4);
+}
+
 TEST_CASE("decode PMOVZXBW xmm0, xmm1 (66 0F 38 30 C1) — F2-IR-041 zero-ext B→H") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x38, 0x30, 0xC1}, r);

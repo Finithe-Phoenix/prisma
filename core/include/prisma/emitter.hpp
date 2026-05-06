@@ -426,6 +426,10 @@ public:
     void clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
     void rbit_clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
 
+    // F2-IR-046. Variable blend by mask MSB per lane. For each lane:
+    // result[i] = (mask[i].MSB == 1) ? src[i] : dst[i].
+    void vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
