@@ -422,6 +422,9 @@ public:
 
     // F2-IR-044. Population count of a GPR's value into another GPR.
     void popcnt_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
+    // F2-IR-045. ARM64 clz (LZCNT) and rbit+clz (TZCNT) directly.
+    void clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
+    void rbit_clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
 
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

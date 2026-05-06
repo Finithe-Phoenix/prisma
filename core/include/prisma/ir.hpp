@@ -595,6 +595,11 @@ enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
 // width. Result Ref is the population count value.
 struct Popcnt { Ref value; OpSize size; };
 
+// F2-IR-045 — LZCNT (F3 0F BD /r) leading-zero count, TZCNT (F3 0F BC /r)
+// trailing-zero count. Both BMI1.
+struct Lzcnt  { Ref value; OpSize size; };
+struct Tzcnt  { Ref value; OpSize size; };
+
 // F2-IR-026 — FP compare → flags (UCOMISS / UCOMISD).
 struct WriteFlagsFp {
     Ref    lhs;        // 128-bit xmm; only the low FP lane participates.
@@ -725,7 +730,8 @@ using Op = std::variant<
     VecAlignr,
     VecExtend,
     VecFpRound,
-    Popcnt
+    Popcnt,
+    Lzcnt, Tzcnt
 >;
 
 // ---------------------------------------------------------------------------
@@ -843,6 +849,8 @@ bool operator==(const VecAlignr&     a, const VecAlignr&     b) noexcept;
 bool operator==(const VecExtend&     a, const VecExtend&     b) noexcept;
 bool operator==(const VecFpRound&    a, const VecFpRound&    b) noexcept;
 bool operator==(const Popcnt&        a, const Popcnt&        b) noexcept;
+bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
+bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

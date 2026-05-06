@@ -98,6 +98,8 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, VecExtend>)     { visit(x.src); }
         else if constexpr (std::is_same_v<T, VecFpRound>)    { visit(x.lhs); visit(x.src); }
         else if constexpr (std::is_same_v<T, Popcnt>)        { visit(x.value); }
+        else if constexpr (std::is_same_v<T, Lzcnt>)         { visit(x.value); }
+        else if constexpr (std::is_same_v<T, Tzcnt>)         { visit(x.value); }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg —
@@ -153,7 +155,9 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecAlignr>
             || std::is_same_v<T, VecExtend>
             || std::is_same_v<T, VecFpRound>
-            || std::is_same_v<T, Popcnt>;
+            || std::is_same_v<T, Popcnt>
+            || std::is_same_v<T, Lzcnt>
+            || std::is_same_v<T, Tzcnt>;
     }, op);
 }
 

@@ -3939,10 +3939,12 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
-        // F2-IR-044: POPCNT (F3 0F B8 /r).
-        //   F3 0F B8 /r — POPCNT r32, r/m32  (REX.W → r64, r/m64).
+        // F2-IR-044/045: POPCNT / LZCNT / TZCNT (F3 0F B8/BC/BD).
+        //   F3 0F B8 /r — POPCNT
+        //   F3 0F BC /r — TZCNT (BMI1)
+        //   F3 0F BD /r — LZCNT (BMI1)
         if (has_f3 && !has_lock && !has_f2 && !has_operand_size_override &&
-            subop == 0xB8u) {
+            (subop == 0xB8u || subop == 0xBCu || subop == 0xBDu)) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
             if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3956,7 +3958,13 @@ std::variant<Decoded, DecodeError> decode_one(
             const ir::Ref r_src = next_ref++;
             const ir::Ref r_res = next_ref++;
             d.stmts.push_back({r_src, ir::LoadReg{m.base, size}});
-            d.stmts.push_back({r_res, ir::Popcnt{r_src, size}});
+            if (subop == 0xB8u) {
+                d.stmts.push_back({r_res, ir::Popcnt{r_src, size}});
+            } else if (subop == 0xBDu) {
+                d.stmts.push_back({r_res, ir::Lzcnt{r_src, size}});
+            } else {
+                d.stmts.push_back({r_res, ir::Tzcnt{r_src, size}});
+            }
             d.stmts.push_back({std::nullopt,
                 ir::StoreReg{dst_gpr, r_res, size}});
             d.bytes_consumed = cursor;

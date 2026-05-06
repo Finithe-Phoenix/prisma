@@ -603,31 +603,16 @@ TEST_CASE("decode LZCNT rax, rax placeholder via F3 48 0F BD C0") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x48, 0x0F, 0xBD, 0xC0}, r);
     REQUIRE(d.bytes_consumed == 5);
-    REQUIRE(d.stmts.size() == 4);
-    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
-    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[2].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 1u, ir::OpSize::I64}});
-    REQUIRE(r == 2);
+    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(std::holds_alternative<ir::Lzcnt>(d.stmts[1].op));
 }
 
-TEST_CASE("decode TZCNT rax, rax placeholder via F3 48 0F BC C0") {
-    // Encoding: F3 48 0F BC C0
-    //   F3 prefix for TZCNT
-    //   48 REX.W
-    //   0F BC opcode BC /r (normally BSF, with F3 => TZCNT)
-    //   C0 mod=11, reg=000 (rax destination), rm=000 (rax source)
+TEST_CASE("decode TZCNT rax, rax via F3 48 0F BC C0 — real TZCNT (F2-IR-045)") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x48, 0x0F, 0xBC, 0xC0}, r);
     REQUIRE(d.bytes_consumed == 5);
-    REQUIRE(d.stmts.size() == 4);
-    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
-    REQUIRE(d.stmts[1].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[2].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 1u, ir::OpSize::I64}});
-    REQUIRE(r == 2);
+    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(std::holds_alternative<ir::Tzcnt>(d.stmts[1].op));
 }
 
 TEST_CASE("decode POPCNT rax, rax via F3 48 0F B8 C0 — real POPCNT (F2-IR-044)") {
@@ -2330,6 +2315,20 @@ TEST_CASE("decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte c
     auto d = decode_ok({0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x04}, r);
     auto va = std::get<ir::VecAlignr>(d.stmts[2].op);
     REQUIRE(va.count == 4);
+}
+
+TEST_CASE("decode LZCNT eax, ecx (F3 0F BD C1) — F2-IR-045 BMI1 leading-zero count") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0xBD, 0xC1}, r);
+    auto lz = std::get<ir::Lzcnt>(d.stmts[1].op);
+    REQUIRE(lz.size == ir::OpSize::I32);
+}
+
+TEST_CASE("decode TZCNT rax, rcx (F3 48 0F BC C1) — BMI1 trailing-zero I64") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x48, 0x0F, 0xBC, 0xC1}, r);
+    auto tz = std::get<ir::Tzcnt>(d.stmts[1].op);
+    REQUIRE(tz.size == ir::OpSize::I64);
 }
 
 TEST_CASE("decode POPCNT eax, ecx (F3 0F B8 C1) — F2-IR-044 SSE4.2 popcount I32") {

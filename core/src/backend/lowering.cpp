@@ -239,6 +239,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecExtend>)     { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpRound>)    { bump(op.lhs, i); bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::Popcnt>)        { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Lzcnt>)         { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Tzcnt>)         { bump(op.value, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1095,6 +1097,34 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
             }
             emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Lzcnt>) {
+            // F2-IR-045 LZCNT — direct ARM64 clz.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Lzcnt without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Lzcnt.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Lzcnt"};
+            }
+            emitter_.clz_gpr(rd, rn, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Tzcnt>) {
+            // F2-IR-045 TZCNT — rbit + clz.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Tzcnt without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Tzcnt.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Tzcnt"};
+            }
+            emitter_.rbit_clz_gpr(rd, rn, op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Popcnt>) {

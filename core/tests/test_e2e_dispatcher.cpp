@@ -271,6 +271,31 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0x48, 0x0F, 0xBD, 0xC1,  // lzcnt rax, rcx
+        0xF3, 0x48, 0x0F, 0xBC, 0xDA,  // tzcnt rbx, rdx
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // 0x0000_0000_0000_0100 → leading zeros = 55, trailing zeros = 8.
+    disp.state()[ir::Gpr::Rcx] = 0x0000000000000100ULL;
+    disp.state()[ir::Gpr::Rdx] = 0x0000000000000100ULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 55u);
+    REQUIRE(disp.state()[ir::Gpr::Rbx] == 8u);
+}
+
 TEST_CASE("e2e: POPCNT 0xCAFEBABE counts the bits") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

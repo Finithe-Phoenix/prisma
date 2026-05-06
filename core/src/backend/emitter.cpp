@@ -1065,6 +1065,29 @@ void emit_vfrint(vixl_aa::MacroAssembler& masm,
 
 }  // namespace
 
+void Emitter::clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
+    if (sz == ir::OpSize::I32) {
+        impl_->masm.Clz(to_vixl_w(rd), to_vixl_w(rn));
+    } else {
+        impl_->masm.Clz(to_vixl_x(rd), to_vixl_x(rn));
+    }
+}
+void Emitter::rbit_clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
+    // tzcnt = clz(rbit(x)).
+    if (sz == ir::OpSize::I32) {
+        vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+        const vixl_aa::Register x_t = temps.AcquireX();
+        const vixl_aa::WRegister w_t(static_cast<int>(x_t.GetCode()));
+        impl_->masm.Rbit(w_t, to_vixl_w(rn));
+        impl_->masm.Clz (to_vixl_w(rd), w_t);
+    } else {
+        vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+        const vixl_aa::Register x_t = temps.AcquireX();
+        impl_->masm.Rbit(x_t, to_vixl_x(rn));
+        impl_->masm.Clz (to_vixl_x(rd), x_t);
+    }
+}
+
 void Emitter::popcnt_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
     // Sequence:
     //   fmov  d31, x_n       ; copy 64-bit input into V31 low half
