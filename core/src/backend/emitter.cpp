@@ -982,8 +982,13 @@ void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
     const vixl_aa::VRegister v_n_q(static_cast<int>(rn), vixl_aa::kFormat16B);
     impl_->masm.Mov(v_t_q, v_n_q);
     const vixl_aa::VRegister v_t_lane(kInternalFpScratchV, fmt);
-    impl_->masm.Mov(v_t_lane, lane_idx,
-                    vixl_aa::Register(to_vixl_w(w_value)));
+    if (lane == VecLane::D2) {
+        impl_->masm.Mov(v_t_lane, lane_idx,
+                        vixl_aa::Register(to_vixl_x(w_value)));
+    } else {
+        impl_->masm.Mov(v_t_lane, lane_idx,
+                        vixl_aa::Register(to_vixl_w(w_value)));
+    }
     const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
     impl_->masm.Mov(v_d_q, v_t_q);
 }
@@ -1248,7 +1253,12 @@ void Emitter::vumov_w_from_lane(arm64::Reg w_dst, FpReg rn,
                                 std::uint8_t lane_idx, VecLane lane) {
     const auto fmt = vec_format_for_lane(lane);
     const vixl_aa::VRegister v_n_lane(static_cast<int>(rn), fmt);
-    impl_->masm.Umov(to_vixl_w(w_dst), v_n_lane, lane_idx);
+    if (lane == VecLane::D2) {
+        // 64-bit lane requires X-form GPR.
+        impl_->masm.Umov(to_vixl_x(w_dst), v_n_lane, lane_idx);
+    } else {
+        impl_->masm.Umov(to_vixl_w(w_dst), v_n_lane, lane_idx);
+    }
 }
 
 void Emitter::vshuffle_2src_s4(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control) {

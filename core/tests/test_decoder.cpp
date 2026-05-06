@@ -2242,6 +2242,30 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode PEXTRD eax, xmm0, 2 (66 0F 3A 16 C0 02) — SSE4.1 dword extract S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x16, 0xC0, 0x02}, r);
+    auto ve = std::get<ir::VecExtractLaneU>(d.stmts[1].op);
+    REQUIRE(ve.lane     == ir::VecLane::S4);
+    REQUIRE(ve.lane_idx == 2);
+}
+
+TEST_CASE("decode PEXTRQ rax, xmm0, 1 (66 48 0F 3A 16 C0 01) — qword extract D2 via REX.W") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x48, 0x0F, 0x3A, 0x16, 0xC0, 0x01}, r);
+    auto ve = std::get<ir::VecExtractLaneU>(d.stmts[1].op);
+    REQUIRE(ve.lane     == ir::VecLane::D2);
+    REQUIRE(ve.lane_idx == 1);
+}
+
+TEST_CASE("decode PINSRD xmm0, eax, 1 (66 0F 3A 22 C0 01) — dword insert") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x22, 0xC0, 0x01}, r);
+    auto vi = std::get<ir::VecInsertLane>(d.stmts[2].op);
+    REQUIRE(vi.lane     == ir::VecLane::S4);
+    REQUIRE(vi.lane_idx == 1);
+}
+
 TEST_CASE("decode PEXTRB eax, xmm0, 5 (66 0F 3A 14 C0 05) — SSE4.1 byte extract") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x3A, 0x14, 0xC0, 0x05}, r);

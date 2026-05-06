@@ -2820,10 +2820,14 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
-            // SSE4.1 PEXTRB / PINSRB (B16 lane).
-            //   66 0F 3A 14 /r ib — PEXTRB r/m32, xmm, imm8 (zero-ext low byte)
-            //   66 0F 3A 20 /r ib — PINSRB xmm, r/m32, imm8
-            if (sub3 == 0x14u || sub3 == 0x20u) {
+            // SSE4.1 PEXTRB/D/Q + PINSRB/D/Q (S4/D2 selected by REX.W on dword/qword forms).
+            //   66 0F 3A 14 /r ib — PEXTRB B16 lane → r/m32
+            //   66 0F 3A 16 /r ib — PEXTRD/Q (REX.W=0 → PEXTRD S4 lane → r/m32;
+            //                                  REX.W=1 → PEXTRQ D2 lane → r/m64)
+            //   66 0F 3A 20 /r ib — PINSRB
+            //   66 0F 3A 22 /r ib — PINSRD/Q
+            if (sub3 == 0x14u || sub3 == 0x16u ||
+                sub3 == 0x20u || sub3 == 0x22u) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
                 if (std::holds_alternative<DecodeError>(modrm)) {
@@ -2835,11 +2839,32 @@ std::variant<Decoded, DecodeError> decode_one(
                 if (std::holds_alternative<DecodeError>(imm)) {
                     return std::get<DecodeError>(imm);
                 }
-                const std::uint8_t lane_idx = static_cast<std::uint8_t>(
-                    std::get<std::uint64_t>(imm)) & 0x0Fu;
+                const std::uint8_t imm_byte = static_cast<std::uint8_t>(
+                    std::get<std::uint64_t>(imm));
+                ir::VecLane lane;
+                std::uint8_t lane_idx;
+                ir::OpSize gpr_sz;
+                switch (sub3) {
+                    case 0x14u: lane = ir::VecLane::B16; lane_idx = imm_byte & 0x0Fu;
+                                gpr_sz = ir::OpSize::I32; break;
+                    case 0x20u: lane = ir::VecLane::B16; lane_idx = imm_byte & 0x0Fu;
+                                gpr_sz = ir::OpSize::I32; break;
+                    case 0x16u:  // PEXTRD/Q
+                    case 0x22u:  // PINSRD/Q
+                        if (rex.w) {
+                            lane = ir::VecLane::D2; lane_idx = imm_byte & 0x01u;
+                            gpr_sz = ir::OpSize::I64;
+                        } else {
+                            lane = ir::VecLane::S4; lane_idx = imm_byte & 0x03u;
+                            gpr_sz = ir::OpSize::I32;
+                        }
+                        break;
+                    default: lane = ir::VecLane::B16; lane_idx = 0; gpr_sz = ir::OpSize::I32;
+                }
+                const bool is_extract = (sub3 == 0x14u || sub3 == 0x16u);
                 Decoded d;
-                if (sub3 == 0x14u) {
-                    // PEXTRB: GPR dest = m.reg, XMM source = m.base.
+                if (is_extract) {
+                    // GPR dest = m.reg, XMM source = m.base.
                     const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
                     const unsigned src_xmm = static_cast<unsigned>(m.base);
                     const ir::Ref r_xmm = next_ref++;
@@ -2847,20 +2872,20 @@ std::variant<Decoded, DecodeError> decode_one(
                     d.stmts.push_back({r_xmm,
                         ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
                     d.stmts.push_back({r_val,
-                        ir::VecExtractLaneU{r_xmm, lane_idx, ir::VecLane::B16}});
+                        ir::VecExtractLaneU{r_xmm, lane_idx, lane}});
                     d.stmts.push_back({std::nullopt,
-                        ir::StoreReg{dst_gpr, r_val, ir::OpSize::I32}});
+                        ir::StoreReg{dst_gpr, r_val, gpr_sz}});
                 } else {
-                    // PINSRB: xmm dest = m.reg, GPR source = m.base.
+                    // PINSR*: xmm dest = m.reg, GPR source = m.base.
                     const ir::Ref r_lhs = next_ref++;
                     const ir::Ref r_val = next_ref++;
                     const ir::Ref r_res = next_ref++;
                     d.stmts.push_back({r_lhs,
                         ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
                     d.stmts.push_back({r_val,
-                        ir::LoadReg{m.base, ir::OpSize::I32}});
+                        ir::LoadReg{m.base, gpr_sz}});
                     d.stmts.push_back({r_res,
-                        ir::VecInsertLane{r_lhs, r_val, lane_idx, ir::VecLane::B16}});
+                        ir::VecInsertLane{r_lhs, r_val, lane_idx, lane}});
                     d.stmts.push_back({std::nullopt,
                         ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
                 }
