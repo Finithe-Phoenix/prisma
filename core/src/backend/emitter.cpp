@@ -609,6 +609,37 @@ void Emitter::vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
     impl_->masm.Smax(to_vixl_q(rd, lane), to_vixl_q(rn, lane), to_vixl_q(rm, lane));
 }
 
+void Emitter::vmulhi_h8(FpReg rd, FpReg rn, FpReg rm, bool is_signed) {
+    // Sequence:
+    //   smull/umull v31.4s, vn.4h, vm.4h        ; lower 4 i32 results
+    //   smull2/umull2 v_t.4s, vn.8h, vm.8h      ; upper 4 i32 results (use rd as second scratch)
+    //   shrn  v31.4h, v31.4s, #16               ; high 16 of each i32 → low half of v31
+    //   shrn2 v31.8h, v_t.4s, #16               ; high 16 → upper half of v31
+    //   mov   vd, v31
+    // We need a second scratch besides V31. Use v_rd directly as the
+    // intermediate for the upper-half products, since we overwrite it.
+    const vixl_aa::VRegister v_n4h(static_cast<int>(rn), vixl_aa::kFormat4H);
+    const vixl_aa::VRegister v_m4h(static_cast<int>(rm), vixl_aa::kFormat4H);
+    const vixl_aa::VRegister v_n8h(static_cast<int>(rn), vixl_aa::kFormat8H);
+    const vixl_aa::VRegister v_m8h(static_cast<int>(rm), vixl_aa::kFormat8H);
+    const vixl_aa::VRegister v_t4s(kInternalFpScratchV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_d4s(static_cast<int>(rd), vixl_aa::kFormat4S);
+    if (is_signed) {
+        impl_->masm.Smull (v_t4s, v_n4h, v_m4h);
+        impl_->masm.Smull2(v_d4s, v_n8h, v_m8h);
+    } else {
+        impl_->masm.Umull (v_t4s, v_n4h, v_m4h);
+        impl_->masm.Umull2(v_d4s, v_n8h, v_m8h);
+    }
+    const vixl_aa::VRegister v_t4h(kInternalFpScratchV, vixl_aa::kFormat4H);
+    const vixl_aa::VRegister v_t8h(kInternalFpScratchV, vixl_aa::kFormat8H);
+    impl_->masm.Shrn (v_t4h, v_t4s, 16);
+    impl_->masm.Shrn2(v_t8h, v_d4s, 16);
+    const vixl_aa::VRegister v_t_q(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_q);
+}
+
 namespace {
 vixl_aa::VRegister to_vixl_q_fp(Emitter::FpReg r, Emitter::VecLane lane) noexcept {
     using L = Emitter::VecLane;

@@ -2193,6 +2193,21 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode PMULHW xmm0, xmm1 (66 0F E5 C1) — F2-IR-025 signed mul-high H8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xE5, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::SMulHi);
+    REQUIRE(vb.lane == ir::VecLane::H8);
+}
+
+TEST_CASE("decode PMULHUW xmm0, xmm1 (66 0F E4 C1) — unsigned mul-high H8") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xE4, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op == ir::VecBinOpKind::UMulHi);
+}
+
 TEST_CASE("decode PMINUB xmm0, xmm1 (66 0F DA C1) — F2-IR-024 unsigned min B16") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0xDA, 0xC1}, r);

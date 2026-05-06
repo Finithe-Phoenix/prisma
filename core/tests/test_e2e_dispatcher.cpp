@@ -271,6 +271,42 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PMULHW xmm0, xmm1 — F2-IR-025 signed high-half multiply") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xE5, 0xC1,  // pmulhw xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4h = [](std::int16_t a, std::int16_t b,
+                     std::int16_t c, std::int16_t d) -> std::uint64_t {
+        return  static_cast<std::uint64_t>(static_cast<std::uint16_t>(a))
+              | (static_cast<std::uint64_t>(static_cast<std::uint16_t>(b)) << 16)
+              | (static_cast<std::uint64_t>(static_cast<std::uint16_t>(c)) << 32)
+              | (static_cast<std::uint64_t>(static_cast<std::uint16_t>(d)) << 48);
+    };
+    // 0x4000 * 0x0002 = 0x0000_8000 → high16 = 0x0000.
+    // 0x4000 * 0x4000 = 0x1000_0000 → high16 = 0x1000.
+    // -1   * -1       = 0x0000_0001 → high16 = 0x0000.
+    // 0x7FFF * 0x7FFF = 0x3FFF_0001 → high16 = 0x3FFF.
+    disp.state().xmm[0].lo = pack4h(0x4000, 0x4000, -1, 0x7FFF);
+    disp.state().xmm[0].hi = pack4h(0, 0, 0, 0);
+    disp.state().xmm[1].lo = pack4h(0x0002, 0x4000, -1, 0x7FFF);
+    disp.state().xmm[1].hi = pack4h(0, 0, 0, 0);
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack4h(0x0000, 0x1000, 0x0000, 0x3FFF));
+}
+
 TEST_CASE("e2e: PADDUSB clamps at 0xFF — F2-IR-023 unsigned sat add") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

@@ -352,6 +352,8 @@ enum class VecBinOpKind : std::uint8_t {
     UMax,
     SMin,
     SMax,
+    SMulHi,         // F2-IR-025 — high half of signed   16x16 multiply (PMULHW).
+    UMulHi,         //              high half of unsigned 16x16 multiply (PMULHUW).
 };
 
 struct VecConstant {

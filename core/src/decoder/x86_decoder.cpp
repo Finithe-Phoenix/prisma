@@ -2848,7 +2848,7 @@ std::variant<Decoded, DecodeError> decode_one(
              subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
              subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
              subop == 0xDBu || subop == 0xEFu ||
-             subop == 0xD5u))
+             subop == 0xD5u || subop == 0xE4u || subop == 0xE5u))
             || is_andps_family || is_sat_arith || is_minmax) {
             auto modrm = parse_modrm(bytes, cursor, rex,
                                      has_address_size_override);
@@ -2886,6 +2886,8 @@ std::variant<Decoded, DecodeError> decode_one(
                 case 0xDEu: vop = ir::VecBinOpKind::UMax;  lane = ir::VecLane::B16; break;
                 case 0xEAu: vop = ir::VecBinOpKind::SMin;  lane = ir::VecLane::H8;  break;
                 case 0xEEu: vop = ir::VecBinOpKind::SMax;  lane = ir::VecLane::H8;  break;
+                case 0xE5u: vop = ir::VecBinOpKind::SMulHi; lane = ir::VecLane::H8; break;
+                case 0xE4u: vop = ir::VecBinOpKind::UMulHi; lane = ir::VecLane::H8; break;
                 default: break;
             }
             Decoded d;

@@ -325,6 +325,9 @@ public:
     void vumax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vsmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    // F2-IR-025. High half of 16x16 multiply, lane-wise (8 H8 results).
+    // is_signed selects PMULHW vs PMULHUW. Uses V31 internal scratch.
+    void vmulhi_h8(FpReg rd, FpReg rn, FpReg rm, bool is_signed);
 
     // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
     // D2 (2×f64); other values are rejected by an assert.
