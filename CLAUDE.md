@@ -87,6 +87,12 @@ cubierto, ejecutando en hardware ARM64).
     VPCMPGTB/W/D, VUNPCKL/HPS/PD, VPUNPCKL/H BW/WD/DQ/QDQ,
     VSHUFPS/PD, VHADDPS/PD, VCMPxxPS/PD ymm. Lane-crossing ops
     (VBROADCAST*, VINSERTF128, VEXTRACTF128, VPERM2F128) deferred.
+    F2-IR-006 — FMA3 packed xmm (VEX C4-only): VFMADD/SUB/NMADD/
+    NMSUB × 132/213/231 × PS/PD. Single VecFpFma IR op with
+    neg_addend/neg_mul flags; ARM64 FMLA/FMLS lowering with
+    FNEG-into-Vd for negated-addend forms. Strict-FP fused — no
+    peephole pass converts mul+add to FMLA. ymm, scalar SS/SD, and
+    MADDSUB/MSUBADD families deferred.
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -106,7 +112,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 770+ Catch2 tests / 4727+ assertions.
+  - `prisma_core_tests` — 774+ Catch2 tests / 4739+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
