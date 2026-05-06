@@ -59,17 +59,21 @@ cubierto, ejecutando en hardware ARM64).
   - `prisma_ir` — IR SSA + pretty-print + validator (F1-IR-016).
   - `prisma_decoder` — x86_64 → IR. SIB, RIP-relative, REX.R/X/B,
     prefijo 0x67 address-size override, segment overrides aceptados,
-    `Cpuid` pseudo-op. SSE/SSE2 cobertura amplia (F2-IR-001..022):
-    PADDx/PSUBx/PAND/POR/PXOR/PMULLW (reg+mem),
-    MOVDQA/MOVDQU/MOVAPS/MOVUPS/MOVAPD/MOVUPD,
-    MOVD/MOVQ (GPR↔XMM), MOVSS/MOVSD,
+    `Cpuid` pseudo-op. SSE/SSE2/SSE3 cobertura amplia (F2-IR-001..033):
+    PADDx/PSUBx/PAND/POR/PXOR/PMULLW + saturating PADDS/US, PSUBS/US,
+    PMINUB/PMAXUB/PMINSW/PMAXSW, PMULHW/PMULHUW, PMULUDQ, PSADBW,
+    MOVDQA/MOVDQU/MOVAPS/MOVUPS/MOVAPD/MOVUPD/MOVDDUP,
+    MOVSLDUP/MOVSHDUP, MOVD/MOVQ (GPR↔XMM), MOVSS/MOVSD,
     ADDPS/SUBPS/MULPS/DIVPS/MAXPS/MINPS/SQRTPS + PD variants,
     ADDSS/SUBSS/MULSS/DIVSS/MAXSS/MINSS/SQRTSS + SD variants,
-    PCMPEQB/W/D + PCMPGTB/W/D, PSHUFD, SHUFPS/SHUFPD,
+    HADDPS/HADDPD (SSE3),
+    PCMPEQB/W/D + PCMPGTB/W/D, UCOMISS/UCOMISD/COMISS/COMISD (FP→flags),
+    PSHUFD, PSHUFLW/PSHUFHW, SHUFPS/SHUFPD,
     PUNPCKL/H{BW,WD,DQ,QDQ} + UNPCKL/HPS/PD,
     PSLLW/D/Q + PSRLW/D/Q + PSRAW/D + PSLLDQ/PSRLDQ,
     CVTSI2SS/SD + CVTTSS/SD2SI + CVTSS2SD/CVTSD2SS,
-    PINSRW/PEXTRW, ANDPS/ORPS/XORPS + PD variants.
+    PINSRW/PEXTRW, PMOVMSKB, MOVMSKPS/PD,
+    ANDPS/ORPS/XORPS + PD variants.
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -89,7 +93,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 690+ Catch2 tests / 4500+ assertions.
+  - `prisma_core_tests` — 718+ Catch2 tests / 4577+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
