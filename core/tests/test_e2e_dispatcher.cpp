@@ -271,6 +271,47 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PSADBW — F2-IR-031 sum of byte differences (used by memcmp)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xF6, 0xC1,  // psadbw xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // xmm0 bytes 0..7  = {10, 20, 30, 40, 50, 60, 70, 80}
+    // xmm1 bytes 0..7  = {15, 15, 35, 35, 55, 55, 75, 75}
+    // |diffs|          = { 5,  5,  5,  5,  5,  5,  5,  5} → sum = 40 → 0x28
+    // upper halves match identically → sum = 0.
+    disp.state().xmm[0].lo = 0x5040302010ULL | (0x80706050ULL << 32);  // bytes 10,20,30,40,50,60,70,80
+    disp.state().xmm[1].lo = 0x35350F0F0FULL ^ 0;  // need careful packing
+    // Build by hand:
+    auto pack8 = [](std::uint8_t* b) {
+        std::uint64_t v = 0;
+        for (int i = 0; i < 8; ++i)
+            v |= static_cast<std::uint64_t>(b[i]) << (i*8);
+        return v;
+    };
+    std::uint8_t xmm0_lo[8] = {10,20,30,40,50,60,70,80};
+    std::uint8_t xmm1_lo[8] = {15,15,35,35,55,55,75,75};
+    std::uint8_t same_hi[8] = {1,2,3,4,5,6,7,8};
+    disp.state().xmm[0].lo = pack8(xmm0_lo);
+    disp.state().xmm[0].hi = pack8(same_hi);
+    disp.state().xmm[1].lo = pack8(xmm1_lo);
+    disp.state().xmm[1].hi = pack8(same_hi);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == 40u);
+    REQUIRE(disp.state().xmm[0].hi == 0u);
+}
+
 TEST_CASE("e2e: PMULUDQ — F2-IR-030 unsigned 32x32→64 lane mul") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

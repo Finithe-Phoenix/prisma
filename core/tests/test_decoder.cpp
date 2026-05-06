@@ -2242,6 +2242,13 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode PSADBW xmm0, xmm1 (66 0F F6 C1) — F2-IR-031 sum-abs-diff bytes") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xF6, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op == ir::VecBinOpKind::SadBw);
+}
+
 TEST_CASE("decode PMULUDQ xmm0, xmm1 (66 0F F4 C1) — F2-IR-030 u32→u64 multiply") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0xF4, 0xC1}, r);

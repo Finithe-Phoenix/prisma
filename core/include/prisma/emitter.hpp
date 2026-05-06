@@ -331,6 +331,8 @@ public:
     // F2-IR-030. PMULUDQ — packs lanes 0,2 of each S4 source into D2
     // results via uzp1 + umull.
     void vmul_u32_to_64(FpReg rd, FpReg rn, FpReg rm);
+    // F2-IR-031. PSADBW.
+    void vsad_bw(FpReg rd, FpReg rn, FpReg rm);
 
     // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
     // D2 (2×f64); other values are rejected by an assert.

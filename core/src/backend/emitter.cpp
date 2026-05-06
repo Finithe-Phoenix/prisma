@@ -609,6 +609,28 @@ void Emitter::vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
     impl_->masm.Smax(to_vixl_q(rd, lane), to_vixl_q(rn, lane), to_vixl_q(rm, lane));
 }
 
+void Emitter::vsad_bw(FpReg rd, FpReg rn, FpReg rm) {
+    // PSADBW: low qword = sum |a[i]-b[i]| for i in 0..7; high qword
+    // same for i in 8..15. Sequence:
+    //   uabd  v_t.16b, vn.16b, vm.16b
+    //   uaddlp v_t.8h, v_t.16b      ; pairs of bytes → halfwords
+    //   uaddlp v_t.4s, v_t.8h
+    //   uaddlp v_t.2d, v_t.4s        ; final → 2 dwords (each = sum of 8 bytes)
+    //   mov    v_d, v_t
+    const vixl_aa::VRegister v_t_16b(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_t_8h (kInternalFpScratchV, vixl_aa::kFormat8H);
+    const vixl_aa::VRegister v_t_4s (kInternalFpScratchV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_t_2d (kInternalFpScratchV, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_n_16b(static_cast<int>(rn), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_m_16b(static_cast<int>(rm), vixl_aa::kFormat16B);
+    impl_->masm.Uabd(v_t_16b, v_n_16b, v_m_16b);
+    impl_->masm.Uaddlp(v_t_8h, v_t_16b);
+    impl_->masm.Uaddlp(v_t_4s, v_t_8h);
+    impl_->masm.Uaddlp(v_t_2d, v_t_4s);
+    const vixl_aa::VRegister v_d_q(static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_t_16b);
+}
+
 void Emitter::vmul_u32_to_64(FpReg rd, FpReg rn, FpReg rm) {
     // PMULUDQ: result.d2[0] = (u64)vn.s4[0] * (u64)vm.s4[0]
     //          result.d2[1] = (u64)vn.s4[2] * (u64)vm.s4[2]
