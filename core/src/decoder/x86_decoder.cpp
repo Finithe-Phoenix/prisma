@@ -2447,9 +2447,23 @@ std::variant<Decoded, DecodeError> decode_one(
                      avx256_op == 0x62u || avx256_op == 0x6Cu ||
                      avx256_op == 0x68u || avx256_op == 0x69u ||
                      avx256_op == 0x6Au || avx256_op == 0x6Du);
+                // CMPxxPS/PD (packed): 0F C2 with pp=00 (PS) or pp=01
+                // (PD). Scalar variants (pp=02/03) are #UD with L=1.
+                const bool fp_cmp_packed =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    avx256_op == 0xC2u;
+                // SHUFPS/PD (0F C6, pp=00 or pp=01).
+                const bool fp_shuf =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    avx256_op == 0xC6u;
+                // HADDPS/PD (0F 7C, pp=01 → PD or pp=03 → PS).
+                const bool fp_hadd =
+                    vex.mmmmm == 1 && (vex.pp == 1 || vex.pp == 3) &&
+                    avx256_op == 0x7Cu;
                 if (!(packed_fp_ps_pd || fp_bitwise ||
                       int_simd_addsub_bitwise ||
-                      int_cmp || fp_unpck || int_unpck)) {
+                      int_cmp || fp_unpck || int_unpck ||
+                      fp_cmp_packed || fp_shuf || fp_hadd)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -3740,6 +3754,11 @@ std::variant<Decoded, DecodeError> decode_one(
             const std::uint8_t lhs_xmm_cmp = vex.present
                 ? static_cast<std::uint8_t>(vex.vvvv)
                 : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
             const ir::Ref r_lhs = next_ref++;
             const ir::Ref r_rhs = next_ref++;
             const ir::Ref r_res = next_ref++;
@@ -3749,15 +3768,41 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::LoadVecReg{static_cast<std::uint8_t>(
                         static_cast<unsigned>(m.base))}});
             } else {
-                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                    instruction_guest_pc + cursor);
-                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
             }
             d.stmts.push_back({r_res,
                 ir::VecFpCompare{r_lhs, r_rhs, size,
                                  static_cast<ir::VecFpCmpPred>(pred), is_packed}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — AVX-256 high-lane emission. CMPxxSS/SD with
+            // VEX.L=1 is #UD (scalar+L=1 illegal); the allowlist already
+            // excludes those, so this branch only fires for packed.
+            if (vex.present && vex.L && is_packed) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_cmp}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecFpCompare{r_lhs_hi, r_rhs_hi, size,
+                                     static_cast<ir::VecFpCmpPred>(pred), is_packed}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }
@@ -3925,26 +3970,55 @@ std::variant<Decoded, DecodeError> decode_one(
                 static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
             const bool is_pd = has_operand_size_override;
             Decoded d;
-            const ir::Ref r_lhs = next_ref++;
-            const ir::Ref r_rhs = next_ref++;
-            const ir::Ref r_res = next_ref++;
             const std::uint8_t lhs_xmm_shuf = vex.present
                 ? static_cast<std::uint8_t>(vex.vvvv)
                 : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
             d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_shuf}});
             if (m.mod == 0b11) {
                 d.stmts.push_back({r_rhs,
                     ir::LoadVecReg{static_cast<std::uint8_t>(
                         static_cast<unsigned>(m.base))}});
             } else {
-                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                    instruction_guest_pc + cursor);
-                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
             }
             d.stmts.push_back({r_res,
                 ir::VecShuffle2Src{is_pd, r_lhs, r_rhs, control}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — VSHUFPS/PD ymm: per-128-bit-lane semantics, so
+            // the same control byte applies to both halves.
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_shuf}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecShuffle2Src{is_pd, r_lhs_hi, r_rhs_hi, control}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }
@@ -4247,26 +4321,53 @@ std::variant<Decoded, DecodeError> decode_one(
                                            ? ir::VecFpSize::D2
                                            : ir::VecFpSize::S4;
             Decoded d;
-            const ir::Ref r_lhs = next_ref++;
-            const ir::Ref r_rhs = next_ref++;
-            const ir::Ref r_res = next_ref++;
             const std::uint8_t lhs_xmm_hadd = vex.present
                 ? static_cast<std::uint8_t>(vex.vvvv)
                 : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
             d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_hadd}});
             if (m.mod == 0b11) {
                 d.stmts.push_back({r_rhs,
                     ir::LoadVecReg{static_cast<std::uint8_t>(
                         static_cast<unsigned>(m.base))}});
             } else {
-                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                    instruction_guest_pc + cursor);
-                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
             }
             d.stmts.push_back({r_res,
                 ir::VecFpBinOp{ir::VecFpBinOpKind::HAdd, r_lhs, r_rhs, size}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_hadd}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecFpBinOp{ir::VecFpBinOpKind::HAdd, r_lhs_hi, r_rhs_hi, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }
