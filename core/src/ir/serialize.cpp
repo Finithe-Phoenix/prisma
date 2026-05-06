@@ -91,11 +91,12 @@ enum class OpKind : std::uint8_t {
     kVecInsertLane = 55,
     kVecExtractLaneU = 56,
     kVecMaskMsb    = 57,
+    kWriteFlagsFp  = 58,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecMaskMsb);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kWriteFlagsFp);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -270,6 +271,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecInsertLane>) return OpKind::kVecInsertLane;
         else if constexpr (std::is_same_v<T, VecExtractLaneU>) return OpKind::kVecExtractLaneU;
         else if constexpr (std::is_same_v<T, VecMaskMsb>)    return OpKind::kVecMaskMsb;
+        else if constexpr (std::is_same_v<T, WriteFlagsFp>)  return OpKind::kWriteFlagsFp;
     }, op);
 }
 
@@ -529,6 +531,11 @@ void write_payload(std::vector<std::uint8_t>& out, const VecExtractLaneU& x) {
 }
 void write_payload(std::vector<std::uint8_t>& out, const VecMaskMsb& x) {
     put_u32(out, x.src_xmm);
+}
+void write_payload(std::vector<std::uint8_t>& out, const WriteFlagsFp& x) {
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -913,6 +920,16 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_write_flags_fp(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t lhs  = c.take_u32();
+    const std::uint32_t rhs  = c.take_u32();
+    const std::uint8_t  size = c.take_u8();
+    if (!is_valid_fpsize(size)) return DeserializeError::BadSize;
+    s.op = WriteFlagsFp{lhs, rhs, static_cast<FpSize>(size)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_mask_msb(Cursor& c, Stmt& s) {
     if (!c.remaining(4)) return DeserializeError::Truncated;
     s.op = VecMaskMsb{c.take_u32()};
@@ -1154,6 +1171,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecInsertLane: return read_payload_vec_insert_lane(c, s);
         case OpKind::kVecExtractLaneU: return read_payload_vec_extract_lane_u(c, s);
         case OpKind::kVecMaskMsb:  return read_payload_vec_mask_msb(c, s);
+        case OpKind::kWriteFlagsFp: return read_payload_write_flags_fp(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

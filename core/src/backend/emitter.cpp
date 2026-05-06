@@ -901,6 +901,14 @@ void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
     impl_->masm.Mov(v_d_q, v_t_q);
 }
 
+void Emitter::fcmp_scalar(FpReg rn, FpReg rm, ir::FpSize sz) {
+    if (sz == ir::FpSize::F32) {
+        impl_->masm.Fcmp(to_vixl_s(rn), to_vixl_s(rm));
+    } else {
+        impl_->masm.Fcmp(to_vixl_d(rn), to_vixl_d(rm));
+    }
+}
+
 void Emitter::vmask_msb_b16(arm64::Reg w_dst, FpReg rn) {
     // PMOVMSKB sequence (well-known):
     //   1. cmlt v_t.16b, vn.16b, #0      ; t[i] = 0xFF if vn[i] MSB set

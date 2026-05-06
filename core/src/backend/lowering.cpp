@@ -229,6 +229,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecInsertLane>)  { bump(op.lhs_xmm, i); bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecExtractLaneU>){ bump(op.src_xmm, i); }
             else if constexpr (std::is_same_v<T, ir::VecMaskMsb>)    { bump(op.src_xmm, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>)  { bump(op.lhs, i); bump(op.rhs, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -273,6 +274,7 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
         fp_free_.push_back(fp_scratch_reg(i));
     }
     flag_refs_.clear();
+    fp_flag_refs_.clear();
     peak_live_   = 0;
     peak_spills_ = 0;
 
@@ -318,6 +320,7 @@ LowerResult Lowerer::lower(const ir::Function& fn) {
         fp_free_.push_back(fp_scratch_reg(i));
     }
     flag_refs_.clear();
+    fp_flag_refs_.clear();
     peak_live_   = 0;
     peak_spills_ = 0;
     if (options_.spill_slots > 0) {
@@ -709,6 +712,21 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>) {
+            // F2-IR-026. fcmp on the low FP lanes of the two xmm regs.
+            // Result Ref lives in NZCV — same model as WriteFlags but
+            // we record it in fp_flag_refs_ so ReadFlag dispatches the
+            // FP-specific cond-code mapping.
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlagsFp.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlagsFp.rhs"};
+            emitter_.fcmp_scalar(rl, rr, op.size);
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+                fp_flag_refs_.insert(*s.result);
+            }
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::WriteFlags>) {
             // F1-IR-004 / F1-BK lowering. Emit the flag-setting variant
             // of the integer op so NZCV reflects the result, then bind
@@ -768,18 +786,36 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!allocate_scratch(*s.result, rd)) {
                 return {false, LowerError::OutOfScratchRegs, "ReadFlag"};
             }
-            ir::CondCode cc = ir::CondCode::Eq;  // mapped per which:
-            switch (op.which) {
-                case ir::FlagBit::Carry:    cc = ir::CondCode::Cc;   break;
-                case ir::FlagBit::Zero:     cc = ir::CondCode::Eq;   break;
-                case ir::FlagBit::Sign:     cc = ir::CondCode::Mi;   break;
-                case ir::FlagBit::Overflow: cc = ir::CondCode::Ov;   break;
-                case ir::FlagBit::Parity:
-                case ir::FlagBit::Aux:
-                    // Not mappable to ARM64 NZCV directly; software
-                    // emulation lands in F1-RT-* future work.
-                    return {false, LowerError::UnsupportedOp,
-                            "ReadFlag(Parity/Aux) needs SW emulation"};
+            const bool is_fp = fp_flag_refs_.count(op.flags) > 0;
+            ir::CondCode cc = ir::CondCode::Eq;
+            if (is_fp) {
+                // FP source (UCOMISS/UCOMISD): NZCV from fcmp.
+                //   x86 ZF → ARM "eq" (Z=1)
+                //   x86 CF → ARM "lt" (N!=V) — true when lhs<rhs or unordered
+                //   x86 PF → ARM "vs" (V=1) — true on unordered
+                //   SF/OF/AF: x86 clears them after UCOMI*; we'd need
+                //   to materialise constant 0 — return error for now.
+                switch (op.which) {
+                    case ir::FlagBit::Zero:     cc = ir::CondCode::Eq; break;
+                    case ir::FlagBit::Carry:    cc = ir::CondCode::Slt; break;
+                    case ir::FlagBit::Parity:   cc = ir::CondCode::Ov; break;  // V=1 → vs
+                    case ir::FlagBit::Sign:
+                    case ir::FlagBit::Overflow:
+                    case ir::FlagBit::Aux:
+                        return {false, LowerError::UnsupportedOp,
+                                "ReadFlag(SF/OF/AF) on FP-source flags"};
+                }
+            } else {
+                switch (op.which) {
+                    case ir::FlagBit::Carry:    cc = ir::CondCode::Cc;   break;
+                    case ir::FlagBit::Zero:     cc = ir::CondCode::Eq;   break;
+                    case ir::FlagBit::Sign:     cc = ir::CondCode::Mi;   break;
+                    case ir::FlagBit::Overflow: cc = ir::CondCode::Ov;   break;
+                    case ir::FlagBit::Parity:
+                    case ir::FlagBit::Aux:
+                        return {false, LowerError::UnsupportedOp,
+                                "ReadFlag(Parity/Aux) needs SW emulation"};
+                }
             }
             emitter_.cset(rd, cc);
             return {};

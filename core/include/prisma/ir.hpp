@@ -311,6 +311,7 @@ struct WriteFlags {
     OpSize    size;
 };
 
+
 struct ReadFlag {
     Ref     flags;
     FlagBit which;
@@ -540,6 +541,13 @@ struct RspAdjust {
 enum class FpSize     : std::uint8_t { F32 = 0, F64 };
 enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
 
+// F2-IR-026 — FP compare → flags (UCOMISS / UCOMISD).
+struct WriteFlagsFp {
+    Ref    lhs;        // 128-bit xmm; only the low FP lane participates.
+    Ref    rhs;
+    FpSize size;
+};
+
 // F2-IR-016 — scalar int ↔ FP conversions (CVTSI2SS/SD + CVTTSS/SD2SI).
 //   IntToFpScalar: signed int (I32 or I64) → low-lane FP (F32 or F64).
 //                  Upper xmm bits are zeroed.
@@ -625,7 +633,8 @@ using Op = std::variant<
     FpCvtScalar,
     VecShuffle2Src,
     VecInsertLane, VecExtractLaneU,
-    VecMaskMsb
+    VecMaskMsb,
+    WriteFlagsFp
 >;
 
 // ---------------------------------------------------------------------------
@@ -733,6 +742,7 @@ bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept;
 bool operator==(const VecInsertLane& a, const VecInsertLane& b) noexcept;
 bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept;
 bool operator==(const VecMaskMsb&    a, const VecMaskMsb&    b) noexcept;
+bool operator==(const WriteFlagsFp&  a, const WriteFlagsFp&  b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

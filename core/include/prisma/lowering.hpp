@@ -201,6 +201,9 @@ private:
     // values so consumers (ReadFlag / CondJumpFlags) can verify
     // their operand was produced by a prior WriteFlags.
     std::unordered_set<ir::Ref> flag_refs_;
+    // F2-IR-026 — subset of flag_refs_ produced by WriteFlagsFp.
+    // ReadFlag / CondJumpFlags pick FP-specific cond codes for these.
+    std::unordered_set<ir::Ref> fp_flag_refs_;
 
 public:
     // For tests: peak number of slots in concurrent use during the

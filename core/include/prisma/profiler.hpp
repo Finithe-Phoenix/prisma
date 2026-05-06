@@ -52,6 +52,7 @@ public:
         VecShuffle2Src,
         VecInsertLane, VecExtractLaneU,
         VecMaskMsb,
+        WriteFlagsFp,
         kCount  // sentinel
     };
 

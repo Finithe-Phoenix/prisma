@@ -374,6 +374,9 @@ public:
     // F2-IR-027. PMOVMSKB: byte MSB extraction → 16-bit mask in w_dst.
     void vmask_msb_b16(arm64::Reg w_dst, FpReg rn);
 
+    // F2-IR-026. fcmp s/d_lhs.low, s/d_rhs.low — sets NZCV.
+    void fcmp_scalar(FpReg rn, FpReg rm, ir::FpSize sz);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

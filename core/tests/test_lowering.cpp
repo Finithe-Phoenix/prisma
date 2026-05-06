@@ -1040,6 +1040,28 @@ TEST_CASE("Lowerer: PADDD xmm0, [rcx] full IR sequence lowers") {
     REQUIRE(ok);
 }
 
+TEST_CASE("Lowerer: F2-IR-026 UCOMISD-style flags chain — fcmp + cset(eq) + cset(slt)") {
+    // Manually construct the IR sequence the decoder emits, then
+    // verify lowering succeeds and emits fcmp / cset.
+    std::vector<ir::Stmt> stmts = {
+        {0u,           ir::LoadVecReg{0u}},
+        {1u,           ir::LoadVecReg{1u}},
+        {2u,           ir::WriteFlagsFp{0u, 1u, ir::FpSize::F64}},
+        {3u,           ir::ReadFlag{2u, ir::FlagBit::Zero}},
+        {4u,           ir::ReadFlag{2u, ir::FlagBit::Carry}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 4u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("fcmp")  != std::string::npos);
+    REQUIRE(d.find("cset")  != std::string::npos);
+    REQUIRE(d.find("eq")    != std::string::npos);
+    REQUIRE(d.find("lt")    != std::string::npos);
+}
+
 TEST_CASE("Lowerer: F2-IR-016 cvtsi2sd round-trip through pipeline") {
     std::vector<ir::Stmt> stmts = {
         {0u,           ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},

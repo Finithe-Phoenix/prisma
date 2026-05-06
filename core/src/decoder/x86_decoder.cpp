@@ -3074,6 +3074,47 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-026: UCOMISS / UCOMISD / COMISS / COMISD — FP compare → flags.
+        //   0F 2E /r — UCOMISS xmm1, xmm2/m32
+        //   0F 2F /r — COMISS  (signaling on QNaN; we treat the same)
+        //   66 0F 2E /r — UCOMISD xmm1, xmm2/m64
+        //   66 0F 2F /r — COMISD
+        // Models: WriteFlagsFp setting NZCV with fcmp. Result Ref is
+        // unused in this lowering (the consumer would be a ReadFlag /
+        // CondJumpFlags op decoded separately for the SETcc / Jcc that
+        // follows). We still produce a Ref so SETcc/Jcc can refer to
+        // it as `flags`.
+        if (!has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x2Eu || subop == 0x2Fu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::FpSize fp_sz =
+                has_operand_size_override ? ir::FpSize::F64 : ir::FpSize::F32;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_flags = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_flags,
+                ir::WriteFlagsFp{r_lhs, r_rhs, fp_sz}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-027: PMOVMSKB r32, xmm (66 0F D7 /r). Reg-direct only.
         if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
             subop == 0xD7u) {

@@ -184,6 +184,9 @@ bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept {
 bool operator==(const VecMaskMsb& a, const VecMaskMsb& b) noexcept {
     return a.src_xmm == b.src_xmm;
 }
+bool operator==(const WriteFlagsFp& a, const WriteFlagsFp& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;
