@@ -466,7 +466,7 @@ translator on a reference Linux ARM64 box.
 - [ ] F2-BK-003: Lowering for AVX (use pair of NEON vectors for 256-bit).
 - [ ] F2-BK-004: Lowering for FMA via NEON FMLA.
 - [ ] F2-BK-005: Lowering for x87 (software emulation for rare cases).
-- [~|claude] F2-BK-006: SIMD register allocator (NEON v0-v31).
+- [x] (0597402) F2-BK-006: SIMD register allocator (NEON v0-v31). (Pool widened V0..V7 → V0..V23 [05044f8]; FP last-use expiry added [0597402] — same liveness machinery as the GPR allocator. Pair-allocator scaffolding + spill plumbing deferred until measured demand.)
 - [ ] F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx).
 - [ ] F2-BK-008: Lowering for REP prefix — loop generation.
 - [ ] F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline.
