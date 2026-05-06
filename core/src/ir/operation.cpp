@@ -226,6 +226,9 @@ bool operator==(const Tzcnt& a, const Tzcnt& b) noexcept {
 bool operator==(const VecBlend& a, const VecBlend& b) noexcept {
     return a.dst == b.dst && a.src == b.src && a.mask == b.mask && a.lane == b.lane;
 }
+bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

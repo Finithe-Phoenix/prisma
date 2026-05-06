@@ -2243,6 +2243,12 @@ TEST_CASE("decode ROUNDSD xmm0, xmm1, 3 (66 0F 3A 0B C1 03) — scalar truncate 
     REQUIRE(vr.mode      == 3);
 }
 
+TEST_CASE("decode PTEST xmm0, xmm1 (66 0F 38 17 C1) — F2-IR-047 SSE4.1 bitwise test") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x17, 0xC1}, r);
+    REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts[2].op));
+}
+
 TEST_CASE("decode PBLENDVB xmm0, xmm1 (66 0F 38 10 C1) — F2-IR-046 byte blend") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x38, 0x10, 0xC1}, r);

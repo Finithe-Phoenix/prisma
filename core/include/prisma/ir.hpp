@@ -617,6 +617,16 @@ struct WriteFlagsFp {
     FpSize size;
 };
 
+// F2-IR-047 — PTEST (SSE4.1) bitwise flag write.
+//   ZF = (lhs AND rhs == 0)
+//   CF = (lhs AND NOT rhs == 0)
+//   SF = OF = AF = PF = 0.
+// Lowering writes ARM NZCV directly via msr.
+struct WriteFlagsPtest {
+    Ref lhs;
+    Ref rhs;
+};
+
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
 //   Predicate = imm8 & 7 from the x86 encoding:
 //     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
@@ -742,7 +752,8 @@ using Op = std::variant<
     VecFpRound,
     Popcnt,
     Lzcnt, Tzcnt,
-    VecBlend
+    VecBlend,
+    WriteFlagsPtest
 >;
 
 // ---------------------------------------------------------------------------
@@ -863,6 +874,7 @@ bool operator==(const Popcnt&        a, const Popcnt&        b) noexcept;
 bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
 bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
 bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
+bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

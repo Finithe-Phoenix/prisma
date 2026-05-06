@@ -242,6 +242,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Lzcnt>)         { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Tzcnt>)         { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecBlend>)      { bump(op.dst, i); bump(op.src, i); bump(op.mask, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) { bump(op.lhs, i); bump(op.rhs, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1098,6 +1099,23 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
             }
             emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) {
+            // F2-IR-047 PTEST.
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlagsPtest.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlagsPtest.rhs"};
+            arm64::Reg w_tmp;
+            if (!allocate_temporary(w_tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "PTEST tmp"};
+            }
+            emitter_.vptest(rl, rr, w_tmp);
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+                // Integer-source mapping: ReadFlag(Carry) → cset cc → returns 1 when ARM C=0.
+                // Our PTEST builds NZCV with ARM C = NOT is_zero_b, so cset cc → is_zero_b = x86 CF. ✓
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecBlend>) {

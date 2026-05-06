@@ -430,6 +430,13 @@ public:
     // result[i] = (mask[i].MSB == 1) ? src[i] : dst[i].
     void vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane);
 
+    // F2-IR-047. PTEST. Sets NZCV so that:
+    //   ARM Z = (lhs AND rhs == 0)
+    //   ARM C = NOT (lhs AND NOT rhs == 0)
+    //   ARM N = ARM V = 0
+    // Maps to x86 ZF/CF via the existing integer-source ReadFlag path.
+    void vptest(FpReg lhs, FpReg rhs, arm64::Reg w_tmp);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

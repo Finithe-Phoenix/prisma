@@ -60,6 +60,7 @@ public:
         VecAlignr, VecExtend, VecFpRound,
         Popcnt, Lzcnt, Tzcnt,
         VecBlend,
+        WriteFlagsPtest,
         kCount  // sentinel
     };
 

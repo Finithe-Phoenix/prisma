@@ -2979,6 +2979,35 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // SSE4.1 PTEST (66 0F 38 17 /r). Sets NZCV via WriteFlagsPtest.
+            if (sub3 == 0x17u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                Decoded d;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_rhs = next_ref++;
+                const ir::Ref r_flags = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({r_flags,
+                    ir::WriteFlagsPtest{r_lhs, r_rhs}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 BLEND* with implicit XMM0 mask:
             //   66 0F 38 10 — PBLENDVB  (B16 lane)
             //   66 0F 38 14 — BLENDVPS (S4 lane)

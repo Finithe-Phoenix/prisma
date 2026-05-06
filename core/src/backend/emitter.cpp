@@ -1065,6 +1065,45 @@ void emit_vfrint(vixl_aa::MacroAssembler& masm,
 
 }  // namespace
 
+void Emitter::vptest(FpReg lhs, FpReg rhs, arm64::Reg w_tmp) {
+    // 1. v_a = lhs AND rhs
+    // 2. v_b = lhs AND NOT rhs   (NEON: bic v_b, vlhs, vrhs)
+    // 3. orr each across two halves to detect zero per 128-bit
+    // 4. compute is_zero_a, is_zero_b in GPRs, build NZCV, msr.
+    constexpr int kAux2 = 30;
+    const vixl_aa::VRegister v_a (kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b (kAux2,               vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_l (static_cast<int>(lhs), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_r (static_cast<int>(rhs), vixl_aa::kFormat16B);
+    impl_->masm.And(v_a, v_l, v_r);
+    impl_->masm.Bic(v_b, v_l, v_r);
+    // umaxv reduces to a single byte = max byte; > 0 iff any byte set.
+    const vixl_aa::BRegister b_a(kInternalFpScratchV);
+    const vixl_aa::BRegister b_b(kAux2);
+    impl_->masm.Umaxv(b_a, v_a);
+    impl_->masm.Umaxv(b_b, v_b);
+    vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+    const vixl_aa::Register x_a = temps.AcquireX();
+    const vixl_aa::Register x_b = temps.AcquireX();
+    impl_->masm.Umov(vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), v_a.V16B(), 0);
+    impl_->masm.Umov(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())), v_b.V16B(), 0);
+    // is_zero_a = (x_a == 0); is_zero_b = (x_b == 0).
+    // Build NZCV: bit 30 = is_zero_a, bit 29 = NOT is_zero_b.
+    // Use cmp + cset to materialise the bools, then shift+or.
+    impl_->masm.Cmp(vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), 0);
+    impl_->masm.Cset(vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), vixl_aa::eq);
+    impl_->masm.Cmp(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())), 0);
+    impl_->masm.Cset(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())), vixl_aa::ne);  // NOT is_zero_b
+    // w_tmp = (x_a << 30) | (x_b << 29).
+    impl_->masm.Lsl(to_vixl_w(w_tmp),
+                    vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), 30);
+    impl_->masm.Orr(to_vixl_w(w_tmp), to_vixl_w(w_tmp),
+                    vixl_aa::Operand(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())),
+                                     vixl_aa::LSL, 29));
+    // msr nzcv, x_tmp
+    impl_->masm.Msr(vixl_aa::NZCV, vixl_aa::Register(to_vixl_x(w_tmp)));
+}
+
 void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
     // Sequence:
     //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set

@@ -104,11 +104,12 @@ enum class OpKind : std::uint8_t {
     kLzcnt         = 68,
     kTzcnt         = 69,
     kVecBlend      = 70,
+    kWriteFlagsPtest = 71,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecBlend);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kWriteFlagsPtest);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -296,6 +297,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Lzcnt>)         return OpKind::kLzcnt;
         else if constexpr (std::is_same_v<T, Tzcnt>)         return OpKind::kTzcnt;
         else if constexpr (std::is_same_v<T, VecBlend>)      return OpKind::kVecBlend;
+        else if constexpr (std::is_same_v<T, WriteFlagsPtest>) return OpKind::kWriteFlagsPtest;
     }, op);
 }
 
@@ -620,6 +622,10 @@ void write_payload(std::vector<std::uint8_t>& out, const VecBlend& x) {
     put_u32(out, x.src);
     put_u32(out, x.mask);
     put_u8(out, static_cast<std::uint8_t>(x.lane));
+}
+void write_payload(std::vector<std::uint8_t>& out, const WriteFlagsPtest& x) {
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -1019,6 +1025,14 @@ DeserializeError read_payload_popcnt(Cursor& c, Stmt& s) {
     s.op = Popcnt{v, static_cast<OpSize>(sz)};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_write_flags_ptest(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4)) return DeserializeError::Truncated;
+    const std::uint32_t lhs = c.take_u32();
+    const std::uint32_t rhs = c.take_u32();
+    s.op = WriteFlagsPtest{lhs, rhs};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_blend(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint32_t dst  = c.take_u32();
@@ -1390,6 +1404,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kLzcnt:       return read_payload_lzcnt(c, s);
         case OpKind::kTzcnt:       return read_payload_tzcnt(c, s);
         case OpKind::kVecBlend:    return read_payload_vec_blend(c, s);
+        case OpKind::kWriteFlagsPtest: return read_payload_write_flags_ptest(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;
