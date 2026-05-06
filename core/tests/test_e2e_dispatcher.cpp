@@ -271,6 +271,39 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PALIGNR concat-shift by 4 bytes (SSSE3)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x04,  // palignr xmm0, xmm1, 4
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // xmm1 holds bytes 0..15 = 0x10..0x1F.
+    // xmm0 holds bytes 16..31 = 0x20..0x2F.
+    // PALIGNR with count=4: result = (xmm0 || xmm1) >> (4 bytes), low 16
+    //   = bytes [4, 5, ..., 15, 16, 17, 18, 19] = 0x14..0x1F, 0x20..0x23.
+    disp.state().xmm[1].lo = 0x1716151413121110ULL;
+    disp.state().xmm[1].hi = 0x1F1E1D1C1B1A1918ULL;
+    disp.state().xmm[0].lo = 0x2726252423222120ULL;
+    disp.state().xmm[0].hi = 0x2F2E2D2C2B2A2928ULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Expected lo = bytes 4..11 of (xmm0||xmm1) = {0x14,0x15,...,0x1B}
+    // = 0x1B1A191817161514.
+    // Expected hi = bytes 12..19 = {0x1C,0x1D,0x1E,0x1F,0x20,0x21,0x22,0x23}
+    // = 0x232221201F1E1D1C.
+    REQUIRE(disp.state().xmm[0].lo == 0x1B1A191817161514ULL);
+    REQUIRE(disp.state().xmm[0].hi == 0x232221201F1E1D1CULL);
+}
+
 TEST_CASE("e2e: PSHUFB byte-permute with MSB-set zero gating (SSSE3)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

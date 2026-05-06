@@ -318,6 +318,10 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, VecPshufb>) {
             os << "vpshufb ";
             print_ref(os, x.src); os << ", "; print_ref(os, x.mask);
+        } else if constexpr (std::is_same_v<T, VecAlignr>) {
+            os << "valignr ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            os << ", #" << static_cast<unsigned>(x.count);
         } else if constexpr (std::is_same_v<T, VecAbs>) {
             const char* lane_n = "?";
             switch (x.lane) {

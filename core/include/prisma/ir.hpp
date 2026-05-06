@@ -484,6 +484,15 @@ struct VecMaskFp {
 struct VecPshufb { Ref src; Ref mask; };
 struct VecAbs    { Ref src; VecLane lane; };
 
+// F2-IR-038 — PALIGNR (SSSE3). Concat (lhs || rhs) as 32 bytes, shift
+// right by `count` bytes, return the low 16 bytes as a 128-bit result.
+// `count` >= 32 yields zero. Maps to NEON `ext` for count <= 16.
+struct VecAlignr {
+    Ref          lhs;
+    Ref          rhs;
+    std::uint8_t count;
+};
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -685,7 +694,8 @@ using Op = std::variant<
     VecShuffleH4,
     VecMaskFp,
     VecFpCompare,
-    VecPshufb, VecAbs
+    VecPshufb, VecAbs,
+    VecAlignr
 >;
 
 // ---------------------------------------------------------------------------
@@ -799,6 +809,7 @@ bool operator==(const VecMaskFp&     a, const VecMaskFp&     b) noexcept;
 bool operator==(const VecFpCompare&  a, const VecFpCompare&  b) noexcept;
 bool operator==(const VecPshufb&     a, const VecPshufb&     b) noexcept;
 bool operator==(const VecAbs&        a, const VecAbs&        b) noexcept;
+bool operator==(const VecAlignr&     a, const VecAlignr&     b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

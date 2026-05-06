@@ -2812,6 +2812,51 @@ std::variant<Decoded, DecodeError> decode_one(
         }
         const Byte subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
 
+        // F2-IR-038: 0F 3A escape — SSSE3 / SSE4.1 imm-bearing ops.
+        if (subop == 0x3Au && has_operand_size_override && !has_lock &&
+            !has_f2 && !has_f3) {
+            auto third = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(third)) {
+                return std::get<DecodeError>(third);
+            }
+            const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            if (sub3 == 0x0Fu) {  // PALIGNR
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t count =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                Decoded d;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_rhs = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({r_res, ir::VecAlignr{r_lhs, r_rhs, count}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            return DecodeError::UnsupportedEncoding;
+        }
+
         // F2-IR-036: 0F 38 escape — SSSE3 / SSE4.1.
         if (subop == 0x38u && has_operand_size_override && !has_lock &&
             !has_f2 && !has_f3) {

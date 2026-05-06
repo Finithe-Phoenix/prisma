@@ -203,6 +203,9 @@ bool operator==(const VecPshufb& a, const VecPshufb& b) noexcept {
 bool operator==(const VecAbs& a, const VecAbs& b) noexcept {
     return a.src == b.src && a.lane == b.lane;
 }
+bool operator==(const VecAlignr& a, const VecAlignr& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs && a.count == b.count;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

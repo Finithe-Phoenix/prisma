@@ -1044,6 +1044,37 @@ void Emitter::vabs_q(FpReg rd, FpReg rn, VecLane lane) {
     impl_->masm.Abs(to_vixl_q(rd, lane), to_vixl_q(rn, lane));
 }
 
+void Emitter::valignr(FpReg rd, FpReg lhs, FpReg rhs, std::uint8_t count) {
+    if (count >= 32) {
+        impl_->masm.Movi(to_vixl_q_bitwise(rd), 0);
+        return;
+    }
+    if (count == 0) {
+        impl_->masm.Mov(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(rhs));
+        return;
+    }
+    if (count < 16) {
+        // ext picks bytes from rhs[count..15] then lhs[0..count-1] —
+        // exactly the low half of (lhs || rhs) shifted right by `count`.
+        impl_->masm.Ext(to_vixl_q_bitwise(rd),
+                        to_vixl_q_bitwise(rhs),
+                        to_vixl_q_bitwise(lhs),
+                        static_cast<int>(count));
+    } else {
+        // count == 16 → result = lhs (whole). count > 16 takes lhs
+        // shifted right by (count - 16) zero-filled.
+        if (count == 16) {
+            impl_->masm.Mov(to_vixl_q_bitwise(rd), to_vixl_q_bitwise(lhs));
+        } else {
+            const vixl_aa::VRegister v_z(kInternalFpScratchV, vixl_aa::kFormat16B);
+            impl_->masm.Movi(v_z, 0);
+            impl_->masm.Ext(to_vixl_q_bitwise(rd),
+                            to_vixl_q_bitwise(lhs), v_z,
+                            static_cast<int>(count - 16));
+        }
+    }
+}
+
 void Emitter::vfcmp_packed(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz, std::uint8_t pred) {
     const auto fmt = (sz == ir::FpSize::F32) ? vixl_aa::kFormat4S
                                               : vixl_aa::kFormat2D;

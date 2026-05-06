@@ -404,6 +404,10 @@ public:
     void vpshufb(FpReg rd, FpReg rn, FpReg rm);
     void vabs_q(FpReg rd, FpReg rn, VecLane lane);
 
+    // F2-IR-038. PALIGNR — concat (lhs || rhs) and shift right by `count`
+    // bytes, return low 16 bytes. count >= 32 yields zero.
+    void valignr(FpReg rd, FpReg lhs, FpReg rhs, std::uint8_t count);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

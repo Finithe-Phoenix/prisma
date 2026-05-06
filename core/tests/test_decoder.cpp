@@ -2242,6 +2242,13 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte concat-shift") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x04}, r);
+    auto va = std::get<ir::VecAlignr>(d.stmts[2].op);
+    REQUIRE(va.count == 4);
+}
+
 TEST_CASE("decode PHADDD xmm0, xmm1 (66 0F 38 02 C1) — F2-IR-037 pairwise add S4") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x38, 0x02, 0xC1}, r);
