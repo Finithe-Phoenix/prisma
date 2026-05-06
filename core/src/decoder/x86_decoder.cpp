@@ -2412,7 +2412,25 @@ std::variant<Decoded, DecodeError> decode_one(
                      avx256_op == 0x5Cu || avx256_op == 0x5Eu ||
                      avx256_op == 0x5Du || avx256_op == 0x5Fu ||
                      avx256_op == 0x51u);
-                if (!packed_fp_ps_pd) {
+                // Bitwise float-domain logical ops (VANDPS/PD, VORPS/PD,
+                // VXORPS/PD). 0F 54/56/57 with pp=00/01.
+                const bool fp_bitwise =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    (avx256_op == 0x54u || avx256_op == 0x56u ||
+                     avx256_op == 0x57u);
+                // Integer SIMD add/sub/bitwise (mmmmm=1, pp=01 → 66 0F).
+                // PADDB/W/D/Q (FC/FD/FE/D4), PSUBB/W/D/Q (F8/F9/FA/FB),
+                // PAND (DB), POR (EB), PXOR (EF).
+                const bool int_simd_addsub_bitwise =
+                    vex.mmmmm == 1 && vex.pp == 1 &&
+                    (avx256_op == 0xFCu || avx256_op == 0xFDu ||
+                     avx256_op == 0xFEu || avx256_op == 0xD4u ||
+                     avx256_op == 0xF8u || avx256_op == 0xF9u ||
+                     avx256_op == 0xFAu || avx256_op == 0xFBu ||
+                     avx256_op == 0xDBu || avx256_op == 0xEBu ||
+                     avx256_op == 0xEFu);
+                if (!(packed_fp_ps_pd || fp_bitwise ||
+                      int_simd_addsub_bitwise)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -3406,6 +3424,11 @@ std::variant<Decoded, DecodeError> decode_one(
             const std::uint8_t lhs_xmm = vex.present
                 ? static_cast<std::uint8_t>(vex.vvvv)
                 : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
             const ir::Ref r_dst_old = next_ref++;
             const ir::Ref r_src     = next_ref++;
             const ir::Ref r_res     = next_ref++;
@@ -3415,14 +3438,37 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::LoadVecReg{static_cast<std::uint8_t>(
                         static_cast<unsigned>(m.base))}});
             } else {
-                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                    instruction_guest_pc + cursor);
-                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
             }
             d.stmts.push_back({r_res,
                 ir::VecBinOp{vop, r_dst_old, r_src, lane}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — AVX-256 high-lane pair when VEX.L=1.
+            if (vex.present && vex.L) {
+                const ir::Ref r_dst_hi_old = next_ref++;
+                const ir::Ref r_src_hi     = next_ref++;
+                const ir::Ref r_res_hi     = next_ref++;
+                d.stmts.push_back({r_dst_hi_old, ir::LoadVecRegHi{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecBinOp{vop, r_dst_hi_old, r_src_hi, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }

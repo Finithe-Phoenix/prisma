@@ -1466,6 +1466,75 @@ TEST_CASE("e2e: VADDPS ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed FP add") {
     REQUIRE(disp.state().ymm_hi[2].hi == pack2f(77.0f, 88.0f));
 }
 
+TEST_CASE("e2e: VXORPS ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 FP bitwise xor") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 [byte1] 57 D1, pp = 00 (PS), L = 1 → byte1 = 0xFC
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFC, 0x57, 0xD1,  // vxorps ymm2, ymm0, ymm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[0].lo    = 0xAAAAAAAAAAAAAAAAULL;
+    disp.state().xmm[0].hi    = 0x5555555555555555ULL;
+    disp.state().ymm_hi[0].lo = 0xFF00FF00FF00FF00ULL;
+    disp.state().ymm_hi[0].hi = 0x123456789ABCDEF0ULL;
+    disp.state().xmm[1].lo    = 0x0F0F0F0F0F0F0F0FULL;
+    disp.state().xmm[1].hi    = 0xF0F0F0F0F0F0F0F0ULL;
+    disp.state().ymm_hi[1].lo = 0x00FF00FF00FF00FFULL;
+    disp.state().ymm_hi[1].hi = 0xFEDCBA9876543210ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == (0xAAAAAAAAAAAAAAAAULL ^ 0x0F0F0F0F0F0F0F0FULL));
+    REQUIRE(disp.state().xmm[2].hi    == (0x5555555555555555ULL ^ 0xF0F0F0F0F0F0F0F0ULL));
+    REQUIRE(disp.state().ymm_hi[2].lo == (0xFF00FF00FF00FF00ULL ^ 0x00FF00FF00FF00FFULL));
+    REQUIRE(disp.state().ymm_hi[2].hi == (0x123456789ABCDEF0ULL ^ 0xFEDCBA9876543210ULL));
+}
+
+TEST_CASE("e2e: VPADDD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 32-bit lane add") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 [byte1] FE D1, pp=01 (66), L=1 → byte1 = 0xFD
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0xFE, 0xD1,  // vpaddd ymm2, ymm0, ymm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[0].lo    = pack4i(1u, 2u);
+    disp.state().xmm[0].hi    = pack4i(3u, 4u);
+    disp.state().ymm_hi[0].lo = pack4i(5u, 6u);
+    disp.state().ymm_hi[0].hi = pack4i(7u, 8u);
+    disp.state().xmm[1].lo    = pack4i(100u, 200u);
+    disp.state().xmm[1].hi    = pack4i(300u, 400u);
+    disp.state().ymm_hi[1].lo = pack4i(500u, 600u);
+    disp.state().ymm_hi[1].hi = pack4i(700u, 800u);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == pack4i(101u, 202u));
+    REQUIRE(disp.state().xmm[2].hi    == pack4i(303u, 404u));
+    REQUIRE(disp.state().ymm_hi[2].lo == pack4i(505u, 606u));
+    REQUIRE(disp.state().ymm_hi[2].hi == pack4i(707u, 808u));
+}
+
 TEST_CASE("e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VEX C5 [byte1] 59 D1, pp = 01 (66 mandatory → PD), L = 1
