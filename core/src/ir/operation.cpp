@@ -210,6 +210,10 @@ bool operator==(const VecExtend& a, const VecExtend& b) noexcept {
     return a.src == b.src && a.narrow_lane == b.narrow_lane
         && a.wide_lane == b.wide_lane && a.is_signed == b.is_signed;
 }
+bool operator==(const VecFpRound& a, const VecFpRound& b) noexcept {
+    return a.lhs == b.lhs && a.src == b.src && a.size == b.size
+        && a.mode == b.mode && a.is_packed == b.is_packed;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

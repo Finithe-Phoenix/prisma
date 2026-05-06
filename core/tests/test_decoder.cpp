@@ -2242,6 +2242,24 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode ROUNDPS xmm0, xmm1, 1 (66 0F 3A 08 C1 01) — F2-IR-042 round-down packed S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x08, 0xC1, 0x01}, r);
+    auto vr = std::get<ir::VecFpRound>(d.stmts[2].op);
+    REQUIRE(vr.size      == ir::FpSize::F32);
+    REQUIRE(vr.is_packed == true);
+    REQUIRE(vr.mode      == 1);
+}
+
+TEST_CASE("decode ROUNDSD xmm0, xmm1, 3 (66 0F 3A 0B C1 03) — scalar truncate F64") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x0B, 0xC1, 0x03}, r);
+    auto vr = std::get<ir::VecFpRound>(d.stmts[2].op);
+    REQUIRE(vr.size      == ir::FpSize::F64);
+    REQUIRE(vr.is_packed == false);
+    REQUIRE(vr.mode      == 3);
+}
+
 TEST_CASE("decode PMOVZXBW xmm0, xmm1 (66 0F 38 30 C1) — F2-IR-041 zero-ext B→H") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x38, 0x30, 0xC1}, r);

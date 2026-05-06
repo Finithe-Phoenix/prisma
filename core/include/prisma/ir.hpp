@@ -616,6 +616,17 @@ struct VecFpCompare {
     bool         is_packed;  // false → scalar (upper preserved from lhs).
 };
 
+// F2-IR-042 — ROUNDPS/PD/SS/SD (SSE4.1 FP round to integer).
+//   mode: 0=nearest, 1=down, 2=up, 3=truncate, 4..7=mxcsr (treated as nearest).
+//   is_packed: true → ROUNDP*, false → ROUNDS* (scalar, upper preserved).
+struct VecFpRound {
+    Ref          lhs;     // upper-bits source for scalar form (ignored if packed).
+    Ref          src;
+    FpSize       size;
+    std::uint8_t mode;
+    bool         is_packed;
+};
+
 // F2-IR-016 — scalar int ↔ FP conversions (CVTSI2SS/SD + CVTTSS/SD2SI).
 //   IntToFpScalar: signed int (I32 or I64) → low-lane FP (F32 or F64).
 //                  Upper xmm bits are zeroed.
@@ -708,7 +719,8 @@ using Op = std::variant<
     VecFpCompare,
     VecPshufb, VecAbs,
     VecAlignr,
-    VecExtend
+    VecExtend,
+    VecFpRound
 >;
 
 // ---------------------------------------------------------------------------
@@ -824,6 +836,7 @@ bool operator==(const VecPshufb&     a, const VecPshufb&     b) noexcept;
 bool operator==(const VecAbs&        a, const VecAbs&        b) noexcept;
 bool operator==(const VecAlignr&     a, const VecAlignr&     b) noexcept;
 bool operator==(const VecExtend&     a, const VecExtend&     b) noexcept;
+bool operator==(const VecFpRound&    a, const VecFpRound&    b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

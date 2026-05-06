@@ -322,6 +322,12 @@ std::string pretty_print(const Op& op) {
             os << "valignr ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
             os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, VecFpRound>) {
+            const char* modes[] = {"rn","rm","rp","rz","rn","rn","rn","rn"};
+            os << "vfrint." << modes[x.mode & 0x7]
+               << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
+               << (x.is_packed ? "_p " : "_s ");
+            print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecExtend>) {
             const char* nl = "?", *wl = "?";
             switch (x.narrow_lane) {

@@ -99,11 +99,12 @@ enum class OpKind : std::uint8_t {
     kVecAbs        = 63,
     kVecAlignr     = 64,
     kVecExtend     = 65,
+    kVecFpRound    = 66,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecExtend);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpRound);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -286,6 +287,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecAbs>)        return OpKind::kVecAbs;
         else if constexpr (std::is_same_v<T, VecAlignr>)     return OpKind::kVecAlignr;
         else if constexpr (std::is_same_v<T, VecExtend>)     return OpKind::kVecExtend;
+        else if constexpr (std::is_same_v<T, VecFpRound>)    return OpKind::kVecFpRound;
     }, op);
 }
 
@@ -585,6 +587,13 @@ void write_payload(std::vector<std::uint8_t>& out, const VecExtend& x) {
     put_u8(out, static_cast<std::uint8_t>(x.narrow_lane));
     put_u8(out, static_cast<std::uint8_t>(x.wide_lane));
     put_u8(out, x.is_signed ? 1u : 0u);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecFpRound& x) {
+    put_u32(out, x.lhs);
+    put_u32(out, x.src);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+    put_u8(out, x.mode);
+    put_u8(out, x.is_packed ? 1u : 0u);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -976,6 +985,19 @@ DeserializeError read_payload_vec_pshufb(Cursor& c, Stmt& s) {
     s.op = VecPshufb{src, mask};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_vec_fp_round(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 1 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t lhs    = c.take_u32();
+    const std::uint32_t src    = c.take_u32();
+    const std::uint8_t  size   = c.take_u8();
+    const std::uint8_t  mode   = c.take_u8();
+    const std::uint8_t  packed = c.take_u8();
+    if (!is_valid_fpsize(size)) return DeserializeError::BadSize;
+    if (packed > 1) return DeserializeError::BadSize;
+    s.op = VecFpRound{lhs, src, static_cast<FpSize>(size), mode, packed == 1};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_extend(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 1 + 1 + 1)) return DeserializeError::Truncated;
     const std::uint32_t src    = c.take_u32();
@@ -1301,6 +1323,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecAbs:      return read_payload_vec_abs(c, s);
         case OpKind::kVecAlignr:   return read_payload_vec_alignr(c, s);
         case OpKind::kVecExtend:   return read_payload_vec_extend(c, s);
+        case OpKind::kVecFpRound:  return read_payload_vec_fp_round(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

@@ -237,6 +237,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecAbs>)        { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecAlignr>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecExtend>)     { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpRound>)    { bump(op.lhs, i); bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1093,6 +1094,26 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
             }
             emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpRound>) {
+            // F2-IR-042 SSE4.1 ROUNDPS/PD/SS/SD.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecFpRound without result"};
+            }
+            Emitter::FpReg rs;
+            if (!fp_reg_of(op.src, rs)) return {false, LowerError::DanglingRef, "VecFpRound.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpRound"};
+            }
+            if (op.is_packed) {
+                emitter_.vfrint_q(rd, rs, op.size, op.mode);
+            } else {
+                Emitter::FpReg rl;
+                if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecFpRound.lhs"};
+                emitter_.vfrint_scalar_with_upper(rd, rl, rs, op.size, op.mode);
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecExtend>) {

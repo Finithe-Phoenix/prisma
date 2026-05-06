@@ -2820,6 +2820,48 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // SSE4.1 ROUNDPS/PD/SS/SD (66 0F 3A 08/09/0A/0B /r ib).
+            if (sub3 == 0x08u || sub3 == 0x09u ||
+                sub3 == 0x0Au || sub3 == 0x0Bu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t mode = static_cast<std::uint8_t>(
+                    std::get<std::uint64_t>(imm)) & 0x07u;
+                const bool is_packed = (sub3 == 0x08u || sub3 == 0x09u);
+                const ir::FpSize fp_sz =
+                    (sub3 == 0x08u || sub3 == 0x0Au) ? ir::FpSize::F32
+                                                      : ir::FpSize::F64;
+                Decoded d;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({r_res,
+                    ir::VecFpRound{r_lhs, r_src, fp_sz, mode, is_packed}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 PEXTRB/D/Q + PINSRB/D/Q (S4/D2 selected by REX.W on dword/qword forms).
             //   66 0F 3A 14 /r ib — PEXTRB B16 lane → r/m32
             //   66 0F 3A 16 /r ib — PEXTRD/Q (REX.W=0 → PEXTRD S4 lane → r/m32;

@@ -414,6 +414,12 @@ public:
     void vextend(FpReg rd, FpReg rn,
                  VecLane narrow_lane, VecLane wide_lane, bool is_signed);
 
+    // F2-IR-042. Packed FP rounding (FRINTN/M/P/Z per mode 0..3).
+    void vfrint_q(FpReg rd, FpReg rn, ir::FpSize sz, std::uint8_t mode);
+    // Scalar form preserves upper bits of `lhs`.
+    void vfrint_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
+                                  ir::FpSize sz, std::uint8_t mode);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

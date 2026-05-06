@@ -271,6 +271,35 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: ROUNDSD truncates 7.9 to 7.0 (mode=3)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x3A, 0x0B, 0xC0, 0x03,  // roundsd xmm0, xmm0, 3 (truncate)
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    double v = 7.9;
+    std::uint64_t bits;
+    std::memcpy(&bits, &v, 8);
+    disp.state().xmm[0].lo = bits;
+    disp.state().xmm[0].hi = 0xDEADBEEFCAFEBABEULL;  // upper preserved
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    double exp = 7.0;
+    std::uint64_t exp_bits;
+    std::memcpy(&exp_bits, &exp, 8);
+    REQUIRE(disp.state().xmm[0].lo == exp_bits);
+    REQUIRE(disp.state().xmm[0].hi == 0xDEADBEEFCAFEBABEULL);
+}
+
 TEST_CASE("e2e: PMOVZXBW — F2-IR-041 zero-extend 8 bytes to 8 halfwords") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

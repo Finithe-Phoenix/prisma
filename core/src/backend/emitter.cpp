@@ -1049,6 +1049,67 @@ void Emitter::vabs_q(FpReg rd, FpReg rn, VecLane lane) {
     impl_->masm.Abs(to_vixl_q(rd, lane), to_vixl_q(rn, lane));
 }
 
+namespace {
+
+void emit_vfrint(vixl_aa::MacroAssembler& masm,
+                 const vixl_aa::VRegister& vd,
+                 const vixl_aa::VRegister& vn,
+                 std::uint8_t mode) {
+    switch (mode & 0x3u) {
+        case 0: masm.Frintn(vd, vn); break;  // round to nearest (ties to even)
+        case 1: masm.Frintm(vd, vn); break;  // round down (toward -inf)
+        case 2: masm.Frintp(vd, vn); break;  // round up   (toward +inf)
+        case 3: masm.Frintz(vd, vn); break;  // truncate (toward zero)
+    }
+}
+
+}  // namespace
+
+void Emitter::vfrint_q(FpReg rd, FpReg rn, ir::FpSize sz, std::uint8_t mode) {
+    const auto fmt = (sz == ir::FpSize::F32) ? vixl_aa::kFormat4S
+                                              : vixl_aa::kFormat2D;
+    const vixl_aa::VRegister vd(static_cast<int>(rd), fmt);
+    const vixl_aa::VRegister vn(static_cast<int>(rn), fmt);
+    emit_vfrint(impl_->masm, vd, vn, mode);
+}
+
+void Emitter::vfrint_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
+                                       ir::FpSize sz, std::uint8_t mode) {
+    // 1. frint scalar into V31's low lane.
+    if (sz == ir::FpSize::F32) {
+        const vixl_aa::SRegister s_t(kInternalFpScratchV);
+        const vixl_aa::SRegister s_n(static_cast<int>(rhs));
+        switch (mode & 0x3u) {
+            case 0: impl_->masm.Frintn(s_t, s_n); break;
+            case 1: impl_->masm.Frintm(s_t, s_n); break;
+            case 2: impl_->masm.Frintp(s_t, s_n); break;
+            case 3: impl_->masm.Frintz(s_t, s_n); break;
+        }
+    } else {
+        const vixl_aa::DRegister d_t(kInternalFpScratchV);
+        const vixl_aa::DRegister d_n(static_cast<int>(rhs));
+        switch (mode & 0x3u) {
+            case 0: impl_->masm.Frintn(d_t, d_n); break;
+            case 1: impl_->masm.Frintm(d_t, d_n); break;
+            case 2: impl_->masm.Frintp(d_t, d_n); break;
+            case 3: impl_->masm.Frintz(d_t, d_n); break;
+        }
+    }
+    // 2. mov rd <- lhs  3. ins lane 0 from V31.
+    const vixl_aa::VRegister v_d_q  (static_cast<int>(rd),  vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_lhs_q(static_cast<int>(lhs), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_lhs_q);
+    if (sz == ir::FpSize::F32) {
+        const vixl_aa::VRegister v_d_s4(static_cast<int>(rd), vixl_aa::kFormat4S);
+        const vixl_aa::VRegister v_t_s4(kInternalFpScratchV,  vixl_aa::kFormat4S);
+        impl_->masm.Mov(v_d_s4, 0, v_t_s4, 0);
+    } else {
+        const vixl_aa::VRegister v_d_d2(static_cast<int>(rd), vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_t_d2(kInternalFpScratchV,  vixl_aa::kFormat2D);
+        impl_->masm.Mov(v_d_d2, 0, v_t_d2, 0);
+    }
+}
+
 void Emitter::vextend(FpReg rd, FpReg rn,
                       VecLane narrow_lane, VecLane wide_lane, bool is_signed) {
     // Chain sxtl/uxtl as needed. Each step doubles lane width and uses
