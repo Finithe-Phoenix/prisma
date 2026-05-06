@@ -322,6 +322,18 @@ std::string pretty_print(const Op& op) {
             os << "valignr ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
             os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, VecExtend>) {
+            const char* nl = "?", *wl = "?";
+            switch (x.narrow_lane) {
+                case VecLane::B16: nl = "b"; break; case VecLane::H8: nl = "h"; break;
+                case VecLane::S4:  nl = "s"; break; case VecLane::D2: nl = "d"; break;
+            }
+            switch (x.wide_lane) {
+                case VecLane::B16: wl = "b"; break; case VecLane::H8: wl = "h"; break;
+                case VecLane::S4:  wl = "s"; break; case VecLane::D2: wl = "d"; break;
+            }
+            os << (x.is_signed ? "vsxtl." : "vuxtl.") << nl << "_to_" << wl << " ";
+            print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecAbs>) {
             const char* lane_n = "?";
             switch (x.lane) {

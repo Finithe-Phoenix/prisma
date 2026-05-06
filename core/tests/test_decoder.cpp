@@ -2242,6 +2242,33 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode PMOVZXBW xmm0, xmm1 (66 0F 38 30 C1) — F2-IR-041 zero-ext B→H") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x30, 0xC1}, r);
+    auto ve = std::get<ir::VecExtend>(d.stmts[1].op);
+    REQUIRE(ve.is_signed   == false);
+    REQUIRE(ve.narrow_lane == ir::VecLane::B16);
+    REQUIRE(ve.wide_lane   == ir::VecLane::H8);
+}
+
+TEST_CASE("decode PMOVSXBQ xmm0, xmm1 (66 0F 38 22 C1) — sign-ext B→Q (3-step)") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x22, 0xC1}, r);
+    auto ve = std::get<ir::VecExtend>(d.stmts[1].op);
+    REQUIRE(ve.is_signed   == true);
+    REQUIRE(ve.narrow_lane == ir::VecLane::B16);
+    REQUIRE(ve.wide_lane   == ir::VecLane::D2);
+}
+
+TEST_CASE("decode PMOVZXDQ xmm0, xmm1 (66 0F 38 35 C1) — zero-ext S4→D2") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x35, 0xC1}, r);
+    auto ve = std::get<ir::VecExtend>(d.stmts[1].op);
+    REQUIRE(ve.is_signed   == false);
+    REQUIRE(ve.narrow_lane == ir::VecLane::S4);
+    REQUIRE(ve.wide_lane   == ir::VecLane::D2);
+}
+
 TEST_CASE("decode PEXTRD eax, xmm0, 2 (66 0F 3A 16 C0 02) — SSE4.1 dword extract S4") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x3A, 0x16, 0xC0, 0x02}, r);

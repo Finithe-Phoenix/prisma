@@ -408,6 +408,12 @@ public:
     // bytes, return low 16 bytes. count >= 32 yields zero.
     void valignr(FpReg rd, FpReg lhs, FpReg rhs, std::uint8_t count);
 
+    // F2-IR-041. Widening: take low N narrow lanes, sign/zero extend
+    // each to a wider lane. Chains sxtl/uxtl up to 3 times for
+    // B→Q (1×3), H→Q (1×2), B→Q (1×3) etc.
+    void vextend(FpReg rd, FpReg rn,
+                 VecLane narrow_lane, VecLane wide_lane, bool is_signed);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

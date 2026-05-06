@@ -271,6 +271,39 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PMOVZXBW — F2-IR-041 zero-extend 8 bytes to 8 halfwords") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x38, 0x30, 0xC1,  // pmovzxbw xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // xmm1 low qword bytes 0..7 = {0xFF, 0x80, 0x01, 0x7F, 0xAB, 0xCD, 0x00, 0xEE}
+    disp.state().xmm[1].lo = 0xEE'00'CD'AB'7F'01'80'FFULL;
+    disp.state().xmm[1].hi = 0;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Each byte zero-extended to a halfword:
+    //   {0x00FF, 0x0080, 0x0001, 0x007F, 0x00AB, 0x00CD, 0x0000, 0x00EE}
+    auto pack4h = [](std::uint16_t a, std::uint16_t b,
+                     std::uint16_t c, std::uint16_t d) -> std::uint64_t {
+        return  static_cast<std::uint64_t>(a)
+              | (static_cast<std::uint64_t>(b) << 16)
+              | (static_cast<std::uint64_t>(c) << 32)
+              | (static_cast<std::uint64_t>(d) << 48);
+    };
+    REQUIRE(disp.state().xmm[0].lo == pack4h(0x00FF, 0x0080, 0x0001, 0x007F));
+    REQUIRE(disp.state().xmm[0].hi == pack4h(0x00AB, 0x00CD, 0x0000, 0x00EE));
+}
+
 TEST_CASE("e2e: PEXTRQ rax, xmm0, 1 — extract upper qword (SSE4.1)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

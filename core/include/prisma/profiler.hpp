@@ -57,7 +57,7 @@ public:
         VecMaskFp,
         VecFpCompare,
         VecPshufb, VecAbs,
-        VecAlignr,
+        VecAlignr, VecExtend,
         kCount  // sentinel
     };
 

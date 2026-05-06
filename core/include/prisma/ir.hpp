@@ -493,6 +493,18 @@ struct VecAlignr {
     std::uint8_t count;
 };
 
+// F2-IR-041 — PMOVZX/PMOVSX widening converts (SSE4.1).
+// Takes the low N source lanes and zero/sign-extends each to a wider
+// lane. `narrow_lane` says how to read the input (B16/H8/S4); `wide_lane`
+// is the result lane (H8/S4/D2). Number of result lanes determined by
+// the ratio (always: 16 / wide_bytes).
+struct VecExtend {
+    Ref     src;
+    VecLane narrow_lane;
+    VecLane wide_lane;
+    bool    is_signed;
+};
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -695,7 +707,8 @@ using Op = std::variant<
     VecMaskFp,
     VecFpCompare,
     VecPshufb, VecAbs,
-    VecAlignr
+    VecAlignr,
+    VecExtend
 >;
 
 // ---------------------------------------------------------------------------
@@ -810,6 +823,7 @@ bool operator==(const VecFpCompare&  a, const VecFpCompare&  b) noexcept;
 bool operator==(const VecPshufb&     a, const VecPshufb&     b) noexcept;
 bool operator==(const VecAbs&        a, const VecAbs&        b) noexcept;
 bool operator==(const VecAlignr&     a, const VecAlignr&     b) noexcept;
+bool operator==(const VecExtend&     a, const VecExtend&     b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

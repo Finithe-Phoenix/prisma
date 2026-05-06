@@ -1049,6 +1049,46 @@ void Emitter::vabs_q(FpReg rd, FpReg rn, VecLane lane) {
     impl_->masm.Abs(to_vixl_q(rd, lane), to_vixl_q(rn, lane));
 }
 
+void Emitter::vextend(FpReg rd, FpReg rn,
+                      VecLane narrow_lane, VecLane wide_lane, bool is_signed) {
+    // Chain sxtl/uxtl as needed. Each step doubles lane width and uses
+    // only the low half of the source. Use V31 internal scratch for
+    // intermediates so we can land in rd at the end.
+    auto step = [&](int dst_v_code, int src_v_code,
+                    VecLane narrow) {
+        // narrow = lane width currently in low half of src.
+        if (narrow == VecLane::B16) {
+            // narrow → H8 (8 lanes). Use .8b → .8h.
+            const vixl_aa::VRegister vd(dst_v_code, vixl_aa::kFormat8H);
+            const vixl_aa::VRegister vs(src_v_code, vixl_aa::kFormat8B);
+            if (is_signed) impl_->masm.Sxtl(vd, vs);
+            else           impl_->masm.Uxtl(vd, vs);
+        } else if (narrow == VecLane::H8) {
+            const vixl_aa::VRegister vd(dst_v_code, vixl_aa::kFormat4S);
+            const vixl_aa::VRegister vs(src_v_code, vixl_aa::kFormat4H);
+            if (is_signed) impl_->masm.Sxtl(vd, vs);
+            else           impl_->masm.Uxtl(vd, vs);
+        } else {  // S4 → D2
+            const vixl_aa::VRegister vd(dst_v_code, vixl_aa::kFormat2D);
+            const vixl_aa::VRegister vs(src_v_code, vixl_aa::kFormat2S);
+            if (is_signed) impl_->masm.Sxtl(vd, vs);
+            else           impl_->masm.Uxtl(vd, vs);
+        }
+    };
+    int cur = static_cast<int>(rn);
+    VecLane cur_narrow = narrow_lane;
+    while (cur_narrow != wide_lane) {
+        const VecLane next = (cur_narrow == VecLane::B16) ? VecLane::H8 :
+                             (cur_narrow == VecLane::H8 ) ? VecLane::S4 :
+                                                             VecLane::D2;
+        const int dst = (next == wide_lane) ? static_cast<int>(rd)
+                                            : kInternalFpScratchV;
+        step(dst, cur, cur_narrow);
+        cur = dst;
+        cur_narrow = next;
+    }
+}
+
 void Emitter::valignr(FpReg rd, FpReg lhs, FpReg rhs, std::uint8_t count) {
     if (count >= 32) {
         impl_->masm.Movi(to_vixl_q_bitwise(rd), 0);

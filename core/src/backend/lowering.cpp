@@ -236,6 +236,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecPshufb>)     { bump(op.src, i); bump(op.mask, i); }
             else if constexpr (std::is_same_v<T, ir::VecAbs>)        { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecAlignr>)     { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecExtend>)     { bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1092,6 +1093,27 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
             }
             emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecExtend>) {
+            // F2-IR-041 SSE4.1 PMOVZX/PMOVSX.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecExtend without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecExtend.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecExtend"};
+            }
+            const auto map_lane = [](ir::VecLane l) {
+                return l == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                       l == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                       l == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                                Emitter::VecLane::D2;
+            };
+            emitter_.vextend(rd, rn, map_lane(op.narrow_lane),
+                             map_lane(op.wide_lane), op.is_signed);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecAlignr>) {
