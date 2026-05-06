@@ -59,21 +59,20 @@ cubierto, ejecutando en hardware ARM64).
   - `prisma_ir` — IR SSA + pretty-print + validator (F1-IR-016).
   - `prisma_decoder` — x86_64 → IR. SIB, RIP-relative, REX.R/X/B,
     prefijo 0x67 address-size override, segment overrides aceptados,
-    `Cpuid` pseudo-op. SSE/SSE2/SSE3/SSSE3/SSE4.1 cobertura amplia
-    (F2-IR-001..042): toda la aritmética packed + scalar integer y FP
-    (incluido sat, min/max, mul-high, PMULUDQ, PSADBW), movs (DQA/U,
-    APS/UPS, APD/UPD, DDUP/SLDUP/SHDUP, MOVD/Q GPR↔XMM, MOVSS/SD),
-    ADDPS/PD/SS/SD + SUB/MUL/DIV/MAX/MIN/SQRT, HADDPS/PD,
-    CMPxxPS/PD/SS/SD (8 predicates) + UCOMISS/UCOMISD con FP-source
-    flag plumbing (cset y CondJumpFlags remap),
-    PCMPEQ/GT B/W/D + SSE4.1 PCMPEQQ,
-    PSHUFD, PSHUFLW/HW, SHUFPS/PD, PSHUFB,
-    PUNPCKL/H + UNPCKL/HPS/PD, PSLLW/D/Q + PSRL + PSRA + PSLLDQ/PSRLDQ,
-    PALIGNR (SSSE3), PHADDW/D + PHSUBW/D, PMULLD,
-    CVTSI2SS/SD + CVTTSS/SD2SI + CVTSS2SD/SD2SS,
-    PINSR/PEXTR B/W/D/Q, PMOVMSKB, MOVMSKPS/PD, PMOVZX/SX × 12,
-    ROUNDPS/PD/SS/SD, PABSB/W/D, ANDPS/ORPS/XORPS + PD,
-    LDDQU + MOVNTDQ/PS/PD aliases.
+    `Cpuid` pseudo-op. SSE..SSE4.2 + BMI1 cobertura amplia
+    (F2-IR-001..047): toda la aritmética packed + scalar integer y FP
+    (incluido sat, min/max, mul-high, PMULUDQ, PSADBW, PMULLD), movs
+    (DQA/U, APS/UPS, APD/UPD, DDUP/SLDUP/SHDUP, MOVD/Q GPR↔XMM,
+    MOVSS/SD, LDDQU, MOVNT*), ADDPS/PD/SS/SD + SUB/MUL/DIV/MAX/MIN/
+    SQRT, HADDPS/PD, CMPxxPS/PD/SS/SD (8 predicates) + UCOMISS/UCOMISD
+    con FP-source flag plumbing, PCMPEQ/GT B/W/D + SSE4.1 PCMPEQQ +
+    SSE4.2 PCMPGTQ, PSHUFD, PSHUFLW/HW, SHUFPS/PD, PSHUFB, PUNPCKL/H +
+    UNPCKL/HPS/PD, PSLLW/D/Q + PSRL + PSRA + PSLLDQ/PSRLDQ, PALIGNR,
+    PHADDW/D + PHSUBW/D, CVT* int↔FP + single↔double, PINSR/PEXTR
+    B/W/D/Q, PMOVMSKB, MOVMSKPS/PD, PMOVZX/SX × 12, ROUNDPS/PD/SS/SD,
+    PABSB/W/D, ANDPS/ORPS/XORPS + PD, PMINUB/PMAXUB/PMINSW/PMAXSW +
+    SSE4.1 PMINS B/D + PMINU W/D + PMAXS B/D + PMAXU W/D,
+    PBLENDVB/BLENDVPS/BLENDVPD, PTEST, POPCNT, LZCNT/TZCNT (BMI1).
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -93,7 +92,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 748+ Catch2 tests / 4665+ assertions.
+  - `prisma_core_tests` — 761+ Catch2 tests / 4686+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
