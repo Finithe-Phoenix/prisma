@@ -73,6 +73,11 @@ cubierto, ejecutando en hardware ARM64).
     PABSB/W/D, ANDPS/ORPS/XORPS + PD, PMINUB/PMAXUB/PMINSW/PMAXSW +
     SSE4.1 PMINS B/D + PMINU W/D + PMAXS B/D + PMAXU W/D,
     PBLENDVB/BLENDVPS/BLENDVPD, PTEST, POPCNT, LZCNT/TZCNT (BMI1).
+    F2-IR-048 — AVX-128 (VEX C4/C5 prefixes parsed; vvvv como tercer
+    operando no-destructivo wired en PADDx/PSUBx/POR/PXOR/PAND/+ sat
+    /min/max/mul-high/PMULUDQ/PSADBW/PHADDx/PMULLD/ANDPS family,
+    ADDPS/SUBPS/MULPS/DIVPS + PD + SS/SD, PCMPEQ/GT, UNPCKL/H,
+    SHUFPS/PD, HADDPS/PD, CMPxxPS/PD/SS/SD, PSHUFB, PALIGNR).
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -92,7 +97,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 761+ Catch2 tests / 4686+ assertions.
+  - `prisma_core_tests` — 763+ Catch2 tests / 4692+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
