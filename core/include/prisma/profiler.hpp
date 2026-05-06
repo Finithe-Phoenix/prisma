@@ -61,6 +61,7 @@ public:
         Popcnt, Lzcnt, Tzcnt,
         VecBlend,
         WriteFlagsPtest,
+        LoadVecRegHi, StoreVecRegHi,
         kCount  // sentinel
     };
 

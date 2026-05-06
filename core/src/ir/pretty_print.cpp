@@ -214,6 +214,13 @@ std::string pretty_print(const Op& op) {
             os << "storexmm xmm" << std::dec
                << static_cast<unsigned>(x.xmm_index) << ", ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, LoadVecRegHi>) {
+            os << "loadymmhi ymm" << std::dec
+               << static_cast<unsigned>(x.ymm_index);
+        } else if constexpr (std::is_same_v<T, StoreVecRegHi>) {
+            os << "storeymmhi ymm" << std::dec
+               << static_cast<unsigned>(x.ymm_index) << ", ";
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

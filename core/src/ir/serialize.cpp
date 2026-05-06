@@ -105,11 +105,13 @@ enum class OpKind : std::uint8_t {
     kTzcnt         = 69,
     kVecBlend      = 70,
     kWriteFlagsPtest = 71,
+    kLoadVecRegHi  = 72,
+    kStoreVecRegHi = 73,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kWriteFlagsPtest);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kStoreVecRegHi);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -298,6 +300,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Tzcnt>)         return OpKind::kTzcnt;
         else if constexpr (std::is_same_v<T, VecBlend>)      return OpKind::kVecBlend;
         else if constexpr (std::is_same_v<T, WriteFlagsPtest>) return OpKind::kWriteFlagsPtest;
+        else if constexpr (std::is_same_v<T, LoadVecRegHi>)  return OpKind::kLoadVecRegHi;
+        else if constexpr (std::is_same_v<T, StoreVecRegHi>) return OpKind::kStoreVecRegHi;
     }, op);
 }
 
@@ -466,6 +470,13 @@ void write_payload(std::vector<std::uint8_t>& out, const LoadVecReg& x) {
 }
 void write_payload(std::vector<std::uint8_t>& out, const StoreVecReg& x) {
     put_u8(out, x.xmm_index);
+    put_u32(out, x.value);
+}
+void write_payload(std::vector<std::uint8_t>& out, const LoadVecRegHi& x) {
+    put_u8(out, x.ymm_index);
+}
+void write_payload(std::vector<std::uint8_t>& out, const StoreVecRegHi& x) {
+    put_u8(out, x.ymm_index);
     put_u32(out, x.value);
 }
 void write_payload(std::vector<std::uint8_t>& out, const VecFpBinOp& x) {
@@ -997,6 +1008,23 @@ DeserializeError read_payload_store_vec_reg(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_load_vec_reg_hi(Cursor& c, Stmt& s) {
+    if (!c.remaining(1)) return DeserializeError::Truncated;
+    const std::uint8_t idx = c.take_u8();
+    if (idx >= kXmmCount) return DeserializeError::BadSize;
+    s.op = LoadVecRegHi{idx};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_store_vec_reg_hi(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4)) return DeserializeError::Truncated;
+    const std::uint8_t  idx = c.take_u8();
+    const std::uint32_t val = c.take_u32();
+    if (idx >= kXmmCount) return DeserializeError::BadSize;
+    s.op = StoreVecRegHi{idx, val};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  op   = c.take_u8();
@@ -1405,6 +1433,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kTzcnt:       return read_payload_tzcnt(c, s);
         case OpKind::kVecBlend:    return read_payload_vec_blend(c, s);
         case OpKind::kWriteFlagsPtest: return read_payload_write_flags_ptest(c, s);
+        case OpKind::kLoadVecRegHi:  return read_payload_load_vec_reg_hi(c, s);
+        case OpKind::kStoreVecRegHi: return read_payload_store_vec_reg_hi(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

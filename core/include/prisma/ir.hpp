@@ -384,6 +384,14 @@ inline constexpr std::size_t kXmmCount = 16;
 struct LoadVecReg  { std::uint8_t xmm_index; };  // 0..15
 struct StoreVecReg { std::uint8_t xmm_index; Ref value; };  // 0..15
 
+// F2-IR-005 — AVX-256 high-lane access. The low 128 bits of YMMn
+// live in xmm[n]; LoadVecRegHi/StoreVecRegHi address the upper
+// 128 bits in CpuStateFrame::ymm_hi[]. Decoder emits these *in
+// addition to* the low-lane LoadVecReg/StoreVecReg pair when
+// VEX.L=1 — i.e. each AVX-256 op materialises as two IR triplets.
+struct LoadVecRegHi  { std::uint8_t ymm_index; };  // 0..15
+struct StoreVecRegHi { std::uint8_t ymm_index; Ref value; };  // 0..15
+
 // F2-IR-007 — 128-bit memory load/store for SSE memory operands.
 // `addr` is a 64-bit guest virtual address (already computed via the
 // usual ModR/M EA Ref chain). Produces / consumes a 128-bit value in
@@ -753,7 +761,8 @@ using Op = std::variant<
     Popcnt,
     Lzcnt, Tzcnt,
     VecBlend,
-    WriteFlagsPtest
+    WriteFlagsPtest,
+    LoadVecRegHi, StoreVecRegHi
 >;
 
 // ---------------------------------------------------------------------------
@@ -875,6 +884,8 @@ bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
 bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
 bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
+bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
+bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

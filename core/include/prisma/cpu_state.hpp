@@ -21,10 +21,11 @@
 
 namespace prisma::runtime {
 
-// XMM (SSE) register count. AVX-256 doubles the size by widening
-// each lane to 32 bytes (YMM); we'll grow `xmm[]` to a 32-byte
-// element type when the AVX path lands.
+// XMM (SSE) register count. AVX-256 keeps the 128-bit `xmm[]` slots
+// stable and stores the high 128 bits of YMM in a parallel `ymm_hi[]`
+// array, so existing offset tables for legacy SSE code don't shift.
 inline constexpr std::size_t kXmmCount = 16;
+inline constexpr std::size_t kYmmCount = kXmmCount;
 
 // 128-bit guest XMM register, naturally aligned. Two 64-bit lanes
 // are the canonical access pattern for SSE2 integer code; floating-
@@ -58,6 +59,12 @@ struct CpuStateFrame {
 
     // F1-RT-012: SSE register file. 16 × 128-bit XMM registers.
     std::array<XmmReg, kXmmCount> xmm{};
+
+    // F2-IR-005: AVX-256 high lane file. The low 128 bits of each
+    // YMM register live in `xmm[]` (so legacy SSE offsets don't
+    // shift); the upper 128 bits live here. Existing 128-bit guest
+    // ops zero this lane to match VEX.128 semantics.
+    std::array<XmmReg, kYmmCount> ymm_hi{};
 
     // F1-RT-012: x87 / MMX stack. 8 entries, each 16 bytes (10 bytes
     // for the 80-bit float, 6 bytes reserved for tag/exception/etc.
@@ -100,6 +107,13 @@ struct CpuStateFrame {
     [[nodiscard]] static constexpr std::int32_t xmm_offset_bytes(std::size_t idx) noexcept {
         return 144 + static_cast<std::int32_t>(idx) * 16;
     }
+
+    // F2-IR-005 — byte offset to `frame.ymm_hi[idx].lo`. ymm_hi[]
+    // immediately follows xmm[] (16 × 16 bytes = 256 bytes), so it
+    // starts at 144 + 256 = 400. Verified by static_assert below.
+    [[nodiscard]] static constexpr std::int32_t ymm_hi_offset_bytes(std::size_t idx) noexcept {
+        return 400 + static_cast<std::int32_t>(idx) * 16;
+    }
 };
 
 // Guarantees the C++ struct layout matches what the Translator emits
@@ -115,6 +129,8 @@ static_assert(offsetof(CpuStateFrame, guest_pc) == 16 * 8,
               "guest_pc must follow gpr[] immediately");
 static_assert(offsetof(CpuStateFrame, xmm) == 144,
               "xmm[] starts at 144 (16 GPR×8 + guest_pc×8 + 8 pad for 16-align)");
+static_assert(offsetof(CpuStateFrame, ymm_hi) == 400,
+              "ymm_hi[] follows xmm[16] tightly: 144 + 16×16 = 400");
 static_assert(sizeof(XmmReg) == 16, "XmmReg is 128 bits");
 static_assert(alignof(XmmReg) == 16, "XmmReg is naturally aligned");
 static_assert(sizeof(X87Slot) == 16, "X87Slot is 16 bytes (10 used + 6 pad)");

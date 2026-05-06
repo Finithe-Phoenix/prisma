@@ -899,6 +899,40 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.vst1_q_offset(rv, arm64::Reg::X27, off);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::LoadVecRegHi>) {
+            // F2-IR-005 — read CpuStateFrame::ymm_hi[idx] (high 128 bits
+            // of YMM) into a fresh V scratch.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadVecRegHi requires a result ref"};
+            }
+            if (op.ymm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "LoadVecRegHi: ymm_index out of range"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadVecRegHi"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::ymm_hi_offset_bytes(op.ymm_index));
+            emitter_.vld1_q_offset(rd, arm64::Reg::X27, off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) {
+            if (op.ymm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "StoreVecRegHi: ymm_index out of range"};
+            }
+            Emitter::FpReg rv;
+            if (!fp_reg_of(op.value, rv)) {
+                return {false, LowerError::DanglingRef, "StoreVecRegHi.value"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::ymm_hi_offset_bytes(op.ymm_index));
+            emitter_.vst1_q_offset(rv, arm64::Reg::X27, off);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::VecConstant>) {
             // F2-IR-001 lowering. Materialise a 128-bit immediate
             // by writing the low and high u64 lanes through the FP
