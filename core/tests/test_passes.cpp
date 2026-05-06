@@ -461,6 +461,48 @@ TEST_CASE("const_prop: chain (Constant → Truncate → Extend) folds end-to-end
     REQUIRE(std::get<ir::Constant>(out[2].op).value == 0xFFFF'FFFF'FFFF'FFFFull);
 }
 
+TEST_CASE("dce(F2-PS-002): WriteFlags whose result is unread is dropped") {
+    // %0 = const 5
+    // %1 = const 5
+    // %2 = writeflags.add.i64 %0, %1     ← dead (no ReadFlag/CondJumpFlags below)
+    //      storereg rax, %0
+    //      ret
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{5, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    // Expected survivors: %0 (read by StoreReg), StoreReg, Return.
+    // %1 is dead with the WriteFlags gone; %2 itself is dead.
+    REQUIRE(out.size() == 3);
+    for (const auto& st : out) {
+        REQUIRE(!std::holds_alternative<ir::WriteFlags>(st.op));
+    }
+}
+
+TEST_CASE("dce(F2-PS-002): WriteFlags is kept when ReadFlag consumes it") {
+    // %0 = const 5
+    // %1 = const 5
+    // %2 = writeflags.add.i64 %0, %1
+    // %3 = readflag.zero %2          ← keeps %2 alive
+    //      storereg rax, %3
+    //      ret
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{5, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::ReadFlag{2u, ir::FlagBit::Zero}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    // All five (defs + StoreReg + Return) remain.
+    REQUIRE(out.size() == s.size());
+}
+
 TEST_CASE("const_prop: transitive folding through a chain") {
     // %0 = 2
     // %1 = 3

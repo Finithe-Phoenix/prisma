@@ -35,10 +35,19 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::Compare>) return true;
         else if constexpr (std::is_same_v<T, ir::Select>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadMem>) return true;
+        // F2-PS-002: WriteFlags / ReadFlag / WriteFlagsFp /
+        // WriteFlagsPtest are pure — they compute a flag-typed Ref
+        // from operands without side effects. If no consumer
+        // (ReadFlag / CondJumpFlags / lowering-time flag plumbing)
+        // reads the result, the write is dead.
+        else if constexpr (std::is_same_v<T, ir::WriteFlags>) return true;
+        else if constexpr (std::is_same_v<T, ir::ReadFlag>) return true;
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>) return true;
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) return true;
         else if constexpr (std::is_same_v<T, ir::JumpReg>) return false;
         // Everything else is impure: StoreReg, StoreMem*, LoadMemTSO,
         // Jump, JumpReg, CondJump, Return, CmpFlags (sets implicit flags),
-        // JumpRel / CondJumpRel (control-flow transfer).
+        // JumpRel / CondJumpRel / CondJumpFlags (control-flow transfer).
         else return false;
     }, op);
 }
@@ -157,6 +166,21 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) {
             into.insert(x.lhs); into.insert(x.rhs);
         }
+        // F2-PS-002: pull flag-related and AVX-256/FMA operand refs
+        // through the live-set so DCE can correctly see what's used.
+        else if constexpr (std::is_same_v<T, ir::WriteFlags>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::ReadFlag>) {
+            into.insert(x.flags);
+        } else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) {
+            into.insert(x.flags);
+        } else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::VecFpFma>) {
+            into.insert(x.a); into.insert(x.b); into.insert(x.c);
+        }
+        // LoadVecRegHi and the various producer-only Load* ops have no
+        // operand refs and need no entry here.
     }, op);
 }
 

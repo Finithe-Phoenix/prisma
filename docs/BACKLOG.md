@@ -475,7 +475,7 @@ translator on a reference Linux ARM64 box.
 ### F2-PS — Passes for Fase 2
 
 - [ ] F2-PS-001: x87 stack elimination pass (FEX-style).
-- [ ] F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints).
+- [x] (PENDING) F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints). (Extended DCE to mark WriteFlags / ReadFlag / WriteFlagsFp / WriteFlagsPtest as pure, and added missing operand-collect entries for WriteFlags / ReadFlag / CondJumpFlags / StoreVecRegHi / VecFpFma so the live-set is correct. F1's flag_write_elimination [F1-PS-012] handles the CmpFlags pattern; this commit covers the SSA WriteFlags family.)
 - [ ] F2-PS-003: Loop-invariant code motion (LICM).
 - [ ] F2-PS-004: Global CSE via dominator-based analysis.
 - [ ] F2-PS-005: Inlining of short helpers.
