@@ -357,6 +357,8 @@ enum class VecBinOpKind : std::uint8_t {
     UMulHi,         //              high half of unsigned 16x16 multiply (PMULHUW).
     UMul32To64,     // F2-IR-030 — PMULUDQ: bottom-of-each-S4-pair u32×u32 → 2 D2 lanes.
     SadBw,          // F2-IR-031 — PSADBW: sum of |byte diffs| per 8-byte half → 2 D2 lanes.
+    PairAddInt,     // F2-IR-037 — pairwise add (PHADDW / PHADDD, SSSE3).
+    PairSubInt,     //              pairwise sub (PHSUBW / PHSUBD).
 };
 
 struct VecConstant {

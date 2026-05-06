@@ -609,6 +609,49 @@ void Emitter::vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
     impl_->masm.Smax(to_vixl_q(rd, lane), to_vixl_q(rn, lane), to_vixl_q(rm, lane));
 }
 
+void Emitter::vaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Addp(to_vixl_q(rd, lane), to_vixl_q(rn, lane), to_vixl_q(rm, lane));
+}
+void Emitter::vsubp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    // ARM has no integer pairwise sub. Emulate: pairwise add of (a, -b).
+    // For each input vector form pairs (lane2i, lane2i+1) → result =
+    // lane2i - lane2i+1. We compute v_a = vn, v_b = -vn-or-vm pattern.
+    //
+    // Concretely: pair-sub of (a,b) = ((a0-a1), (a2-a3),...,(b0-b1)...)
+    // Build by negating odd lanes of vn and vm, then addp.
+    constexpr int kAux2 = 30;
+    const auto fmt = (lane == VecLane::B16) ? vixl_aa::kFormat16B
+                  : (lane == VecLane::H8 ) ? vixl_aa::kFormat8H
+                  : (lane == VecLane::S4 ) ? vixl_aa::kFormat4S
+                                           : vixl_aa::kFormat2D;
+    const vixl_aa::VRegister v_t (kInternalFpScratchV, fmt);
+    const vixl_aa::VRegister v_t2(kAux2,               fmt);
+    const vixl_aa::VRegister v_n (static_cast<int>(rn), fmt);
+    const vixl_aa::VRegister v_m (static_cast<int>(rm), fmt);
+    const vixl_aa::VRegister v_d (static_cast<int>(rd), fmt);
+    // v_t = -vn (whole), then we'll select alternate lanes via trn1/trn2.
+    // Simpler: addp(vn, vm) gives sums; but we want differences. Use neg
+    // then addp:
+    //   For pair (a, b), we want a - b = a + (-b). So negate every odd
+    //   lane of vn and vm. The trn2/uzp2 family extracts odd lanes.
+    //
+    // Cheaper trick: split using zip1/zip2-style or use neg+ext:
+    //   neg v_t,  v_n  (full negate)
+    //   trn2 v_t2, v_n, v_t  -> picks odd lanes of v_n (a1) and v_t (-a1) alternately. Hmm.
+    //
+    // Cleanest: build {a0, -a1, a2, -a3, ...} by neg + zip.
+    //   neg v_t, v_n              ; v_t = -v_n
+    //   trn1 v_t,  v_n, v_t        ; alternates v_n.even, v_t.even = even lanes of {a0, -a1, a2, -a3,...}
+    // But that's still not right. The simplest is to use uzp1/uzp2 to
+    // separate even and odd lanes, then sub:
+    //   uzp1 v_t,  v_n, v_m  → v_t  = {n.even, m.even}
+    //   uzp2 v_t2, v_n, v_m  → v_t2 = {n.odd,  m.odd}
+    //   sub  v_d,  v_t, v_t2 → result
+    impl_->masm.Uzp1(v_t,  v_n, v_m);
+    impl_->masm.Uzp2(v_t2, v_n, v_m);
+    impl_->masm.Sub (v_d, v_t, v_t2);
+}
+
 void Emitter::vsad_bw(FpReg rd, FpReg rn, FpReg rm) {
     // PSADBW: low qword = sum |a[i]-b[i]| for i in 0..7; high qword
     // same for i in 8..15. Sequence:

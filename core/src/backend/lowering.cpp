@@ -959,6 +959,8 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecBinOpKind::UMulHi: emitter_.vmulhi_h8(rd, rl, rr, /*signed=*/false); break;
                 case ir::VecBinOpKind::UMul32To64: emitter_.vmul_u32_to_64(rd, rl, rr); break;
                 case ir::VecBinOpKind::SadBw:      emitter_.vsad_bw(rd, rl, rr); break;
+                case ir::VecBinOpKind::PairAddInt: emitter_.vaddp_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::PairSubInt: emitter_.vsubp_q(rd, rl, rr, lane); break;
             }
             return {};
         }

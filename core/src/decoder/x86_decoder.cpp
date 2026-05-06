@@ -2824,6 +2824,59 @@ std::variant<Decoded, DecodeError> decode_one(
             // PABSB:  66 0F 38 1C /r   (B16)
             // PABSW:  66 0F 38 1D /r   (H8)
             // PABSD:  66 0F 38 1E /r   (S4)
+            //
+            // Also a quick SIMD-binop family routed through the existing
+            // VecBinOp branch:
+            //   PHADDW  66 0F 38 01  → PairAddInt H8
+            //   PHADDD  66 0F 38 02  → PairAddInt S4
+            //   PHSUBW  66 0F 38 05  → PairSubInt H8
+            //   PHSUBD  66 0F 38 06  → PairSubInt S4
+            //   PMULLD  66 0F 38 40  → Mul          S4   (SSE4.1)
+            //   PCMPEQQ 66 0F 38 29  → VecCmp Eq    D2   (SSE4.1)
+            if (sub3 == 0x01u || sub3 == 0x02u ||
+                sub3 == 0x05u || sub3 == 0x06u ||
+                sub3 == 0x40u || sub3 == 0x29u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                Decoded d;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_rhs = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                }
+                if (sub3 == 0x29u) {
+                    d.stmts.push_back({r_res,
+                        ir::VecCmp{ir::VecCmpKind::Eq, r_lhs, r_rhs, ir::VecLane::D2}});
+                } else {
+                    ir::VecBinOpKind k;
+                    ir::VecLane l;
+                    switch (sub3) {
+                        case 0x01u: k = ir::VecBinOpKind::PairAddInt; l = ir::VecLane::H8; break;
+                        case 0x02u: k = ir::VecBinOpKind::PairAddInt; l = ir::VecLane::S4; break;
+                        case 0x05u: k = ir::VecBinOpKind::PairSubInt; l = ir::VecLane::H8; break;
+                        case 0x06u: k = ir::VecBinOpKind::PairSubInt; l = ir::VecLane::S4; break;
+                        default:    k = ir::VecBinOpKind::Mul;        l = ir::VecLane::S4; break;
+                    }
+                    d.stmts.push_back({r_res, ir::VecBinOp{k, r_lhs, r_rhs, l}});
+                }
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
             if (sub3 == 0x00u || sub3 == 0x1Cu || sub3 == 0x1Du || sub3 == 0x1Eu) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);

@@ -333,6 +333,9 @@ public:
     void vmul_u32_to_64(FpReg rd, FpReg rn, FpReg rm);
     // F2-IR-031. PSADBW.
     void vsad_bw(FpReg rd, FpReg rn, FpReg rm);
+    // F2-IR-037. Pairwise add/sub on H8/S4 lanes (PHADD/PHSUB).
+    void vaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsubp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
 
     // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
     // D2 (2×f64); other values are rejected by an assert.
