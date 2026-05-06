@@ -197,6 +197,12 @@ bool operator==(const VecFpCompare& a, const VecFpCompare& b) noexcept {
     return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size
         && a.pred == b.pred && a.is_packed == b.is_packed;
 }
+bool operator==(const VecPshufb& a, const VecPshufb& b) noexcept {
+    return a.src == b.src && a.mask == b.mask;
+}
+bool operator==(const VecAbs& a, const VecAbs& b) noexcept {
+    return a.src == b.src && a.lane == b.lane;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

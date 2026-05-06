@@ -982,6 +982,25 @@ void emit_fp_pred_packed(vixl_aa::MacroAssembler& masm,
 
 }  // namespace
 
+void Emitter::vpshufb(FpReg rd, FpReg rn, FpReg rm) {
+    // PSHUFB: rd[i] = rn[mask[i] & 0xF] if mask[i].MSB == 0, else 0.
+    // NEON tbl returns 0 when index >= 16. So we OR the mask with 0xFF
+    // wherever its MSB is set, forcing those slots to 0 in the lookup.
+    constexpr int kAux2 = 30;
+    const vixl_aa::VRegister v_t  (kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_idx(kAux2,               vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_n  (static_cast<int>(rn), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_m  (static_cast<int>(rm), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d  (static_cast<int>(rd), vixl_aa::kFormat16B);
+    impl_->masm.Cmlt(v_t, v_m, 0);          // t[i] = 0xFF if mask MSB set
+    impl_->masm.Orr (v_idx, v_m, v_t);      // copy mask, force MSB-set bytes to 0xFF
+    impl_->masm.Tbl (v_d, v_n, v_idx);
+}
+
+void Emitter::vabs_q(FpReg rd, FpReg rn, VecLane lane) {
+    impl_->masm.Abs(to_vixl_q(rd, lane), to_vixl_q(rn, lane));
+}
+
 void Emitter::vfcmp_packed(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz, std::uint8_t pred) {
     const auto fmt = (sz == ir::FpSize::F32) ? vixl_aa::kFormat4S
                                               : vixl_aa::kFormat2D;

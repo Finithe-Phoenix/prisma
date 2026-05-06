@@ -139,6 +139,8 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{36u, VecMaskFp{14u, false}});
     c.visit(Stmt{37u,
         VecFpCompare{14u, 14u, FpSize::F32, VecFpCmpPred::Eq, true}});
+    c.visit(Stmt{38u, VecPshufb{14u, 14u}});
+    c.visit(Stmt{39u, VecAbs{14u, VecLane::B16}});
 
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));

@@ -397,6 +397,10 @@ public:
     void vfcmp_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
                                  ir::FpSize sz, std::uint8_t pred);
 
+    // F2-IR-036. SSSE3.
+    void vpshufb(FpReg rd, FpReg rn, FpReg rm);
+    void vabs_q(FpReg rd, FpReg rn, VecLane lane);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

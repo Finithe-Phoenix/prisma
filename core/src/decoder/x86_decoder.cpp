@@ -2812,6 +2812,71 @@ std::variant<Decoded, DecodeError> decode_one(
         }
         const Byte subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
 
+        // F2-IR-036: 0F 38 escape — SSSE3 / SSE4.1.
+        if (subop == 0x38u && has_operand_size_override && !has_lock &&
+            !has_f2 && !has_f3) {
+            auto third = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(third)) {
+                return std::get<DecodeError>(third);
+            }
+            const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // PSHUFB: 66 0F 38 00 /r
+            // PABSB:  66 0F 38 1C /r   (B16)
+            // PABSW:  66 0F 38 1D /r   (H8)
+            // PABSD:  66 0F 38 1E /r   (S4)
+            if (sub3 == 0x00u || sub3 == 0x1Cu || sub3 == 0x1Du || sub3 == 0x1Eu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                Decoded d;
+                if (sub3 == 0x00u) {
+                    const ir::Ref r_dst_old = next_ref++;
+                    const ir::Ref r_mask    = next_ref++;
+                    const ir::Ref r_res     = next_ref++;
+                    d.stmts.push_back({r_dst_old,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_mask,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        d.stmts.push_back({r_mask, ir::LoadVec{r_addr}});
+                    }
+                    d.stmts.push_back({r_res,
+                        ir::VecPshufb{r_dst_old, r_mask}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                } else {
+                    const ir::VecLane lane =
+                        sub3 == 0x1Cu ? ir::VecLane::B16 :
+                        sub3 == 0x1Du ? ir::VecLane::H8  :
+                                        ir::VecLane::S4;
+                    const ir::Ref r_src = next_ref++;
+                    const ir::Ref r_res = next_ref++;
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                    }
+                    d.stmts.push_back({r_res, ir::VecAbs{r_src, lane}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            return DecodeError::UnsupportedEncoding;
+        }
+
         // F2-IR-003: SSE2 integer SIMD register-direct.
         //   66 0F FC /r — PADDB xmm1, xmm2   (16 × i8)
         //   66 0F FD /r — PADDW xmm1, xmm2   ( 8 × i16)

@@ -2242,6 +2242,26 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode PSHUFB xmm0, xmm1 (66 0F 38 00 C1) — F2-IR-036 SSSE3 byte shuffle") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x00, 0xC1}, r);
+    REQUIRE(std::holds_alternative<ir::VecPshufb>(d.stmts[2].op));
+}
+
+TEST_CASE("decode PABSB xmm0, xmm1 (66 0F 38 1C C1) — abs B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x1C, 0xC1}, r);
+    auto va = std::get<ir::VecAbs>(d.stmts[1].op);
+    REQUIRE(va.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PABSD xmm0, xmm1 (66 0F 38 1E C1) — abs S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x1E, 0xC1}, r);
+    auto va = std::get<ir::VecAbs>(d.stmts[1].op);
+    REQUIRE(va.lane == ir::VecLane::S4);
+}
+
 TEST_CASE("decode LDDQU xmm0, [rcx] (F2 0F F0 01) — F2-IR-035 SSE3 unaligned load") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF2, 0x0F, 0xF0, 0x01}, r);

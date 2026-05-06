@@ -56,6 +56,7 @@ public:
         VecShuffleH4,
         VecMaskFp,
         VecFpCompare,
+        VecPshufb, VecAbs,
         kCount  // sentinel
     };
 

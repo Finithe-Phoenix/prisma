@@ -313,6 +313,19 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, VecMaskFp>) {
             os << (x.is_pd ? "vmaskpd " : "vmaskps ");
             print_ref(os, x.src_xmm);
+        } else if constexpr (std::is_same_v<T, VecPshufb>) {
+            os << "vpshufb ";
+            print_ref(os, x.src); os << ", "; print_ref(os, x.mask);
+        } else if constexpr (std::is_same_v<T, VecAbs>) {
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << "vabs." << lane_n << " ";
+            print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecFpCompare>) {
             const char* preds[] = {"eq","lt","le","unord","neq","nlt","nle","ord"};
             os << "vfcmp." << preds[static_cast<unsigned>(x.pred)]

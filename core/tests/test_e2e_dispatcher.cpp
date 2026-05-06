@@ -271,6 +271,48 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PSHUFB byte-permute with MSB-set zero gating (SSSE3)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x38, 0x00, 0xC1,  // pshufb xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack8 = [](std::uint8_t* b) {
+        std::uint64_t v = 0;
+        for (int i = 0; i < 8; ++i)
+            v |= static_cast<std::uint64_t>(b[i]) << (i*8);
+        return v;
+    };
+    // xmm0 source bytes: index → ascii letter A..P (0x41..0x50)
+    std::uint8_t src_lo[8] = {0x41,0x42,0x43,0x44,0x45,0x46,0x47,0x48};
+    std::uint8_t src_hi[8] = {0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F,0x50};
+    // mask: select bytes 15, 0, 7, 0x80 (MSB → zero), 1, 14, 0x80, 0,
+    //                    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80
+    std::uint8_t mask_lo[8] = {15, 0, 7, 0x80, 1, 14, 0x80, 0};
+    std::uint8_t mask_hi[8] = {0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80};
+    disp.state().xmm[0].lo = pack8(src_lo);
+    disp.state().xmm[0].hi = pack8(src_hi);
+    disp.state().xmm[1].lo = pack8(mask_lo);
+    disp.state().xmm[1].hi = pack8(mask_hi);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Expected lane[i] = mask[i] MSB ? 0 : src[mask[i] & 0xF]
+    std::uint8_t exp_lo[8] = {src_hi[7], src_lo[0], src_lo[7], 0,
+                               src_lo[1], src_hi[6], 0, src_lo[0]};
+    std::uint8_t exp_hi[8] = {0,0,0,0, 0,0,0,0};
+    REQUIRE(disp.state().xmm[0].lo == pack8(exp_lo));
+    REQUIRE(disp.state().xmm[0].hi == pack8(exp_hi));
+}
+
 TEST_CASE("e2e: CMPLTPS — F2-IR-034 packed FP less-than mask") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

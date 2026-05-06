@@ -474,6 +474,14 @@ struct VecMaskFp {
     bool is_pd;
 };
 
+// F2-IR-036 — SSSE3.
+//   PSHUFB: lane-wise byte shuffle controlled by per-byte indices in
+//           `mask`. If mask.b[i] has its MSB set, result.b[i] = 0;
+//           otherwise result.b[i] = src.b[mask.b[i] & 0x0F].
+//   VecAbs: lane-wise signed absolute value (PABSB / PABSW / PABSD).
+struct VecPshufb { Ref src; Ref mask; };
+struct VecAbs    { Ref src; VecLane lane; };
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -674,7 +682,8 @@ using Op = std::variant<
     WriteFlagsFp,
     VecShuffleH4,
     VecMaskFp,
-    VecFpCompare
+    VecFpCompare,
+    VecPshufb, VecAbs
 >;
 
 // ---------------------------------------------------------------------------
@@ -786,6 +795,8 @@ bool operator==(const WriteFlagsFp&  a, const WriteFlagsFp&  b) noexcept;
 bool operator==(const VecShuffleH4&  a, const VecShuffleH4&  b) noexcept;
 bool operator==(const VecMaskFp&     a, const VecMaskFp&     b) noexcept;
 bool operator==(const VecFpCompare&  a, const VecFpCompare&  b) noexcept;
+bool operator==(const VecPshufb&     a, const VecPshufb&     b) noexcept;
+bool operator==(const VecAbs&        a, const VecAbs&        b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

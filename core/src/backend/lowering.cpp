@@ -233,6 +233,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecShuffleH4>)  { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecMaskFp>)     { bump(op.src_xmm, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpCompare>)  { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecPshufb>)     { bump(op.src, i); bump(op.mask, i); }
+            else if constexpr (std::is_same_v<T, ir::VecAbs>)        { bump(op.src, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1072,6 +1074,40 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
                                               Emitter::VecLane::D2;
             emitter_.vins_lane_from_w(rd, rl, op.lane_idx, rv, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecPshufb>) {
+            // F2-IR-036 SSSE3 PSHUFB.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecPshufb without result"};
+            }
+            Emitter::FpReg rn, rm;
+            if (!fp_reg_of(op.src, rn))  return {false, LowerError::DanglingRef, "VecPshufb.src"};
+            if (!fp_reg_of(op.mask, rm)) return {false, LowerError::DanglingRef, "VecPshufb.mask"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
+            }
+            emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecAbs>) {
+            // F2-IR-036 SSSE3 PABSB/W/D.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecAbs without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecAbs.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecAbs"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vabs_q(rd, rn, lane);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecFpCompare>) {

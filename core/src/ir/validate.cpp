@@ -92,6 +92,8 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, VecShuffleH4>)  { visit(x.src); }
         else if constexpr (std::is_same_v<T, VecMaskFp>)     { visit(x.src_xmm); }
         else if constexpr (std::is_same_v<T, VecFpCompare>)  { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, VecPshufb>)     { visit(x.src); visit(x.mask); }
+        else if constexpr (std::is_same_v<T, VecAbs>)        { visit(x.src); }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg —
@@ -141,7 +143,9 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, WriteFlagsFp>
             || std::is_same_v<T, VecShuffleH4>
             || std::is_same_v<T, VecMaskFp>
-            || std::is_same_v<T, VecFpCompare>;
+            || std::is_same_v<T, VecFpCompare>
+            || std::is_same_v<T, VecPshufb>
+            || std::is_same_v<T, VecAbs>;
     }, op);
 }
 

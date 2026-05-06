@@ -95,11 +95,13 @@ enum class OpKind : std::uint8_t {
     kVecShuffleH4  = 59,
     kVecMaskFp     = 60,
     kVecFpCompare  = 61,
+    kVecPshufb     = 62,
+    kVecAbs        = 63,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpCompare);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecAbs);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -278,6 +280,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecShuffleH4>)  return OpKind::kVecShuffleH4;
         else if constexpr (std::is_same_v<T, VecMaskFp>)     return OpKind::kVecMaskFp;
         else if constexpr (std::is_same_v<T, VecFpCompare>)  return OpKind::kVecFpCompare;
+        else if constexpr (std::is_same_v<T, VecPshufb>)     return OpKind::kVecPshufb;
+        else if constexpr (std::is_same_v<T, VecAbs>)        return OpKind::kVecAbs;
     }, op);
 }
 
@@ -558,6 +562,14 @@ void write_payload(std::vector<std::uint8_t>& out, const VecFpCompare& x) {
     put_u8(out, static_cast<std::uint8_t>(x.size));
     put_u8(out, static_cast<std::uint8_t>(x.pred));
     put_u8(out, x.is_packed ? 1u : 0u);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecPshufb& x) {
+    put_u32(out, x.src);
+    put_u32(out, x.mask);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecAbs& x) {
+    put_u32(out, x.src);
+    put_u8(out, static_cast<std::uint8_t>(x.lane));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -942,6 +954,22 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_pshufb(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4)) return DeserializeError::Truncated;
+    const std::uint32_t src  = c.take_u32();
+    const std::uint32_t mask = c.take_u32();
+    s.op = VecPshufb{src, mask};
+    return DeserializeError::Ok;
+}
+DeserializeError read_payload_vec_abs(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t src  = c.take_u32();
+    const std::uint8_t  lane = c.take_u8();
+    if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
+    s.op = VecAbs{src, static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_compare(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 1 + 1 + 1)) return DeserializeError::Truncated;
     const std::uint32_t lhs    = c.take_u32();
@@ -1231,6 +1259,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecShuffleH4: return read_payload_vec_shuffle_h4(c, s);
         case OpKind::kVecMaskFp:   return read_payload_vec_mask_fp(c, s);
         case OpKind::kVecFpCompare: return read_payload_vec_fp_compare(c, s);
+        case OpKind::kVecPshufb:   return read_payload_vec_pshufb(c, s);
+        case OpKind::kVecAbs:      return read_payload_vec_abs(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;
