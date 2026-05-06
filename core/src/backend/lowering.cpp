@@ -210,11 +210,13 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::FpBinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::WriteFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::ReadFlag>)      { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::VecBinOp>)      { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVecReg>)   { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
@@ -269,6 +271,21 @@ void Lowerer::expire_intervals() {
         if (expired) {
             free_regs_.push_back(it->second);
             it = ref_to_scratch_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // F2-BK-006 — same liveness-based expiry for the FP pool. Without
+    // this, every Vec*/Fp* SSA ref sticks to its V-reg until end-of-
+    // block, and AVX-256 chains exhaust the pool deterministically.
+    for (auto it = ref_to_fp_.begin(); it != ref_to_fp_.end();) {
+        auto lu_it = last_use_.find(it->first);
+        const bool expired = lu_it != last_use_.end()
+                             && lu_it->second <= stmt_index_;
+        if (expired) {
+            fp_free_.push_back(it->second);
+            it = ref_to_fp_.erase(it);
         } else {
             ++it;
         }
