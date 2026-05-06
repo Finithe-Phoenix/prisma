@@ -832,7 +832,21 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::UnsupportedOp,
                         "CondJumpFlags outside Function lowering (no block label)"};
             }
-            emitter_.branch_cc(it_t->second, op.cc);
+            // F2-IR-026. For FP-source flags, remap x86 CF-based codes
+            // onto the ARM "lt/ge/gt/le" family so the branch matches
+            // x86 UCOMISD semantics (where CF=1 means lhs<rhs ∨ unordered,
+            // i.e., ARM N!=V).
+            ir::CondCode cc = op.cc;
+            if (fp_flag_refs_.count(op.flags) > 0) {
+                switch (cc) {
+                    case ir::CondCode::Cc: case ir::CondCode::Uge: cc = ir::CondCode::Sge; break;
+                    case ir::CondCode::Nc: case ir::CondCode::Ult: cc = ir::CondCode::Slt; break;
+                    case ir::CondCode::Ugt: cc = ir::CondCode::Sgt; break;
+                    case ir::CondCode::Ule: cc = ir::CondCode::Sle; break;
+                    default: break;  // Eq/Ne/etc. unchanged.
+                }
+            }
+            emitter_.branch_cc(it_t->second, cc);
             emitter_.branch(it_f->second);
             return {};
         }
