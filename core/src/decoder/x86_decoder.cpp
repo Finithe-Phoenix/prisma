@@ -2397,8 +2397,25 @@ std::variant<Decoded, DecodeError> decode_one(
                 vex.pp   = static_cast<std::uint8_t>(v2 & 0x03u);
                 cursor += 3;
             }
-            if (vex.L) return DecodeError::UnsupportedEncoding;  // no AVX-256
             if (vex.mmmmm == 0 || vex.mmmmm > 3) return DecodeError::UnsupportedEncoding;
+            // F2-IR-005 — AVX-256 allowlist. VEX.L=1 (256-bit YMM) is
+            // accepted only for opcodes whose handlers know how to emit
+            // the low+high-lane IR pair. Each subsequent commit grows
+            // this list as a new opcode batch is wired up. Scalar FP
+            // ops with L=1 are #UD per Intel SDM regardless.
+            if (vex.L) {
+                if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
+                const Byte avx256_op = bytes[cursor];
+                const bool packed_fp_ps_pd =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    (avx256_op == 0x58u || avx256_op == 0x59u ||
+                     avx256_op == 0x5Cu || avx256_op == 0x5Eu ||
+                     avx256_op == 0x5Du || avx256_op == 0x5Fu ||
+                     avx256_op == 0x51u);
+                if (!packed_fp_ps_pd) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+            }
             // Synthesise the legacy mandatory prefixes the SSE branches
             // gate on, so the existing dispatch can be reused.
             switch (vex.pp) {
@@ -4372,6 +4389,14 @@ std::variant<Decoded, DecodeError> decode_one(
             const std::uint8_t lhs_xmm = vex.present
                 ? static_cast<std::uint8_t>(vex.vvvv)
                 : static_cast<std::uint8_t>(m.reg);
+            // Compute the (optional) memory address once, ahead of the
+            // load, so both lo and hi halves can reference it when
+            // VEX.L=1.
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
             const ir::Ref r_dst_old = next_ref++;
             const ir::Ref r_src     = next_ref++;
             const ir::Ref r_res     = next_ref++;
@@ -4381,14 +4406,40 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::LoadVecReg{static_cast<std::uint8_t>(
                         static_cast<unsigned>(m.base))}});
             } else {
-                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                    instruction_guest_pc + cursor);
-                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
             }
             d.stmts.push_back({r_res,
                 ir::VecFpBinOp{vop, r_dst_old, r_src, size}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — AVX-256: emit the high-lane pair for VEX.L=1.
+            // Memory high-lane is at addr+16; reg high-lane comes from
+            // ymm_hi[m.base]. The vvvv register is the same xmm/ymm
+            // index for both halves.
+            if (vex.present && vex.L) {
+                const ir::Ref r_dst_hi_old = next_ref++;
+                const ir::Ref r_src_hi     = next_ref++;
+                const ir::Ref r_res_hi     = next_ref++;
+                d.stmts.push_back({r_dst_hi_old, ir::LoadVecRegHi{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecFpBinOp{vop, r_dst_hi_old, r_src_hi, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }

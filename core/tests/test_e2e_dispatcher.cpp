@@ -1419,3 +1419,87 @@ TEST_CASE("e2e: cache hit — running the same blob twice reuses the translation
     REQUIRE(d2.run(0x4000, 100).exit == runtime::DispatchExit::Halted);
     REQUIRE(tx.stats().cache_hits == 1);
 }
+
+TEST_CASE("e2e: VADDPS ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed FP add") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 [byte1] 58 D1
+    //   pp = 00 (PS, no mandatory prefix)
+    //   L  = 1  (256-bit ymm)
+    //   vvvv = inverted(0) = 1111
+    //   R̅ = 1
+    // byte1 = 1_1111_1_00 = 0xFC
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFC, 0x58, 0xD1,  // vaddps ymm2, ymm0, ymm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // ymm0 = [1, 2, 3, 4, 5, 6, 7, 8] (low half xmm0 + high half ymm_hi[0])
+    disp.state().xmm[0].lo = pack2f(1.0f, 2.0f);
+    disp.state().xmm[0].hi = pack2f(3.0f, 4.0f);
+    disp.state().ymm_hi[0].lo = pack2f(5.0f, 6.0f);
+    disp.state().ymm_hi[0].hi = pack2f(7.0f, 8.0f);
+    // ymm1 = [10, 20, 30, 40, 50, 60, 70, 80]
+    disp.state().xmm[1].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi = pack2f(30.0f, 40.0f);
+    disp.state().ymm_hi[1].lo = pack2f(50.0f, 60.0f);
+    disp.state().ymm_hi[1].hi = pack2f(70.0f, 80.0f);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // ymm2 = ymm0 + ymm1 = [11, 22, 33, 44, 55, 66, 77, 88]
+    REQUIRE(disp.state().xmm[2].lo    == pack2f(11.0f, 22.0f));
+    REQUIRE(disp.state().xmm[2].hi    == pack2f(33.0f, 44.0f));
+    REQUIRE(disp.state().ymm_hi[2].lo == pack2f(55.0f, 66.0f));
+    REQUIRE(disp.state().ymm_hi[2].hi == pack2f(77.0f, 88.0f));
+}
+
+TEST_CASE("e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 [byte1] 59 D1, pp = 01 (66 mandatory → PD), L = 1
+    //   byte1 = 1_1111_1_01 = 0xFD
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0x59, 0xD1,  // vmulpd ymm2, ymm0, ymm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto u64_of_double = [](double v) -> std::uint64_t {
+        std::uint64_t bits; std::memcpy(&bits, &v, 8); return bits;
+    };
+    // ymm0 = [2.0, 3.0, 4.0, 5.0]   ymm1 = [10.0, 20.0, 30.0, 40.0]
+    disp.state().xmm[0].lo    = u64_of_double(2.0);
+    disp.state().xmm[0].hi    = u64_of_double(3.0);
+    disp.state().ymm_hi[0].lo = u64_of_double(4.0);
+    disp.state().ymm_hi[0].hi = u64_of_double(5.0);
+    disp.state().xmm[1].lo    = u64_of_double(10.0);
+    disp.state().xmm[1].hi    = u64_of_double(20.0);
+    disp.state().ymm_hi[1].lo = u64_of_double(30.0);
+    disp.state().ymm_hi[1].hi = u64_of_double(40.0);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == u64_of_double(20.0));
+    REQUIRE(disp.state().xmm[2].hi    == u64_of_double(60.0));
+    REQUIRE(disp.state().ymm_hi[2].lo == u64_of_double(120.0));
+    REQUIRE(disp.state().ymm_hi[2].hi == u64_of_double(200.0));
+}
