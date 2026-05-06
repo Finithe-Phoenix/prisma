@@ -3412,6 +3412,43 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-033: MOVDDUP / MOVSLDUP / MOVSHDUP (SSE3 broadcasts).
+        //   F2 0F 12 /r — MOVDDUP  xmm, xmm/m64  (dup low qword across D2)
+        //   F3 0F 12 /r — MOVSLDUP xmm, xmm/m128 (replicate even S4 lanes)
+        //   F3 0F 16 /r — MOVSHDUP xmm, xmm/m128 (replicate odd S4 lanes)
+        // All map to a VecShuffle32x4 with a fixed control byte.
+        if (!has_lock && !has_operand_size_override &&
+            ((has_f2 && subop == 0x12u) ||
+             (has_f3 && (subop == 0x12u || subop == 0x16u)))) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            std::uint8_t control;
+            if (has_f2)                   control = 0x44u;  // MOVDDUP : 0,1,0,1
+            else if (subop == 0x12u)      control = 0xA0u;  // MOVSLDUP: 0,0,2,2
+            else                          control = 0xF5u;  // MOVSHDUP: 1,1,3,3
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res, ir::VecShuffle32x4{r_src, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-021: MOVSS / MOVSD — scalar move (FP).
         //   F3 0F 10 /r — MOVSS load:  reg-reg keeps upper of dst,
         //                              mem→reg zeroes upper of dst.
