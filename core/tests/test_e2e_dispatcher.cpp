@@ -271,6 +271,41 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: VPXOR xmm2, xmm0, xmm1 — F2-IR-048 AVX-128 3-operand XOR") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 prefix: 0xC5 [R̅ vvvv L pp]
+    //   pp = 01 (66 mandatory, for VPXOR)
+    //   L  = 0  (128-bit)
+    //   vvvv = inverted(xmm0=0) = 1111 = 15
+    //   R̅  = 1 (R=0)
+    // → second VEX byte = 1_1111_0_01 = 0xF9
+    // Then opcode EF (PXOR) and ModR/M D1 (xmm2 ← xmm0/xmm1).
+    //   ModR/M D1 = 11_010_001 → reg=2 (dst=xmm2), rm=1 (rhs=xmm1).
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xF9, 0xEF, 0xD1,  // vpxor xmm2, xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[0].lo = 0xFF00FF00FF00FF00ULL;
+    disp.state().xmm[0].hi = 0x00FF00FF00FF00FFULL;
+    disp.state().xmm[1].lo = 0x0F0F0F0F0F0F0F0FULL;
+    disp.state().xmm[1].hi = 0xF0F0F0F0F0F0F0F0ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // xmm2 = xmm0 XOR xmm1 → byte-wise xor
+    REQUIRE(disp.state().xmm[2].lo == (0xFF00FF00FF00FF00ULL ^ 0x0F0F0F0F0F0F0F0FULL));
+    REQUIRE(disp.state().xmm[2].hi == (0x00FF00FF00FF00FFULL ^ 0xF0F0F0F0F0F0F0F0ULL));
+}
+
 TEST_CASE("e2e: PBLENDVB — variable byte blend selected by xmm0 MSB (SSE4.1)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

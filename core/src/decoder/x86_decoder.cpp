@@ -36,6 +36,20 @@ struct RexPrefix {
     bool b{false};
 };
 
+// F2-IR-048 — VEX-encoded ops (AVX-128). When `present` is true, the
+// instruction was encoded with C4 / C5 and the existing prefix bits
+// (`has_66/has_f2/has_f3` and `rex`) were synthesised from the VEX
+// fields. `vvvv` is the third (non-destructive) source operand
+// extracted from the VEX byte (always inverted on the wire). `L` ≠ 0
+// means 256-bit (YMM) which we currently reject.
+struct VexPrefix {
+    bool         present{false};
+    bool         L{false};       // 0 = 128-bit, 1 = 256-bit
+    std::uint8_t vvvv{0};        // 4-bit second source register
+    std::uint8_t mmmmm{1};       // implied escape (1=0F, 2=0F38, 3=0F3A)
+    std::uint8_t pp{0};          // implied prefix (00=none, 01=66, 10=F3, 11=F2)
+};
+
 // Parsed ModR/M operand. If `mod == 11` it's a register direct reference
 // (`base` is the register, displacement unused). Otherwise it describes a
 // memory access with optional base + optional scaled index + signed
@@ -2302,6 +2316,7 @@ std::variant<Decoded, DecodeError> decode_one(
     bool seen_f3 = false;
     bool seen_lock = false;
     bool seen_segment_override = false;
+    VexPrefix vex;
     while (cursor < bytes.size()) {
         if (cursor >= kMaxInstructionBytes) {
             return DecodeError::UnsupportedEncoding;
@@ -2346,6 +2361,54 @@ std::variant<Decoded, DecodeError> decode_one(
             continue;
         }
 
+        // F2-IR-048 — VEX prefix (C4 / C5). Must follow legacy prefixes;
+        // appearing before a VEX prefix means the legacy ones are
+        // illegal. Per Intel: VEX is incompatible with REX, LOCK, F0,
+        // F2, F3, 66 prefixes appearing in the same instruction.
+        if (b == 0xC5u || b == 0xC4u) {
+            if (seen_rex || seen_66 || seen_f2 || seen_f3 || seen_lock) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            // Need at least one more byte for the VEX payload.
+            if (b == 0xC5u) {
+                if (cursor + 1 >= bytes.size()) return DecodeError::TruncatedInput;
+                const Byte v1 = bytes[cursor + 1];
+                vex.present = true;
+                rex.present = true;
+                rex.r = (v1 & 0x80u) == 0;            // R̅ (inverted)
+                vex.vvvv = static_cast<std::uint8_t>(((~v1) >> 3) & 0x0Fu);
+                vex.L    = (v1 & 0x04u) != 0;
+                vex.pp   = static_cast<std::uint8_t>(v1 & 0x03u);
+                vex.mmmmm = 1;                         // implied 0F
+                cursor += 2;
+            } else {
+                if (cursor + 2 >= bytes.size()) return DecodeError::TruncatedInput;
+                const Byte v1 = bytes[cursor + 1];
+                const Byte v2 = bytes[cursor + 2];
+                vex.present = true;
+                rex.present = true;
+                rex.r = (v1 & 0x80u) == 0;
+                rex.x = (v1 & 0x40u) == 0;
+                rex.b = (v1 & 0x20u) == 0;
+                vex.mmmmm = static_cast<std::uint8_t>(v1 & 0x1Fu);
+                rex.w = (v2 & 0x80u) != 0;
+                vex.vvvv = static_cast<std::uint8_t>(((~v2) >> 3) & 0x0Fu);
+                vex.L    = (v2 & 0x04u) != 0;
+                vex.pp   = static_cast<std::uint8_t>(v2 & 0x03u);
+                cursor += 3;
+            }
+            if (vex.L) return DecodeError::UnsupportedEncoding;  // no AVX-256
+            if (vex.mmmmm == 0 || vex.mmmmm > 3) return DecodeError::UnsupportedEncoding;
+            // Synthesise the legacy mandatory prefixes the SSE branches
+            // gate on, so the existing dispatch can be reused.
+            switch (vex.pp) {
+                case 1: has_operand_size_override = true; break;
+                case 2: has_f3 = true; break;
+                case 3: has_f2 = true; break;
+            }
+            break;  // VEX consumes the prefix slot; opcode follows.
+        }
+
         if (b == 0xF0u) {
             if (seen_lock) return DecodeError::UnsupportedEncoding;
             has_lock = true;
@@ -2375,9 +2438,18 @@ std::variant<Decoded, DecodeError> decode_one(
     if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
     if (cursor >= kMaxInstructionBytes) return DecodeError::UnsupportedEncoding;
 
-    // 2. Opcode byte.
-    const Byte opcode = bytes[cursor];
-    ++cursor;
+    // 2. Opcode byte. With VEX-encoded instructions, the escape level is
+    // encoded in vex.mmmmm rather than 0F / 0F 38 / 0F 3A bytes in the
+    // stream — synthesise opcode = 0x0F to enter the existing two-byte
+    // dispatch and (for mmmmm=2/3) the inner sub-dispatch will inject
+    // the right `subop` byte.
+    Byte opcode;
+    if (vex.present) {
+        opcode = 0x0Fu;
+    } else {
+        opcode = bytes[cursor];
+        ++cursor;
+    }
 
     // LOCK currently only makes sense for the selected two-byte atomic
     // exchange-family opcodes handled below.
@@ -2806,11 +2878,18 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- Two-byte opcodes (0x0F xx) --------------------------------------
     if (opcode == 0x0Fu) {
-        auto sub = consume_le<1>(bytes, cursor);
-        if (std::holds_alternative<DecodeError>(sub)) {
-            return std::get<DecodeError>(sub);
+        Byte subop;
+        if (vex.present && vex.mmmmm == 2) {
+            subop = 0x38u;  // route into the 0F 38 escape sub-dispatch
+        } else if (vex.present && vex.mmmmm == 3) {
+            subop = 0x3Au;  // route into the 0F 3A escape sub-dispatch
+        } else {
+            auto sub = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(sub)) {
+                return std::get<DecodeError>(sub);
+            }
+            subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
         }
-        const Byte subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
 
         // F2-IR-038: 0F 3A escape — SSSE3 / SSE4.1 imm-bearing ops.
         if (subop == 0x3Au && has_operand_size_override && !has_lock &&
@@ -3300,11 +3379,15 @@ std::variant<Decoded, DecodeError> decode_one(
                 default: break;
             }
             Decoded d;
+            // For VEX-encoded ops the first source is the third operand
+            // (vvvv); otherwise it's the SSE-classic dest aliasing src1.
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
             const ir::Ref r_dst_old = next_ref++;
             const ir::Ref r_src     = next_ref++;
             const ir::Ref r_res     = next_ref++;
-            d.stmts.push_back({r_dst_old,
-                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            d.stmts.push_back({r_dst_old, ir::LoadVecReg{lhs_xmm}});
             if (m.mod == 0b11) {
                 d.stmts.push_back({r_src,
                     ir::LoadVecReg{static_cast<std::uint8_t>(
