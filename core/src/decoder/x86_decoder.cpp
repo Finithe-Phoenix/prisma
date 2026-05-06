@@ -3030,8 +3030,10 @@ std::variant<Decoded, DecodeError> decode_one(
                 const ir::Ref r_lhs = next_ref++;
                 const ir::Ref r_rhs = next_ref++;
                 const ir::Ref r_res = next_ref++;
-                d.stmts.push_back({r_lhs,
-                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                const std::uint8_t lhs_xmm_palignr = vex.present
+                    ? static_cast<std::uint8_t>(vex.vvvv)
+                    : static_cast<std::uint8_t>(m.reg);
+                d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_palignr}});
                 if (m.mod == 0b11) {
                     d.stmts.push_back({r_rhs,
                         ir::LoadVecReg{static_cast<std::uint8_t>(
@@ -3256,8 +3258,11 @@ std::variant<Decoded, DecodeError> decode_one(
                     const ir::Ref r_dst_old = next_ref++;
                     const ir::Ref r_mask    = next_ref++;
                     const ir::Ref r_res     = next_ref++;
+                    const std::uint8_t lhs_xmm_pshufb = vex.present
+                        ? static_cast<std::uint8_t>(vex.vvvv)
+                        : static_cast<std::uint8_t>(m.reg);
                     d.stmts.push_back({r_dst_old,
-                        ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                        ir::LoadVecReg{lhs_xmm_pshufb}});
                     if (m.mod == 0b11) {
                         d.stmts.push_back({r_mask,
                             ir::LoadVecReg{static_cast<std::uint8_t>(
@@ -3596,11 +3601,13 @@ std::variant<Decoded, DecodeError> decode_one(
                 (has_operand_size_override || has_f2) ? ir::FpSize::F64
                                                       : ir::FpSize::F32;
             Decoded d;
+            const std::uint8_t lhs_xmm_cmp = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
             const ir::Ref r_lhs = next_ref++;
             const ir::Ref r_rhs = next_ref++;
             const ir::Ref r_res = next_ref++;
-            d.stmts.push_back({r_lhs,
-                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_cmp}});
             if (m.mod == 0b11) {
                 d.stmts.push_back({r_rhs,
                     ir::LoadVecReg{static_cast<std::uint8_t>(
@@ -4080,8 +4087,10 @@ std::variant<Decoded, DecodeError> decode_one(
             const ir::Ref r_lhs = next_ref++;
             const ir::Ref r_rhs = next_ref++;
             const ir::Ref r_res = next_ref++;
-            d.stmts.push_back({r_lhs,
-                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            const std::uint8_t lhs_xmm_hadd = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_hadd}});
             if (m.mod == 0b11) {
                 d.stmts.push_back({r_rhs,
                     ir::LoadVecReg{static_cast<std::uint8_t>(
