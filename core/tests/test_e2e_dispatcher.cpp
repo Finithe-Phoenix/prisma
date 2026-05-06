@@ -271,6 +271,47 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: PMOVMSKB eax, xmm0 — F2-IR-027 byte-MSB extraction") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0xD7, 0xC0,  // pmovmskb eax, xmm0
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // Bytes (little-endian byte order in lo/hi):
+    //   lo bytes 0..7: 0x80 (MSB=1), 0x01 (MSB=0), 0xFF (1), 0x7F (0), 0x80 (1), 0x00 (0), 0xC0 (1), 0x40 (0)
+    //   hi bytes 8..15: 0x80, 0x80, 0x00, 0x00, 0xFF, 0xFF, 0x01, 0x80
+    // Expected mask bits (LSB first per byte index):
+    //   bits 0..7  = 1 0 1 0 1 0 1 0  → 0x55
+    //   bits 8..15 = 1 1 0 0 1 1 0 1  → 0xB3
+    // Mask = 0xB355.
+    disp.state().xmm[0].lo = 0x40C0008080FF0180ULL;  // bytes 0..7 reversed for little-endian layout
+    disp.state().xmm[0].hi = 0x80'01'FF'FF'00'00'80'80ULL;
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Recompute the expected mask from the bytes we set.
+    auto compute_mask = [&]() {
+        std::uint16_t mask = 0;
+        std::uint8_t bytes[16];
+        std::memcpy(&bytes[0], &disp.state().xmm[0].lo, 8);
+        std::memcpy(&bytes[8], &disp.state().xmm[0].hi, 8);
+        for (int i = 0; i < 16; ++i) {
+            if (bytes[i] & 0x80u) mask |= static_cast<std::uint16_t>(1u << i);
+        }
+        return mask;
+    };
+    const std::uint64_t expected = compute_mask();
+    REQUIRE(disp.state()[ir::Gpr::Rax] == expected);
+}
+
 TEST_CASE("e2e: PMULHW xmm0, xmm1 — F2-IR-025 signed high-half multiply") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

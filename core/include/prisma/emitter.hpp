@@ -371,6 +371,9 @@ public:
     void vumov_w_from_lane(arm64::Reg w_dst, FpReg rn,
                            std::uint8_t lane_idx, VecLane lane);
 
+    // F2-IR-027. PMOVMSKB: byte MSB extraction → 16-bit mask in w_dst.
+    void vmask_msb_b16(arm64::Reg w_dst, FpReg rn);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

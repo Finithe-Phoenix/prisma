@@ -3074,6 +3074,31 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-027: PMOVMSKB r32, xmm (66 0F D7 /r). Reg-direct only.
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            subop == 0xD7u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            // /r reg = GPR dest, rm = XMM source.
+            const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+            const unsigned src_xmm = static_cast<unsigned>(m.base);
+            Decoded d;
+            const ir::Ref r_xmm = next_ref++;
+            const ir::Ref r_mask = next_ref++;
+            d.stmts.push_back({r_xmm,
+                ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+            d.stmts.push_back({r_mask, ir::VecMaskMsb{r_xmm}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_gpr, r_mask, ir::OpSize::I32}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-022: PINSRW / PEXTRW.
         //   66 0F C4 /r ib — PINSRW xmm1, r/m32, imm8 (insert low 16 of r/m at lane imm8 & 7)
         //   66 0F C5 /r ib — PEXTRW r32, xmm, imm8 (extract H8 lane, zero-extend; reg-only)

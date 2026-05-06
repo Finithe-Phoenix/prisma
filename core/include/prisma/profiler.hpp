@@ -51,6 +51,7 @@ public:
         IntToFpScalar, FpToIntScalar, FpCvtScalar,
         VecShuffle2Src,
         VecInsertLane, VecExtractLaneU,
+        VecMaskMsb,
         kCount  // sentinel
     };
 

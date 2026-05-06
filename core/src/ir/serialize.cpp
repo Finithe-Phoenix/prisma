@@ -90,11 +90,12 @@ enum class OpKind : std::uint8_t {
     kVecShuffle2Src = 54,
     kVecInsertLane = 55,
     kVecExtractLaneU = 56,
+    kVecMaskMsb    = 57,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecExtractLaneU);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecMaskMsb);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -268,6 +269,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecShuffle2Src>) return OpKind::kVecShuffle2Src;
         else if constexpr (std::is_same_v<T, VecInsertLane>) return OpKind::kVecInsertLane;
         else if constexpr (std::is_same_v<T, VecExtractLaneU>) return OpKind::kVecExtractLaneU;
+        else if constexpr (std::is_same_v<T, VecMaskMsb>)    return OpKind::kVecMaskMsb;
     }, op);
 }
 
@@ -524,6 +526,9 @@ void write_payload(std::vector<std::uint8_t>& out, const VecExtractLaneU& x) {
     put_u32(out, x.src_xmm);
     put_u8(out, x.lane_idx);
     put_u8(out, static_cast<std::uint8_t>(x.lane));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecMaskMsb& x) {
+    put_u32(out, x.src_xmm);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -908,6 +913,12 @@ DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_mask_msb(Cursor& c, Stmt& s) {
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    s.op = VecMaskMsb{c.take_u32()};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_insert_lane(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 1 + 1)) return DeserializeError::Truncated;
     const std::uint32_t lhs   = c.take_u32();
@@ -1142,6 +1153,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecShuffle2Src: return read_payload_vec_shuffle_2src(c, s);
         case OpKind::kVecInsertLane: return read_payload_vec_insert_lane(c, s);
         case OpKind::kVecExtractLaneU: return read_payload_vec_extract_lane_u(c, s);
+        case OpKind::kVecMaskMsb:  return read_payload_vec_mask_msb(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

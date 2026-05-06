@@ -449,6 +449,12 @@ struct VecExtractLaneU {
     VecLane      lane;
 };
 
+// F2-IR-027 — PMOVMSKB. Extract MSB of each of the 16 bytes of an
+// xmm into bits [0..15] of a GPR (zero-extended to 32-bit width).
+struct VecMaskMsb {
+    Ref src_xmm;
+};
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -618,7 +624,8 @@ using Op = std::variant<
     IntToFpScalar, FpToIntScalar,
     FpCvtScalar,
     VecShuffle2Src,
-    VecInsertLane, VecExtractLaneU
+    VecInsertLane, VecExtractLaneU,
+    VecMaskMsb
 >;
 
 // ---------------------------------------------------------------------------
@@ -725,6 +732,7 @@ bool operator==(const FpCvtScalar&   a, const FpCvtScalar&   b) noexcept;
 bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept;
 bool operator==(const VecInsertLane& a, const VecInsertLane& b) noexcept;
 bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept;
+bool operator==(const VecMaskMsb&    a, const VecMaskMsb&    b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

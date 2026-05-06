@@ -901,6 +901,67 @@ void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
     impl_->masm.Mov(v_d_q, v_t_q);
 }
 
+void Emitter::vmask_msb_b16(arm64::Reg w_dst, FpReg rn) {
+    // PMOVMSKB sequence (well-known):
+    //   1. cmlt v_t.16b, vn.16b, #0      ; t[i] = 0xFF if vn[i] MSB set
+    //   2. build mask {1,2,...,128, 1,...,128} in V_mask via two .d[] inserts
+    //   3. and v_t.16b, v_t.16b, v_mask.16b
+    //   4. uaddlv h_lo, v_t.8b           ; sum bytes 0..7  → h_lo (low byte of mask)
+    //   5. ext v_hi.16b, v_t.16b, v_t.16b, #8
+    //   6. uaddlv h_hi, v_hi.8b
+    //   7. umov w_lo, v_lo.h[0]; umov w_hi, v_hi.h[0]
+    //   8. orr w_dst, w_lo, w_hi << 8
+    //
+    // Uses V31 (existing internal scratch) and V30 for the mask, plus
+    // a vixl X scratch via UseScratchRegisterScope. The V regs we use
+    // are outside the SSA pool (V0..V7).
+    constexpr int kMaskV   = 30;
+    constexpr int kHiTmpV  = 29;
+    constexpr int kInternalV = kInternalFpScratchV;  // V31
+
+    const vixl_aa::VRegister v_n_16b(static_cast<int>(rn), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_t_16b(kInternalV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_t_8b (kInternalV, vixl_aa::kFormat8B);
+    const vixl_aa::VRegister v_t_8h (kInternalV, vixl_aa::kFormat8H);
+    const vixl_aa::VRegister v_mask_16b(kMaskV,  vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_mask_2d (kMaskV,  vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_hi_16b(kHiTmpV,   vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_hi_8b (kHiTmpV,   vixl_aa::kFormat8B);
+    const vixl_aa::VRegister v_hi_8h (kHiTmpV,   vixl_aa::kFormat8H);
+
+    // 1. signed-less-than-zero per byte → mask of 0xFF/0x00.
+    impl_->masm.Cmlt(v_t_16b, v_n_16b, 0);
+
+    // 2. construct {1,2,4,8,16,32,64,128} repeated.
+    {
+        vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+        const vixl_aa::Register x_t = temps.AcquireX();
+        impl_->masm.Mov(x_t, 0x8040201008040201ULL);
+        impl_->masm.Mov(v_mask_2d, 0, x_t);
+        impl_->masm.Mov(v_mask_2d, 1, x_t);
+    }
+
+    // 3. and.
+    impl_->masm.And(v_t_16b, v_t_16b, v_mask_16b);
+
+    // 4-6. Compute upper-half sum FIRST (since it reads from v_t),
+    // THEN compute lower-half sum (which clobbers v_t lane 0).
+    impl_->masm.Ext(v_hi_16b, v_t_16b, v_t_16b, 8);
+    impl_->masm.Uaddlv(vixl_aa::HRegister(kHiTmpV), v_hi_8b);
+    impl_->masm.Uaddlv(vixl_aa::HRegister(kInternalV), v_t_8b);
+
+    // 7. extract lo and hi to GPRs.
+    {
+        vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+        const vixl_aa::Register w_hi = temps.AcquireW();
+        impl_->masm.Umov(to_vixl_w(w_dst), v_t_8h, 0);
+        impl_->masm.Umov(w_hi,             v_hi_8h, 0);
+        // 8. w_dst = w_dst | (w_hi << 8)
+        impl_->masm.Orr(to_vixl_w(w_dst), to_vixl_w(w_dst),
+                        vixl_aa::Operand(w_hi, vixl_aa::LSL, 8));
+    }
+}
+
 void Emitter::vumov_w_from_lane(arm64::Reg w_dst, FpReg rn,
                                 std::uint8_t lane_idx, VecLane lane) {
     const auto fmt = vec_format_for_lane(lane);

@@ -297,6 +297,9 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, VecExtractLaneU>) {
             os << "vextu.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
             print_ref(os, x.src_xmm);
+        } else if constexpr (std::is_same_v<T, VecMaskMsb>) {
+            os << "vmask_msb.b16 ";
+            print_ref(os, x.src_xmm);
         } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
             os << (x.is_pd ? "vshufpd " : "vshufps ");
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
