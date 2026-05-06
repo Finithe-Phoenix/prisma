@@ -218,6 +218,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::StoreVecReg>)   { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpFma>)      { bump(op.a, i); bump(op.b, i); bump(op.c, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
@@ -1567,6 +1568,46 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::DanglingRef, "StoreVec.value"};
             }
             emitter_.vst1_q(rv, raddr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpFma>) {
+            // F2-IR-006 — fused multiply-add. ARM64 FMLA is destructive
+            // (Vd += Vn*Vm); we materialise the addend into Vd first.
+            //   (neg_addend=F, neg_mul=F): Vd = Va; FMLA Vd, Vb, Vc
+            //   (neg_addend=F, neg_mul=T): Vd = Va; FMLS Vd, Vb, Vc
+            //   (neg_addend=T, neg_mul=F): FNEG Vd, Va; FMLA Vd, Vb, Vc
+            //   (neg_addend=T, neg_mul=T): FNEG Vd, Va; FMLS Vd, Vb, Vc
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpFma requires a result ref"};
+            }
+            Emitter::FpReg ra, rb, rc;
+            if (!fp_reg_of(op.a, ra)) {
+                return {false, LowerError::DanglingRef, "VecFpFma.a"};
+            }
+            if (!fp_reg_of(op.b, rb)) {
+                return {false, LowerError::DanglingRef, "VecFpFma.b"};
+            }
+            if (!fp_reg_of(op.c, rc)) {
+                return {false, LowerError::DanglingRef, "VecFpFma.c"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpFma"};
+            }
+            const Emitter::VecLane lane =
+                op.size == ir::VecFpSize::S4 ? Emitter::VecLane::S4
+                                             : Emitter::VecLane::D2;
+            if (op.neg_addend) {
+                emitter_.vfneg_q(rd, ra, lane);
+            } else {
+                emitter_.vmov_q(rd, ra);
+            }
+            if (op.neg_mul) {
+                emitter_.vfmls_q(rd, rb, rc, lane);
+            } else {
+                emitter_.vfmla_q(rd, rb, rc, lane);
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) {

@@ -568,6 +568,27 @@ struct VecFpBinOp {
     VecFpSize      size;
 };
 
+// F2-IR-006 — fused multiply-add (FMA3). Single fused rounding step,
+// matching ARM64 FMLA / FMLS semantics. Canonical form:
+//   result = (neg_addend ? -a : a) + (neg_mul ? -(b*c) : b*c)
+// The four x86 mnemonics map as:
+//   VFMADD  → neg_addend=false, neg_mul=false
+//   VFMSUB  → neg_addend=true,  neg_mul=false   (result = b*c - a)
+//   VFNMADD → neg_addend=false, neg_mul=true    (result = a - b*c)
+//   VFNMSUB → neg_addend=true,  neg_mul=true    (result = -a - b*c)
+// Decoder normalises the 132/213/231 operand orderings into (a,b,c).
+// Packed only in the first slice; scalar (SS/SD) deferred. The pass
+// pipeline must NOT lower a separate Mul + Add into FMLA — fused vs
+// decomposed differ in ULP.
+struct VecFpFma {
+    Ref          a;
+    Ref          b;
+    Ref          c;
+    bool         neg_addend;
+    bool         neg_mul;
+    VecFpSize    size;
+};
+
 
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
@@ -762,7 +783,8 @@ using Op = std::variant<
     Lzcnt, Tzcnt,
     VecBlend,
     WriteFlagsPtest,
-    LoadVecRegHi, StoreVecRegHi
+    LoadVecRegHi, StoreVecRegHi,
+    VecFpFma
 >;
 
 // ---------------------------------------------------------------------------
@@ -886,6 +908,7 @@ bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
+bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

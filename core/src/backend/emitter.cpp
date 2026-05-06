@@ -769,6 +769,27 @@ void Emitter::vfaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
                       to_vixl_q_fp(rm, lane));
 }
 
+// F2-IR-006 — fused multiply-add primitives. ARM64 FMLA is destructive
+// (Vd += Vn*Vm); the lowerer materialises the addend into Vd via vmov_q
+// before calling vfmla_q.
+void Emitter::vfmla_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fmla(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfmls_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Fmls(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                     to_vixl_q_fp(rm, lane));
+}
+void Emitter::vfneg_q(FpReg rd, FpReg rn, VecLane lane) {
+    impl_->masm.Fneg(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane));
+}
+void Emitter::vmov_q(FpReg rd, FpReg rn) {
+    if (static_cast<int>(rd) == static_cast<int>(rn)) return;
+    const vixl_aa::VRegister vd(static_cast<int>(rd), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister vn(static_cast<int>(rn), vixl_aa::kFormat16B);
+    impl_->masm.Mov(vd, vn);
+}
+
 // F2-IR-006 — internal scratch V31, never used by the SSA scratch pool
 // (which only allocates V0..V7). Common impl for the four scalar SSE ops:
 //   1. mov  v31.16b, vn.16b               ; copy lhs into scratch (preserves upper)

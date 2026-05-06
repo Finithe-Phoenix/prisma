@@ -133,6 +133,11 @@ bool operator==(const LoadVecRegHi& a, const LoadVecRegHi& b) noexcept {
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept {
     return a.ymm_index == b.ymm_index && a.value == b.value;
 }
+bool operator==(const VecFpFma& a, const VecFpFma& b) noexcept {
+    return a.a == b.a && a.b == b.b && a.c == b.c
+        && a.neg_addend == b.neg_addend && a.neg_mul == b.neg_mul
+        && a.size == b.size;
+}
 bool operator==(const VecFpBinOp& a, const VecFpBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }

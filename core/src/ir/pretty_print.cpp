@@ -221,6 +221,14 @@ std::string pretty_print(const Op& op) {
             os << "storeymmhi ymm" << std::dec
                << static_cast<unsigned>(x.ymm_index) << ", ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecFpFma>) {
+            const char* mn = x.neg_mul
+                ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
+                : (x.neg_addend ? "vfmsub"  : "vfmadd");
+            os << mn << "." << (x.size == VecFpSize::S4 ? "s4" : "d2") << " ";
+            print_ref(os, x.a); os << ", ";
+            print_ref(os, x.b); os << ", ";
+            print_ref(os, x.c);
         } else if constexpr (std::is_same_v<T, VecBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

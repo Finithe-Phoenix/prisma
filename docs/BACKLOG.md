@@ -454,7 +454,7 @@ translator on a reference Linux ARM64 box.
 - [x] (db74b8a) F2-IR-003: SSE integer ops (PADD, PSUB, PCMPEQ, PMULLW, ...). (Add/Sub + bitwise covered; Cmp + Mul follow-up.)
 - [ ] F2-IR-004: SSE shuffle / blend.
 - [x] (99d2056) F2-IR-005: AVX 256-bit equivalents (VADDPS, etc.). (First batch — packed FP arith, integer SIMD, FP/int bitwise, PCMPEQ/GT, UNPCK, SHUFPS/PD, HADDPS/PD, CMPxxPS/PD ymm. Lane-crossing ops follow.)
-- [ ] F2-IR-006: FMA (VFMADD, VFMSUB, etc.).
+- [~|claude] F2-IR-006: FMA (VFMADD, VFMSUB, etc.).
 - [ ] F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH).
 - [ ] F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass).
 - [ ] F2-IR-009: MMX ops (rare in modern binaries, skip or stub).

@@ -3157,6 +3157,80 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
+            // F2-IR-006 — FMA3 (66 0F 38, VEX-only). Even low-nibble =
+            // packed PS/PD (W=0/1); odd low-nibble would be scalar SS/SD
+            // and is deferred. High-nibble selects family + ordering:
+            //   9x → 132 (b=r_dst,  c=r_rm,  a=r_v )
+            //   Ax → 213 (b=r_v,    c=r_dst, a=r_rm)
+            //   Bx → 231 (b=r_v,    c=r_rm,  a=r_dst)
+            // Within a family: 8/9 = MADD, A/B = MSUB, C/D = NMADD, E/F = NMSUB.
+            // For C-1 we ship VFMADD only; subsequent commits add MSUB/
+            // NMADD/NMSUB. MADDSUB/MSUBADD (96/97/A6/A7/B6/B7) are deferred.
+            if (vex.present &&
+                (sub3 == 0x98u || sub3 == 0xA8u || sub3 == 0xB8u ||  // MADD packed PS
+                 sub3 == 0x99u || sub3 == 0xA9u || sub3 == 0xB9u)) { // MADD packed PD
+                if (vex.L) return DecodeError::UnsupportedEncoding;  // ymm FMA in follow-up.
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                const ir::VecFpSize size = (sub3 & 0x01u) ? ir::VecFpSize::D2
+                                                          : ir::VecFpSize::S4;
+                const std::uint8_t high_nibble = sub3 & 0xF0u;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                // Materialise the three operands into IR refs. The r/m
+                // operand may be reg or memory; vvvv and reg are always
+                // xmm registers.
+                const ir::Ref r_a = next_ref++;
+                const ir::Ref r_b = next_ref++;
+                const ir::Ref r_c = next_ref++;
+                // Loads: we need r_dst (always xmm), r_v (always xmm),
+                // and r_rm (xmm or memory). Map them onto a/b/c per the
+                // 132/213/231 permutation.
+                ir::Ref r_dst_load = next_ref++;
+                ir::Ref r_v_load   = next_ref++;
+                ir::Ref r_rm_load  = next_ref++;
+                d.stmts.push_back({r_dst_load, ir::LoadVecReg{r_dst}});
+                d.stmts.push_back({r_v_load,   ir::LoadVecReg{r_v}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rm_load,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_rm_load, ir::LoadVec{*r_addr_lo}});
+                }
+                ir::Ref ra, rb, rc;
+                switch (high_nibble) {
+                    case 0x90u:  // 132: b=r_dst, c=r_rm, a=r_v
+                        ra = r_v_load; rb = r_dst_load; rc = r_rm_load; break;
+                    case 0xA0u:  // 213: b=r_v, c=r_dst, a=r_rm
+                        ra = r_rm_load; rb = r_v_load; rc = r_dst_load; break;
+                    case 0xB0u:  // 231: b=r_v, c=r_rm, a=r_dst
+                        ra = r_dst_load; rb = r_v_load; rc = r_rm_load; break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                (void)r_a; (void)r_b; (void)r_c;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecFpFma{ra, rb, rc,
+                                 /*neg_addend=*/false,
+                                 /*neg_mul=*/false,
+                                 size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 BLEND* with implicit XMM0 mask:
             //   66 0F 38 10 — PBLENDVB  (B16 lane)
             //   66 0F 38 14 — BLENDVPS (S4 lane)

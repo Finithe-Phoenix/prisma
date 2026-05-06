@@ -348,6 +348,15 @@ public:
     void vfsqrt_q(FpReg rd, FpReg rn, VecLane lane);
     void vfaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);  // F2-IR-032 HADDPS/PD
 
+    // F2-IR-006 — fused multiply-add primitives. The destination is
+    // accumulating; emit `vmov_q(rd, ra)` then call `vfmla_q(rd, rb, rc)`
+    // to compute rd = ra + rb*rc. `vfmls_q` computes rd -= rb*rc.
+    // `vfneg_q` computes rd = -rn.
+    void vfmla_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmls_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfneg_q(FpReg rd, FpReg rn, VecLane lane);
+    void vmov_q (FpReg rd, FpReg rn);  // 128-bit register copy.
+
     // F2-IR-006 — scalar SSE FP semantics: result.low = op(rn.low, rm.low),
     // result.upper = rn.upper (untouched). `sz` selects S (32-bit) or D
     // (64-bit) lane. Internally uses V31 as a fixed scratch — it must
