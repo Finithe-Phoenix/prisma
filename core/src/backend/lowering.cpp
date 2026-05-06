@@ -25,7 +25,11 @@ namespace prisma::backend {
 namespace {
 
 constexpr unsigned kScratchPoolSize   = 10;  // x0..x9
-constexpr unsigned kFpScratchPoolSize = 8;   // V0..V7
+// F2-BK-006 — wider FP pool. V0..V23 (24 regs) for SSA scratch;
+// V24..V31 reserved for emitter helpers (kInternalFpScratchV = V31,
+// kAuxV = V30; V24..V29 left as future-proofing for multi-temp
+// helpers and potential AVX-256 pair-allocator bookkeeping).
+constexpr unsigned kFpScratchPoolSize = 24;
 
 constexpr arm64::Reg scratch_reg(unsigned idx) noexcept {
     // x0 = 0, x1 = 1, ... x9 = 9.
