@@ -2334,6 +2334,30 @@ TEST_CASE("decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte c
     REQUIRE(va.count == 4);
 }
 
+TEST_CASE("decode PCMPGTQ xmm0, xmm1 (66 0F 38 37 C1) — F2-IR-043 SSE4.2 D2 signed >") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x37, 0xC1}, r);
+    auto vc = std::get<ir::VecCmp>(d.stmts[2].op);
+    REQUIRE(vc.kind == ir::VecCmpKind::Gt);
+    REQUIRE(vc.lane == ir::VecLane::D2);
+}
+
+TEST_CASE("decode PMINSB xmm0, xmm1 (66 0F 38 38 C1) — SSE4.1 signed min B16") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x38, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::SMin);
+    REQUIRE(vb.lane == ir::VecLane::B16);
+}
+
+TEST_CASE("decode PMAXUD xmm0, xmm1 (66 0F 38 3F C1) — SSE4.1 unsigned max S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0x3F, 0xC1}, r);
+    auto vb = std::get<ir::VecBinOp>(d.stmts[2].op);
+    REQUIRE(vb.op   == ir::VecBinOpKind::UMax);
+    REQUIRE(vb.lane == ir::VecLane::S4);
+}
+
 TEST_CASE("decode PHADDD xmm0, xmm1 (66 0F 38 02 C1) — F2-IR-037 pairwise add S4") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x38, 0x02, 0xC1}, r);

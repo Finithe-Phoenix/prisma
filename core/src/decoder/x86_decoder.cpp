@@ -3035,7 +3035,8 @@ std::variant<Decoded, DecodeError> decode_one(
             //   PCMPEQQ 66 0F 38 29  → VecCmp Eq    D2   (SSE4.1)
             if (sub3 == 0x01u || sub3 == 0x02u ||
                 sub3 == 0x05u || sub3 == 0x06u ||
-                sub3 == 0x40u || sub3 == 0x29u) {
+                sub3 == 0x40u || sub3 == 0x29u || sub3 == 0x37u ||
+                (sub3 >= 0x38u && sub3 <= 0x3Fu)) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
                 if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3060,6 +3061,24 @@ std::variant<Decoded, DecodeError> decode_one(
                 if (sub3 == 0x29u) {
                     d.stmts.push_back({r_res,
                         ir::VecCmp{ir::VecCmpKind::Eq, r_lhs, r_rhs, ir::VecLane::D2}});
+                } else if (sub3 == 0x37u) {
+                    d.stmts.push_back({r_res,
+                        ir::VecCmp{ir::VecCmpKind::Gt, r_lhs, r_rhs, ir::VecLane::D2}});
+                } else if (sub3 >= 0x38u && sub3 <= 0x3Fu) {
+                    ir::VecBinOpKind k;
+                    ir::VecLane l;
+                    switch (sub3) {
+                        case 0x38u: k = ir::VecBinOpKind::SMin; l = ir::VecLane::B16; break;
+                        case 0x39u: k = ir::VecBinOpKind::SMin; l = ir::VecLane::S4;  break;
+                        case 0x3Au: k = ir::VecBinOpKind::UMin; l = ir::VecLane::H8;  break;
+                        case 0x3Bu: k = ir::VecBinOpKind::UMin; l = ir::VecLane::S4;  break;
+                        case 0x3Cu: k = ir::VecBinOpKind::SMax; l = ir::VecLane::B16; break;
+                        case 0x3Du: k = ir::VecBinOpKind::SMax; l = ir::VecLane::S4;  break;
+                        case 0x3Eu: k = ir::VecBinOpKind::UMax; l = ir::VecLane::H8;  break;
+                        case 0x3Fu: k = ir::VecBinOpKind::UMax; l = ir::VecLane::S4;  break;
+                        default:    k = ir::VecBinOpKind::SMin; l = ir::VecLane::B16;
+                    }
+                    d.stmts.push_back({r_res, ir::VecBinOp{k, r_lhs, r_rhs, l}});
                 } else {
                     ir::VecBinOpKind k;
                     ir::VecLane l;
