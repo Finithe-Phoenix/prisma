@@ -307,6 +307,9 @@ std::string pretty_print(const Op& op) {
             os << (x.is_high ? "vshufhw " : "vshuflw ");
             print_ref(os, x.src);
             os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+        } else if constexpr (std::is_same_v<T, VecMaskFp>) {
+            os << (x.is_pd ? "vmaskpd " : "vmaskps ");
+            print_ref(os, x.src_xmm);
         } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
             os << (x.is_pd ? "vshufpd " : "vshufps ");
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);

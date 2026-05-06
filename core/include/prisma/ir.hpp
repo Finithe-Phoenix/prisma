@@ -465,6 +465,13 @@ struct VecMaskMsb {
     Ref src_xmm;
 };
 
+// F2-IR-029 — MOVMSKPS (4 S4 sign bits → bits 0..3 of GPR) and
+// MOVMSKPD (2 D2 sign bits → bits 0..1 of GPR). is_pd selects D2.
+struct VecMaskFp {
+    Ref  src_xmm;
+    bool is_pd;
+};
+
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
 // merge of two source vectors: low form takes the bottom n/2 lanes of
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
@@ -644,7 +651,8 @@ using Op = std::variant<
     VecInsertLane, VecExtractLaneU,
     VecMaskMsb,
     WriteFlagsFp,
-    VecShuffleH4
+    VecShuffleH4,
+    VecMaskFp
 >;
 
 // ---------------------------------------------------------------------------
@@ -754,6 +762,7 @@ bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept;
 bool operator==(const VecMaskMsb&    a, const VecMaskMsb&    b) noexcept;
 bool operator==(const WriteFlagsFp&  a, const WriteFlagsFp&  b) noexcept;
 bool operator==(const VecShuffleH4&  a, const VecShuffleH4&  b) noexcept;
+bool operator==(const VecMaskFp&     a, const VecMaskFp&     b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

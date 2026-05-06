@@ -901,6 +901,33 @@ void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
     impl_->masm.Mov(v_d_q, v_t_q);
 }
 
+void Emitter::vmask_fp(arm64::Reg w_dst, FpReg rn, bool is_pd, arm64::Reg w_tmp) {
+    // Sequence: ushr v_t.4s/2d, vn.4s/2d, #31/63 → each lane = 0 or 1.
+    // Then umov + orr-shifted to assemble bits 0..3 (or 0..1).
+    // w_tmp is a caller-supplied scratch (the SSA register allocator
+    // hands us one via allocate_temporary).
+    if (is_pd) {
+        const vixl_aa::VRegister v_t_2d(kInternalFpScratchV, vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_n_2d(static_cast<int>(rn), vixl_aa::kFormat2D);
+        impl_->masm.Ushr(v_t_2d, v_n_2d, 63);
+        // Lane 0 → w_dst (low bit). Lane 1 → w_tmp, then OR << 1.
+        impl_->masm.Umov(to_vixl_w(w_dst), v_t_2d.S(), 0);  // 2D lane viewed as 32-bit low half
+        impl_->masm.Umov(to_vixl_w(w_tmp), v_t_2d.S(), 2);  // S-lane index 2 = D-lane 1, low half
+        impl_->masm.Orr(to_vixl_w(w_dst), to_vixl_w(w_dst),
+                        vixl_aa::Operand(to_vixl_w(w_tmp), vixl_aa::LSL, 1));
+    } else {
+        const vixl_aa::VRegister v_t_4s(kInternalFpScratchV, vixl_aa::kFormat4S);
+        const vixl_aa::VRegister v_n_4s(static_cast<int>(rn), vixl_aa::kFormat4S);
+        impl_->masm.Ushr(v_t_4s, v_n_4s, 31);
+        impl_->masm.Umov(to_vixl_w(w_dst), v_t_4s, 0);
+        for (unsigned i = 1; i < 4; ++i) {
+            impl_->masm.Umov(to_vixl_w(w_tmp), v_t_4s, static_cast<int>(i));
+            impl_->masm.Orr(to_vixl_w(w_dst), to_vixl_w(w_dst),
+                            vixl_aa::Operand(to_vixl_w(w_tmp), vixl_aa::LSL, i));
+        }
+    }
+}
+
 void Emitter::vshuffle_h4(FpReg rd, FpReg rn, std::uint8_t control, bool is_high) {
     // Build the result in V31 starting from a full copy of src so the
     // passthrough half is preserved when rd == rn.

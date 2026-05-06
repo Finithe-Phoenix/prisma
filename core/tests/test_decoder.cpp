@@ -2193,6 +2193,20 @@ TEST_CASE("decode PCMPGTD xmm0, xmm1 (66 0F 66 C1) — VecCmp.Gt S4") {
     REQUIRE(vc.lane == ir::VecLane::S4);
 }
 
+TEST_CASE("decode MOVMSKPS eax, xmm0 (0F 50 C0) — F2-IR-029 FP sign mask S4") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x50, 0xC0}, r);
+    auto vm = std::get<ir::VecMaskFp>(d.stmts[1].op);
+    REQUIRE(vm.is_pd == false);
+}
+
+TEST_CASE("decode MOVMSKPD eax, xmm0 (66 0F 50 C0) — D2 form") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x50, 0xC0}, r);
+    auto vm = std::get<ir::VecMaskFp>(d.stmts[1].op);
+    REQUIRE(vm.is_pd == true);
+}
+
 TEST_CASE("decode PSHUFLW xmm0, xmm1, 0x1B (F2 0F 70 C1 1B) — F2-IR-028 low-half H8 shuffle") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF2, 0x0F, 0x70, 0xC1, 0x1B}, r);

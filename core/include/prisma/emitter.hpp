@@ -380,6 +380,10 @@ public:
     // F2-IR-028. PSHUFLW / PSHUFHW — 4-way H8 shuffle of one half.
     void vshuffle_h4(FpReg rd, FpReg rn, std::uint8_t control, bool is_high);
 
+    // F2-IR-029. MOVMSKPS / MOVMSKPD — extract sign bits.
+    // `w_tmp` is a caller-provided scratch GPR.
+    void vmask_fp(arm64::Reg w_dst, FpReg rn, bool is_pd, arm64::Reg w_tmp);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

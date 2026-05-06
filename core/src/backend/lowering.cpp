@@ -231,6 +231,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecMaskMsb>)    { bump(op.src_xmm, i); }
             else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>)  { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecShuffleH4>)  { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecMaskFp>)     { bump(op.src_xmm, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1067,6 +1068,24 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
                                               Emitter::VecLane::D2;
             emitter_.vins_lane_from_w(rd, rl, op.lane_idx, rv, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecMaskFp>) {
+            // F2-IR-029. MOVMSKPS / MOVMSKPD.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecMaskFp without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src_xmm, rn)) return {false, LowerError::DanglingRef, "VecMaskFp.src"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecMaskFp"};
+            }
+            arm64::Reg rt;
+            if (!allocate_temporary(rt)) {
+                return {false, LowerError::OutOfScratchRegs, "VecMaskFp temp"};
+            }
+            emitter_.vmask_fp(rd, rn, op.is_pd, rt);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecShuffleH4>) {

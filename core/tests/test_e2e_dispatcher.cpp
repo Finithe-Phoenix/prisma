@@ -271,6 +271,33 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: MOVMSKPS extracts 4 sign bits from S4 lanes") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x0F, 0x50, 0xC0,  // movmskps eax, xmm0
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    // Lanes (S4): 0x80000000 (sign=1), 0x00000000 (0), 0xFFFFFFFF (1), 0x7FFFFFFF (0).
+    // Expected mask = bits 0,2 set = 0x5.
+    disp.state().xmm[0].lo = pack4(0x80000000u, 0x00000000u);
+    disp.state().xmm[0].hi = pack4(0xFFFFFFFFu, 0x7FFFFFFFu);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 0x5u);
+}
+
 TEST_CASE("e2e: PSHUFLW reverses low 4 words, high half passes through") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;
