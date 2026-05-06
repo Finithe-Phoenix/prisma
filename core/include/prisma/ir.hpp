@@ -518,6 +518,7 @@ enum class VecFpBinOpKind : std::uint8_t {
     Add = 0, Sub, Mul, Div,
     Min, Max,
     Sqrt,            // F2-IR-019 — unary; uses rhs only (lhs supplies upper bits in scalar form).
+    HAdd,            // F2-IR-032 — pairwise add (SSE3 HADDPS/HADDPD).
 };
 enum class VecFpSize : std::uint8_t { S4 = 0, D2 };
 

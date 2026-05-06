@@ -3478,6 +3478,44 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-032: HADDPS / HADDPD (SSE3 horizontal add).
+        //   F2 0F 7C /r — HADDPS (S4)
+        //   66 0F 7C /r — HADDPD (D2)
+        if (!has_lock && !has_f3 && subop == 0x7Cu &&
+            ((has_f2 && !has_operand_size_override) ||
+             (!has_f2 && has_operand_size_override))) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::VecFpSize size = has_operand_size_override
+                                           ? ir::VecFpSize::D2
+                                           : ir::VecFpSize::S4;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecFpBinOp{ir::VecFpBinOpKind::HAdd, r_lhs, r_rhs, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-016: scalar int ↔ FP conversions, register-direct only.
         //   F3 0F 2A /r — CVTSI2SS xmm, r/m32   (REX.W → r/m64)
         //   F2 0F 2A /r — CVTSI2SD

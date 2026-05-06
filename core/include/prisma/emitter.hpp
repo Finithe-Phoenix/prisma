@@ -343,6 +343,7 @@ public:
     void vfmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vfmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vfsqrt_q(FpReg rd, FpReg rn, VecLane lane);
+    void vfaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);  // F2-IR-032 HADDPS/PD
 
     // F2-IR-006 — scalar SSE FP semantics: result.low = op(rn.low, rm.low),
     // result.upper = rn.upper (untouched). `sz` selects S (32-bit) or D

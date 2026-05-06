@@ -721,6 +721,10 @@ void Emitter::vfmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
 void Emitter::vfsqrt_q(FpReg rd, FpReg rn, VecLane lane) {
     impl_->masm.Fsqrt(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane));
 }
+void Emitter::vfaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane) {
+    impl_->masm.Faddp(to_vixl_q_fp(rd, lane), to_vixl_q_fp(rn, lane),
+                      to_vixl_q_fp(rm, lane));
+}
 
 // F2-IR-006 — internal scratch V31, never used by the SSA scratch pool
 // (which only allocates V0..V7). Common impl for the four scalar SSE ops:

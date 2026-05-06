@@ -271,6 +271,38 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: HADDPS — F2-IR-032 horizontal pairwise add of 4 floats") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF2, 0x0F, 0x7C, 0xC1,  // haddps xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // xmm0 = {1.0, 2.0, 3.0, 4.0}, xmm1 = {10, 20, 30, 40}.
+    // HADDPS: result = {1+2, 3+4, 10+20, 30+40} = {3, 7, 30, 70}.
+    disp.state().xmm[0].lo = pack2f(1.0f, 2.0f);
+    disp.state().xmm[0].hi = pack2f(3.0f, 4.0f);
+    disp.state().xmm[1].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi = pack2f(30.0f, 40.0f);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == pack2f(3.0f, 7.0f));
+    REQUIRE(disp.state().xmm[0].hi == pack2f(30.0f, 70.0f));
+}
+
 TEST_CASE("e2e: PSADBW — F2-IR-031 sum of byte differences (used by memcmp)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

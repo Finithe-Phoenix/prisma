@@ -988,6 +988,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Min: emitter_.vfmin_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Max: emitter_.vfmax_q(rd, rl, rr, lane); break;
                 case ir::VecFpBinOpKind::Sqrt: emitter_.vfsqrt_q(rd, rr, lane); break;
+                case ir::VecFpBinOpKind::HAdd: emitter_.vfaddp_q(rd, rl, rr, lane); break;
             }
             return {};
         }
@@ -1336,6 +1337,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecFpBinOpKind::Min:  emitter_.vfmin_scalar(rd, rl, rr, op.size); break;
                 case ir::VecFpBinOpKind::Max:  emitter_.vfmax_scalar(rd, rl, rr, op.size); break;
                 case ir::VecFpBinOpKind::Sqrt: emitter_.vfsqrt_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::HAdd:
+                    return {false, LowerError::UnsupportedOp,
+                            "HAdd is packed-only; no scalar form"};
             }
             return {};
         }
