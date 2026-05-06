@@ -271,6 +271,41 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: VADDPS xmm2, xmm0, xmm1 — AVX-128 3-operand packed FP add") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 [vvvv pp] 58 D1
+    //   pp = 00 (no prefix → packed single)
+    //   vvvv = inverted(0) = 1111
+    //   R̅ = 1
+    // VEX byte: 1_1111_0_00 = 0xF8
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xF8, 0x58, 0xD1,  // vaddps xmm2, xmm0, xmm1
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    disp.state().xmm[0].lo = pack2f(1.0f, 2.0f);
+    disp.state().xmm[0].hi = pack2f(3.0f, 4.0f);
+    disp.state().xmm[1].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi = pack2f(30.0f, 40.0f);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo == pack2f(11.0f, 22.0f));
+    REQUIRE(disp.state().xmm[2].hi == pack2f(33.0f, 44.0f));
+}
+
 TEST_CASE("e2e: VPXOR xmm2, xmm0, xmm1 — F2-IR-048 AVX-128 3-operand XOR") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VEX C5 prefix: 0xC5 [R̅ vvvv L pp]
