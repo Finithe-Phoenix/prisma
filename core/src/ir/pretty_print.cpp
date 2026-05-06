@@ -313,6 +313,12 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, VecMaskFp>) {
             os << (x.is_pd ? "vmaskpd " : "vmaskps ");
             print_ref(os, x.src_xmm);
+        } else if constexpr (std::is_same_v<T, VecFpCompare>) {
+            const char* preds[] = {"eq","lt","le","unord","neq","nlt","nle","ord"};
+            os << "vfcmp." << preds[static_cast<unsigned>(x.pred)]
+               << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
+               << (x.is_packed ? "_p " : "_s ");
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
             os << (x.is_pd ? "vshufpd " : "vshufps ");
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);

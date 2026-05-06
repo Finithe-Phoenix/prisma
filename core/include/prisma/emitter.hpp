@@ -390,6 +390,13 @@ public:
     // `w_tmp` is a caller-provided scratch GPR.
     void vmask_fp(arm64::Reg w_dst, FpReg rn, bool is_pd, arm64::Reg w_tmp);
 
+    // F2-IR-034. Packed-FP predicate compare → all-1s/all-0s mask.
+    // pred: 0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
+    void vfcmp_packed(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz, std::uint8_t pred);
+    // Scalar variant — low lane = compare result, upper bits from rn.
+    void vfcmp_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
+                                 ir::FpSize sz, std::uint8_t pred);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

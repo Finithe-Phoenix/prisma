@@ -55,6 +55,7 @@ public:
         WriteFlagsFp,
         VecShuffleH4,
         VecMaskFp,
+        VecFpCompare,
         kCount  // sentinel
     };
 

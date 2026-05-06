@@ -134,6 +134,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.src);
         } else if constexpr (std::is_same_v<T, ir::VecMaskFp>) {
             into.insert(x.src_xmm);
+        } else if constexpr (std::is_same_v<T, ir::VecFpCompare>) {
+            into.insert(x.lhs); into.insert(x.rhs);
         }
     }, op);
 }

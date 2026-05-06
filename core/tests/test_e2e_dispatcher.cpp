@@ -271,6 +271,41 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
     REQUIRE(disp.state().xmm[0].hi == kSentinelHi);
 }
 
+TEST_CASE("e2e: CMPLTPS — F2-IR-034 packed FP less-than mask") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x0F, 0xC2, 0xC1, 0x01,  // cmpltps xmm0, xmm1 (pred=1)
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // xmm0 = {1,2,3,4}, xmm1 = {2,2,2,2}. ltps gives {1<2, 2<2, 3<2, 4<2}
+    //   = {0xFFFFFFFF, 0, 0, 0}
+    disp.state().xmm[0].lo = pack2f(1.0f, 2.0f);
+    disp.state().xmm[0].hi = pack2f(3.0f, 4.0f);
+    disp.state().xmm[1].lo = pack2f(2.0f, 2.0f);
+    disp.state().xmm[1].hi = pack2f(2.0f, 2.0f);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    REQUIRE(disp.state().xmm[0].lo == pack4(0xFFFFFFFFu, 0u));
+    REQUIRE(disp.state().xmm[0].hi == pack4(0u, 0u));
+}
+
 TEST_CASE("e2e: MOVDDUP — F2-IR-033 broadcast low qword to both D2 lanes") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     translator::Translator tx;

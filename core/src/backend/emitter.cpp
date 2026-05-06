@@ -945,6 +945,99 @@ void Emitter::vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
     impl_->masm.Mov(v_d_q, v_t_q);
 }
 
+namespace {
+
+// Compute the mask for a "ordered AND <pred>" relation across two FP
+// vectors using NEON Fcmeq/Fcmgt/Fcmge. The base predicates 0..2 set
+// `result` to lane = all-1s if (a, b are ordered) AND <pred>(a,b).
+// 3 (unord) is computed separately.
+//
+// Caller guarantees v_t (V31) is free as scratch.
+void emit_fp_pred_packed(vixl_aa::MacroAssembler& masm,
+                         const vixl_aa::VRegister& v_d,
+                         const vixl_aa::VRegister& v_n,
+                         const vixl_aa::VRegister& v_m,
+                         vixl_aa::VectorFormat fmt,
+                         std::uint8_t pred) {
+    const std::uint8_t base = pred & 0x3u;
+    const bool negate = (pred & 0x4u) != 0;
+    const vixl_aa::VRegister v_t(kInternalFpScratchV, fmt);
+    if (base == 0) {            // eq
+        masm.Fcmeq(v_d, v_n, v_m);
+    } else if (base == 1) {     // lt: a < b == b > a
+        masm.Fcmgt(v_d, v_m, v_n);
+    } else if (base == 2) {     // le: a <= b == b >= a
+        masm.Fcmge(v_d, v_m, v_n);
+    } else {                    // unord: NaN(a) || NaN(b)
+        // Fcmeq(a,a) sets all-1s when a is ordered; mvn gives unord-a mask.
+        masm.Fcmeq(v_d, v_n, v_n);
+        masm.Fcmeq(v_t, v_m, v_m);
+        masm.And  (v_d.V16B(), v_d.V16B(), v_t.V16B());
+        masm.Mvn  (v_d.V16B(), v_d.V16B());
+    }
+    if (negate) {
+        masm.Mvn(v_d.V16B(), v_d.V16B());
+    }
+}
+
+}  // namespace
+
+void Emitter::vfcmp_packed(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz, std::uint8_t pred) {
+    const auto fmt = (sz == ir::FpSize::F32) ? vixl_aa::kFormat4S
+                                              : vixl_aa::kFormat2D;
+    const vixl_aa::VRegister v_d(static_cast<int>(rd), fmt);
+    const vixl_aa::VRegister v_n(static_cast<int>(rn), fmt);
+    const vixl_aa::VRegister v_m(static_cast<int>(rm), fmt);
+    emit_fp_pred_packed(impl_->masm, v_d, v_n, v_m, fmt, pred);
+}
+
+void Emitter::vfcmp_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
+                                      ir::FpSize sz, std::uint8_t pred) {
+    // Compute the packed result into V31 (full 128-bit), then mov rd
+    // = lhs (preserves upper) and INS lane 0 from V31.
+    const auto fmt = (sz == ir::FpSize::F32) ? vixl_aa::kFormat4S
+                                              : vixl_aa::kFormat2D;
+    const vixl_aa::VRegister v_t(kInternalFpScratchV, fmt);
+    const vixl_aa::VRegister v_n(static_cast<int>(lhs), fmt);
+    const vixl_aa::VRegister v_m(static_cast<int>(rhs), fmt);
+    // Use a scratch other than V31 because V31 is the result temp here.
+    constexpr int kAux2 = 30;
+    const vixl_aa::VRegister v_t2(kAux2, fmt);
+    // Re-implement the predicate sequence using V31 as v_d and V30 as
+    // the secondary scratch. We can't reuse emit_fp_pred_packed because
+    // it pulls v_t (V31) from the same alias. Inline it here.
+    const std::uint8_t base = pred & 0x3u;
+    const bool negate = (pred & 0x4u) != 0;
+    if (base == 0) {
+        impl_->masm.Fcmeq(v_t, v_n, v_m);
+    } else if (base == 1) {
+        impl_->masm.Fcmgt(v_t, v_m, v_n);
+    } else if (base == 2) {
+        impl_->masm.Fcmge(v_t, v_m, v_n);
+    } else {
+        impl_->masm.Fcmeq(v_t, v_n, v_n);
+        impl_->masm.Fcmeq(v_t2, v_m, v_m);
+        impl_->masm.And  (v_t.V16B(), v_t.V16B(), v_t2.V16B());
+        impl_->masm.Mvn  (v_t.V16B(), v_t.V16B());
+    }
+    if (negate) {
+        impl_->masm.Mvn(v_t.V16B(), v_t.V16B());
+    }
+    // Now mov rd <- lhs, then INS lane 0 from V31.
+    const vixl_aa::VRegister v_d_q  (static_cast<int>(rd),  vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_lhs_q(static_cast<int>(lhs), vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_d_q, v_lhs_q);
+    if (sz == ir::FpSize::F32) {
+        const vixl_aa::VRegister v_d_s4(static_cast<int>(rd), vixl_aa::kFormat4S);
+        const vixl_aa::VRegister v_t_s4(kInternalFpScratchV,  vixl_aa::kFormat4S);
+        impl_->masm.Mov(v_d_s4, 0, v_t_s4, 0);
+    } else {
+        const vixl_aa::VRegister v_d_d2(static_cast<int>(rd), vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_t_d2(kInternalFpScratchV,  vixl_aa::kFormat2D);
+        impl_->masm.Mov(v_d_d2, 0, v_t_d2, 0);
+    }
+}
+
 void Emitter::vmask_fp(arm64::Reg w_dst, FpReg rn, bool is_pd, arm64::Reg w_tmp) {
     // Sequence: ushr v_t.4s/2d, vn.4s/2d, #31/63 → each lane = 0 or 1.
     // Then umov + orr-shifted to assemble bits 0..3 (or 0..1).

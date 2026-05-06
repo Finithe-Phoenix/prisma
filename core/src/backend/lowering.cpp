@@ -232,6 +232,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>)  { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecShuffleH4>)  { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecMaskFp>)     { bump(op.src_xmm, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpCompare>)  { bump(op.lhs, i); bump(op.rhs, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1071,6 +1072,26 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
                                               Emitter::VecLane::D2;
             emitter_.vins_lane_from_w(rd, rl, op.lane_idx, rv, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpCompare>) {
+            // F2-IR-034. CMPxxPS/PD/SS/SD predicate compare.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecFpCompare without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecFpCompare.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecFpCompare.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpCompare"};
+            }
+            const std::uint8_t pred = static_cast<std::uint8_t>(op.pred);
+            if (op.is_packed) {
+                emitter_.vfcmp_packed(rd, rl, rr, op.size, pred);
+            } else {
+                emitter_.vfcmp_scalar_with_upper(rd, rl, rr, op.size, pred);
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecMaskFp>) {

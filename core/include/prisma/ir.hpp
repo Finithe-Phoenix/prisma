@@ -567,6 +567,24 @@ struct WriteFlagsFp {
     FpSize size;
 };
 
+// F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
+//   Predicate = imm8 & 7 from the x86 encoding:
+//     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
+//   Packed forms produce per-lane all-1s/all-0s mask; scalar forms
+//   only fill the low lane (upper bits = lhs).
+//   `is_packed` toggles those two shapes.
+enum class VecFpCmpPred : std::uint8_t {
+    Eq = 0, Lt, Le, Unord,
+    Neq, Nlt, Nle, Ord,
+};
+struct VecFpCompare {
+    Ref          lhs;
+    Ref          rhs;
+    FpSize       size;       // F32 / F64
+    VecFpCmpPred pred;
+    bool         is_packed;  // false → scalar (upper preserved from lhs).
+};
+
 // F2-IR-016 — scalar int ↔ FP conversions (CVTSI2SS/SD + CVTTSS/SD2SI).
 //   IntToFpScalar: signed int (I32 or I64) → low-lane FP (F32 or F64).
 //                  Upper xmm bits are zeroed.
@@ -655,7 +673,8 @@ using Op = std::variant<
     VecMaskMsb,
     WriteFlagsFp,
     VecShuffleH4,
-    VecMaskFp
+    VecMaskFp,
+    VecFpCompare
 >;
 
 // ---------------------------------------------------------------------------
@@ -766,6 +785,7 @@ bool operator==(const VecMaskMsb&    a, const VecMaskMsb&    b) noexcept;
 bool operator==(const WriteFlagsFp&  a, const WriteFlagsFp&  b) noexcept;
 bool operator==(const VecShuffleH4&  a, const VecShuffleH4&  b) noexcept;
 bool operator==(const VecMaskFp&     a, const VecMaskFp&     b) noexcept;
+bool operator==(const VecFpCompare&  a, const VecFpCompare&  b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

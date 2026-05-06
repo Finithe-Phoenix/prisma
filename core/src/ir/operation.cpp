@@ -193,6 +193,10 @@ bool operator==(const VecShuffleH4& a, const VecShuffleH4& b) noexcept {
 bool operator==(const VecMaskFp& a, const VecMaskFp& b) noexcept {
     return a.src_xmm == b.src_xmm && a.is_pd == b.is_pd;
 }
+bool operator==(const VecFpCompare& a, const VecFpCompare& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size
+        && a.pred == b.pred && a.is_packed == b.is_packed;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

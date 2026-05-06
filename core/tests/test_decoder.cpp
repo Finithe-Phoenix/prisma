@@ -2242,6 +2242,31 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode CMPEQPS xmm0, xmm1 (0F C2 C1 00) — F2-IR-034 packed eq F32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0xC2, 0xC1, 0x00}, r);
+    auto vc = std::get<ir::VecFpCompare>(d.stmts[2].op);
+    REQUIRE(vc.pred == ir::VecFpCmpPred::Eq);
+    REQUIRE(vc.size == ir::FpSize::F32);
+    REQUIRE(vc.is_packed == true);
+}
+
+TEST_CASE("decode CMPLTSS xmm0, xmm1 (F3 0F C2 C1 01) — scalar lt F32") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF3, 0x0F, 0xC2, 0xC1, 0x01}, r);
+    auto vc = std::get<ir::VecFpCompare>(d.stmts[2].op);
+    REQUIRE(vc.pred == ir::VecFpCmpPred::Lt);
+    REQUIRE(vc.is_packed == false);
+}
+
+TEST_CASE("decode CMPNLEPD xmm0, xmm1 (66 0F C2 C1 06) — packed nle F64") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xC2, 0xC1, 0x06}, r);
+    auto vc = std::get<ir::VecFpCompare>(d.stmts[2].op);
+    REQUIRE(vc.pred == ir::VecFpCmpPred::Nle);
+    REQUIRE(vc.size == ir::FpSize::F64);
+}
+
 TEST_CASE("decode HADDPS xmm0, xmm1 (F2 0F 7C C1) — F2-IR-032 horizontal-add S4") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF2, 0x0F, 0x7C, 0xC1}, r);
