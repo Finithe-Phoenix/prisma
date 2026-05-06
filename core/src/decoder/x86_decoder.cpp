@@ -3694,6 +3694,46 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // F2-IR-035: LDDQU (F2 0F F0 mem→reg, SSE3) + non-temporal stores
+        // MOVNTDQ (66 0F E7), MOVNTPS (0F 2B), MOVNTPD (66 0F 2B). On ARM64
+        // we have no non-temporal hint — treat them as plain 128-bit
+        // mov to memory or load.
+        const bool is_lddqu      = has_f2 && !has_lock && !has_f3 &&
+                                   !has_operand_size_override && subop == 0xF0u;
+        const bool is_movntdq    = has_operand_size_override && !has_lock &&
+                                   !has_f2 && !has_f3 && subop == 0xE7u;
+        const bool is_movntps    = !has_operand_size_override && !has_lock &&
+                                   !has_f2 && !has_f3 && subop == 0x2Bu;
+        const bool is_movntpd    = has_operand_size_override && !has_lock &&
+                                   !has_f2 && !has_f3 && subop == 0x2Bu;
+        if (is_lddqu || is_movntdq || is_movntps || is_movntpd) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            // LDDQU: only mem→reg form. MOVNT*: only reg→mem form.
+            if (m.mod == 0b11) return DecodeError::UnsupportedEncoding;
+            const bool is_load = is_lddqu;
+            Decoded d;
+            const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                instruction_guest_pc + cursor);
+            if (is_load) {
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_src}});
+            } else {
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_val,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({std::nullopt, ir::StoreVec{r_addr, r_val}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-004 / F2-IR-013: 128-bit register-or-memory MOV family.
         //   MOVDQA  66 0F 6F/7F   (integer, aligned)
         //   MOVDQU  F3 0F 6F/7F   (integer, unaligned)

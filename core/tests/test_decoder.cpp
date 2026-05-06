@@ -2242,6 +2242,36 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode LDDQU xmm0, [rcx] (F2 0F F0 01) — F2-IR-035 SSE3 unaligned load") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x0F, 0xF0, 0x01}, r);
+    bool saw_loadvec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(st.op)) saw_loadvec = true;
+    }
+    REQUIRE(saw_loadvec);
+}
+
+TEST_CASE("decode MOVNTDQ [rcx], xmm0 (66 0F E7 01) — non-temporal store alias") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xE7, 0x01}, r);
+    bool saw_storevec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::StoreVec>(st.op)) saw_storevec = true;
+    }
+    REQUIRE(saw_storevec);
+}
+
+TEST_CASE("decode MOVNTPS [rcx], xmm0 (0F 2B 01) — non-temporal FP store") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x2B, 0x01}, r);
+    bool saw_storevec = false;
+    for (const auto& st : d.stmts) {
+        if (std::holds_alternative<ir::StoreVec>(st.op)) saw_storevec = true;
+    }
+    REQUIRE(saw_storevec);
+}
+
 TEST_CASE("decode CMPEQPS xmm0, xmm1 (0F C2 C1 00) — F2-IR-034 packed eq F32") {
     ir::Ref r = 0;
     auto d = decode_ok({0x0F, 0xC2, 0xC1, 0x00}, r);
