@@ -2242,6 +2242,22 @@ TEST_CASE("decode PMOVMSKB eax, xmm0 (66 0F D7 C0) — F2-IR-027") {
     REQUIRE(std::holds_alternative<ir::VecMaskMsb>(d.stmts[1].op));
 }
 
+TEST_CASE("decode PEXTRB eax, xmm0, 5 (66 0F 3A 14 C0 05) — SSE4.1 byte extract") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x14, 0xC0, 0x05}, r);
+    auto ve = std::get<ir::VecExtractLaneU>(d.stmts[1].op);
+    REQUIRE(ve.lane     == ir::VecLane::B16);
+    REQUIRE(ve.lane_idx == 5);
+}
+
+TEST_CASE("decode PINSRB xmm0, eax, 7 (66 0F 3A 20 C0 07) — SSE4.1 byte insert") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0x20, 0xC0, 0x07}, r);
+    auto vi = std::get<ir::VecInsertLane>(d.stmts[2].op);
+    REQUIRE(vi.lane     == ir::VecLane::B16);
+    REQUIRE(vi.lane_idx == 7);
+}
+
 TEST_CASE("decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte concat-shift") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x04}, r);

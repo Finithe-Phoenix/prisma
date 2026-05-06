@@ -2820,6 +2820,53 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // SSE4.1 PEXTRB / PINSRB (B16 lane).
+            //   66 0F 3A 14 /r ib — PEXTRB r/m32, xmm, imm8 (zero-ext low byte)
+            //   66 0F 3A 20 /r ib — PINSRB xmm, r/m32, imm8
+            if (sub3 == 0x14u || sub3 == 0x20u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t lane_idx = static_cast<std::uint8_t>(
+                    std::get<std::uint64_t>(imm)) & 0x0Fu;
+                Decoded d;
+                if (sub3 == 0x14u) {
+                    // PEXTRB: GPR dest = m.reg, XMM source = m.base.
+                    const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+                    const unsigned src_xmm = static_cast<unsigned>(m.base);
+                    const ir::Ref r_xmm = next_ref++;
+                    const ir::Ref r_val = next_ref++;
+                    d.stmts.push_back({r_xmm,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                    d.stmts.push_back({r_val,
+                        ir::VecExtractLaneU{r_xmm, lane_idx, ir::VecLane::B16}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreReg{dst_gpr, r_val, ir::OpSize::I32}});
+                } else {
+                    // PINSRB: xmm dest = m.reg, GPR source = m.base.
+                    const ir::Ref r_lhs = next_ref++;
+                    const ir::Ref r_val = next_ref++;
+                    const ir::Ref r_res = next_ref++;
+                    d.stmts.push_back({r_lhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                    d.stmts.push_back({r_val,
+                        ir::LoadReg{m.base, ir::OpSize::I32}});
+                    d.stmts.push_back({r_res,
+                        ir::VecInsertLane{r_lhs, r_val, lane_idx, ir::VecLane::B16}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
             if (sub3 == 0x0Fu) {  // PALIGNR
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
