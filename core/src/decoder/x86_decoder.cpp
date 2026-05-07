@@ -2493,6 +2493,17 @@ std::variant<Decoded, DecodeError> decode_one(
                 const bool int_pshuf_hw_lw =
                     vex.mmmmm == 1 && (vex.pp == 2 || vex.pp == 3) &&
                     avx256_op == 0x70u;
+                // VMOVDQA (66 0F 6F/7F), VMOVDQU (F3 0F 6F/7F), VMOVAPS
+                // (0F 28/29), VMOVUPS (0F 10/11), VMOVAPD (66 0F 28/29),
+                // VMOVUPD (66 0F 10/11). All ymm forms via vex.L=1.
+                const bool avx_mov_family =
+                    vex.mmmmm == 1 &&
+                    ((vex.pp == 0 && (avx256_op == 0x10u || avx256_op == 0x11u ||
+                                      avx256_op == 0x28u || avx256_op == 0x29u)) ||
+                     (vex.pp == 1 && (avx256_op == 0x10u || avx256_op == 0x11u ||
+                                      avx256_op == 0x28u || avx256_op == 0x29u ||
+                                      avx256_op == 0x6Fu || avx256_op == 0x7Fu)) ||
+                     (vex.pp == 2 && (avx256_op == 0x6Fu || avx256_op == 0x7Fu)));
                 // CMPxxPS/PD (packed): 0F C2 with pp=00 (PS) or pp=01
                 // (PD). Scalar variants (pp=02/03) are #UD with L=1.
                 const bool fp_cmp_packed =
@@ -2559,6 +2570,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
                       int_pshufd || int_pshuf_hw_lw ||
+                      avx_mov_family ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_int_simd_38 ||
@@ -5447,6 +5459,13 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_src}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_src_hi = next_ref++;
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(src_xmm)}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(dst_xmm), r_src_hi}});
+                }
             } else if (is_load) {
                 // 6F: load 128 bits from memory into xmm[reg].
                 const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
@@ -5455,6 +5474,19 @@ std::variant<Decoded, DecodeError> decode_one(
                 d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_src}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    const ir::Ref r_src_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_src_hi}});
+                }
             } else {
                 // 7F: store xmm[reg] to memory.
                 const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
@@ -5463,6 +5495,20 @@ std::variant<Decoded, DecodeError> decode_one(
                 d.stmts.push_back({r_val,
                     ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
                 d.stmts.push_back({std::nullopt, ir::StoreVec{r_addr, r_val}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    const ir::Ref r_val_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_val_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVec{r_addr_hi, r_val_hi}});
+                }
             }
             d.bytes_consumed = cursor;
             return d;

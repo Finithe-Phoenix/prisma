@@ -1916,6 +1916,36 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VMOVDQA ymm0, ymm1 — F2-IR-005 256-bit register-to-register move") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // 66 0F 6F /r → MOVDQA. C5 byte1: pp=01, L=1, vvvv=1111 → 0xFD.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0x6F, 0xC1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[1].lo    = 0x1111111111111111ULL;
+    disp.state().xmm[1].hi    = 0x2222222222222222ULL;
+    disp.state().ymm_hi[1].lo = 0x3333333333333333ULL;
+    disp.state().ymm_hi[1].hi = 0x4444444444444444ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // ymm0 ← ymm1 — full 256-bit copy.
+    REQUIRE(disp.state().xmm[0].lo    == 0x1111111111111111ULL);
+    REQUIRE(disp.state().xmm[0].hi    == 0x2222222222222222ULL);
+    REQUIRE(disp.state().ymm_hi[0].lo == 0x3333333333333333ULL);
+    REQUIRE(disp.state().ymm_hi[0].hi == 0x4444444444444444ULL);
+}
+
 TEST_CASE("e2e: VPSHUFD ymm0, ymm1, 0x1B — F2-IR-005 32-bit lane reverse ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPSHUFD = 66 0F 70. C5 byte1: pp=01, L=1, vvvv=1111 → 0xFD.
