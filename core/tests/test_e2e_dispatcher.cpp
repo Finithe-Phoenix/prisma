@@ -1916,6 +1916,41 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VPSHUFD ymm0, ymm1, 0x1B — F2-IR-005 32-bit lane reverse ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VPSHUFD = 66 0F 70. C5 byte1: pp=01, L=1, vvvv=1111 → 0xFD.
+    // Imm 0x1B = 0b00_01_10_11 → reverse the 4 lanes (per 128-bit half).
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0x70, 0xC1, 0x1B,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    // ymm1 = [1, 2, 3, 4 | 5, 6, 7, 8]
+    disp.state().xmm[1].lo    = pack4i(1u, 2u);
+    disp.state().xmm[1].hi    = pack4i(3u, 4u);
+    disp.state().ymm_hi[1].lo = pack4i(5u, 6u);
+    disp.state().ymm_hi[1].hi = pack4i(7u, 8u);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Per-half reverse: low half [4, 3, 2, 1], high half [8, 7, 6, 5].
+    REQUIRE(disp.state().xmm[0].lo    == pack4i(4u, 3u));
+    REQUIRE(disp.state().xmm[0].hi    == pack4i(2u, 1u));
+    REQUIRE(disp.state().ymm_hi[0].lo == pack4i(8u, 7u));
+    REQUIRE(disp.state().ymm_hi[0].hi == pack4i(6u, 5u));
+}
+
 TEST_CASE("e2e: VPABSB ymm0, ymm1 — F2-IR-005 byte abs ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPABSB = 66 0F 38 1C /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
