@@ -1694,6 +1694,52 @@ TEST_CASE("e2e: VFMSUB231PS xmm2, xmm0, xmm1 — F2-IR-006 b*c - a") {
     REQUIRE(disp.state().xmm[2].hi == pack2f(119.0f, 199.0f));
 }
 
+TEST_CASE("e2e: VFMADD231PS ymm2, ymm0, ymm1 — F2-IR-006 ymm 256-bit FMA") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C4 byte1 byte2 B8 D1
+    //   byte1: R̅ X̅ B̅ mmmmm = 1_1_1_00010 = 0xE2 (mmmmm=2 → 0F 38)
+    //   byte2: W vvvv L pp     = 0_1111_1_01 = 0x7D (W=0 PS, vvvv=0xF, L=1, pp=01)
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x7D, 0xB8, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // ymm0 = [2..9], ymm1 = [10,20,30,40,50,60,70,80], ymm2 = [1,1,1,1,1,1,1,1]
+    // result = (ymm0*ymm1) + ymm2 = [21, 61, 121, 201, 301, 421, 561, 721]
+    disp.state().xmm[0].lo    = pack2f(2.0f, 3.0f);
+    disp.state().xmm[0].hi    = pack2f(4.0f, 5.0f);
+    disp.state().ymm_hi[0].lo = pack2f(6.0f, 7.0f);
+    disp.state().ymm_hi[0].hi = pack2f(8.0f, 9.0f);
+    disp.state().xmm[1].lo    = pack2f(10.0f, 20.0f);
+    disp.state().xmm[1].hi    = pack2f(30.0f, 40.0f);
+    disp.state().ymm_hi[1].lo = pack2f(50.0f, 60.0f);
+    disp.state().ymm_hi[1].hi = pack2f(70.0f, 80.0f);
+    disp.state().xmm[2].lo    = pack2f(1.0f, 1.0f);
+    disp.state().xmm[2].hi    = pack2f(1.0f, 1.0f);
+    disp.state().ymm_hi[2].lo = pack2f(1.0f, 1.0f);
+    disp.state().ymm_hi[2].hi = pack2f(1.0f, 1.0f);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == pack2f(21.0f, 61.0f));
+    REQUIRE(disp.state().xmm[2].hi    == pack2f(121.0f, 201.0f));
+    REQUIRE(disp.state().ymm_hi[2].lo == pack2f(301.0f, 421.0f));
+    REQUIRE(disp.state().ymm_hi[2].hi == pack2f(561.0f, 721.0f));
+}
+
 TEST_CASE("e2e: VFNMADD231PS xmm2, xmm0, xmm1 — F2-IR-006 a - b*c") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VFNMADD231PS: xmm2 = -(xmm0 * xmm1) + xmm2 = xmm2 - (xmm0*xmm1)

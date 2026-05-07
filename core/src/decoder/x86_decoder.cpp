@@ -2460,10 +2460,20 @@ std::variant<Decoded, DecodeError> decode_one(
                 const bool fp_hadd =
                     vex.mmmmm == 1 && (vex.pp == 1 || vex.pp == 3) &&
                     avx256_op == 0x7Cu;
+                // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
+                // High nibble in {9,A,B} = ordering 132/213/231;
+                // low nibble in {8..F} = MADD/MSUB/NMADD/NMSUB packed
+                // PS/PD. Even low = PS, odd low = PD.
+                const bool fma3_ymm =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    ((avx256_op >= 0x98u && avx256_op <= 0x9Fu) ||
+                     (avx256_op >= 0xA8u && avx256_op <= 0xAFu) ||
+                     (avx256_op >= 0xB8u && avx256_op <= 0xBFu));
                 if (!(packed_fp_ps_pd || fp_bitwise ||
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
-                      fp_cmp_packed || fp_shuf || fp_hadd)) {
+                      fp_cmp_packed || fp_shuf || fp_hadd ||
+                      fma3_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -3177,7 +3187,6 @@ std::variant<Decoded, DecodeError> decode_one(
             const bool fma_high_ok =
                 (fma_hi == 0x90u || fma_hi == 0xA0u || fma_hi == 0xB0u);
             if (vex.present && fma_packed_lo && fma_high_ok) {
-                if (vex.L) return DecodeError::UnsupportedEncoding;  // ymm FMA in follow-up.
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
                 if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3244,6 +3253,43 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::VecFpFma{ra, rb, rc, neg_addend, neg_mul, size}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecReg{r_dst, r_res}});
+                // F2-IR-006 ymm extension — emit the high-lane pair.
+                if (vex.L) {
+                    const ir::Ref r_dst_hi = next_ref++;
+                    const ir::Ref r_v_hi   = next_ref++;
+                    const ir::Ref r_rm_hi  = next_ref++;
+                    d.stmts.push_back({r_dst_hi, ir::LoadVecRegHi{r_dst}});
+                    d.stmts.push_back({r_v_hi,   ir::LoadVecRegHi{r_v}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_rm_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16 = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_rm_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    ir::Ref ra_h, rb_h, rc_h;
+                    switch (high_nibble) {
+                        case 0x90u:
+                            ra_h = r_v_hi; rb_h = r_dst_hi; rc_h = r_rm_hi; break;
+                        case 0xA0u:
+                            ra_h = r_rm_hi; rb_h = r_v_hi; rc_h = r_dst_hi; break;
+                        case 0xB0u:
+                            ra_h = r_dst_hi; rb_h = r_v_hi; rc_h = r_rm_hi; break;
+                        default: return DecodeError::UnsupportedEncoding;
+                    }
+                    const ir::Ref r_res_hi = next_ref++;
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecFpFma{ra_h, rb_h, rc_h, neg_addend, neg_mul, size}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{r_dst, r_res_hi}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }
