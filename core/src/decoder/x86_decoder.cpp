@@ -2504,6 +2504,12 @@ std::variant<Decoded, DecodeError> decode_one(
                                       avx256_op == 0x28u || avx256_op == 0x29u ||
                                       avx256_op == 0x6Fu || avx256_op == 0x7Fu)) ||
                      (vex.pp == 2 && (avx256_op == 0x6Fu || avx256_op == 0x7Fu)));
+                // VMOVDDUP (F2 0F 12, pp=03), VMOVSLDUP (F3 0F 12, pp=02),
+                // VMOVSHDUP (F3 0F 16, pp=02).
+                const bool avx_mov_dup =
+                    vex.mmmmm == 1 &&
+                    ((vex.pp == 3 && avx256_op == 0x12u) ||
+                     (vex.pp == 2 && (avx256_op == 0x12u || avx256_op == 0x16u)));
                 // CMPxxPS/PD (packed): 0F C2 with pp=00 (PS) or pp=01
                 // (PD). Scalar variants (pp=02/03) are #UD with L=1.
                 const bool fp_cmp_packed =
@@ -2570,7 +2576,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
                       int_pshufd || int_pshuf_hw_lw ||
-                      avx_mov_family ||
+                      avx_mov_family || avx_mov_dup ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_int_simd_38 ||
@@ -5106,6 +5112,11 @@ std::variant<Decoded, DecodeError> decode_one(
             else if (subop == 0x12u)      control = 0xA0u;  // MOVSLDUP: 0,0,2,2
             else                          control = 0xF5u;  // MOVSHDUP: 1,1,3,3
             Decoded d;
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
             const ir::Ref r_src = next_ref++;
             const ir::Ref r_res = next_ref++;
             if (m.mod == 0b11) {
@@ -5113,13 +5124,36 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::LoadVecReg{static_cast<std::uint8_t>(
                         static_cast<unsigned>(m.base))}});
             } else {
-                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                    instruction_guest_pc + cursor);
-                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
             }
             d.stmts.push_back({r_res, ir::VecShuffle32x4{r_src, control}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — VMOVDDUP / VMOVSLDUP / VMOVSHDUP ymm.
+            // Per-128-bit-lane semantics: the same shuffle-control
+            // pattern applies to each half independently.
+            if (vex.present && vex.L) {
+                const ir::Ref r_src_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecShuffle32x4{r_src_hi, control}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }
