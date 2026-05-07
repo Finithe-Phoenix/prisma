@@ -1916,6 +1916,39 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VPABSB ymm0, ymm1 — F2-IR-005 byte abs ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VPABSB = 66 0F 38 1C /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x7D, 0x1C, 0xC1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // bytes: -1, -2, -3, ...; abs should yield 1, 2, 3, ...
+    disp.state().xmm[1].lo    = 0xFFFEFDFCFBFAF9F8ULL;  // -1, -2, -3, ..., -8
+    disp.state().xmm[1].hi    = 0xF7F6F5F4F3F2F1F0ULL;  // -9, ..., -16
+    disp.state().ymm_hi[1].lo = 0x0102030405060708ULL;  // 1, 2, 3, ..., 8 (positive untouched)
+    disp.state().ymm_hi[1].hi = 0x80FF7F8081827F00ULL;  // mix: -128, -1, +127, ...
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo == 0x0102030405060708ULL);
+    REQUIRE(disp.state().xmm[0].hi == 0x090A0B0C0D0E0F10ULL);
+    REQUIRE(disp.state().ymm_hi[0].lo == 0x0102030405060708ULL);
+    // -128 (0x80) abs is +128, but +128 doesn't fit signed-i8 → wraps back to -128 (0x80).
+    // -1 (0xFF) → 1; +127 (0x7F) → 127; -128 (0x80) → 128 wraps to 0x80;
+    // -127 (0x81) → 127 (0x7F); -126 (0x82) → 126 (0x7E); +127 (0x7F) → 127 (0x7F); 0 → 0.
+    REQUIRE(disp.state().ymm_hi[0].hi == 0x80017F807F7E7F00ULL);
+}
+
 TEST_CASE("e2e: VPMULLD ymm2, ymm0, ymm1 — F2-IR-005 SSE4.1 32-bit mul ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMULLD = 66 0F 38 40 /r. C4 byte1=0xE2 (mmmmm=2), byte2: W=0
