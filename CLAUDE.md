@@ -105,7 +105,10 @@ cubierto, ejecutando en hardware ARM64).
     PHSUBW/D, PCMPEQQ, PCMPGTQ, PMIN/PMAXSB/D + PMINUW/D + PMAXUW/D
     (SSE4.1), PSHUFB, PABSB/W/D, PSHUFD, PSHUFLW/HW, PALIGNR ymm.
     Plus VMOVDQA/U + VMOVAPS/UPS + VMOVAPD/UPD ymm (memory and
-    register forms). VecConstant lowering ahora carga 128 bits
+    register forms), VMOVDDUP / VMOVSLDUP / VMOVSHDUP ymm,
+    VLDDQU / VMOVNT{DQ,PS,PD} ymm, VPMOVMSKB ymm + VMOVMSKPS/PD ymm
+    (combinados via shift+OR de las dos máscaras de 128-bit),
+    VROUNDPS/PD ymm. VecConstant lowering ahora carga 128 bits
     completos (lo + INS hi) — antes silenciosamente truncaba.
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
@@ -126,7 +129,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 795+ Catch2 tests / 4829+ assertions.
+  - `prisma_core_tests` — 796+ Catch2 tests / 4831+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
