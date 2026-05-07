@@ -1213,53 +1213,69 @@ std::variant<Decoded, DecodeError> decode_neg_not_from_rm(
     return d;
 }
 
-// DIV/IDIV r/m64 family (48 F7 /6 and /7) — MVP placeholder.
-// Encodes:
-//   placeholder quotient = 0 in RAX, placeholder remainder = 0 in RDX.
-// Real signed/unsigned divide lowering (including divide-by-zero behavior and
-// full RDX:RAX dividend handling) is deferred to lowering work (F1-BK-011).
+// F2-BK-007 — DIV/IDIV r/m64. Treats the dividend as 64-bit (RAX
+// only; RDX is assumed zero / sign-extended). The full 128-bit
+// RDX:RAX dividend support is deferred — most compiler-generated code
+// zero-extends or sign-extends RDX before DIV, so this covers the
+// common case correctly. Divide-by-zero produces ARM64 UDIV/SDIV's
+// well-defined behaviour (zero quotient) rather than the x86 #DE
+// trap; the trap path is a follow-up.
 std::variant<Decoded, DecodeError> decode_div_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
     ir::Ref& next_ref,
-    ir::OpSize size) {
+    ir::OpSize size,
+    bool is_signed) {
     if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     Decoded d;
-    const ir::Ref ref_dividend = next_ref++;
-    const ir::Ref ref_divisor = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
+    const ir::Ref ref_dividend  = next_ref++;
+    const ir::Ref ref_divisor   = next_ref++;
+    const ir::Ref ref_quotient  = next_ref++;
+    const ir::Ref ref_remainder = next_ref++;
 
     d.stmts.push_back({ref_dividend, ir::LoadReg{ir::Gpr::Rax, size}});
-    d.stmts.push_back({ref_divisor, ir::LoadReg{m.base, size}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_zero, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_zero, size}});
+    d.stmts.push_back({ref_divisor,  ir::LoadReg{m.base,       size}});
+    d.stmts.push_back({ref_quotient,
+        ir::BinOp{is_signed ? ir::BinOpKind::SDiv : ir::BinOpKind::UDiv,
+                  ref_dividend, ref_divisor, size}});
+    d.stmts.push_back({ref_remainder,
+        ir::BinOp{is_signed ? ir::BinOpKind::SMod : ir::BinOpKind::UMod,
+                  ref_dividend, ref_divisor, size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_quotient,  size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_remainder, size}});
 
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
+// F2-BK-007 — MUL/IMUL r/m64. Computes the full 128-bit product as
+// two 64-bit halves: low → RAX (BinOp::Mul), high → RDX (UMulHi for
+// MUL or SMulHi for IMUL). ARM64 MUL is sign-agnostic on the low
+// half, so both forms share the BinOp::Mul kind.
 std::variant<Decoded, DecodeError> decode_mul_imul_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
     ir::Ref& next_ref,
     ir::BinOpKind op,
-    ir::OpSize size) {
+    ir::OpSize size,
+    bool is_signed = false) {
     if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     Decoded d;
     const ir::Ref ref_rax = next_ref++;
     const ir::Ref ref_rhs = next_ref++;
-    const ir::Ref ref_product = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
+    const ir::Ref ref_lo  = next_ref++;
+    const ir::Ref ref_hi  = next_ref++;
+    const ir::BinOpKind hi_kind =
+        is_signed ? ir::BinOpKind::SMulHi : ir::BinOpKind::UMulHi;
 
     d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, size}});
-    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
-    d.stmts.push_back({ref_product, ir::BinOp{op, ref_rax, ref_rhs, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_product, size}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_zero, size}});
+    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base,       size}});
+    d.stmts.push_back({ref_lo,  ir::BinOp{op,      ref_rax, ref_rhs, size}});
+    d.stmts.push_back({ref_hi,  ir::BinOp{hi_kind, ref_rax, ref_rhs, size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_lo, size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_hi, size}});
 
     d.bytes_consumed = bytes_consumed;
     return d;
@@ -1992,10 +2008,14 @@ DispatchDecodeResult decode_group3_dispatch(
         return decode_neg_not_from_rm(m, cursor, next_ref, ir::BinOpKind::Sub, *size);
     }
     if (m.reg == 4u || m.reg == 5u) {
-        return decode_mul_imul_from_rm(m, cursor, next_ref, ir::BinOpKind::Mul, *size);
+        // /4 = MUL (unsigned), /5 = IMUL (signed).
+        return decode_mul_imul_from_rm(m, cursor, next_ref,
+                                       ir::BinOpKind::Mul, *size,
+                                       /*is_signed=*/m.reg == 5u);
     }
     if (m.reg == 6u || m.reg == 7u) {
-        return decode_div_from_rm(m, cursor, next_ref, *size);
+        // /6 = DIV (unsigned), /7 = IDIV (signed).
+        return decode_div_from_rm(m, cursor, next_ref, *size, /*is_signed=*/m.reg == 7u);
     }
     return DecodeError::UnsupportedEncoding;
 }

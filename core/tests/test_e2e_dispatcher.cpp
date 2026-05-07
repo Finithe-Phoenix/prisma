@@ -1916,6 +1916,62 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: MUL r/m64 produces RDX:RAX 128-bit product (F2-BK-007)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // 48 F7 E3 → MUL rbx (rdx:rax = rax * rbx)
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x48, 0xF7, 0xE3,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // 0xFFFFFFFFFFFFFFFF * 2 = 0x1FFFFFFFFFFFFFFFE → low = 0xFFFFFFFFFFFFFFFE,
+    //   hi = 0x0000000000000001
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0xFFFFFFFFFFFFFFFFULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rbx)] = 2ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] = 0xDEADBEEFULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] ==
+            0xFFFFFFFFFFFFFFFEULL);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] == 1ULL);
+}
+
+TEST_CASE("e2e: DIV r/m64 → quotient in RAX, remainder in RDX (F2-BK-007)") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // 48 F7 F3 → DIV rbx (RAX = RAX / RBX, RDX = RAX % RBX)
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x48, 0xF7, 0xF3,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 100ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rbx)] = 7ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] = 0xDEADBEEFULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // 100 / 7 = 14, 100 % 7 = 2
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] == 14ULL);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] == 2ULL);
+}
+
 TEST_CASE("e2e: VFMADDSUB132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating add/sub") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VFMADDSUB132PS: 132 form, opcode 0x96, packed PS (W=0).

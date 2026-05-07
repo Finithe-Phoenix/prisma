@@ -59,11 +59,21 @@ LowerResult emit_binop(Emitter& em,
         case ir::BinOpKind::Sar: em.asr(rd, rn, rm);  return {};
         case ir::BinOpKind::Ror: em.ror(rd, rn, rm);  return {};
         case ir::BinOpKind::Rcr: em.ror(rd, rn, rm);  return {};
+        case ir::BinOpKind::UMulHi: em.umulh(rd, rn, rm); return {};
+        case ir::BinOpKind::SMulHi: em.smulh(rd, rn, rm); return {};
+        case ir::BinOpKind::UDiv:   em.udiv (rd, rn, rm); return {};
+        case ir::BinOpKind::SDiv:   em.sdiv (rd, rn, rm); return {};
         case ir::BinOpKind::Rol:
         case ir::BinOpKind::Rcl:
             // Rol/Rcl are lowered via a neg+ror helper register in lower_stmt.
             return {false, LowerError::UnsupportedOp,
                     "rotate-left emulation requires a temporary scratch register"};
+        case ir::BinOpKind::UMod:
+        case ir::BinOpKind::SMod:
+            // Mod is q = n / m; r = n - q * m — needs a scratch held in
+            // lower_stmt to materialise q before the msub.
+            return {false, LowerError::UnsupportedOp,
+                    "UMod/SMod requires a temporary scratch register"};
     }
     return {false, LowerError::UnsupportedOp, "unknown BinOpKind"};
 }
@@ -447,6 +457,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                     return {false, LowerError::OutOfScratchRegs, "BinOp temporary"};
                 }
                 emitter_.rol(rd, rn, rm, tmp);
+                return {};
+            }
+            // F2-BK-007 — UMod / SMod = n - (n / m) * m.
+            if (op.op == ir::BinOpKind::UMod || op.op == ir::BinOpKind::SMod) {
+                arm64::Reg q;
+                if (!allocate_temporary(q)) {
+                    return {false, LowerError::OutOfScratchRegs, "Mod temporary"};
+                }
+                if (op.op == ir::BinOpKind::UMod) {
+                    emitter_.udiv(q, rn, rm);
+                } else {
+                    emitter_.sdiv(q, rn, rm);
+                }
+                emitter_.msub(rd, q, rm, rn);  // rd = rn - q*rm
                 return {};
             }
             return emit_binop(emitter_, op.op, rd, rn, rm);

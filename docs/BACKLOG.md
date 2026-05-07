@@ -467,7 +467,7 @@ translator on a reference Linux ARM64 box.
 - [x] (50caa95) F2-BK-004: Lowering for FMA via NEON FMLA. (Closed: vfmla_q / vfmls_q / vfneg_q / vmov_q primitives plus the VecFpFma lowering arm. F2-IR-006 and its ymm extension exercise the four sign combinations.)
 - [ ] F2-BK-005: Lowering for x87 (software emulation for rare cases).
 - [x] (0597402) F2-BK-006: SIMD register allocator (NEON v0-v31). (Pool widened V0..V7 → V0..V23 [05044f8]; FP last-use expiry added [0597402] — same liveness machinery as the GPR allocator. Pair-allocator scaffolding + spill plumbing deferred until measured demand.)
-- [ ] F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx).
+- [x] (PENDING) F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx). (Adds BinOpKind::UMulHi/SMulHi/UDiv/SDiv/UMod/SMod; MUL writes both halves of the 128-bit product; DIV writes UDiv quotient + UMod remainder. Const-prop folds with __int128 for compile-time constants. 64-bit dividend only — full 128/64 with explicit RDX:RAX is a follow-up.)
 - [ ] F2-BK-008: Lowering for REP prefix — loop generation.
 - [ ] F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline.
 - [ ] F2-BK-010: Call / Return lowering with return-stack.

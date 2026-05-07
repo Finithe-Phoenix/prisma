@@ -65,6 +65,11 @@ enum class BinOpKind : std::uint8_t {
     Shl,     Shr, Sar,
     Rol,     Ror,
     Rcl,     Rcr,
+    UMulHi,  SMulHi,    // F2-BK-007 — high half of unsigned/signed
+                        //              N×N multiply (for x86 MUL/IMUL
+                        //              writeback to rdx).
+    UDiv,    SDiv,      // F2-BK-007 — quotient (rax for x86 DIV/IDIV).
+    UMod,    SMod,      // F2-BK-007 — remainder (rdx for x86 DIV/IDIV).
 };
 
 enum class CondCode : std::uint8_t {

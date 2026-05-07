@@ -240,7 +240,7 @@ TEST_CASE("decode NEG rax → Sub zero - reg placeholder, 3 bytes") {
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
 }
 
-TEST_CASE("decode MUL rax, rax placeholder → RAX*RAX low64 + RDX cleared, 3 bytes") {
+TEST_CASE("decode MUL rax, rax → RAX = low(RAX*RAX), RDX = umulhi(RAX*RAX), 3 bytes") {
     // Encoding: 48 F7 E0
     //   48 REX.W
     //   F7 opcode F7 /4
@@ -254,13 +254,14 @@ TEST_CASE("decode MUL rax, rax placeholder → RAX*RAX low64 + RDX cleared, 3 by
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::UMulHi, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
     REQUIRE(d.stmts[5].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}});
 }
 
-TEST_CASE("decode IMUL rax, rax placeholder → RAX*RAX signed low64 + RDX cleared, 3 bytes") {
+TEST_CASE("decode IMUL rax, rax → RAX = low(RAX*RAX), RDX = smulhi(RAX*RAX), 3 bytes") {
     // Encoding: 48 F7 E8
     //   48 REX.W
     //   F7 opcode F7 /5
@@ -274,8 +275,9 @@ TEST_CASE("decode IMUL rax, rax placeholder → RAX*RAX signed low64 + RDX clear
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Mul, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::SMulHi, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[4].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
     REQUIRE(d.stmts[5].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}});
 }
@@ -337,7 +339,7 @@ TEST_CASE("decode IMUL rax, rbx, 10 placeholder → RBX*10, sign-extended imm8")
     REQUIRE(r == 3);
 }
 
-TEST_CASE("decode DIV rax, rax placeholder → quotient/remainder in RAX/RDX as zero, 3 bytes") {
+TEST_CASE("decode DIV rax, rax → RAX = udiv, RDX = umod, 3 bytes") {
     // Encoding: 48 F7 F0
     //   48 REX.W
     //   F7 opcode F7 /6
@@ -345,18 +347,21 @@ TEST_CASE("decode DIV rax, rax placeholder → quotient/remainder in RAX/RDX as 
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0xF7, 0xF0}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts.size() == 6);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
-    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::UDiv, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+            ir::Op{ir::BinOp{ir::BinOpKind::UMod, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[4].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 2u, ir::OpSize::I64}});
-    REQUIRE(r == 3);
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}});
+    REQUIRE(r == 4);
 }
 
-TEST_CASE("decode IDIV rax, rax placeholder → quotient/remainder in RAX/RDX as zero, 3 bytes") {
+TEST_CASE("decode IDIV rax, rax → RAX = sdiv, RDX = smod, 3 bytes") {
     // Encoding: 48 F7 F8
     //   48 REX.W
     //   F7 opcode F7 /7
@@ -364,15 +369,18 @@ TEST_CASE("decode IDIV rax, rax placeholder → quotient/remainder in RAX/RDX as
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0xF7, 0xF8}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts.size() == 6);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
-    REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::SDiv, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+            ir::Op{ir::BinOp{ir::BinOpKind::SMod, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[4].op ==
-            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 2u, ir::OpSize::I64}});
-    REQUIRE(r == 3);
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}});
+    REQUIRE(r == 4);
 }
 
 TEST_CASE("decode SHL rax, 3 placeholder via 48 C1 E0 03") {

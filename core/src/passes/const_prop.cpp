@@ -1,5 +1,8 @@
 // core/src/passes/const_prop.cpp — constant propagation + folding.
 //
+// Includes:
+//   <limits> for std::numeric_limits in the SDiv/SMod fast-paths.
+//
 // Single sweep over the input statement list. Maintains a ref→u64 map for
 // every Ref that is known to be a constant. When a BinOp's two operands
 // are both in that map, we replace the BinOp with a Constant whose value
@@ -15,6 +18,7 @@
 
 #include "prisma/passes.hpp"
 
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <variant>
@@ -60,6 +64,44 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
             const std::uint64_t n = b & 0x3Fu;
             if (n == 0) return a;
             return (a >> n) | (a << (64 - n));
+        }
+        case ir::BinOpKind::UMulHi: {
+            const __uint128_t prod =
+                static_cast<__uint128_t>(a) * static_cast<__uint128_t>(b);
+            return static_cast<std::uint64_t>(prod >> 64);
+        }
+        case ir::BinOpKind::SMulHi: {
+            const __int128_t prod =
+                static_cast<__int128_t>(static_cast<std::int64_t>(a)) *
+                static_cast<__int128_t>(static_cast<std::int64_t>(b));
+            return static_cast<std::uint64_t>(prod >> 64);
+        }
+        case ir::BinOpKind::UDiv: {
+            if (b == 0) return 0;  // ARM64 udiv returns 0 on /0.
+            return a / b;
+        }
+        case ir::BinOpKind::SDiv: {
+            const std::int64_t sa = static_cast<std::int64_t>(a);
+            const std::int64_t sb = static_cast<std::int64_t>(b);
+            if (sb == 0) return 0;
+            // INT_MIN / -1 wraps in ARM64 sdiv (no trap); mirror that.
+            if (sa == std::numeric_limits<std::int64_t>::min() && sb == -1) {
+                return static_cast<std::uint64_t>(sa);
+            }
+            return static_cast<std::uint64_t>(sa / sb);
+        }
+        case ir::BinOpKind::UMod: {
+            if (b == 0) return a;  // ARM64 mod via udiv+msub: r = a - 0*b = a.
+            return a % b;
+        }
+        case ir::BinOpKind::SMod: {
+            const std::int64_t sa = static_cast<std::int64_t>(a);
+            const std::int64_t sb = static_cast<std::int64_t>(b);
+            if (sb == 0) return static_cast<std::uint64_t>(sa);
+            if (sa == std::numeric_limits<std::int64_t>::min() && sb == -1) {
+                return 0;
+            }
+            return static_cast<std::uint64_t>(sa % sb);
         }
     }
     return 0;  // unreachable
