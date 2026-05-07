@@ -2510,6 +2510,14 @@ std::variant<Decoded, DecodeError> decode_one(
                     vex.mmmmm == 1 &&
                     ((vex.pp == 3 && avx256_op == 0x12u) ||
                      (vex.pp == 2 && (avx256_op == 0x12u || avx256_op == 0x16u)));
+                // VLDDQU (F2 0F F0), VMOVNTDQ (66 0F E7), VMOVNTPS
+                // (0F 2B), VMOVNTPD (66 0F 2B).
+                const bool avx_lddqu_movnt =
+                    vex.mmmmm == 1 &&
+                    ((vex.pp == 3 && avx256_op == 0xF0u) ||
+                     (vex.pp == 1 && avx256_op == 0xE7u) ||
+                     (vex.pp == 0 && avx256_op == 0x2Bu) ||
+                     (vex.pp == 1 && avx256_op == 0x2Bu));
                 // CMPxxPS/PD (packed): 0F C2 with pp=00 (PS) or pp=01
                 // (PD). Scalar variants (pp=02/03) are #UD with L=1.
                 const bool fp_cmp_packed =
@@ -2577,6 +2585,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       int_cmp || fp_unpck || int_unpck ||
                       int_pshufd || int_pshuf_hw_lw ||
                       avx_mov_family || avx_mov_dup ||
+                      avx_lddqu_movnt ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_int_simd_38 ||
@@ -5450,6 +5459,29 @@ std::variant<Decoded, DecodeError> decode_one(
                 d.stmts.push_back({r_val,
                     ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
                 d.stmts.push_back({std::nullopt, ir::StoreVec{r_addr, r_val}});
+            }
+            // F2-IR-005 — VLDDQU / VMOVNTDQ / VMOVNTPS / VMOVNTPD ymm.
+            // Per-128-bit-lane: address+16 + Load/StoreVecRegHi pair.
+            if (vex.present && vex.L) {
+                const ir::Ref r_off16   = next_ref++;
+                const ir::Ref r_addr_hi = next_ref++;
+                d.stmts.push_back({r_off16,
+                    ir::Constant{16ULL, ir::OpSize::I64}});
+                d.stmts.push_back({r_addr_hi,
+                    ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                              ir::OpSize::I64}});
+                if (is_load) {
+                    const ir::Ref r_src_hi = next_ref++;
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_src_hi}});
+                } else {
+                    const ir::Ref r_val_hi = next_ref++;
+                    d.stmts.push_back({r_val_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVec{r_addr_hi, r_val_hi}});
+                }
             }
             d.bytes_consumed = cursor;
             return d;
