@@ -2005,10 +2005,10 @@ TEST_CASE("e2e: VFMADD132PD xmm2, xmm0, xmm1 — F2-IR-006 132-form FMA double")
     //   C4 byte1 = 0xE2 (R̅=1 X̅=1 B̅=1 mmmmm=2)
     //   C4 byte2: W=1 (PD), vvvv=inverted(0)=1111, L=0, pp=01
     //          → 1_1111_0_01 = 0xF9
-    //   opcode 0x99 (132 PD)
+    //   opcode 0x98 (even low-nibble = packed; W=1 → PD)
     translator::Translator tx;
     std::vector<std::uint8_t> code{
-        0xC4, 0xE2, 0xF9, 0x99, 0xD1,
+        0xC4, 0xE2, 0xF9, 0x98, 0xD1,
         0xC3,
     };
     auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {

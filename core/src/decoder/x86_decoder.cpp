@@ -2472,13 +2472,18 @@ std::variant<Decoded, DecodeError> decode_one(
                      avx256_op == 0x19u);
                 // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
                 // High nibble in {9,A,B} = ordering 132/213/231;
-                // low nibble in {8..F} = MADD/MSUB/NMADD/NMSUB packed
-                // PS/PD. Even low = PS, odd low = PD.
+                // even low nibble = packed (PS if W=0, PD if W=1).
+                // Odd low nibble = scalar SS/SD (deferred — handler
+                // returns UnsupportedEncoding).
+                const std::uint8_t op_lo = avx256_op & 0x0Fu;
                 const bool fma3_ymm =
                     vex.mmmmm == 2 && vex.pp == 1 &&
-                    ((avx256_op >= 0x98u && avx256_op <= 0x9Fu) ||
-                     (avx256_op >= 0xA8u && avx256_op <= 0xAFu) ||
-                     (avx256_op >= 0xB8u && avx256_op <= 0xBFu));
+                    (avx256_op >= 0x98u && avx256_op <= 0xBFu) &&
+                    ((avx256_op & 0xF0u) == 0x90u ||
+                     (avx256_op & 0xF0u) == 0xA0u ||
+                     (avx256_op & 0xF0u) == 0xB0u) &&
+                    (op_lo == 0x8u || op_lo == 0xAu ||
+                     op_lo == 0xCu || op_lo == 0xEu);
                 if (!(packed_fp_ps_pd || fp_bitwise ||
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
@@ -3431,26 +3436,27 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
-            // F2-IR-006 — FMA3 (66 0F 38, VEX-only). Even low-nibble =
-            // packed PS, odd = packed PD (W picks PS/PD via opcode parity).
+            // F2-IR-006 — FMA3 (66 0F 38, VEX-only).
             // High-nibble selects ordering: 9x=132, Ax=213, Bx=231.
-            // Low nibble picks family (× 2 packed forms each):
+            // Low-nibble parity selects packed-vs-scalar:
+            //   even (8/A/C/E) → packed (PS if W=0, PD if W=1)
+            //   odd  (9/B/D/F) → scalar (SS if W=0, SD if W=1)  — DEFERRED
+            // Family is the *pair* of low-nibbles (ignoring scalar/packed):
             //   8/9 → VFMADD   (neg_addend=F, neg_mul=F)
             //   A/B → VFMSUB   (neg_addend=T, neg_mul=F)
             //   C/D → VFNMADD  (neg_addend=F, neg_mul=T)
             //   E/F → VFNMSUB  (neg_addend=T, neg_mul=T)
-            // Scalar (SS/SD) and MADDSUB/MSUBADD (96/97/A6/A7/B6/B7)
-            // are deferred to follow-ups.
+            // Scalar (odd low-nibble) needs upper-lane preservation and a
+            // dedicated IR op; deferred. MADDSUB/MSUBADD (96/97/A6/A7/B6/B7)
+            // also deferred — they need a per-lane sign-blend lowering.
             const std::uint8_t fma_hi = sub3 & 0xF0u;
             const std::uint8_t fma_lo = sub3 & 0x0Fu;
-            const bool fma_packed_lo =
-                (fma_lo == 0x8u || fma_lo == 0x9u ||
-                 fma_lo == 0xAu || fma_lo == 0xBu ||
-                 fma_lo == 0xCu || fma_lo == 0xDu ||
-                 fma_lo == 0xEu || fma_lo == 0xFu);
+            const bool fma_packed_even =
+                (fma_lo == 0x8u || fma_lo == 0xAu ||
+                 fma_lo == 0xCu || fma_lo == 0xEu);
             const bool fma_high_ok =
                 (fma_hi == 0x90u || fma_hi == 0xA0u || fma_hi == 0xB0u);
-            if (vex.present && fma_packed_lo && fma_high_ok) {
+            if (vex.present && fma_packed_even && fma_high_ok) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
                 if (std::holds_alternative<DecodeError>(modrm)) {
@@ -3459,11 +3465,12 @@ std::variant<Decoded, DecodeError> decode_one(
                 const auto& m = std::get<ModRmOperand>(modrm);
                 const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
                 const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
-                const ir::VecFpSize size = (sub3 & 0x01u) ? ir::VecFpSize::D2
-                                                          : ir::VecFpSize::S4;
+                // VEX.W picks PS (W=0) vs PD (W=1) for the packed forms.
+                const ir::VecFpSize size = rex.w ? ir::VecFpSize::D2
+                                                 : ir::VecFpSize::S4;
                 const std::uint8_t high_nibble = fma_hi;
-                // family — keyed by the low-nibble pair (ignoring W bit
-                // selecting PS vs PD).
+                // family — keyed by the low-nibble pair (ignoring scalar
+                // bit, which we already constrained to even above).
                 const std::uint8_t family_lo = (fma_lo & 0xEu);
                 bool neg_addend = false;
                 bool neg_mul    = false;
