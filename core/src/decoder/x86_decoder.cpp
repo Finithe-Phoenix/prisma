@@ -2438,9 +2438,15 @@ std::variant<Decoded, DecodeError> decode_one(
                     vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
                     (avx256_op == 0x54u || avx256_op == 0x56u ||
                      avx256_op == 0x57u);
-                // Integer SIMD add/sub/bitwise (mmmmm=1, pp=01 → 66 0F).
-                // PADDB/W/D/Q (FC/FD/FE/D4), PSUBB/W/D/Q (F8/F9/FA/FB),
-                // PAND (DB), POR (EB), PXOR (EF).
+                // Integer SIMD ymm — all opcodes routed through the
+                // big 66 0F handler that emits VecBinOp. Mirrors the
+                // SSE2..SSE4.1 set: add/sub/bitwise (FC/FD/FE/D4 +
+                // F8/F9/FA/FB + DB/EB/EF), saturating arith (EC/ED +
+                // DC/DD + E8/E9 + D8/D9), unsigned/signed min/max
+                // (DA/DE + EA/EE), and the multiply family (D5
+                // PMULLW, E4 PMULHUW, E5 PMULHW, F4 PMULUDQ, F6
+                // PSADBW). All share the same handler so admitting
+                // them here at L=1 is essentially free.
                 const bool int_simd_addsub_bitwise =
                     vex.mmmmm == 1 && vex.pp == 1 &&
                     (avx256_op == 0xFCu || avx256_op == 0xFDu ||
@@ -2448,7 +2454,19 @@ std::variant<Decoded, DecodeError> decode_one(
                      avx256_op == 0xF8u || avx256_op == 0xF9u ||
                      avx256_op == 0xFAu || avx256_op == 0xFBu ||
                      avx256_op == 0xDBu || avx256_op == 0xEBu ||
-                     avx256_op == 0xEFu);
+                     avx256_op == 0xEFu ||
+                     // saturating
+                     avx256_op == 0xECu || avx256_op == 0xEDu ||
+                     avx256_op == 0xDCu || avx256_op == 0xDDu ||
+                     avx256_op == 0xE8u || avx256_op == 0xE9u ||
+                     avx256_op == 0xD8u || avx256_op == 0xD9u ||
+                     // min/max
+                     avx256_op == 0xDAu || avx256_op == 0xDEu ||
+                     avx256_op == 0xEAu || avx256_op == 0xEEu ||
+                     // multiply
+                     avx256_op == 0xD5u || avx256_op == 0xE4u ||
+                     avx256_op == 0xE5u || avx256_op == 0xF4u ||
+                     avx256_op == 0xF6u);
                 // PCMPEQ B/W/D (74/75/76) + PCMPGT B/W/D (64/65/66),
                 // mmmmm=1 pp=01.
                 const bool int_cmp =

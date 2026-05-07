@@ -1916,6 +1916,82 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VPADDSB ymm2, ymm0, ymm1 — F2-IR-005 saturated byte add ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VEX C5 [byte1] EC D1 — pp=01 (66), L=1 → byte1 = 0xFD
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0xEC, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // Saturating signed byte add: positive saturation at +127, negative at -128.
+    // Use bytes that overflow to test sat clamp.
+    disp.state().xmm[0].lo    = 0x7F7F7F7F7F7F7F7FULL;  // all +127
+    disp.state().xmm[0].hi    = 0x8080808080808080ULL;  // all -128
+    disp.state().ymm_hi[0].lo = 0x0102030405060708ULL;
+    disp.state().ymm_hi[0].hi = 0xF1F2F3F4F5F6F7F8ULL;
+    disp.state().xmm[1].lo    = 0x0101010101010101ULL;  // all +1 → +127+1=+128 saturates to +127
+    disp.state().xmm[1].hi    = 0xFFFFFFFFFFFFFFFFULL;  // all -1 → -128+(-1)=-129 saturates to -128
+    disp.state().ymm_hi[1].lo = 0x0101010101010101ULL;
+    disp.state().ymm_hi[1].hi = 0x0101010101010101ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == 0x7F7F7F7F7F7F7F7FULL);  // saturated +127
+    REQUIRE(disp.state().xmm[2].hi    == 0x8080808080808080ULL);  // saturated -128
+    // ymm_hi: 0x01..08 + 0x01 = 0x02..09; 0xF1..F8 + 0x01 = 0xF2..F9.
+    REQUIRE(disp.state().ymm_hi[2].lo == 0x0203040506070809ULL);
+    REQUIRE(disp.state().ymm_hi[2].hi == 0xF2F3F4F5F6F7F8F9ULL);
+}
+
+TEST_CASE("e2e: VPMULLW ymm2, ymm0, ymm1 — F2-IR-005 16-bit lane multiply ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VPMULLW = 66 0F D5. C5 [byte1] D5 D1, byte1 = 0xFD.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0xD5, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4w = [](std::uint16_t a, std::uint16_t b,
+                     std::uint16_t c, std::uint16_t d) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a)
+            | (static_cast<std::uint64_t>(b) << 16)
+            | (static_cast<std::uint64_t>(c) << 32)
+            | (static_cast<std::uint64_t>(d) << 48);
+    };
+    disp.state().xmm[0].lo    = pack4w(2, 3, 4, 5);
+    disp.state().xmm[0].hi    = pack4w(6, 7, 8, 9);
+    disp.state().ymm_hi[0].lo = pack4w(10, 11, 12, 13);
+    disp.state().ymm_hi[0].hi = pack4w(14, 15, 16, 17);
+    disp.state().xmm[1].lo    = pack4w(10, 10, 10, 10);
+    disp.state().xmm[1].hi    = pack4w(10, 10, 10, 10);
+    disp.state().ymm_hi[1].lo = pack4w(10, 10, 10, 10);
+    disp.state().ymm_hi[1].hi = pack4w(10, 10, 10, 10);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == pack4w(20, 30, 40, 50));
+    REQUIRE(disp.state().xmm[2].hi    == pack4w(60, 70, 80, 90));
+    REQUIRE(disp.state().ymm_hi[2].lo == pack4w(100, 110, 120, 130));
+    REQUIRE(disp.state().ymm_hi[2].hi == pack4w(140, 150, 160, 170));
+}
+
 TEST_CASE("e2e: MUL r/m64 produces RDX:RAX 128-bit product (F2-BK-007)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // 48 F7 E3 → MUL rbx (rdx:rax = rax * rbx)
