@@ -450,9 +450,9 @@ translator on a reference Linux ARM64 box.
 ### F2-IR — IR for full x86_64
 
 - [x] (db74b8a) F2-IR-001: SIMD operand types (Vec128, Vec256). (Vec128 lands; Vec256 deferred until AVX decoder work.)
-- [~] F2-IR-002: SSE ops (ADDPS/SS, MULPS/SS, SUBPS/SS, DIVPS/SS, ...). (Integer SIMD via VecBinOp landed in db74b8a; SSE-FP packed forms still pending.)
-- [x] (db74b8a) F2-IR-003: SSE integer ops (PADD, PSUB, PCMPEQ, PMULLW, ...). (Add/Sub + bitwise covered; Cmp + Mul follow-up.)
-- [ ] F2-IR-004: SSE shuffle / blend.
+- [x] (50caa95) F2-IR-002: SSE ops (ADDPS/SS, MULPS/SS, SUBPS/SS, DIVPS/SS, ...). (Closed: ADDPS/PD/SS/SD + SUB/MUL/DIV/MIN/MAX/SQRT, HADDPS/PD, CMPxxPS/PD/SS/SD all landed across F2-IR-014..048. The umbrella's last-mile work was the FMA family in F2-IR-006.)
+- [x] (50caa95) F2-IR-003: SSE integer ops (PADD, PSUB, PCMPEQ, PMULLW, ...). (Closed: full PADD/PSUB B/W/D/Q + sat variants, PAND/POR/PXOR, PCMPEQ/GT B/W/D + SSE4.1 PCMPEQQ + SSE4.2 PCMPGTQ, PMUL{HW,LW,UDQ,LD}, PMIN/PMAX × signed/unsigned × multiple lane sizes — landed across F2-IR-001..045.)
+- [x] (50caa95) F2-IR-004: SSE shuffle / blend. (Closed: PSHUFD, PSHUFLW/HW, SHUFPS/PD, PSHUFB, PUNPCKL/H + UNPCKL/HPS/PD, PALIGNR, BLENDV PS/PD + PBLENDVB landed across F2-IR-010/011/015/036/038/046.)
 - [x] (99d2056) F2-IR-005: AVX 256-bit equivalents (VADDPS, etc.). (First batch — packed FP arith, integer SIMD, FP/int bitwise, PCMPEQ/GT, UNPCK, SHUFPS/PD, HADDPS/PD, CMPxxPS/PD ymm. Lane-crossing ops follow.)
 - [x] (d98bdbb) F2-IR-006: FMA (VFMADD, VFMSUB, etc.). (First batch — packed PS/PD xmm: VFMADD/SUB/NMADD/NMSUB × 132/213/231. Single VecFpFma IR op with neg_addend/neg_mul flags; ARM64 FMLA/FMLS lowering. ymm, scalar SS/SD, MADDSUB/MSUBADD deferred.)
 - [ ] F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH).
@@ -461,10 +461,10 @@ translator on a reference Linux ARM64 box.
 
 ### F2-BK — Backend for full ISA
 
-- [ ] F2-BK-001: Lowering for SIMD via NEON.
-- [ ] F2-BK-002: SIMD shuffle lowering (ARM tbl / zip / uzp / trn).
-- [ ] F2-BK-003: Lowering for AVX (use pair of NEON vectors for 256-bit).
-- [ ] F2-BK-004: Lowering for FMA via NEON FMLA.
+- [x] (50caa95) F2-BK-001: Lowering for SIMD via NEON. (Closed: VecBinOp / VecFpBinOp / VecFpScalarBinOp / VecCmp / VecUnpack / VecShift{Imm,Bytes} / VecShuffle{32x4,2Src,H4} / VecPshufb / VecAlignr / VecExtend / VecAbs / VecMaskMsb / VecMaskFp / VecFpRound / VecBlend / VecFpFma plus the GPR↔XMM bridge and Load/StoreVec{Reg,Hi} all lowered to NEON via vixl across the F2-IR-001..006 + F2-BK-006 work.)
+- [x] (50caa95) F2-BK-002: SIMD shuffle lowering (ARM tbl / zip / uzp / trn). (Closed alongside F2-BK-001: VecPshufb uses TBL, VecUnpack uses ZIP, VecShuffle{32x4,2Src,H4} use TBL/EXT/INS, VecAlignr uses EXT.)
+- [x] (50caa95) F2-BK-003: Lowering for AVX (use pair of NEON vectors for 256-bit). (Closed: pair-of-Vec128 representation via LoadVecRegHi/StoreVecRegHi + ymm_hi[16] in CpuStateFrame; 256-bit ops compile to two NEON ops on consecutive scratch regs. F2-IR-005 and the FMA ymm extension exercise the pattern end-to-end.)
+- [x] (50caa95) F2-BK-004: Lowering for FMA via NEON FMLA. (Closed: vfmla_q / vfmls_q / vfneg_q / vmov_q primitives plus the VecFpFma lowering arm. F2-IR-006 and its ymm extension exercise the four sign combinations.)
 - [ ] F2-BK-005: Lowering for x87 (software emulation for rare cases).
 - [x] (0597402) F2-BK-006: SIMD register allocator (NEON v0-v31). (Pool widened V0..V7 → V0..V23 [05044f8]; FP last-use expiry added [0597402] — same liveness machinery as the GPR allocator. Pair-allocator scaffolding + spill plumbing deferred until measured demand.)
 - [ ] F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx).
