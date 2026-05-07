@@ -357,6 +357,11 @@ public:
     void vfneg_q(FpReg rd, FpReg rn, VecLane lane);
     void vmov_q (FpReg rd, FpReg rn);  // 128-bit register copy.
 
+    // F2-IR-001 — full 128-bit constant load. lo = bytes[0..7],
+    // hi = bytes[8..15] in the little-endian layout shared with
+    // VecConstant's IR field convention.
+    void vec_const_128(FpReg rd, std::uint64_t lo, std::uint64_t hi);
+
     // F2-IR-006 — scalar SSE FP semantics: result.low = op(rn.low, rm.low),
     // result.upper = rn.upper (untouched). `sz` selects S (32-bit) or D
     // (64-bit) lane. Internally uses V31 as a fixed scratch — it must

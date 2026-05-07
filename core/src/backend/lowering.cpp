@@ -957,13 +957,11 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecConstant>) {
-            // F2-IR-001 lowering. Materialise a 128-bit immediate
-            // by writing the low and high u64 lanes through the FP
-            // scratch register's two D-views. We synthesise the
-            // value via two scalar `fmov_imm` calls reinterpreting
-            // the bits as f64. This is correct because vixl's Fmov
-            // immediate path does not interpret the bits as a
-            // value — it loads them through a literal pool.
+            // F2-IR-001 lowering. Materialise a 128-bit immediate.
+            // ARM64 has no single-instruction 128-bit immediate; we
+            // load the two halves separately via fmov_imm (which
+            // routes through vixl's literal pool) and INS the high
+            // half into lane 1 of rd.
             if (!s.result.has_value()) {
                 return {false, LowerError::DanglingRef,
                         "VecConstant requires a result ref"};
@@ -972,15 +970,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!allocate_fp_scratch(*s.result, rd)) {
                 return {false, LowerError::OutOfScratchRegs, "VecConstant"};
             }
-            // Two-step: load the low 64 bits, then the high 64 bits
-            // into separate scratch regs, then build the 128-bit
-            // value by ORring them with proper byte placement.
-            // For the MVP we just zero the upper bits and load
-            // the low half — enough to test the VecConstant IR
-            // shape without needing a true 128-bit literal pool.
-            // The full path lands in F2-IR-001 follow-up.
-            emitter_.fmov_imm(rd, op.lo, ir::FpSize::F64);
-            (void)op.hi;  // upper-half handling deferred.
+            emitter_.vec_const_128(rd, op.lo, op.hi);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecBinOp>) {

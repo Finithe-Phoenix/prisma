@@ -790,6 +790,21 @@ void Emitter::vmov_q(FpReg rd, FpReg rn) {
     impl_->masm.Mov(vd, vn);
 }
 
+void Emitter::vec_const_128(FpReg rd, std::uint64_t lo, std::uint64_t hi) {
+    // Load the low 64 bits via the literal pool (Fmov d_d, imm).
+    double d_lo;
+    std::memcpy(&d_lo, &lo, sizeof d_lo);
+    impl_->masm.Fmov(vixl_aa::DRegister(static_cast<int>(rd)), d_lo);
+    // Load the high 64 bits into the internal scratch.
+    double d_hi;
+    std::memcpy(&d_hi, &hi, sizeof d_hi);
+    impl_->masm.Fmov(vixl_aa::DRegister(kInternalFpScratchV), d_hi);
+    // INS rd.d[1] ← v31.d[0]; rd's lane 0 (lo) stays put.
+    const vixl_aa::VRegister v_d_d2 (static_cast<int>(rd),     vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_t_d2 (kInternalFpScratchV,      vixl_aa::kFormat2D);
+    impl_->masm.Mov(v_d_d2, 1, v_t_d2, 0);
+}
+
 // F2-IR-006 — internal scratch V31, never used by the SSA scratch pool
 // (which only allocates V0..V7). Common impl for the four scalar SSE ops:
 //   1. mov  v31.16b, vn.16b               ; copy lhs into scratch (preserves upper)

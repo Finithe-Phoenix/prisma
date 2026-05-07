@@ -2473,8 +2473,7 @@ std::variant<Decoded, DecodeError> decode_one(
                 // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
                 // High nibble in {9,A,B} = ordering 132/213/231;
                 // even low nibble = packed (PS if W=0, PD if W=1).
-                // Odd low nibble = scalar SS/SD (deferred — handler
-                // returns UnsupportedEncoding).
+                // Odd low nibble = scalar SS/SD (only L=0 valid).
                 const std::uint8_t op_lo = avx256_op & 0x0Fu;
                 const bool fma3_ymm =
                     vex.mmmmm == 2 && vex.pp == 1 &&
@@ -2484,12 +2483,19 @@ std::variant<Decoded, DecodeError> decode_one(
                      (avx256_op & 0xF0u) == 0xB0u) &&
                     (op_lo == 0x8u || op_lo == 0xAu ||
                      op_lo == 0xCu || op_lo == 0xEu);
+                // VFMADDSUB / VFMSUBADD ymm: opcodes X6/X7 with X
+                // in {9,A,B}. Always packed (no scalar form).
+                const bool fma3_addsub_ymm =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op == 0x96u || avx256_op == 0x97u ||
+                     avx256_op == 0xA6u || avx256_op == 0xA7u ||
+                     avx256_op == 0xB6u || avx256_op == 0xB7u);
                 if (!(packed_fp_ps_pd || fp_bitwise ||
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
-                      fma3_ymm)) {
+                      fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -3449,6 +3455,140 @@ std::variant<Decoded, DecodeError> decode_one(
             // Scalar (odd low-nibble) needs upper-lane preservation and a
             // dedicated IR op; deferred. MADDSUB/MSUBADD (96/97/A6/A7/B6/B7)
             // also deferred — they need a per-lane sign-blend lowering.
+            // F2-IR-006 — VFMADDSUB / VFMSUBADD packed (66 0F 38 X6/X7,
+            // X in {9,A,B}). Per-lane alternation between ADD and SUB:
+            //   VFMADDSUB: even lanes = SUB (b*c - a), odd lanes = ADD (a + b*c)
+            //   VFMSUBADD: even lanes = ADD,           odd lanes = SUB
+            // Lowered as two packed VecFpFma + a VecBlend with an
+            // alternating mask. PS uses S4 lane granularity; PD uses D2.
+            // No scalar form per Intel SDM.
+            if (vex.present &&
+                (sub3 == 0x96u || sub3 == 0x97u ||
+                 sub3 == 0xA6u || sub3 == 0xA7u ||
+                 sub3 == 0xB6u || sub3 == 0xB7u)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                const ir::VecFpSize size = rex.w ? ir::VecFpSize::D2
+                                                 : ir::VecFpSize::S4;
+                const bool is_msubadd = (sub3 & 0x01u) != 0u;  // 0x97/A7/B7
+                const std::uint8_t hi = sub3 & 0xF0u;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                auto emit_pair = [&](bool hi_half) -> ir::Ref {
+                    const ir::Ref r_dst_load = next_ref++;
+                    const ir::Ref r_v_load   = next_ref++;
+                    const ir::Ref r_rm_load  = next_ref++;
+                    if (hi_half) {
+                        d.stmts.push_back({r_dst_load, ir::LoadVecRegHi{r_dst}});
+                        d.stmts.push_back({r_v_load,   ir::LoadVecRegHi{r_v}});
+                        if (m.mod == 0b11) {
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                    static_cast<unsigned>(m.base))}});
+                        } else {
+                            const ir::Ref r_off16 = next_ref++;
+                            const ir::Ref r_addr_hi = next_ref++;
+                            d.stmts.push_back({r_off16,
+                                ir::Constant{16ULL, ir::OpSize::I64}});
+                            d.stmts.push_back({r_addr_hi,
+                                ir::BinOp{ir::BinOpKind::Add,
+                                          *r_addr_lo, r_off16, ir::OpSize::I64}});
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVec{r_addr_hi}});
+                        }
+                    } else {
+                        d.stmts.push_back({r_dst_load, ir::LoadVecReg{r_dst}});
+                        d.stmts.push_back({r_v_load,   ir::LoadVecReg{r_v}});
+                        if (m.mod == 0b11) {
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVecReg{static_cast<std::uint8_t>(
+                                    static_cast<unsigned>(m.base))}});
+                        } else {
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVec{*r_addr_lo}});
+                        }
+                    }
+                    ir::Ref ra, rb, rc;
+                    switch (hi) {
+                        case 0x90u:  // 132
+                            ra = r_v_load; rb = r_dst_load; rc = r_rm_load; break;
+                        case 0xA0u:  // 213
+                            ra = r_rm_load; rb = r_v_load; rc = r_dst_load; break;
+                        case 0xB0u:  // 231
+                            ra = r_dst_load; rb = r_v_load; rc = r_rm_load; break;
+                        default: ra = rb = rc = 0u; break;
+                    }
+                    const ir::Ref r_add = next_ref++;
+                    const ir::Ref r_sub = next_ref++;
+                    d.stmts.push_back({r_add,
+                        ir::VecFpFma{ra, rb, rc, /*neg_addend=*/false,
+                                     /*neg_mul=*/false, size}});
+                    d.stmts.push_back({r_sub,
+                        ir::VecFpFma{ra, rb, rc, /*neg_addend=*/true,
+                                     /*neg_mul=*/false, size}});
+                    // Mask: alternating lanes. For VFMADDSUB (is_msubadd=F),
+                    // mask MSB is set on ODD lanes (so VecBlend picks
+                    // src=V_add at odd, dst=V_sub at even).
+                    // For VFMSUBADD: mask MSB set on EVEN lanes.
+                    std::uint64_t mask_lo = 0, mask_hi = 0;
+                    if (size == ir::VecFpSize::S4) {
+                        // 32-bit lanes: 4 lanes per half.
+                        if (is_msubadd) {
+                            // even-set: lanes 0, 2 → MSB=1; lanes 1, 3 → MSB=0
+                            mask_lo = 0x00000000FFFFFFFFULL;
+                            mask_hi = 0x00000000FFFFFFFFULL;
+                        } else {
+                            // odd-set: lanes 1, 3 → MSB=1; lanes 0, 2 → MSB=0
+                            mask_lo = 0xFFFFFFFF00000000ULL;
+                            mask_hi = 0xFFFFFFFF00000000ULL;
+                        }
+                    } else {
+                        // 64-bit lanes: 2 lanes per half.
+                        if (is_msubadd) {
+                            // lane 0 → MSB=1, lane 1 → MSB=0
+                            mask_lo = 0xFFFFFFFFFFFFFFFFULL;
+                            mask_hi = 0x0000000000000000ULL;
+                        } else {
+                            // lane 0 → MSB=0, lane 1 → MSB=1
+                            mask_lo = 0x0000000000000000ULL;
+                            mask_hi = 0xFFFFFFFFFFFFFFFFULL;
+                        }
+                    }
+                    const ir::Ref r_mask = next_ref++;
+                    d.stmts.push_back({r_mask,
+                        ir::VecConstant{mask_lo, mask_hi}});
+                    const ir::Ref r_res = next_ref++;
+                    // VecBlend: dst (mask MSB == 0) + src (mask MSB == 1).
+                    // Lane granularity = the FP size (S4 for PS, D2 for PD).
+                    const ir::VecLane blend_lane =
+                        size == ir::VecFpSize::S4 ? ir::VecLane::S4
+                                                  : ir::VecLane::D2;
+                    d.stmts.push_back({r_res,
+                        ir::VecBlend{r_sub, r_add, r_mask, blend_lane}});
+                    return r_res;
+                };
+                const ir::Ref r_lo = emit_pair(false);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_lo}});
+                if (vex.L) {
+                    const ir::Ref r_hi = emit_pair(true);
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{r_dst, r_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             const std::uint8_t fma_hi = sub3 & 0xF0u;
             const std::uint8_t fma_lo = sub3 & 0x0Fu;
             const bool fma_packed_even =

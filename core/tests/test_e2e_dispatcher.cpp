@@ -1916,6 +1916,88 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VFMADDSUB132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating add/sub") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VFMADDSUB132PS: 132 form, opcode 0x96, packed PS (W=0).
+    //   xmm2 = (xmm2 * xmm1) ± xmm0  with even lane = SUB, odd = ADD.
+    // C4 byte1 = 0xE2, byte2: W=0 vvvv=0xF L=0 pp=01 → 0x79
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x79, 0x96, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // xmm2 = [10, 20, 30, 40], xmm1 = [2, 3, 4, 5], xmm0 = [1, 1, 1, 1]
+    // 132: lane[i] = (xmm2[i] * xmm1[i]) ± xmm0[i]
+    //   lane 0 (SUB): 10*2 - 1 = 19
+    //   lane 1 (ADD): 20*3 + 1 = 61
+    //   lane 2 (SUB): 30*4 - 1 = 119
+    //   lane 3 (ADD): 40*5 + 1 = 201
+    disp.state().xmm[0].lo = pack2f(1.0f, 1.0f);
+    disp.state().xmm[0].hi = pack2f(1.0f, 1.0f);
+    disp.state().xmm[1].lo = pack2f(2.0f, 3.0f);
+    disp.state().xmm[1].hi = pack2f(4.0f, 5.0f);
+    disp.state().xmm[2].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[2].hi = pack2f(30.0f, 40.0f);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo == pack2f(19.0f, 61.0f));
+    REQUIRE(disp.state().xmm[2].hi == pack2f(119.0f, 201.0f));
+}
+
+TEST_CASE("e2e: VFMSUBADD132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating sub/add") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VFMSUBADD132PS: opcode 0x97, packed PS.
+    //   xmm2 = (xmm2 * xmm1) ± xmm0  with even lane = ADD, odd = SUB.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x79, 0x97, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    disp.state().xmm[0].lo = pack2f(1.0f, 1.0f);
+    disp.state().xmm[0].hi = pack2f(1.0f, 1.0f);
+    disp.state().xmm[1].lo = pack2f(2.0f, 3.0f);
+    disp.state().xmm[1].hi = pack2f(4.0f, 5.0f);
+    disp.state().xmm[2].lo = pack2f(10.0f, 20.0f);
+    disp.state().xmm[2].hi = pack2f(30.0f, 40.0f);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Even lane = ADD, odd = SUB.
+    //   lane 0 (ADD): 10*2 + 1 = 21
+    //   lane 1 (SUB): 20*3 - 1 = 59
+    //   lane 2 (ADD): 30*4 + 1 = 121
+    //   lane 3 (SUB): 40*5 - 1 = 199
+    REQUIRE(disp.state().xmm[2].lo == pack2f(21.0f, 59.0f));
+    REQUIRE(disp.state().xmm[2].hi == pack2f(121.0f, 199.0f));
+}
+
 TEST_CASE("e2e: VFMADD231SS xmm2, xmm0, xmm1 — F2-IR-006 scalar single FMA") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VFMADD231SS xmm2, xmm0, xmm1 → low lane: xmm2 = (xmm0 * xmm1) + xmm2
