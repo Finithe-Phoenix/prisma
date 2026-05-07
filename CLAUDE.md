@@ -87,17 +87,18 @@ cubierto, ejecutando en hardware ARM64).
     VPCMPGTB/W/D, VUNPCKL/HPS/PD, VPUNPCKL/H BW/WD/DQ/QDQ,
     VSHUFPS/PD, VHADDPS/PD, VCMPxxPS/PD ymm. Lane-crossing ops
     (VBROADCAST*, VINSERTF128, VEXTRACTF128, VPERM2F128) deferred.
-    F2-IR-006 — FMA3 (VEX C4-only): VFMADD/SUB/NMADD/NMSUB × 132/
-    213/231 × PS/PD packed xmm + ymm + SS/SD scalar (72 opcodes).
-    Two IR ops: VecFpFma (packed) + VecFpScalarFma (with
-    scalar_upper Ref for upper-lane preservation). ARM64 FMLA/FMLS
-    for packed; 4-operand FMADD/FMSUB/FNMADD/FNMSUB scalar with
-    INS-into-rd-lane-0 for scalar. Strict-FP fused — no peephole
-    converts mul+add to FMLA. MADDSUB/MSUBADD families deferred.
-    Lane-crossing AVX-256: VBROADCASTSS/SD/F128, VINSERTF128,
-    VEXTRACTF128, VPERM2F128 — all expressible via existing IR
-    (VecShuffle32x4 / VecUnpack / Load+StoreVecReg{Hi} / VecConstant)
-    so no new IR ops required.
+    F2-IR-006 — FMA3 completo (VEX C4-only): MADD/SUB/NMADD/NMSUB
+    × 132/213/231 × {PS,PD}×{xmm,ymm} + scalar SS/SD + MADDSUB/
+    MSUBADD packed (96 instrucciones). VecFpFma (packed) +
+    VecFpScalarFma (con scalar_upper). MADDSUB/MSUBADD lower a dos
+    VecFpFma (add+sub) + VecBlend con máscara alterna construida via
+    VecConstant 128-bit completo. Lane-crossing AVX-256:
+    VBROADCASTSS/SD/F128, VINSERTF128, VEXTRACTF128, VPERM2F128 —
+    todos sin nuevos IR ops. F2-BK-007 — MUL/IMUL escriben rdx:rax
+    completo (UMulHi/SMulHi); DIV/IDIV escriben quotient + remainder
+    (UDiv/SDiv + UMod/SMod). const_prop folds con __int128;
+    algebraic_simplify maneja x*0/0*x/0/x/0%x/x%1 → 0 para los
+    nuevos kinds.
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -117,7 +118,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 785+ Catch2 tests / 4785+ assertions.
+  - `prisma_core_tests` — 789+ Catch2 tests / 4799+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
