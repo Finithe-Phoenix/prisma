@@ -1916,6 +1916,43 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VPMULLD ymm2, ymm0, ymm1 — F2-IR-005 SSE4.1 32-bit mul ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VPMULLD = 66 0F 38 40 /r. C4 byte1=0xE2 (mmmmm=2), byte2: W=0
+    // vvvv=inv(0)=1111 L=1 pp=01 → 0x7D.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x7D, 0x40, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
+    };
+    disp.state().xmm[0].lo    = pack4i(2u, 3u);
+    disp.state().xmm[0].hi    = pack4i(4u, 5u);
+    disp.state().ymm_hi[0].lo = pack4i(6u, 7u);
+    disp.state().ymm_hi[0].hi = pack4i(8u, 9u);
+    disp.state().xmm[1].lo    = pack4i(10u, 100u);
+    disp.state().xmm[1].hi    = pack4i(1000u, 10000u);
+    disp.state().ymm_hi[1].lo = pack4i(2u, 4u);
+    disp.state().ymm_hi[1].hi = pack4i(8u, 16u);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo    == pack4i(20u, 300u));
+    REQUIRE(disp.state().xmm[2].hi    == pack4i(4000u, 50000u));
+    REQUIRE(disp.state().ymm_hi[2].lo == pack4i(12u, 28u));
+    REQUIRE(disp.state().ymm_hi[2].hi == pack4i(64u, 144u));
+}
+
 TEST_CASE("e2e: VPADDSB ymm2, ymm0, ymm1 — F2-IR-005 saturated byte add ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VEX C5 [byte1] EC D1 — pp=01 (66), L=1 → byte1 = 0xFD
