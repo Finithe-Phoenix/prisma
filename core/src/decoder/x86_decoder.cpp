@@ -2567,6 +2567,11 @@ std::variant<Decoded, DecodeError> decode_one(
                 // VPALIGNR ymm: 66 0F 3A 0F /r ib (mmmmm=3, pp=01, op=0x0F).
                 const bool avx_palignr =
                     vex.mmmmm == 3 && vex.pp == 1 && avx256_op == 0x0Fu;
+                // VROUNDPS/PD ymm: 66 0F 3A 08/09 /r ib.
+                // Scalar SS/SD (0A/0B) reject in handler with L=1.
+                const bool avx_round =
+                    vex.mmmmm == 3 && vex.pp == 1 &&
+                    (avx256_op == 0x08u || avx256_op == 0x09u);
                 // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
                 // High nibble in {9,A,B} = ordering 132/213/231;
                 // even low nibble = packed (PS if W=0, PD if W=1).
@@ -2596,7 +2601,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_movmsk_fp ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
-                      avx_palignr || avx_int_simd_38 ||
+                      avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
@@ -3287,7 +3292,16 @@ std::variant<Decoded, DecodeError> decode_one(
                 const ir::FpSize fp_sz =
                     (sub3 == 0x08u || sub3 == 0x0Au) ? ir::FpSize::F32
                                                       : ir::FpSize::F64;
+                // Scalar VROUNDSS/SD with VEX.L=1 is #UD per Intel SDM.
+                if (vex.present && vex.L && !is_packed) {
+                    return DecodeError::UnsupportedEncoding;
+                }
                 Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
                 const ir::Ref r_lhs = next_ref++;
                 const ir::Ref r_src = next_ref++;
                 const ir::Ref r_res = next_ref++;
@@ -3298,14 +3312,38 @@ std::variant<Decoded, DecodeError> decode_one(
                         ir::LoadVecReg{static_cast<std::uint8_t>(
                             static_cast<unsigned>(m.base))}});
                 } else {
-                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                        instruction_guest_pc + cursor);
-                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                    d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
                 }
                 d.stmts.push_back({r_res,
                     ir::VecFpRound{r_lhs, r_src, fp_sz, mode, is_packed}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                // F2-IR-005 — VROUNDPS/PD ymm. Per-128-bit-lane.
+                if (vex.present && vex.L) {
+                    const ir::Ref r_lhs_hi = next_ref++;
+                    const ir::Ref r_src_hi = next_ref++;
+                    const ir::Ref r_res_hi = next_ref++;
+                    d.stmts.push_back({r_lhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_src_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16 = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecFpRound{r_lhs_hi, r_src_hi, fp_sz, mode, is_packed}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }
