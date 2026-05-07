@@ -1694,6 +1694,156 @@ TEST_CASE("e2e: VFMSUB231PS xmm2, xmm0, xmm1 — F2-IR-006 b*c - a") {
     REQUIRE(disp.state().xmm[2].hi == pack2f(119.0f, 199.0f));
 }
 
+TEST_CASE("e2e: VINSERTF128 ymm0, ymm1, xmm2, 1 — F2-IR-005 high-lane insert") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // C4 byte1 byte2 18 ModRM imm8
+    //   byte1: R̅ X̅ B̅ mmmmm = 1_1_1_00011 = 0xE3 (mmmmm=3 → 0F 3A)
+    //   byte2: W=0 vvvv=inv(1)=1110 L=1 pp=01 → 0_1110_1_01 = 0x75
+    //   ModRM C2 = 11_000_010 → reg=ymm0, rm=xmm2
+    //   imm8 = 0x01 → insert into HIGH half
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE3, 0x75, 0x18, 0xC2, 0x01,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // ymm1.lo = [11 12], ymm1.hi = [13 14] (256-bit) — survives unchanged in ymm0.lo.
+    // xmm2 = [99 100] — inserted into ymm0.hi (replacing the original ymm1.hi).
+    disp.state().xmm[1].lo    = 0x000000010000000BULL;  // arbitrary
+    disp.state().xmm[1].hi    = 0x000000020000000CULL;
+    disp.state().ymm_hi[1].lo = 0xDEADBEEF00000000ULL;  // overwritten by xmm2
+    disp.state().ymm_hi[1].hi = 0xCAFEBABE00000000ULL;  // overwritten by xmm2
+    disp.state().xmm[2].lo    = 0x1111111122222222ULL;
+    disp.state().xmm[2].hi    = 0x3333333344444444ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // ymm0 low half = ymm1 low half (preserved from vvvv).
+    REQUIRE(disp.state().xmm[0].lo == 0x000000010000000BULL);
+    REQUIRE(disp.state().xmm[0].hi == 0x000000020000000CULL);
+    // ymm0 high half = xmm2 (the 128-bit source).
+    REQUIRE(disp.state().ymm_hi[0].lo == 0x1111111122222222ULL);
+    REQUIRE(disp.state().ymm_hi[0].hi == 0x3333333344444444ULL);
+}
+
+TEST_CASE("e2e: VEXTRACTF128 xmm0, ymm1, 1 — F2-IR-005 high-lane extract") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // C4 byte1 byte2 19 ModRM imm8
+    //   byte1 = 0xE3 (mmmmm=3)
+    //   byte2: W=0 vvvv=1111 L=1 pp=01 → 0_1111_1_01 = 0x7D
+    //   ModRM C8 = 11_001_000 → reg=ymm1 (source), rm=xmm0 (dst)
+    //   imm8 = 0x01 → extract HIGH half
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE3, 0x7D, 0x19, 0xC8, 0x01,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[1].lo    = 0xAAAAAAAAAAAAAAAAULL;
+    disp.state().xmm[1].hi    = 0xBBBBBBBBBBBBBBBBULL;
+    disp.state().ymm_hi[1].lo = 0xCCCCCCCCCCCCCCCCULL;
+    disp.state().ymm_hi[1].hi = 0xDDDDDDDDDDDDDDDDULL;
+    // Pre-fill xmm0's upper half (ymm_hi[0]) with garbage so we can confirm it gets zeroed.
+    disp.state().ymm_hi[0].lo = 0xEEEEEEEEEEEEEEEEULL;
+    disp.state().ymm_hi[0].hi = 0xFFFFFFFFFFFFFFFFULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // xmm0 = ymm1 high half.
+    REQUIRE(disp.state().xmm[0].lo == 0xCCCCCCCCCCCCCCCCULL);
+    REQUIRE(disp.state().xmm[0].hi == 0xDDDDDDDDDDDDDDDDULL);
+    // ymm_hi[0] is zeroed (xmm-form extract zeroes the upper half).
+    REQUIRE(disp.state().ymm_hi[0].lo == 0ULL);
+    REQUIRE(disp.state().ymm_hi[0].hi == 0ULL);
+}
+
+TEST_CASE("e2e: VPERM2F128 ymm0, ymm1, ymm2, 0x21 — F2-IR-005 lane swap") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // imm8 = 0x21 → low half ← src.lo (sel=0b01=ymm1.hi), high half ← src2.lo (sel=0b10=ymm2.lo)
+    //   bits [1:0] = 01 → vvvv.hi (ymm1.hi) for low half
+    //   bits [5:4] = 10 → src.lo (ymm2.lo) for high half
+    // C4 byte1 byte2 06 ModRM imm8
+    //   byte1 = 0xE3, byte2: W=0 vvvv=inv(1)=1110 L=1 pp=01 → 0x75
+    //   ModRM C2 = 11_000_010 → reg=ymm0, rm=ymm2
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE3, 0x75, 0x06, 0xC2, 0x21,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[1].lo    = 0x1111111111111111ULL;  // ymm1.lo
+    disp.state().xmm[1].hi    = 0x2222222222222222ULL;
+    disp.state().ymm_hi[1].lo = 0x3333333333333333ULL;  // ymm1.hi (→ ymm0.lo)
+    disp.state().ymm_hi[1].hi = 0x4444444444444444ULL;
+    disp.state().xmm[2].lo    = 0xAAAAAAAAAAAAAAAAULL;  // ymm2.lo (→ ymm0.hi)
+    disp.state().xmm[2].hi    = 0xBBBBBBBBBBBBBBBBULL;
+    disp.state().ymm_hi[2].lo = 0xCCCCCCCCCCCCCCCCULL;
+    disp.state().ymm_hi[2].hi = 0xDDDDDDDDDDDDDDDDULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // ymm0.lo = ymm1.hi
+    REQUIRE(disp.state().xmm[0].lo == 0x3333333333333333ULL);
+    REQUIRE(disp.state().xmm[0].hi == 0x4444444444444444ULL);
+    // ymm0.hi = ymm2.lo
+    REQUIRE(disp.state().ymm_hi[0].lo == 0xAAAAAAAAAAAAAAAAULL);
+    REQUIRE(disp.state().ymm_hi[0].hi == 0xBBBBBBBBBBBBBBBBULL);
+}
+
+TEST_CASE("e2e: VPERM2F128 ymm0, ymm1, ymm2, 0x88 — F2-IR-005 zero both halves") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // imm8 = 0x88 → bit 3 set (zero low) and bit 7 set (zero high) → all zero.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE3, 0x75, 0x06, 0xC2, 0x88,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().xmm[1].lo    = 0x1111111111111111ULL;
+    disp.state().xmm[1].hi    = 0x2222222222222222ULL;
+    disp.state().ymm_hi[1].lo = 0x3333333333333333ULL;
+    disp.state().ymm_hi[1].hi = 0x4444444444444444ULL;
+    disp.state().xmm[2].lo    = 0xAAAAAAAAAAAAAAAAULL;
+    disp.state().xmm[2].hi    = 0xBBBBBBBBBBBBBBBBULL;
+    disp.state().ymm_hi[2].lo = 0xCCCCCCCCCCCCCCCCULL;
+    disp.state().ymm_hi[2].hi = 0xDDDDDDDDDDDDDDDDULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[0].lo    == 0ULL);
+    REQUIRE(disp.state().xmm[0].hi    == 0ULL);
+    REQUIRE(disp.state().ymm_hi[0].lo == 0ULL);
+    REQUIRE(disp.state().ymm_hi[0].hi == 0ULL);
+}
+
 TEST_CASE("e2e: VBROADCASTSS ymm0, xmm1 — F2-IR-005 lane-0 broadcast to all 8") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VEX C4 byte1 byte2 18 C1

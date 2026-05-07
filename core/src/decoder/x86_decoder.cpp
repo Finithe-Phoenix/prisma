@@ -2465,6 +2465,11 @@ std::variant<Decoded, DecodeError> decode_one(
                     vex.mmmmm == 2 && vex.pp == 1 &&
                     (avx256_op == 0x18u || avx256_op == 0x19u ||
                      avx256_op == 0x1Au);
+                // VINSERTF128 / VEXTRACTF128 / VPERM2F128 (mmmmm=3, pp=01).
+                const bool avx_lane_xfer =
+                    vex.mmmmm == 3 && vex.pp == 1 &&
+                    (avx256_op == 0x06u || avx256_op == 0x18u ||
+                     avx256_op == 0x19u);
                 // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
                 // High nibble in {9,A,B} = ordering 132/213/231;
                 // low nibble in {8..F} = MADD/MSUB/NMADD/NMSUB packed
@@ -2478,7 +2483,8 @@ std::variant<Decoded, DecodeError> decode_one(
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
-                      avx_broadcast || fma3_ymm)) {
+                      avx_broadcast || avx_lane_xfer ||
+                      fma3_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -2982,6 +2988,172 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+
+            // F2-IR-005 follow-up — AVX lane-crossing 128-bit moves
+            // (66 0F 3A, VEX.L=1 only):
+            //   sub3 = 0x18 — VINSERTF128 ymm1, ymm2, xmm3/m128, imm8
+            //   sub3 = 0x19 — VEXTRACTF128 xmm1/m128, ymm2, imm8
+            //   sub3 = 0x06 — VPERM2F128   ymm1, ymm2, ymm3/m128, imm8
+            // imm8 bit 0 (insert/extract) selects which 128-bit half:
+            // 0 = low, 1 = high. VEX.vvvv supplies the other half for
+            // VINSERTF128 (the unmodified source). VEXTRACTF128 has no
+            // vvvv (must be 0b1111).
+            if (vex.present && vex.L &&
+                (sub3 == 0x18u || sub3 == 0x19u)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t ctrl =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm)) & 0x01u;
+                Decoded d;
+                if (sub3 == 0x18u) {
+                    // VINSERTF128 ymm1 (m.reg), ymm2 (vvvv), xmm3/m128 (m.r/m)
+                    const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                    const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                    // Source 128-bit value (xmm3 or memory).
+                    ir::Ref r_src;
+                    if (m.mod == 0b11) {
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                    }
+                    if (ctrl == 0u) {
+                        // Insert into low half. Low ← src, High ← vvvv.hi.
+                        const ir::Ref r_v_hi = next_ref++;
+                        d.stmts.push_back({r_v_hi, ir::LoadVecRegHi{r_v}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecReg{r_dst, r_src}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{r_dst, r_v_hi}});
+                    } else {
+                        // Insert into high half. Low ← vvvv.lo, High ← src.
+                        const ir::Ref r_v_lo = next_ref++;
+                        d.stmts.push_back({r_v_lo, ir::LoadVecReg{r_v}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecReg{r_dst, r_v_lo}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{r_dst, r_src}});
+                    }
+                } else {
+                    // VEXTRACTF128 xmm1/m128 (m.r/m), ymm2 (m.reg), imm8.
+                    // In the VEX-encoded extract, ModRM.reg is the *source*
+                    // ymm and ModRM.r/m is the destination xmm/m128. vvvv
+                    // is reserved (encoded 0b1111 → stored 0); we don't
+                    // enforce since other VEX handlers don't either.
+                    const std::uint8_t r_src = static_cast<std::uint8_t>(m.reg);
+                    const ir::Ref r_half = next_ref++;
+                    if (ctrl == 0u) {
+                        d.stmts.push_back({r_half, ir::LoadVecReg{r_src}});
+                    } else {
+                        d.stmts.push_back({r_half, ir::LoadVecRegHi{r_src}});
+                    }
+                    if (m.mod == 0b11) {
+                        // Destination is xmm — write low half, zero upper.
+                        const std::uint8_t r_dst =
+                            static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                        const ir::Ref r_zero = next_ref++;
+                        d.stmts.push_back({r_zero,
+                            ir::VecConstant{0ULL, 0ULL}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecReg{r_dst, r_half}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{r_dst, r_zero}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVec{r_addr, r_half}});
+                    }
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // VPERM2F128 ymm1, ymm2, ymm3/m128, imm8 (66 0F 3A 06 /r ib).
+            // imm8 bits [1:0] select source for low half:
+            //   0b00 = ymm2.lo, 0b01 = ymm2.hi, 0b10 = src.lo, 0b11 = src.hi
+            // imm8 bits [5:4] same encoding for high half.
+            // imm8 bit 3 → zero the low half; bit 7 → zero the high half.
+            if (vex.present && vex.L && sub3 == 0x06u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                Decoded d;
+                // Materialise the four candidate 128-bit halves: vvvv.lo,
+                // vvvv.hi, src.lo, src.hi. Some may end up dead and DCE
+                // will clean them up later.
+                const ir::Ref r_v_lo  = next_ref++;
+                const ir::Ref r_v_hi  = next_ref++;
+                const ir::Ref r_s_lo  = next_ref++;
+                const ir::Ref r_s_hi  = next_ref++;
+                d.stmts.push_back({r_v_lo, ir::LoadVecReg{r_v}});
+                d.stmts.push_back({r_v_hi, ir::LoadVecRegHi{r_v}});
+                if (m.mod == 0b11) {
+                    const std::uint8_t r_rm =
+                        static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                    d.stmts.push_back({r_s_lo, ir::LoadVecReg{r_rm}});
+                    d.stmts.push_back({r_s_hi, ir::LoadVecRegHi{r_rm}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_s_lo, ir::LoadVec{r_addr}});
+                    d.stmts.push_back({r_s_hi, ir::LoadVec{r_addr_hi}});
+                }
+                const ir::Ref r_zero = next_ref++;
+                d.stmts.push_back({r_zero, ir::VecConstant{0ULL, 0ULL}});
+                auto pick = [&](unsigned sel, bool zero_bit) -> ir::Ref {
+                    if (zero_bit) return r_zero;
+                    switch (sel & 0x3u) {
+                        case 0: return r_v_lo;
+                        case 1: return r_v_hi;
+                        case 2: return r_s_lo;
+                        case 3: return r_s_hi;
+                    }
+                    return r_zero;
+                };
+                const ir::Ref out_lo = pick(imm8 & 0x03u,
+                                            (imm8 & 0x08u) != 0);
+                const ir::Ref out_hi = pick((imm8 >> 4) & 0x03u,
+                                            (imm8 & 0x80u) != 0);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, out_lo}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{r_dst, out_hi}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 ROUNDPS/PD/SS/SD (66 0F 3A 08/09/0A/0B /r ib).
             if (sub3 == 0x08u || sub3 == 0x09u ||
                 sub3 == 0x0Au || sub3 == 0x0Bu) {
