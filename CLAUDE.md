@@ -99,6 +99,14 @@ cubierto, ejecutando en hardware ARM64).
     (UDiv/SDiv + UMod/SMod). const_prop folds con __int128;
     algebraic_simplify maneja x*0/0*x/0/x/0%x/x%1 → 0 para los
     nuevos kinds.
+    F2-IR-005 ymm follow-up — toda la familia integer SIMD packed
+    extendida a L=1: PADDS/PSUBS sat, PADDUS/PSUBUS, PMINU/PMAXU,
+    PMINS/PMAXS, PMULL{W,D}, PMULH{W,UW}, PMULUDQ, PSADBW, PHADDW/D,
+    PHSUBW/D, PCMPEQQ, PCMPGTQ, PMIN/PMAXSB/D + PMINUW/D + PMAXUW/D
+    (SSE4.1), PSHUFB, PABSB/W/D, PSHUFD, PSHUFLW/HW, PALIGNR ymm.
+    Plus VMOVDQA/U + VMOVAPS/UPS + VMOVAPD/UPD ymm (memory and
+    register forms). VecConstant lowering ahora carga 128 bits
+    completos (lo + INS hi) — antes silenciosamente truncaba.
   - `prisma_passes` — 10 pases en el pipeline por defecto:
     const_prop → algebraic → strength_reduce → const_prop_2 →
     redundant_load → CSE → copy_propagate → dead_store →
@@ -118,7 +126,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 789+ Catch2 tests / 4799+ assertions.
+  - `prisma_core_tests` — 795+ Catch2 tests / 4829+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
