@@ -2559,6 +2559,12 @@ std::variant<Decoded, DecodeError> decode_one(
                     vex.mmmmm == 2 && vex.pp == 1 &&
                     (avx256_op == 0x00u || avx256_op == 0x1Cu ||
                      avx256_op == 0x1Du || avx256_op == 0x1Eu);
+                // VPMOVZX/SX BW/BD/BQ/WD/WQ/DQ ymm (66 0F 38 20..25 +
+                // 30..35).
+                const bool avx_pmov_zx_sx =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    ((avx256_op >= 0x20u && avx256_op <= 0x25u) ||
+                     (avx256_op >= 0x30u && avx256_op <= 0x35u));
                 // VINSERTF128 / VEXTRACTF128 / VPERM2F128 (mmmmm=3, pp=01).
                 const bool avx_lane_xfer =
                     vex.mmmmm == 3 && vex.pp == 1 &&
@@ -2602,7 +2608,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_round || avx_int_simd_38 ||
-                      avx_pshufb_pabs ||
+                      avx_pshufb_pabs || avx_pmov_zx_sx ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -3977,6 +3983,12 @@ std::variant<Decoded, DecodeError> decode_one(
             }
 
             // SSE4.1 PMOVZX/SX widening converts (66 0F 38 20..25, 30..35).
+            // VEX.L=1 → ymm output: each 128-bit half built independently.
+            // The lo half uses the low source bytes (existing VecExtend
+            // semantics); the hi half uses bytes [N..2N-1] of the source,
+            // synthesised via VecShiftBytes (PSRLDQ-style byte right shift)
+            // before VecExtend. N = 16/extension_factor, where
+            // extension_factor = wide_bytes / narrow_bytes.
             if ((sub3 >= 0x20u && sub3 <= 0x25u) ||
                 (sub3 >= 0x30u && sub3 <= 0x35u)) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
@@ -3988,14 +4000,15 @@ std::variant<Decoded, DecodeError> decode_one(
                 const bool is_signed = sub3 < 0x30u;
                 const std::uint8_t low_nibble = sub3 & 0x0Fu;
                 ir::VecLane narrow, wide;
+                std::uint8_t hi_shift_bytes = 0;
                 switch (low_nibble) {
-                    case 0x0u: narrow = ir::VecLane::B16; wide = ir::VecLane::H8; break;
-                    case 0x1u: narrow = ir::VecLane::B16; wide = ir::VecLane::S4; break;
-                    case 0x2u: narrow = ir::VecLane::B16; wide = ir::VecLane::D2; break;
-                    case 0x3u: narrow = ir::VecLane::H8;  wide = ir::VecLane::S4; break;
-                    case 0x4u: narrow = ir::VecLane::H8;  wide = ir::VecLane::D2; break;
-                    case 0x5u: narrow = ir::VecLane::S4;  wide = ir::VecLane::D2; break;
-                    default:   narrow = ir::VecLane::B16; wide = ir::VecLane::H8;
+                    case 0x0u: narrow = ir::VecLane::B16; wide = ir::VecLane::H8; hi_shift_bytes = 8; break;
+                    case 0x1u: narrow = ir::VecLane::B16; wide = ir::VecLane::S4; hi_shift_bytes = 4; break;
+                    case 0x2u: narrow = ir::VecLane::B16; wide = ir::VecLane::D2; hi_shift_bytes = 2; break;
+                    case 0x3u: narrow = ir::VecLane::H8;  wide = ir::VecLane::S4; hi_shift_bytes = 8; break;
+                    case 0x4u: narrow = ir::VecLane::H8;  wide = ir::VecLane::D2; hi_shift_bytes = 4; break;
+                    case 0x5u: narrow = ir::VecLane::S4;  wide = ir::VecLane::D2; hi_shift_bytes = 8; break;
+                    default:   narrow = ir::VecLane::B16; wide = ir::VecLane::H8; hi_shift_bytes = 8;
                 }
                 Decoded d;
                 const ir::Ref r_src = next_ref++;
@@ -4013,6 +4026,17 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::VecExtend{r_src, narrow, wide, is_signed}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                // F2-IR-005 — VPMOVZX/SX ymm. Hi half = extend(src >> N bytes).
+                if (vex.present && vex.L) {
+                    const ir::Ref r_src_hi_bytes = next_ref++;
+                    const ir::Ref r_res_hi      = next_ref++;
+                    d.stmts.push_back({r_src_hi_bytes,
+                        ir::VecShiftBytes{/*is_left=*/false, r_src, hi_shift_bytes}});
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecExtend{r_src_hi_bytes, narrow, wide, is_signed}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }

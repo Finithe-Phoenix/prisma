@@ -1916,6 +1916,46 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
+    // Reads 16 source bytes from xmm1, zero-extends each to a word
+    // (16 result words spread across ymm0).
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x7D, 0x30, 0xC1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // xmm1 bytes: 0x01 .. 0x10 across all 16 lanes.
+    disp.state().xmm[1].lo = 0x0807060504030201ULL;
+    disp.state().xmm[1].hi = 0x100F0E0D0C0B0A09ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // ymm0 should contain bytes 1..16 each zero-extended to a word.
+    // Lower 128 (xmm[0]): words 0x0001 0x0002 0x0003 0x0004 (lo) 0x0005 0x0006 0x0007 0x0008 (hi)
+    // Upper 128 (ymm_hi[0]): 0x0009..0x000C / 0x000D..0x0010
+    auto pack4w = [](std::uint16_t a, std::uint16_t b,
+                     std::uint16_t c, std::uint16_t d) -> std::uint64_t {
+        return static_cast<std::uint64_t>(a)
+            | (static_cast<std::uint64_t>(b) << 16)
+            | (static_cast<std::uint64_t>(c) << 32)
+            | (static_cast<std::uint64_t>(d) << 48);
+    };
+    REQUIRE(disp.state().xmm[0].lo    == pack4w(0x0001, 0x0002, 0x0003, 0x0004));
+    REQUIRE(disp.state().xmm[0].hi    == pack4w(0x0005, 0x0006, 0x0007, 0x0008));
+    REQUIRE(disp.state().ymm_hi[0].lo == pack4w(0x0009, 0x000A, 0x000B, 0x000C));
+    REQUIRE(disp.state().ymm_hi[0].hi == pack4w(0x000D, 0x000E, 0x000F, 0x0010));
+}
+
 TEST_CASE("e2e: VPMOVMSKB rax, ymm0 — F2-IR-005 32-bit MSB extract from ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // 66 0F D7 /r → PMOVMSKB. C5 byte1: pp=01, L=1, vvvv=1111 → 0xFD.
