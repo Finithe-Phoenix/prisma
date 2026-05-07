@@ -1916,6 +1916,39 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VPMOVMSKB rax, ymm0 — F2-IR-005 32-bit MSB extract from ymm") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // 66 0F D7 /r → PMOVMSKB. C5 byte1: pp=01, L=1, vvvv=1111 → 0xFD.
+    // ModRM C0 = 11_000_000 → reg=rax (GPR dst), rm=ymm0 (xmm src).
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC5, 0xFD, 0xD7, 0xC0,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // Set bytes with MSB pattern: alternating 0x80 / 0x00 across the
+    // 32 bytes. The mask should be 0x55555555 (bit i set iff lane i has
+    // MSB set; even-lane → 0x80 → MSB set).
+    disp.state().xmm[0].lo    = 0x0080008000800080ULL;  // bytes: 80 00 80 00 80 00 80 00
+    disp.state().xmm[0].hi    = 0x0080008000800080ULL;
+    disp.state().ymm_hi[0].lo = 0x0080008000800080ULL;
+    disp.state().ymm_hi[0].hi = 0x0080008000800080ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Mask: lane 0 = 0x80 → bit 0 set; lane 1 = 0x00 → bit 1 clear; ...
+    // Pattern 0x80 at even lanes (0, 2, 4, ...) → bit 0, 2, 4, ... set.
+    // 32 bytes → 32-bit mask = 0b01010101_01010101_01010101_01010101 = 0x55555555.
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] == 0x55555555ULL);
+}
+
 TEST_CASE("e2e: VMOVDQA ymm0, ymm1 — F2-IR-005 256-bit register-to-register move") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // 66 0F 6F /r → MOVDQA. C5 byte1: pp=01, L=1, vvvv=1111 → 0xFD.

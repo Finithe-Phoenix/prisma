@@ -2518,6 +2518,9 @@ std::variant<Decoded, DecodeError> decode_one(
                      (vex.pp == 1 && avx256_op == 0xE7u) ||
                      (vex.pp == 0 && avx256_op == 0x2Bu) ||
                      (vex.pp == 1 && avx256_op == 0x2Bu));
+                // VPMOVMSKB ymm (66 0F D7).
+                const bool avx_pmovmskb =
+                    vex.mmmmm == 1 && vex.pp == 1 && avx256_op == 0xD7u;
                 // CMPxxPS/PD (packed): 0F C2 with pp=00 (PS) or pp=01
                 // (PD). Scalar variants (pp=02/03) are #UD with L=1.
                 const bool fp_cmp_packed =
@@ -2585,7 +2588,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       int_cmp || fp_unpck || int_unpck ||
                       int_pshufd || int_pshuf_hw_lw ||
                       avx_mov_family || avx_mov_dup ||
-                      avx_lddqu_movnt ||
+                      avx_lddqu_movnt || avx_pmovmskb ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_int_simd_38 ||
@@ -4720,6 +4723,9 @@ std::variant<Decoded, DecodeError> decode_one(
         }
 
         // F2-IR-027: PMOVMSKB r32, xmm (66 0F D7 /r). Reg-direct only.
+        // VEX.L=1 covers VPMOVMSKB r32, ymm — produces a 32-bit mask
+        // by concatenating the 16-bit masks of each 128-bit half:
+        //   r32 = (mask(hi) << 16) | mask(lo)
         if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
             subop == 0xD7u) {
             auto modrm = parse_modrm(bytes, cursor, rex,
@@ -4734,12 +4740,32 @@ std::variant<Decoded, DecodeError> decode_one(
             const unsigned src_xmm = static_cast<unsigned>(m.base);
             Decoded d;
             const ir::Ref r_xmm = next_ref++;
-            const ir::Ref r_mask = next_ref++;
+            const ir::Ref r_mask_lo = next_ref++;
             d.stmts.push_back({r_xmm,
                 ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
-            d.stmts.push_back({r_mask, ir::VecMaskMsb{r_xmm}});
+            d.stmts.push_back({r_mask_lo, ir::VecMaskMsb{r_xmm}});
+            ir::Ref r_final = r_mask_lo;
+            if (vex.present && vex.L) {
+                const ir::Ref r_xmm_hi   = next_ref++;
+                const ir::Ref r_mask_hi  = next_ref++;
+                const ir::Ref r_shamt    = next_ref++;
+                const ir::Ref r_mask_hi_shifted = next_ref++;
+                const ir::Ref r_combined = next_ref++;
+                d.stmts.push_back({r_xmm_hi,
+                    ir::LoadVecRegHi{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_mask_hi, ir::VecMaskMsb{r_xmm_hi}});
+                d.stmts.push_back({r_shamt,
+                    ir::Constant{16ULL, ir::OpSize::I32}});
+                d.stmts.push_back({r_mask_hi_shifted,
+                    ir::BinOp{ir::BinOpKind::Shl, r_mask_hi, r_shamt,
+                              ir::OpSize::I32}});
+                d.stmts.push_back({r_combined,
+                    ir::BinOp{ir::BinOpKind::Or, r_mask_lo, r_mask_hi_shifted,
+                              ir::OpSize::I32}});
+                r_final = r_combined;
+            }
             d.stmts.push_back({std::nullopt,
-                ir::StoreReg{dst_gpr, r_mask, ir::OpSize::I32}});
+                ir::StoreReg{dst_gpr, r_final, ir::OpSize::I32}});
             d.bytes_consumed = cursor;
             return d;
         }
