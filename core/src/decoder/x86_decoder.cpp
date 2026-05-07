@@ -2460,6 +2460,11 @@ std::variant<Decoded, DecodeError> decode_one(
                 const bool fp_hadd =
                     vex.mmmmm == 1 && (vex.pp == 1 || vex.pp == 3) &&
                     avx256_op == 0x7Cu;
+                // VBROADCASTSS/SD/F128 (mmmmm=2, pp=01).
+                const bool avx_broadcast =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op == 0x18u || avx256_op == 0x19u ||
+                     avx256_op == 0x1Au);
                 // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
                 // High nibble in {9,A,B} = ordering 132/213/231;
                 // low nibble in {8..F} = MADD/MSUB/NMADD/NMSUB packed
@@ -2473,7 +2478,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
                       fp_cmp_packed || fp_shuf || fp_hadd ||
-                      fma3_ymm)) {
+                      avx_broadcast || fma3_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -3163,6 +3168,93 @@ std::variant<Decoded, DecodeError> decode_one(
                 }
                 d.stmts.push_back({r_flags,
                     ir::WriteFlagsPtest{r_lhs, r_rhs}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-005 follow-up — AVX broadcasts (66 0F 38 18/19/1A).
+            //   VBROADCASTSS xmm/ymm, xmm/m32  (sub3 = 0x18)
+            //   VBROADCASTSD ymm,    xmm/m64   (sub3 = 0x19, ymm-only)
+            //   VBROADCASTF128 ymm,  m128       (sub3 = 0x1A, mem-only)
+            // VEX-encoded only. Lower-half result is built as a 128-bit
+            // broadcast Ref; for VEX.L=1 we replicate it to ymm_hi as
+            // well (per-lane semantics by repetition; no cross-lane data
+            // movement needed even though the x86 encoding is "lane-
+            // crossing" relative to AVX-128).
+            if (vex.present &&
+                (sub3 == 0x18u || sub3 == 0x19u || sub3 == 0x1Au)) {
+                // VBROADCASTSD (0x19) requires VEX.L=1.
+                if (sub3 == 0x19u && !vex.L) return DecodeError::UnsupportedEncoding;
+                // VBROADCASTF128 (0x1A) requires VEX.L=1 and mem operand.
+                if (sub3 == 0x1Au && !vex.L) return DecodeError::UnsupportedEncoding;
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (sub3 == 0x1Au && m.mod == 0b11) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                Decoded d;
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const ir::Ref r_lo = next_ref++;
+                if (sub3 == 0x18u) {
+                    // VBROADCASTSS — broadcast 32-bit lane 0 → all 4 lanes.
+                    if (m.mod == 0b11) {
+                        const ir::Ref r_src = next_ref++;
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                        d.stmts.push_back({r_lo,
+                            ir::VecShuffle32x4{r_src, 0x00u}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        const ir::Ref r_val32 = next_ref++;
+                        const ir::Ref r_lane = next_ref++;
+                        d.stmts.push_back({r_val32,
+                            ir::LoadMem{r_addr, ir::OpSize::I32}});
+                        d.stmts.push_back({r_lane,
+                            ir::XmmFromGpr{r_val32, ir::OpSize::I32}});
+                        d.stmts.push_back({r_lo,
+                            ir::VecShuffle32x4{r_lane, 0x00u}});
+                    }
+                } else if (sub3 == 0x19u) {
+                    // VBROADCASTSD ymm — broadcast 64-bit lane 0 → both
+                    // 64-bit lanes (UNPCKLPD self-pair semantics).
+                    ir::Ref r_src;
+                    if (m.mod == 0b11) {
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        const ir::Ref r_val64 = next_ref++;
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_val64,
+                            ir::LoadMem{r_addr, ir::OpSize::I64}});
+                        d.stmts.push_back({r_src,
+                            ir::XmmFromGpr{r_val64, ir::OpSize::I64}});
+                    }
+                    d.stmts.push_back({r_lo,
+                        ir::VecUnpack{/*is_high=*/false, r_src, r_src,
+                                      ir::VecLane::D2}});
+                } else {
+                    // VBROADCASTF128 — load full 128 bits, replicate to
+                    // both ymm halves.
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_lo, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_lo}});
+                if (vex.L) {
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{r_dst, r_lo}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }
