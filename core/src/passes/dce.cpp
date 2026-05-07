@@ -178,6 +178,9 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::VecFpFma>) {
             into.insert(x.a); into.insert(x.b); into.insert(x.c);
+        } else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) {
+            into.insert(x.a); into.insert(x.b); into.insert(x.c);
+            into.insert(x.scalar_upper);
         }
         // LoadVecRegHi and the various producer-only Load* ops have no
         // operand refs and need no entry here.

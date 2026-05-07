@@ -369,6 +369,13 @@ public:
     void vfmax_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
     void vfsqrt_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);  // unary; rm is the source.
 
+    // F2-IR-006 — scalar FMA: result = (neg_addend ? -ra : ra)
+    //                                 + (neg_mul ? -(rb*rc) : rb*rc)
+    // in the low lane, with upper lanes copied from `rupper`. Maps to
+    // ARM64 4-operand FMADD/FMSUB/FNMADD/FNMSUB scalars.
+    void vfma_scalar(FpReg rd, FpReg rupper, FpReg ra, FpReg rb, FpReg rc,
+                     ir::FpSize sz, bool neg_addend, bool neg_mul);
+
     // F2-IR-009. Lane-wise integer compare (cmeq / cmgt).
     void vcmeq_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vcmgt_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

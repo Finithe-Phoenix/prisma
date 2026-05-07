@@ -138,6 +138,12 @@ bool operator==(const VecFpFma& a, const VecFpFma& b) noexcept {
         && a.neg_addend == b.neg_addend && a.neg_mul == b.neg_mul
         && a.size == b.size;
 }
+bool operator==(const VecFpScalarFma& a, const VecFpScalarFma& b) noexcept {
+    return a.a == b.a && a.b == b.b && a.c == b.c
+        && a.scalar_upper == b.scalar_upper
+        && a.neg_addend == b.neg_addend && a.neg_mul == b.neg_mul
+        && a.size == b.size;
+}
 bool operator==(const VecFpBinOp& a, const VecFpBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }

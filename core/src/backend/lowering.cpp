@@ -219,6 +219,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpFma>)      { bump(op.a, i); bump(op.b, i); bump(op.c, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) { bump(op.a, i); bump(op.b, i); bump(op.c, i); bump(op.scalar_upper, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
@@ -1568,6 +1569,32 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::DanglingRef, "StoreVec.value"};
             }
             emitter_.vst1_q(rv, raddr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) {
+            // F2-IR-006 — scalar FMA. ARM64 has 4-operand scalar FMA
+            // primitives; the emitter wraps them with upper-lane
+            // preservation (copies bits from `scalar_upper` into rd
+            // before INS-ing the FMA result into rd's low lane).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpScalarFma requires a result ref"};
+            }
+            Emitter::FpReg ra, rb, rc, rupper;
+            if (!fp_reg_of(op.a, ra))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.a"};
+            if (!fp_reg_of(op.b, rb))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.b"};
+            if (!fp_reg_of(op.c, rc))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.c"};
+            if (!fp_reg_of(op.scalar_upper, rupper))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.scalar_upper"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpScalarFma"};
+            }
+            emitter_.vfma_scalar(rd, rupper, ra, rb, rc, op.size,
+                                 op.neg_addend, op.neg_mul);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecFpFma>) {

@@ -1916,6 +1916,82 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: VFMADD231SS xmm2, xmm0, xmm1 — F2-IR-006 scalar single FMA") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VFMADD231SS xmm2, xmm0, xmm1 → low lane: xmm2 = (xmm0 * xmm1) + xmm2
+    // Upper lanes preserved from xmm2 (the destination).
+    // Opcode 0xB9 (231 odd low-nibble = scalar). C4 byte2: W=0 vvvv=0xF L=0 pp=01 → 0x79.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0x79, 0xB9, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto pack2f = [](float a, float b) -> std::uint64_t {
+        std::uint32_t aa, bb;
+        std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
+        return static_cast<std::uint64_t>(aa) | (static_cast<std::uint64_t>(bb) << 32);
+    };
+    // xmm0 lane 0 = 3.0, xmm1 lane 0 = 4.0, xmm2 lane 0 = 1.0.
+    // result xmm2 lane 0 = (3.0 * 4.0) + 1.0 = 13.0.
+    // Upper 96 bits of xmm2 must be preserved.
+    disp.state().xmm[0].lo = pack2f(3.0f, 99.0f);
+    disp.state().xmm[0].hi = pack2f(98.0f, 97.0f);
+    disp.state().xmm[1].lo = pack2f(4.0f, 88.0f);
+    disp.state().xmm[1].hi = pack2f(87.0f, 86.0f);
+    const std::uint64_t orig_lo_upper_lane = pack2f(1.0f, 77.5f);
+    disp.state().xmm[2].lo = orig_lo_upper_lane;
+    disp.state().xmm[2].hi = 0xCAFEBABE12345678ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Low lane = 13.0; upper 32 bits of xmm[2].lo (= 77.5f) preserved;
+    // hi 64 bits preserved entirely.
+    REQUIRE(disp.state().xmm[2].lo == pack2f(13.0f, 77.5f));
+    REQUIRE(disp.state().xmm[2].hi == 0xCAFEBABE12345678ULL);
+}
+
+TEST_CASE("e2e: VFMSUB132SD xmm2, xmm0, xmm1 — F2-IR-006 scalar double, 132 form") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // VFMSUB132SD xmm2, xmm0, xmm1: low lane: xmm2 = (xmm2 * xmm1) - xmm0
+    // Opcode 0x9B (132 odd = scalar). C4 byte2: W=1 (SD) vvvv=0xF L=0 pp=01 → 0xF9.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xC4, 0xE2, 0xF9, 0x9B, 0xD1,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    auto u64_of_double = [](double v) -> std::uint64_t {
+        std::uint64_t bits; std::memcpy(&bits, &v, 8); return bits;
+    };
+    // xmm0 lane 0 = 5.0, xmm1 lane 0 = 4.0, xmm2 lane 0 = 3.0.
+    // 132: low lane result = (3.0 * 4.0) - 5.0 = 7.0.
+    // Upper 64 bits of xmm2 must be preserved.
+    disp.state().xmm[0].lo = u64_of_double(5.0);
+    disp.state().xmm[1].lo = u64_of_double(4.0);
+    disp.state().xmm[2].lo = u64_of_double(3.0);
+    disp.state().xmm[2].hi = 0x123456789ABCDEF0ULL;  // sentinel
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[2].lo == u64_of_double(7.0));
+    REQUIRE(disp.state().xmm[2].hi == 0x123456789ABCDEF0ULL);  // preserved
+}
+
 TEST_CASE("e2e: VFMADD231PS ymm2, ymm0, ymm1 — F2-IR-006 ymm 256-bit FMA") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VEX C4 byte1 byte2 B8 D1

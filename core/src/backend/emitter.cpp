@@ -856,6 +856,73 @@ void emit_scalar_sse_op(vixl_aa::MacroAssembler& masm,
 }
 }  // namespace
 
+// F2-IR-006 — scalar FMA. Computes one of the four ARM64 4-operand
+// fused-multiply-add primitives into V31's low lane, then preserves
+// the upper bits of `rupper` in `rd`. ARM mnemonics map to canonical
+// (neg_addend, neg_mul) flags as:
+//   FMADD  (Sd = Sa + Sn*Sm)  ↔ (F, F)
+//   FNMSUB (Sd = -Sa + Sn*Sm) ↔ (T, F)
+//   FMSUB  (Sd = Sa - Sn*Sm)  ↔ (F, T)
+//   FNMADD (Sd = -Sa - Sn*Sm) ↔ (T, T)
+// The argument order in vixl is masm.Fmadd(Sd, Sn, Sm, Sa) — note
+// the addend is the LAST operand.
+namespace {
+void emit_scalar_fma_op(vixl_aa::MacroAssembler& masm,
+                        int rd_c, int rupper_c,
+                        int ra_c, int rb_c, int rc_c,
+                        ir::FpSize sz,
+                        bool neg_addend, bool neg_mul) {
+    const vixl_aa::VRegister v_upper_q(rupper_c, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_d_q    (rd_c,     vixl_aa::kFormat16B);
+    if (sz == ir::FpSize::F32) {
+        const vixl_aa::SRegister s_t(kInternalFpScratchV);
+        const vixl_aa::SRegister s_a(ra_c);
+        const vixl_aa::SRegister s_b(rb_c);
+        const vixl_aa::SRegister s_c(rc_c);
+        if (!neg_addend && !neg_mul) {
+            masm.Fmadd (s_t, s_b, s_c, s_a);
+        } else if (neg_addend && !neg_mul) {
+            masm.Fnmsub(s_t, s_b, s_c, s_a);
+        } else if (!neg_addend && neg_mul) {
+            masm.Fmsub (s_t, s_b, s_c, s_a);
+        } else {
+            masm.Fnmadd(s_t, s_b, s_c, s_a);
+        }
+        masm.Mov(v_d_q, v_upper_q);
+        const vixl_aa::VRegister v_d_s4(rd_c,                vixl_aa::kFormat4S);
+        const vixl_aa::VRegister v_t_s4(kInternalFpScratchV, vixl_aa::kFormat4S);
+        masm.Mov(v_d_s4, 0, v_t_s4, 0);
+    } else {
+        const vixl_aa::DRegister d_t(kInternalFpScratchV);
+        const vixl_aa::DRegister d_a(ra_c);
+        const vixl_aa::DRegister d_b(rb_c);
+        const vixl_aa::DRegister d_c(rc_c);
+        if (!neg_addend && !neg_mul) {
+            masm.Fmadd (d_t, d_b, d_c, d_a);
+        } else if (neg_addend && !neg_mul) {
+            masm.Fnmsub(d_t, d_b, d_c, d_a);
+        } else if (!neg_addend && neg_mul) {
+            masm.Fmsub (d_t, d_b, d_c, d_a);
+        } else {
+            masm.Fnmadd(d_t, d_b, d_c, d_a);
+        }
+        masm.Mov(v_d_q, v_upper_q);
+        const vixl_aa::VRegister v_d_d2(rd_c,                vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_t_d2(kInternalFpScratchV, vixl_aa::kFormat2D);
+        masm.Mov(v_d_d2, 0, v_t_d2, 0);
+    }
+}
+}  // namespace
+
+void Emitter::vfma_scalar(FpReg rd, FpReg rupper,
+                          FpReg ra, FpReg rb, FpReg rc,
+                          ir::FpSize sz, bool neg_addend, bool neg_mul) {
+    emit_scalar_fma_op(impl_->masm,
+        static_cast<int>(rd), static_cast<int>(rupper),
+        static_cast<int>(ra), static_cast<int>(rb), static_cast<int>(rc),
+        sz, neg_addend, neg_mul);
+}
+
 void Emitter::vfadd_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz) {
     emit_scalar_sse_op(impl_->masm,
         static_cast<int>(rd), static_cast<int>(rn), static_cast<int>(rm), sz, '+');

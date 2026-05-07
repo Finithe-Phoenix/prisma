@@ -63,6 +63,7 @@ public:
         WriteFlagsPtest,
         LoadVecRegHi, StoreVecRegHi,
         VecFpFma,
+        VecFpScalarFma,
         kCount  // sentinel
     };
 

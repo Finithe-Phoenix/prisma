@@ -3454,8 +3454,68 @@ std::variant<Decoded, DecodeError> decode_one(
             const bool fma_packed_even =
                 (fma_lo == 0x8u || fma_lo == 0xAu ||
                  fma_lo == 0xCu || fma_lo == 0xEu);
+            const bool fma_scalar_odd =
+                (fma_lo == 0x9u || fma_lo == 0xBu ||
+                 fma_lo == 0xDu || fma_lo == 0xFu);
             const bool fma_high_ok =
                 (fma_hi == 0x90u || fma_hi == 0xA0u || fma_hi == 0xB0u);
+            // Scalar FMA: VEX.L=1 is illegal per Intel SDM (#UD).
+            if (vex.present && fma_scalar_odd && fma_high_ok && !vex.L) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                const ir::FpSize size = rex.w ? ir::FpSize::F64 : ir::FpSize::F32;
+                const std::uint8_t family_lo = (fma_lo & 0xEu);
+                bool neg_addend = false, neg_mul = false;
+                switch (family_lo) {
+                    case 0x8u: neg_addend = false; neg_mul = false; break;
+                    case 0xAu: neg_addend = true;  neg_mul = false; break;
+                    case 0xCu: neg_addend = false; neg_mul = true;  break;
+                    case 0xEu: neg_addend = true;  neg_mul = true;  break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_dst_load = next_ref++;
+                const ir::Ref r_v_load   = next_ref++;
+                const ir::Ref r_rm_load  = next_ref++;
+                d.stmts.push_back({r_dst_load, ir::LoadVecReg{r_dst}});
+                d.stmts.push_back({r_v_load,   ir::LoadVecReg{r_v}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rm_load,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_rm_load, ir::LoadVec{*r_addr_lo}});
+                }
+                ir::Ref ra, rb, rc;
+                switch (fma_hi) {
+                    case 0x90u:  // 132: b=r_dst, c=r_rm, a=r_v
+                        ra = r_v_load; rb = r_dst_load; rc = r_rm_load; break;
+                    case 0xA0u:  // 213: b=r_v, c=r_dst, a=r_rm
+                        ra = r_rm_load; rb = r_v_load; rc = r_dst_load; break;
+                    case 0xB0u:  // 231: b=r_v, c=r_rm, a=r_dst
+                        ra = r_dst_load; rb = r_v_load; rc = r_rm_load; break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecFpScalarFma{ra, rb, rc, /*scalar_upper=*/r_dst_load,
+                                       neg_addend, neg_mul, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
             if (vex.present && fma_packed_even && fma_high_ok) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);

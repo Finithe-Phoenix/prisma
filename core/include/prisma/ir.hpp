@@ -589,6 +589,8 @@ struct VecFpFma {
     VecFpSize    size;
 };
 
+// (VecFpScalarFma — moved below FpSize declaration.)
+
 
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
@@ -713,6 +715,25 @@ struct VecFpScalarBinOp {
     FpSize         size;
 };
 
+// F2-IR-006 — scalar-form FMA (VFMADDxxxSS / VFMADDxxxSD and the
+// MSUB / NMADD / NMSUB variants). Computes the canonical
+//    low_lane(result) = (neg_addend ? -a.lo : a.lo)
+//                     + (neg_mul ? -(b.lo*c.lo) : b.lo*c.lo)
+// and copies the upper lane(s) of `scalar_upper` (the destination's
+// original value) into the result. Decoder normalises 132/213/231
+// into (a, b, c) and always sets `scalar_upper` to the destination's
+// loaded xmm Ref so the lowerer doesn't need to know which form
+// produced the IR.
+struct VecFpScalarFma {
+    Ref     a;
+    Ref     b;
+    Ref     c;
+    Ref     scalar_upper;
+    bool    neg_addend;
+    bool    neg_mul;
+    FpSize  size;
+};
+
 struct FpConstant { std::uint64_t bits; FpSize size; };
 struct FpBinOp    { FpBinOpKind op; Ref lhs; Ref rhs; FpSize size; };
 
@@ -784,7 +805,7 @@ using Op = std::variant<
     VecBlend,
     WriteFlagsPtest,
     LoadVecRegHi, StoreVecRegHi,
-    VecFpFma
+    VecFpFma, VecFpScalarFma
 >;
 
 // ---------------------------------------------------------------------------
@@ -909,6 +930,7 @@ bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;
+bool operator==(const VecFpScalarFma& a, const VecFpScalarFma& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 
