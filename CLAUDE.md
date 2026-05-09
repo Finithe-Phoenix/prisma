@@ -131,7 +131,7 @@ cubierto, ejecutando en hardware ARM64).
     FlagM/DotProd/CRC32 detection).
   - `prisma_translator` — facade que combina decoder + passes +
     lowerer + cache + runtime en un API público.
-  - `prisma_core_tests` — 797+ Catch2 tests / 4836+ assertions.
+  - `prisma_core_tests` — 800+ Catch2 tests / 5004+ assertions.
     E2E tests verifican SSE2 ejecutando en ARM64 JIT real (Apple silicon).
     Benchmarks opt-in vía
     `[.benchmark]` tag (F1-TC-007).
