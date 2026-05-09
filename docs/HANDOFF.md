@@ -4,6 +4,36 @@
 > en el equipo de Danny en otra máquina. Léelo COMPLETO antes de
 > tocar código.
 
+## 0. Auto-setup en máquina nueva
+
+Para arrancar desde cero en otro equipo:
+
+```bash
+git clone https://github.com/Finithe-Phoenix/prisma.git
+cd prisma
+git checkout claude/hopeful-taussig-051239    # rama de la sesión saliente
+
+# Onboarding de un solo paso (idempotente):
+./tools/setup-agent-env.sh --with-skills
+```
+
+Lo que hace `setup-agent-env.sh`:
+1. Verifica toolchain (cmake / ninja / clang / git / gh).
+2. Opcional (con `--with-skills` o confirmación interactiva): instala
+   los 14 skills de [obra/superpowers](https://github.com/obra/superpowers)
+   en `~/.claude/skills/`. Skills: test-driven-development,
+   using-git-worktrees, finishing-a-development-branch,
+   systematic-debugging, subagent-driven-development,
+   dispatching-parallel-agents, brainstorming, writing-plans,
+   executing-plans, requesting-code-review, receiving-code-review,
+   verification-before-completion, writing-skills, using-superpowers.
+3. Configura `core/build` (Debug, Ninja) si no está.
+4. Build + test (debe terminar verde con 797+ casos).
+5. Imprime apuntadores a CLAUDE.md / HANDOFF.md / SESSION_TRACE.md.
+
+Flags útiles: `--no-skills` (skip skill install), `--no-build` (skip
+cmake/build), `--yes` (no preguntar confirmación TTY).
+
 ## 1. Lo primero — orientación rápida
 
 - **Repo**: Prisma — DBT x86_64 → ARM64 para emulación Windows en Android.
