@@ -596,6 +596,34 @@ struct VecFpFma {
 
 // (VecFpScalarFma — moved below FpSize declaration.)
 
+// F2-BK-008 — REP STOSB / STOSW / STOSD / STOSQ as a native ARM64
+// loop. No SSA operands: the lowerer reads/writes the pinned guest
+// registers RCX (counter), RDI (dest pointer), and RAX (store
+// value) directly. Side-effecting; treated as a barrier by DCE.
+//
+// Semantics (with DF=0, the common case; reverse=true handles DF=1):
+//   while (RCX != 0) {
+//     [RDI] = AL/AX/EAX/RAX   (size selects)
+//     RDI  += sign * size
+//     RCX  -= 1
+//   }
+//   ; on exit RCX is 0 and RDI has advanced by count*size.
+//
+// `reverse=true` decrements RDI (DF=1). For now the decoder always
+// emits reverse=false; a future commit can wire DF tracking.
+struct RepStos {
+    OpSize size;
+    bool   reverse;
+};
+
+// F2-BK-009 — REP MOVSB / MOVSW / MOVSD / MOVSQ. Same shape as
+// RepStos but reads from [RSI] and writes to [RDI]; uses both as
+// pinned operands.
+struct RepMovs {
+    OpSize size;
+    bool   reverse;
+};
+
 
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
@@ -810,7 +838,8 @@ using Op = std::variant<
     VecBlend,
     WriteFlagsPtest,
     LoadVecRegHi, StoreVecRegHi,
-    VecFpFma, VecFpScalarFma
+    VecFpFma, VecFpScalarFma,
+    RepStos, RepMovs
 >;
 
 // ---------------------------------------------------------------------------
@@ -936,6 +965,8 @@ bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;
 bool operator==(const VecFpScalarFma& a, const VecFpScalarFma& b) noexcept;
+bool operator==(const RepStos&       a, const RepStos&       b) noexcept;
+bool operator==(const RepMovs&       a, const RepMovs&       b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

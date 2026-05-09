@@ -468,8 +468,8 @@ translator on a reference Linux ARM64 box.
 - [ ] F2-BK-005: Lowering for x87 (software emulation for rare cases).
 - [x] (0597402) F2-BK-006: SIMD register allocator (NEON v0-v31). (Pool widened V0..V7 → V0..V23 [05044f8]; FP last-use expiry added [0597402] — same liveness machinery as the GPR allocator. Pair-allocator scaffolding + spill plumbing deferred until measured demand.)
 - [x] (8317648) F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx). (Adds BinOpKind::UMulHi/SMulHi/UDiv/SDiv/UMod/SMod; MUL writes both halves of the 128-bit product; DIV writes UDiv quotient + UMod remainder. Const-prop folds with __int128 for compile-time constants. 64-bit dividend only — full 128/64 with explicit RDX:RAX is a follow-up.)
-- [ ] F2-BK-008: Lowering for REP prefix — loop generation.
-- [ ] F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline.
+- [x] (PENDING) F2-BK-008: Lowering for REP prefix — loop generation. (RepStos / RepMovs IR ops emit native ARM64 cbz+cbnz loops via existing label/branch infrastructure. Pinned guest regs RCX/RDI/RSI/RAX modified in-place; no scratch SSA refs needed.)
+- [x] (PENDING) F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline. (Closed alongside F2-BK-008. STOSB/STOSW/STOSD/STOSQ + MOVSB/MOVSW/MOVSD/MOVSQ all decoded with F3 prefix → RepStos/RepMovs. CMPSB/SCASB still fall through to InlineAsm; deferred.)
 - [ ] F2-BK-010: Call / Return lowering with return-stack.
 
 ### F2-PS — Passes for Fase 2

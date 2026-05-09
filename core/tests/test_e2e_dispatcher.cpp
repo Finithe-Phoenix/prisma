@@ -1916,6 +1916,99 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
     REQUIRE(disp.state().ymm_hi[0].hi == pat);
 }
 
+TEST_CASE("e2e: REP STOSB — F2-BK-008 native loop memset") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    // F3 AA → REP STOSB. Fills [RDI..RDI+RCX) with AL bytes.
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0xAA,
+        0xC3,
+    };
+    alignas(16) static std::uint8_t buf[80] = {};
+    for (auto& b : buf) b = 0xAA;
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0x55ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = 32ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
+        reinterpret_cast<std::uint64_t>(&buf[8]);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    for (int i = 0; i < 8; ++i)  REQUIRE(buf[i] == 0xAA);
+    for (int i = 8; i < 8 + 32; ++i) REQUIRE(buf[i] == 0x55);
+    for (int i = 8 + 32; i < 80; ++i) REQUIRE(buf[i] == 0xAA);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] == 0ULL);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] ==
+            reinterpret_cast<std::uint64_t>(&buf[8 + 32]));
+}
+
+TEST_CASE("e2e: REP MOVSB — F2-BK-009 native loop memcpy") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0xA4,
+        0xC3,
+    };
+    alignas(16) static std::uint8_t src_buf[64] = {};
+    alignas(16) static std::uint8_t dst_buf[64] = {};
+    for (std::size_t i = 0; i < 64; ++i) {
+        src_buf[i] = static_cast<std::uint8_t>(i + 1);
+        dst_buf[i] = 0xCC;
+    }
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = 24ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rsi)] =
+        reinterpret_cast<std::uint64_t>(&src_buf[0]);
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
+        reinterpret_cast<std::uint64_t>(&dst_buf[0]);
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    for (std::size_t i = 0; i < 24; ++i) REQUIRE(dst_buf[i] == src_buf[i]);
+    for (std::size_t i = 24; i < 64; ++i) REQUIRE(dst_buf[i] == 0xCC);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] == 0ULL);
+}
+
+TEST_CASE("e2e: REP STOSB with RCX=0 — F2-BK-008 zero-iteration skip") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0xF3, 0xAA,
+        0xC3,
+    };
+    alignas(16) static std::uint8_t buf[16] = {};
+    for (auto& b : buf) b = 0xAA;
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0x99ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = 0ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
+        reinterpret_cast<std::uint64_t>(&buf[0]);
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    for (auto b : buf) REQUIRE(b == 0xAA);
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.

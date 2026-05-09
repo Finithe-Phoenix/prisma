@@ -109,11 +109,13 @@ enum class OpKind : std::uint8_t {
     kStoreVecRegHi = 73,
     kVecFpFma      = 74,
     kVecFpScalarFma = 75,
+    kRepStos       = 76,
+    kRepMovs       = 77,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecFpScalarFma);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kRepMovs);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -306,6 +308,8 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, StoreVecRegHi>) return OpKind::kStoreVecRegHi;
         else if constexpr (std::is_same_v<T, VecFpFma>)      return OpKind::kVecFpFma;
         else if constexpr (std::is_same_v<T, VecFpScalarFma>) return OpKind::kVecFpScalarFma;
+        else if constexpr (std::is_same_v<T, RepStos>)       return OpKind::kRepStos;
+        else if constexpr (std::is_same_v<T, RepMovs>)       return OpKind::kRepMovs;
     }, op);
 }
 
@@ -503,6 +507,14 @@ void write_payload(std::vector<std::uint8_t>& out, const VecFpScalarFma& x) {
     put_u8(out, flags);
     put_u8(out, static_cast<std::uint8_t>(x.size));
     put_u8(out, 0u);  // reserved padding
+}
+void write_payload(std::vector<std::uint8_t>& out, const RepStos& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+    put_u8(out, x.reverse ? 1u : 0u);
+}
+void write_payload(std::vector<std::uint8_t>& out, const RepMovs& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+    put_u8(out, x.reverse ? 1u : 0u);
 }
 void write_payload(std::vector<std::uint8_t>& out, const VecFpBinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
@@ -1085,6 +1097,24 @@ DeserializeError read_payload_vec_fp_scalar_fma(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_rep_stos(Cursor& c, Stmt& s) {
+    if (!c.remaining(2)) return DeserializeError::Truncated;
+    const std::uint8_t size_b = c.take_u8();
+    const std::uint8_t rev_b  = c.take_u8();
+    if (size_b > static_cast<std::uint8_t>(OpSize::I64)) return DeserializeError::BadSize;
+    s.op = RepStos{static_cast<OpSize>(size_b), rev_b != 0u};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_rep_movs(Cursor& c, Stmt& s) {
+    if (!c.remaining(2)) return DeserializeError::Truncated;
+    const std::uint8_t size_b = c.take_u8();
+    const std::uint8_t rev_b  = c.take_u8();
+    if (size_b > static_cast<std::uint8_t>(OpSize::I64)) return DeserializeError::BadSize;
+    s.op = RepMovs{static_cast<OpSize>(size_b), rev_b != 0u};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  op   = c.take_u8();
@@ -1497,6 +1527,8 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kStoreVecRegHi: return read_payload_store_vec_reg_hi(c, s);
         case OpKind::kVecFpFma:    return read_payload_vec_fp_fma(c, s);
         case OpKind::kVecFpScalarFma: return read_payload_vec_fp_scalar_fma(c, s);
+        case OpKind::kRepStos:     return read_payload_rep_stos(c, s);
+        case OpKind::kRepMovs:     return read_payload_rep_movs(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

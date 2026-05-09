@@ -3437,14 +3437,15 @@ TEST_CASE("NOP + MOV imm64 + RET sequence decodes cleanly one at a time") {
 // F1-DC-066 REP / REPE / REPNE prefixes on string ops
 // ---------------------------------------------------------------------
 
-TEST_CASE("decode REP STOSB (F3 AA) → InlineAsm placeholder, 2 bytes") {
+TEST_CASE("decode REP STOSB (F3 AA) → RepStos IR (F2-BK-008)") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0xAA}, r);
     REQUIRE(d.bytes_consumed == 2);
     REQUIRE(d.stmts.size() == 1);
-    REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
-    const auto& ia = std::get<ir::InlineAsm>(d.stmts[0].op);
-    REQUIRE(ia.bytes == std::vector<std::uint8_t>{0xF3, 0xAA});
+    REQUIRE(std::holds_alternative<ir::RepStos>(d.stmts[0].op));
+    const auto& rs = std::get<ir::RepStos>(d.stmts[0].op);
+    REQUIRE(rs.size == ir::OpSize::I8);
+    REQUIRE(rs.reverse == false);
 }
 
 TEST_CASE("decode REPNE SCASB (F2 AE) → InlineAsm placeholder, 2 bytes") {
@@ -3454,12 +3455,14 @@ TEST_CASE("decode REPNE SCASB (F2 AE) → InlineAsm placeholder, 2 bytes") {
     REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
 }
 
-TEST_CASE("decode REP MOVSQ (F3 48 A5) → InlineAsm placeholder, 3 bytes") {
+TEST_CASE("decode REP MOVSQ (F3 48 A5) → RepMovs IR (F2-BK-009)") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x48, 0xA5}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(std::holds_alternative<ir::InlineAsm>(d.stmts[0].op));
-    REQUIRE(std::get<ir::InlineAsm>(d.stmts[0].op).bytes.size() == 3);
+    REQUIRE(std::holds_alternative<ir::RepMovs>(d.stmts[0].op));
+    const auto& rm = std::get<ir::RepMovs>(d.stmts[0].op);
+    REQUIRE(rm.size == ir::OpSize::I64);
+    REQUIRE(rm.reverse == false);
 }
 
 TEST_CASE("decode REPE CMPSB (F3 A6) → InlineAsm placeholder") {

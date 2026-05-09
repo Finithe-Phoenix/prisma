@@ -2909,15 +2909,30 @@ std::variant<Decoded, DecodeError> decode_one(
     // --- STOSB/STOSW/STOSD/STOSQ (AA / AB) ----------------------------------
     if (opcode == 0xAAu || opcode == 0xABu) {
         if (has_lock) return DecodeError::UnsupportedEncoding;
-        if (has_f2 || has_f3) {
-            // REP / REPNE STOS — InlineAsm placeholder.
-            return rep_string_inline_asm(cursor);
-        }
         const ir::OpSize size =
             opcode == 0xAAu ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
                                      : (has_operand_size_override ? ir::OpSize::I16
                                                                   : ir::OpSize::I32));
+        if (has_f3) {
+            // F2-BK-008 — REP STOS lowered as native ARM64 loop.
+            // REPNE (F2) on STOS is invalid per Intel SDM (no compare);
+            // fall through to the InlineAsm placeholder below if seen.
+            if (opcode == 0xAAu && (rex.present || has_operand_size_override)) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            if (opcode == 0xABu && rex.w && has_operand_size_override) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            Decoded d;
+            d.stmts.push_back({std::nullopt, ir::RepStos{size, /*reverse=*/false}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+        if (has_f2) {
+            // REPNE STOS — InlineAsm placeholder (rare/invalid).
+            return rep_string_inline_asm(cursor);
+        }
         if (opcode == 0xAAu && (rex.present || has_operand_size_override)) {
             return DecodeError::UnsupportedEncoding;
         }
@@ -2930,12 +2945,25 @@ std::variant<Decoded, DecodeError> decode_one(
     // --- MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5) ----------------------------------
     if (opcode == 0xA4u || opcode == 0xA5u) {
         if (has_lock) return DecodeError::UnsupportedEncoding;
-        if (has_f2 || has_f3) return rep_string_inline_asm(cursor);
         const ir::OpSize size =
             opcode == 0xA4u ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
                                      : (has_operand_size_override ? ir::OpSize::I16
                                                                   : ir::OpSize::I32));
+        if (has_f3) {
+            // F2-BK-009 — REP MOVS native loop.
+            if (opcode == 0xA4u && (rex.present || has_operand_size_override)) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            if (opcode == 0xA5u && rex.w && has_operand_size_override) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            Decoded d;
+            d.stmts.push_back({std::nullopt, ir::RepMovs{size, /*reverse=*/false}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+        if (has_f2) return rep_string_inline_asm(cursor);
         if (opcode == 0xA4u && (rex.present || has_operand_size_override)) {
             return DecodeError::UnsupportedEncoding;
         }

@@ -105,6 +105,8 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, StoreVecRegHi>) { visit(x.value); }
         else if constexpr (std::is_same_v<T, VecFpFma>)      { visit(x.a); visit(x.b); visit(x.c); }
         else if constexpr (std::is_same_v<T, VecFpScalarFma>) { visit(x.a); visit(x.b); visit(x.c); visit(x.scalar_upper); }
+        else if constexpr (std::is_same_v<T, RepStos>)       { (void)x; }   // no operand refs
+        else if constexpr (std::is_same_v<T, RepMovs>)       { (void)x; }
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg,

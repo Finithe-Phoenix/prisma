@@ -64,6 +64,7 @@ public:
         LoadVecRegHi, StoreVecRegHi,
         VecFpFma,
         VecFpScalarFma,
+        RepStos, RepMovs,
         kCount  // sentinel
     };
 

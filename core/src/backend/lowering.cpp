@@ -230,6 +230,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpFma>)      { bump(op.a, i); bump(op.b, i); bump(op.c, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) { bump(op.a, i); bump(op.b, i); bump(op.c, i); bump(op.scalar_upper, i); }
+            else if constexpr (std::is_same_v<T, ir::RepStos>)       { (void)op; }   // pinned-reg side effects only
+            else if constexpr (std::is_same_v<T, ir::RepMovs>)       { (void)op; }
             else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
@@ -749,6 +751,81 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // dispatcher knows we couldn't handle this region.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::RepStos>) {
+            // F2-BK-008. Native ARM64 loop:
+            //   if RCX == 0: skip.
+            //   loop: store rax→[rdi]; rdi += step; rcx -= 1; loop while rcx != 0.
+            // The pinned host regs for guest RCX/RDI/RAX get mutated
+            // in-place; subsequent IR ops reading these guest regs see
+            // the post-loop values.
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdi = arm64::host_reg_for(ir::Gpr::Rdi);
+            const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
+            Emitter::Label end_label = emitter_.create_label();
+            emitter_.cbz(rcx, end_label);
+            arm64::Reg step_reg, one_reg;
+            if (!allocate_temporary(step_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos step"};
+            }
+            if (!allocate_temporary(one_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos one"};
+            }
+            const std::uint64_t step =
+                static_cast<std::uint64_t>(ir::bit_width(op.size) / 8u);
+            emitter_.mov_imm64(step_reg, step);
+            emitter_.mov_imm64(one_reg, 1ULL);
+            Emitter::Label loop_label = emitter_.create_label();
+            emitter_.bind(loop_label);
+            emitter_.store(rax, rdi, op.size);
+            if (op.reverse) {
+                emitter_.sub(rdi, rdi, step_reg);
+            } else {
+                emitter_.add(rdi, rdi, step_reg);
+            }
+            emitter_.sub(rcx, rcx, one_reg);
+            emitter_.cbnz(rcx, loop_label);
+            emitter_.bind(end_label);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::RepMovs>) {
+            // F2-BK-009. Native ARM64 loop. Same shape as RepStos but
+            // reads from [RSI] into a scratch and writes to [RDI];
+            // both pointers advance per iteration.
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdi = arm64::host_reg_for(ir::Gpr::Rdi);
+            const arm64::Reg rsi = arm64::host_reg_for(ir::Gpr::Rsi);
+            Emitter::Label end_label = emitter_.create_label();
+            emitter_.cbz(rcx, end_label);
+            arm64::Reg step_reg, one_reg, byte_reg;
+            if (!allocate_temporary(step_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs step"};
+            }
+            if (!allocate_temporary(one_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs one"};
+            }
+            if (!allocate_temporary(byte_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs byte"};
+            }
+            const std::uint64_t step =
+                static_cast<std::uint64_t>(ir::bit_width(op.size) / 8u);
+            emitter_.mov_imm64(step_reg, step);
+            emitter_.mov_imm64(one_reg, 1ULL);
+            Emitter::Label loop_label = emitter_.create_label();
+            emitter_.bind(loop_label);
+            emitter_.load (byte_reg, rsi, op.size);
+            emitter_.store(byte_reg, rdi, op.size);
+            if (op.reverse) {
+                emitter_.sub(rsi, rsi, step_reg);
+                emitter_.sub(rdi, rdi, step_reg);
+            } else {
+                emitter_.add(rsi, rsi, step_reg);
+                emitter_.add(rdi, rdi, step_reg);
+            }
+            emitter_.sub(rcx, rcx, one_reg);
+            emitter_.cbnz(rcx, loop_label);
+            emitter_.bind(end_label);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::RspAdjust>) {
