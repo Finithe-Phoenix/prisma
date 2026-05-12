@@ -243,10 +243,14 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.scalar_upper);
         } else if constexpr (std::is_same_v<T, RepStos>) {
             os << "rep_stos." << size_suffix(x.size)
-               << (x.reverse ? ".rev" : "");
+               << (x.reverse ? ".rev" : "")
+               << " (pc=" << x.pc_of_rep
+               << " -> " << x.pc_after_rep << ")";
         } else if constexpr (std::is_same_v<T, RepMovs>) {
             os << "rep_movs." << size_suffix(x.size)
-               << (x.reverse ? ".rev" : "");
+               << (x.reverse ? ".rev" : "")
+               << " (pc=" << x.pc_of_rep
+               << " -> " << x.pc_after_rep << ")";
         } else if constexpr (std::is_same_v<T, VecBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

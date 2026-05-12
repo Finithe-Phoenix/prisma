@@ -3439,13 +3439,17 @@ TEST_CASE("NOP + MOV imm64 + RET sequence decodes cleanly one at a time") {
 
 TEST_CASE("decode REP STOSB (F3 AA) → RepStos IR (F2-BK-008)") {
     ir::Ref r = 0;
-    auto d = decode_ok({0xF3, 0xAA}, r);
+    auto d = decode_ok({0xF3, 0xAA}, r, /*instruction_guest_pc=*/0x4000ull);
     REQUIRE(d.bytes_consumed == 2);
     REQUIRE(d.stmts.size() == 1);
     REQUIRE(std::holds_alternative<ir::RepStos>(d.stmts[0].op));
     const auto& rs = std::get<ir::RepStos>(d.stmts[0].op);
     REQUIRE(rs.size == ir::OpSize::I8);
     REQUIRE(rs.reverse == false);
+    // Blocker A: PCs must round-trip the instruction's guest address +
+    // bytes_consumed so the lowering can pick re-entry vs advance.
+    REQUIRE(rs.pc_of_rep    == 0x4000ull);
+    REQUIRE(rs.pc_after_rep == 0x4002ull);
 }
 
 TEST_CASE("decode REPNE SCASB (F2 AE) → InlineAsm placeholder, 2 bytes") {
@@ -3457,12 +3461,14 @@ TEST_CASE("decode REPNE SCASB (F2 AE) → InlineAsm placeholder, 2 bytes") {
 
 TEST_CASE("decode REP MOVSQ (F3 48 A5) → RepMovs IR (F2-BK-009)") {
     ir::Ref r = 0;
-    auto d = decode_ok({0xF3, 0x48, 0xA5}, r);
+    auto d = decode_ok({0xF3, 0x48, 0xA5}, r, /*instruction_guest_pc=*/0x5000ull);
     REQUIRE(d.bytes_consumed == 3);
     REQUIRE(std::holds_alternative<ir::RepMovs>(d.stmts[0].op));
     const auto& rm = std::get<ir::RepMovs>(d.stmts[0].op);
     REQUIRE(rm.size == ir::OpSize::I64);
     REQUIRE(rm.reverse == false);
+    REQUIRE(rm.pc_of_rep    == 0x5000ull);
+    REQUIRE(rm.pc_after_rep == 0x5003ull);
 }
 
 TEST_CASE("decode REPE CMPSB (F3 A6) → InlineAsm placeholder") {

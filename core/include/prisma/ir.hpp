@@ -609,19 +609,45 @@ struct VecFpFma {
 //   }
 //   ; on exit RCX is 0 and RDI has advanced by count*size.
 //
+// Maximum bytes a single REP STOS/MOVS invocation writes before
+// returning to the dispatcher (Blocker A remediation). Bounded so a
+// guest-controlled RCX cannot hang the host. When the clamp triggers,
+// the lowering exits with `x0 = pc_of_rep` and the dispatcher
+// re-enters the same REP instruction on the next hop with the
+// remaining count, matching x86 REP-is-interruptible semantics.
+// Per-call latency upper bound is dominated by `kRepMaxBytesPerCall`
+// guest stores at ~1 ns each on ARM64 — ~16 ms for 16 MiB.
+inline constexpr std::uint64_t kRepMaxBytesPerCall = 16ull << 20;  // 16 MiB
+
 // `reverse=true` decrements RDI (DF=1). For now the decoder always
 // emits reverse=false; a future commit can wire DF tracking.
+//
+// **Block-terminating with bounded iteration (Blocker A remediation):**
+// `RepStos` is a block terminator (`is_block_terminator` returns true)
+// because its lowering must control the next guest PC. The lowering
+// clamps RCX to `kRepMaxBytesPerCall / step` iterations per dispatch
+// hop so a guest-controlled RCX cannot hang the host. If RCX is
+// non-zero after the clamped loop completes, the block exits with
+// `x0 = pc_of_rep` (re-enters REP on next dispatch); otherwise
+// `x0 = pc_after_rep`. This matches x86 REP-is-interruptible
+// semantics: the guest IP only advances past REP when RCX reaches
+// zero.
 struct RepStos {
-    OpSize size;
-    bool   reverse;
+    OpSize        size;
+    bool          reverse;
+    std::uint64_t pc_of_rep;       // PC of the REP STOSB instruction
+    std::uint64_t pc_after_rep;    // PC of the instruction after REP
 };
 
 // F2-BK-009 — REP MOVSB / MOVSW / MOVSD / MOVSQ. Same shape as
 // RepStos but reads from [RSI] and writes to [RDI]; uses both as
-// pinned operands.
+// pinned operands. Same block-terminating + clamp semantics as
+// `RepStos` (see above).
 struct RepMovs {
-    OpSize size;
-    bool   reverse;
+    OpSize        size;
+    bool          reverse;
+    std::uint64_t pc_of_rep;       // PC of the REP MOVSB instruction
+    std::uint64_t pc_after_rep;    // PC of the instruction after REP
 };
 
 

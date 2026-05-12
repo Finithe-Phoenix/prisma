@@ -32,7 +32,9 @@ bool is_block_terminator(const ir::Op& op) noexcept {
     return std::holds_alternative<ir::Return>(op)
         || std::holds_alternative<ir::JumpRel>(op)
         || std::holds_alternative<ir::JumpReg>(op)
-        || std::holds_alternative<ir::CondJumpRel>(op);
+        || std::holds_alternative<ir::CondJumpRel>(op)
+        || std::holds_alternative<ir::RepStos>(op)
+        || std::holds_alternative<ir::RepMovs>(op);
 }
 
 // ---------------------------------------------------------------------

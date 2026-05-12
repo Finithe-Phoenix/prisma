@@ -2009,6 +2009,55 @@ TEST_CASE("e2e: REP STOSB with RCX=0 — F2-BK-008 zero-iteration skip") {
     for (auto b : buf) REQUIRE(b == 0xAA);
 }
 
+// Blocker A adversarial test: REP STOSB with RCX strictly greater than
+// the per-call clamp must finish correctly across multiple dispatcher
+// hops, not hang the host. RCX = kRepMaxBytesPerCall + small_overflow
+// triggers exactly two REP blocks (one clamped, one finisher) plus the
+// trailing RET block — 3 dispatcher steps total.
+TEST_CASE("e2e: REP STOSB beyond clamp — Blocker A re-entry path") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    constexpr std::uint64_t kIterCap  = ir::kRepMaxBytesPerCall;  // I8: 16 MiB
+    constexpr std::uint64_t kOverflow = 7u;
+    constexpr std::uint64_t kCount    = kIterCap + kOverflow;
+    // Heap buffer with one-byte sentinels at both ends.
+    std::vector<std::uint8_t> buf(kCount + 16u, 0xAAu);
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{0xF3, 0xAA, 0xC3};   // REP STOSB; RET
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0x42ULL;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = kCount;
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
+        reinterpret_cast<std::uint64_t>(&buf[8]);
+    auto r = disp.run(0x4000, /*max_steps=*/8);
+    INFO("dispatch: " << r.message
+                      << "  steps=" << r.stats.steps_taken);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Two REP blocks (clamp + finisher) + one RET block = 3 dispatcher
+    // hops. If the clamp were missing this would either hang or finish
+    // in 1 hop with 16 MiB stored in one host-side burst.
+    REQUIRE(r.stats.steps_taken == 3u);
+    // Pre/post-buffer sentinels intact.
+    REQUIRE(buf[7]                      == 0xAAu);
+    REQUIRE(buf[8u + kCount]            == 0xAAu);
+    // Body fully filled with 0x42.
+    REQUIRE(buf[8u]                     == 0x42u);
+    REQUIRE(buf[8u + kCount - 1u]       == 0x42u);
+    REQUIRE(buf[8u + kIterCap]          == 0x42u);   // boundary byte
+    REQUIRE(buf[8u + kIterCap - 1u]     == 0x42u);
+    // Guest state at halt.
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] == 0ULL);
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] ==
+            reinterpret_cast<std::uint64_t>(&buf[8u + kCount]));
+    REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] == 0x42ULL);
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.

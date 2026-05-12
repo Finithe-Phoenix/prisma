@@ -20,7 +20,9 @@ bool is_terminator(const Op& op) noexcept {
         || std::holds_alternative<Cpuid>(op)
         || std::holds_alternative<Syscall>(op)
         || std::holds_alternative<InlineAsm>(op)
-        || std::holds_alternative<CondJumpFlags>(op);
+        || std::holds_alternative<CondJumpFlags>(op)
+        || std::holds_alternative<RepStos>(op)
+        || std::holds_alternative<RepMovs>(op);
 }
 
 Function build_cfg(std::span<const Stmt> stmts) {

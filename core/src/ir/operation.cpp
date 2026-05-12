@@ -145,10 +145,14 @@ bool operator==(const VecFpScalarFma& a, const VecFpScalarFma& b) noexcept {
         && a.size == b.size;
 }
 bool operator==(const RepStos& a, const RepStos& b) noexcept {
-    return a.size == b.size && a.reverse == b.reverse;
+    return a.size == b.size && a.reverse == b.reverse
+        && a.pc_of_rep == b.pc_of_rep
+        && a.pc_after_rep == b.pc_after_rep;
 }
 bool operator==(const RepMovs& a, const RepMovs& b) noexcept {
-    return a.size == b.size && a.reverse == b.reverse;
+    return a.size == b.size && a.reverse == b.reverse
+        && a.pc_of_rep == b.pc_of_rep
+        && a.pc_after_rep == b.pc_after_rep;
 }
 bool operator==(const VecFpBinOp& a, const VecFpBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;

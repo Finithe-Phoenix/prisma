@@ -754,18 +754,33 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::RepStos>) {
-            // F2-BK-008. Native ARM64 loop:
-            //   if RCX == 0: skip.
-            //   loop: store rax→[rdi]; rdi += step; rcx -= 1; loop while rcx != 0.
-            // The pinned host regs for guest RCX/RDI/RAX get mutated
-            // in-place; subsequent IR ops reading these guest regs see
-            // the post-loop values.
+            // F2-BK-008 + Blocker A. Bounded native ARM64 loop.
+            //
+            //   if RCX == 0: x0 = pc_after_rep; goto block exit.
+            //   iter = min(RCX, kRepMaxBytesPerCall / step)
+            //   RCX -= iter                       (remaining count for next hop)
+            //   loop: store rax→[rdi]; rdi += step; iter -= 1; loop while iter != 0.
+            //   x0 = (RCX == 0) ? pc_after_rep : pc_of_rep
+            //
+            // The clamp turns a guest-controlled RCX into at most
+            // `kRepMaxBytesPerCall` bytes of host work per dispatch hop.
+            // If the loop did not consume all of RCX, the block exits
+            // with `x0 = pc_of_rep` so the dispatcher re-enters the
+            // same REP STOS on the next hop with the remaining count —
+            // matching x86 REP-is-interruptible semantics exactly.
             const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
             const arm64::Reg rdi = arm64::host_reg_for(ir::Gpr::Rdi);
             const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
-            Emitter::Label end_label = emitter_.create_label();
-            emitter_.cbz(rcx, end_label);
-            arm64::Reg step_reg, one_reg;
+            Emitter::Label done_label = emitter_.create_label();
+            Emitter::Label tail_label = emitter_.create_label();
+            emitter_.cbz(rcx, done_label);
+            arm64::Reg max_reg, iter_reg, step_reg, one_reg;
+            if (!allocate_temporary(max_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos max"};
+            }
+            if (!allocate_temporary(iter_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos iter"};
+            }
             if (!allocate_temporary(step_reg)) {
                 return {false, LowerError::OutOfScratchRegs, "RepStos step"};
             }
@@ -774,8 +789,15 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             const std::uint64_t step =
                 static_cast<std::uint64_t>(ir::bit_width(op.size) / 8u);
+            const std::uint64_t iter_cap = ir::kRepMaxBytesPerCall / step;
+            emitter_.mov_imm64(max_reg, iter_cap);
             emitter_.mov_imm64(step_reg, step);
             emitter_.mov_imm64(one_reg, 1ULL);
+            // iter_reg = (RCX < iter_cap) ? RCX : iter_cap
+            emitter_.cmp(rcx, max_reg);
+            emitter_.csel(iter_reg, rcx, max_reg, ir::CondCode::Ult);
+            // RCX = RCX - iter_reg  (remaining count for next hop)
+            emitter_.sub(rcx, rcx, iter_reg);
             Emitter::Label loop_label = emitter_.create_label();
             emitter_.bind(loop_label);
             emitter_.store(rax, rdi, op.size);
@@ -784,21 +806,36 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             } else {
                 emitter_.add(rdi, rdi, step_reg);
             }
-            emitter_.sub(rcx, rcx, one_reg);
-            emitter_.cbnz(rcx, loop_label);
-            emitter_.bind(end_label);
+            emitter_.sub(iter_reg, iter_reg, one_reg);
+            emitter_.cbnz(iter_reg, loop_label);
+            emitter_.bind(done_label);
+            // Block exit: pick pc_after_rep when RCX hit 0; otherwise
+            // pc_of_rep so the dispatcher re-enters the same REP.
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_of_rep);
+            emitter_.cbnz(rcx, tail_label);
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_after_rep);
+            emitter_.bind(tail_label);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::RepMovs>) {
-            // F2-BK-009. Native ARM64 loop. Same shape as RepStos but
-            // reads from [RSI] into a scratch and writes to [RDI];
-            // both pointers advance per iteration.
+            // F2-BK-009 + Blocker A. Bounded native ARM64 loop. Same
+            // shape as RepStos but reads from [RSI] into a scratch and
+            // writes to [RDI]; both pointers advance per iteration.
+            // See RepStos for the clamp + re-entry contract.
             const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
             const arm64::Reg rdi = arm64::host_reg_for(ir::Gpr::Rdi);
             const arm64::Reg rsi = arm64::host_reg_for(ir::Gpr::Rsi);
-            Emitter::Label end_label = emitter_.create_label();
-            emitter_.cbz(rcx, end_label);
-            arm64::Reg step_reg, one_reg, byte_reg;
+            Emitter::Label done_label = emitter_.create_label();
+            Emitter::Label tail_label = emitter_.create_label();
+            emitter_.cbz(rcx, done_label);
+            arm64::Reg max_reg, iter_reg, step_reg, one_reg, byte_reg;
+            if (!allocate_temporary(max_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs max"};
+            }
+            if (!allocate_temporary(iter_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs iter"};
+            }
             if (!allocate_temporary(step_reg)) {
                 return {false, LowerError::OutOfScratchRegs, "RepMovs step"};
             }
@@ -810,8 +847,13 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             const std::uint64_t step =
                 static_cast<std::uint64_t>(ir::bit_width(op.size) / 8u);
+            const std::uint64_t iter_cap = ir::kRepMaxBytesPerCall / step;
+            emitter_.mov_imm64(max_reg, iter_cap);
             emitter_.mov_imm64(step_reg, step);
             emitter_.mov_imm64(one_reg, 1ULL);
+            emitter_.cmp(rcx, max_reg);
+            emitter_.csel(iter_reg, rcx, max_reg, ir::CondCode::Ult);
+            emitter_.sub(rcx, rcx, iter_reg);
             Emitter::Label loop_label = emitter_.create_label();
             emitter_.bind(loop_label);
             emitter_.load (byte_reg, rsi, op.size);
@@ -823,9 +865,14 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 emitter_.add(rsi, rsi, step_reg);
                 emitter_.add(rdi, rdi, step_reg);
             }
-            emitter_.sub(rcx, rcx, one_reg);
-            emitter_.cbnz(rcx, loop_label);
-            emitter_.bind(end_label);
+            emitter_.sub(iter_reg, iter_reg, one_reg);
+            emitter_.cbnz(iter_reg, loop_label);
+            emitter_.bind(done_label);
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_of_rep);
+            emitter_.cbnz(rcx, tail_label);
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_after_rep);
+            emitter_.bind(tail_label);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::RspAdjust>) {

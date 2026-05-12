@@ -2925,7 +2925,11 @@ std::variant<Decoded, DecodeError> decode_one(
                 return DecodeError::UnsupportedEncoding;
             }
             Decoded d;
-            d.stmts.push_back({std::nullopt, ir::RepStos{size, /*reverse=*/false}});
+            d.stmts.push_back({std::nullopt, ir::RepStos{
+                size,
+                /*reverse=*/false,
+                /*pc_of_rep=*/instruction_guest_pc,
+                /*pc_after_rep=*/instruction_guest_pc + cursor}});
             d.bytes_consumed = cursor;
             return d;
         }
@@ -2959,7 +2963,11 @@ std::variant<Decoded, DecodeError> decode_one(
                 return DecodeError::UnsupportedEncoding;
             }
             Decoded d;
-            d.stmts.push_back({std::nullopt, ir::RepMovs{size, /*reverse=*/false}});
+            d.stmts.push_back({std::nullopt, ir::RepMovs{
+                size,
+                /*reverse=*/false,
+                /*pc_of_rep=*/instruction_guest_pc,
+                /*pc_after_rep=*/instruction_guest_pc + cursor}});
             d.bytes_consumed = cursor;
             return d;
         }

@@ -1227,3 +1227,57 @@ TEST_CASE("Lowerer: Fence Sfence emits dmb ishst") {
     REQUIRE(ok);
     REQUIRE(d.find("dmb ishst") != std::string::npos);
 }
+
+// Blocker A: REP STOS / REP MOVS must bound their per-call iteration
+// count so a guest-controlled RCX cannot hang the host. The lowering
+// inserts `cmp rcx, kIterCap ; csel iter, rcx, kIterCap, lo` before
+// the body and exits with `x0 = pc_of_rep` when RCX is non-zero at
+// loop end so the dispatcher re-enters with the remaining count.
+TEST_CASE("Lowerer: RepStos clamps RCX and emits PC-conditional epilogue") {
+    constexpr std::uint64_t kPcRep   = 0x4000ull;
+    constexpr std::uint64_t kPcAfter = 0x4002ull;  // 2-byte F3 AA
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::RepStos{ir::OpSize::I8, /*reverse=*/false,
+                                   kPcRep, kPcAfter}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+
+    // Bounded loop: cbz / cbnz brackets + cmp + csel for the clamp.
+    REQUIRE(d.find("cbz")  != std::string::npos);   // zero-RCX fast path
+    REQUIRE(d.find("cmp")  != std::string::npos);   // rcx vs iter_cap
+    REQUIRE(d.find("csel") != std::string::npos);   // iter = min(rcx, cap)
+    REQUIRE(d.find("cbnz") != std::string::npos);   // loop back-edge
+
+    // For OpSize::I8 the iter_cap is kRepMaxBytesPerCall / 1 = 16 MiB =
+    // 0x1000000. vixl prints it as either #0x1000000 or split via movz/movk.
+    // We check the high half (movk #0x100, lsl #16) which is the stable view.
+    REQUIRE((d.find("#0x100, lsl #16") != std::string::npos ||
+             d.find("#0x1000000")      != std::string::npos));
+
+    // Both PC destinations show up in the epilogue (mov_imm64 each).
+    REQUIRE(d.find("#0x4000") != std::string::npos);
+    REQUIRE(d.find("#0x4002") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {
+    constexpr std::uint64_t kPcRep   = 0x5000ull;
+    constexpr std::uint64_t kPcAfter = 0x5003ull;  // 3-byte F3 48 A5
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::RepMovs{ir::OpSize::I64, /*reverse=*/false,
+                                   kPcRep, kPcAfter}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("cbz")  != std::string::npos);
+    REQUIRE(d.find("cmp")  != std::string::npos);
+    REQUIRE(d.find("csel") != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
+    // For OpSize::I64 the iter_cap is 16 MiB / 8 = 2 MiB = 0x200000.
+    REQUIRE((d.find("#0x20, lsl #16") != std::string::npos ||
+             d.find("#0x200000")      != std::string::npos));
+    REQUIRE(d.find("#0x5000") != std::string::npos);
+    REQUIRE(d.find("#0x5003") != std::string::npos);
+}

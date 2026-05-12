@@ -511,10 +511,14 @@ void write_payload(std::vector<std::uint8_t>& out, const VecFpScalarFma& x) {
 void write_payload(std::vector<std::uint8_t>& out, const RepStos& x) {
     put_u8(out, static_cast<std::uint8_t>(x.size));
     put_u8(out, x.reverse ? 1u : 0u);
+    put_u64(out, x.pc_of_rep);
+    put_u64(out, x.pc_after_rep);
 }
 void write_payload(std::vector<std::uint8_t>& out, const RepMovs& x) {
     put_u8(out, static_cast<std::uint8_t>(x.size));
     put_u8(out, x.reverse ? 1u : 0u);
+    put_u64(out, x.pc_of_rep);
+    put_u64(out, x.pc_after_rep);
 }
 void write_payload(std::vector<std::uint8_t>& out, const VecFpBinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
@@ -1098,20 +1102,24 @@ DeserializeError read_payload_vec_fp_scalar_fma(Cursor& c, Stmt& s) {
 }
 
 DeserializeError read_payload_rep_stos(Cursor& c, Stmt& s) {
-    if (!c.remaining(2)) return DeserializeError::Truncated;
-    const std::uint8_t size_b = c.take_u8();
-    const std::uint8_t rev_b  = c.take_u8();
+    if (!c.remaining(2 + 8 + 8)) return DeserializeError::Truncated;
+    const std::uint8_t  size_b = c.take_u8();
+    const std::uint8_t  rev_b  = c.take_u8();
+    const std::uint64_t pc_of  = c.take_u64();
+    const std::uint64_t pc_aft = c.take_u64();
     if (size_b > static_cast<std::uint8_t>(OpSize::I64)) return DeserializeError::BadSize;
-    s.op = RepStos{static_cast<OpSize>(size_b), rev_b != 0u};
+    s.op = RepStos{static_cast<OpSize>(size_b), rev_b != 0u, pc_of, pc_aft};
     return DeserializeError::Ok;
 }
 
 DeserializeError read_payload_rep_movs(Cursor& c, Stmt& s) {
-    if (!c.remaining(2)) return DeserializeError::Truncated;
-    const std::uint8_t size_b = c.take_u8();
-    const std::uint8_t rev_b  = c.take_u8();
+    if (!c.remaining(2 + 8 + 8)) return DeserializeError::Truncated;
+    const std::uint8_t  size_b = c.take_u8();
+    const std::uint8_t  rev_b  = c.take_u8();
+    const std::uint64_t pc_of  = c.take_u64();
+    const std::uint64_t pc_aft = c.take_u64();
     if (size_b > static_cast<std::uint8_t>(OpSize::I64)) return DeserializeError::BadSize;
-    s.op = RepMovs{static_cast<OpSize>(size_b), rev_b != 0u};
+    s.op = RepMovs{static_cast<OpSize>(size_b), rev_b != 0u, pc_of, pc_aft};
     return DeserializeError::Ok;
 }
 
