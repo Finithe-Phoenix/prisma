@@ -269,7 +269,7 @@ test, doubled.
   not move; the existing 800+ test corpus stayed green throughout
   the F2-IR-005 ramp.
 - Incremental rollout: one opcode at a time, each as its own commit
-  + decoder test. No flag-day refactor.
+  paired with a decoder test. No flag-day refactor.
 - The Lean spec only grows by the two trivial load/store ops once
   formalised. Pair semantics fall out of repeated application of the
   underlying 128-bit primitives.

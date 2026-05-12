@@ -359,7 +359,7 @@ proves insufficient.
 **Status:** open. **Must be addressed before merging the F2 branch to
 `main`.** Tracked as Blocker A in the F2 review.
 
-### 2. x86 `#DE` (divide-error) trap is not emitted.
+### 2. x86 `#DE` (divide-error) trap is not emitted
 
 Both lowering (`core/src/backend/lowering.cpp:469-483`) and const-prop
 (`core/src/passes/const_prop.cpp:76-91`) silently produce `0` for
@@ -370,7 +370,7 @@ not a fault. This is a known divergence; tracked for a deferred F2-BK
 item that introduces an optional pre-check + `Trap` IR op. Decoder spec
 already carries a caveat. Not blocking; not a regression.
 
-### 3. DF (direction flag) tracking for REP.
+### 3. DF (direction flag) tracking for REP
 
 `reverse = true` is reachable only once the decoder reads DF at decode
 time. Today DF is not part of the modelled flag set; we always emit
@@ -378,7 +378,7 @@ time. Today DF is not part of the modelled flag set; we always emit
 `REP MOVSB` get incorrect behaviour today. Tracked for the F2 flag
 infrastructure work.
 
-### 4. Pairing pass should be promoted to an explicit recogniser.
+### 4. Pairing pass should be promoted to an explicit recogniser
 
 The lowerer's ad-hoc adjacent-pair recognition is fragile (depends on
 statement ordering surviving the 10-pass pipeline). Promoting it to an
@@ -388,7 +388,7 @@ tag the pair so the lowerer can emit a single ARM64 sequence" — would
 de-couple the recogniser from emission and make the optimisation
 visible to the IR dumper. Tracked for a follow-up.
 
-### 5. Lean specification.
+### 5. Lean specification
 
 The six new `BinOpKind`s have closed-form arithmetic semantics over
 `BitVec n` and should add to `ir-spec/PrismaIR/Semantics.lean` without
