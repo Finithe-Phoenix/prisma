@@ -19,6 +19,7 @@
 #include <csetjmp>
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
