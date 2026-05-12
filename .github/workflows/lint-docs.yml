@@ -30,6 +30,7 @@ jobs:
             **/*.md
             !third_party/**
             !**/node_modules/**
+            !.claude/**
 
   check-rfc-frontmatter:
     runs-on: ubuntu-latest
