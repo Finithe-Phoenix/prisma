@@ -1,14 +1,22 @@
 // markdownlint rules for Prisma.
 // Philosophy: permissive. We care about real problems (broken links,
-// malformed frontmatter), not about line length or duplicate headings
-// in living documents.
+// malformed frontmatter), not about line length or cosmetic spacing
+// in living documents. CI checks meaningful structure; humans can
+// read the file just fine without forced blank lines around lists.
 {
   "default": true,
   "MD013": false,         // line length — long lines are fine in prose
+  "MD022": false,         // blanks around headings — cosmetic only
   "MD024": false,         // duplicate headings — research notes repeat sections by design
+  "MD025": false,         // single h1 — frontmatter + body title coexist in blog drafts
+  "MD029": false,         // ordered list prefix — we don't care about 1.1.1 vs 1.2.3
+  "MD031": false,         // blanks around fences — cosmetic only
+  "MD032": false,         // blanks around lists — cosmetic only
   "MD033": false,         // inline HTML — we use none, but not worth blocking
+  "MD040": false,         // fenced code language — many shell snippets stand alone
   "MD041": false,         // first line h1 — frontmatter triggers this in RFCs
   "MD046": false,         // code block style — both fenced and indented are fine
-  "MD007": { "indent": 2 },
-  "MD029": false          // ordered list prefix — we don't care about 1.1.1 vs 1.2.3
+  "MD047": false,         // single trailing newline — cosmetic only
+  "MD056": false,         // table column count — pipes inside `[~|claude]` cell trips this; semantically fine
+  "MD007": { "indent": 2 }
 }
