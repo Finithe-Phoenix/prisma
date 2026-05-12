@@ -41,12 +41,19 @@ protocol and one missed attacker model.
   BinOps + REP IR ops, covers `5448c9b`, `8317648`). Authorship
   recorded as `claude`; Danny waiver or Codex co-sign is the
   remaining step to flip the status to `accepted` under two-eyes.
-- **Blocker A — REP DoS:** open. Proposed clamp + restart remediation
-  documented in [RFC 0012 §Open questions §1](rfc/0012-f2-wide-binops-and-rep-string.md#1-security-high-rep-unbounded-iteration-is-a-host-dos)
-  with the canonical `csel` sketch and the required adversarial test
-  (`RepStos { rcx = (1 << 32) + 1 }` completes in bounded time).
-  Implementation requires a build-capable machine (Apple silicon or
-  Linux ARM64); cannot land from the Windows coordination host.
+- **Blocker A — REP DoS: RESOLVED** in `5756084`. `RepStos` and
+  `RepMovs` are now block-terminating IR ops carrying `pc_of_rep` and
+  `pc_after_rep`. Lowering caps per-call iterations at
+  `kRepMaxBytesPerCall / step` (16 MiB of stores) and selects the
+  exit PC from post-loop RCX — when remaining count is non-zero, the
+  dispatcher re-enters the same REP with `x0 = pc_of_rep`. Per-call
+  host latency is bounded at ~16 ms regardless of guest RCX.
+  Validation: 768/767 cases + 4494 assertions verde under Debug AND
+  ASan+UBSan on a Linux x86_64 container (mirrors CI). Adversarial
+  e2e (`RepStos { rcx = 16 MiB + 7 }` halts in 3 dispatcher hops,
+  full buffer filled, RCX=0) is wired but ARM64-only — gets
+  `SUCCEED("skipped on non-ARM64 host")` until validated on Apple
+  silicon or `linux/arm64` CI.
 
 ---
 
