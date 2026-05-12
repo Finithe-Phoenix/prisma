@@ -404,10 +404,14 @@ TEST_CASE("zydis-diff(corpus): atomic / fence",
 #else  // !PRISMA_HAVE_ZYDIS
 
 TEST_CASE("zydis-diff: skipped (build with -DPRISMA_ENABLE_ZYDIS=ON)",
-          "[zydis][differential][!shouldfail]") {
-    WARN("Zydis not enabled at configure time; differential decoder "
-         "test is a no-op. Re-run cmake with -DPRISMA_ENABLE_ZYDIS=ON "
-         "to activate.");
+          "[zydis][differential]") {
+    // SUCCEED — not WARN+!shouldfail — so this stub does not register
+    // as a test failure under ctest in CI when Zydis is disabled (the
+    // default in core-stub.yml / core-sanitizers.yml). The message is
+    // still visible to anyone running the suite locally.
+    SUCCEED("Zydis not enabled at configure time; differential decoder "
+            "test is a no-op. Re-run cmake with -DPRISMA_ENABLE_ZYDIS=ON "
+            "to activate.");
 }
 
 #endif  // PRISMA_HAVE_ZYDIS
