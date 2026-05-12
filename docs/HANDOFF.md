@@ -65,7 +65,7 @@ Revisa **`docs/SESSION_TRACE.md`** para la trazabilidad completa de los
   VEXTRACTF128, VPERM2F128, VPMOVZX/SX BW/BD/BQ/WD/WQ/DQ — todos
   implementados sin nuevos IR ops.
 - **FMA3 completo**: 96 opcodes (4 familias × 3 orderings × {PS,PD}×{xmm,ymm}
-  + scalar SS/SD + MADDSUB/MSUBADD packed). Dos IR ops nuevos:
+  plus scalar SS/SD + MADDSUB/MSUBADD packed). Dos IR ops nuevos:
   `VecFpFma`, `VecFpScalarFma`.
 - **MUL/DIV proper**: x86 MUL/IMUL ahora escriben rdx:rax completo
   (UMulHi/SMulHi); DIV/IDIV escriben quotient + remainder. Nuevos

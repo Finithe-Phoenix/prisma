@@ -20,13 +20,13 @@ soft-skip in CI on hosts without QEMU user-mode.
 - QEMU user-mode (`qemu-x86_64`) is **not** on Homebrew for macOS
   (only `qemu-system-*`). The CI Linux runner (`prisma-linux-arm64`,
   per `F0-DX-014`) has it; local macOS dev installs via:
-    * `brew install qemu` won't help — the user-mode targets are
-      not built in the bottle.
-    * Docker Desktop's `linux/amd64` Rosetta layer silently fails
-      on non-trivial binaries today (we tried; emulated bash
-      "cannot execute binary file"); bring this back when Apple
-      ships a 16K-page-friendly amd64 path.
-    * Build qemu from source with `--enable-linux-user` (~5 min).
+  - `brew install qemu` won't help — the user-mode targets are
+    not built in the bottle.
+  - Docker Desktop's `linux/amd64` Rosetta layer silently fails
+    on non-trivial binaries today (we tried; emulated bash
+    "cannot execute binary file"); bring this back when Apple
+    ships a 16K-page-friendly amd64 path.
+  - Build qemu from source with `--enable-linux-user` (~5 min).
 - ELF generation is more naturally Python than CMake.
 
 ## Roadmap
