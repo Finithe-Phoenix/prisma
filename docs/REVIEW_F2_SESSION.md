@@ -32,6 +32,22 @@ block merge to `main`:
 Both must be addressed. Code quality itself is good; this is about
 protocol and one missed attacker model.
 
+### Status update (later 2026-05-12 session)
+
+- **Blocker B — Two-eyes:** option 2 (post-hoc RFCs) satisfied via
+  [RFC 0011](rfc/0011-f2-avx256-fma-lowering.md) (pair-of-Vec128 + FMA
+  IR shape, covers `a2fabde`, `02c900f`, `afccedd`) and
+  [RFC 0012](rfc/0012-f2-wide-binops-and-rep-string.md) (wide-form
+  BinOps + REP IR ops, covers `5448c9b`, `8317648`). Authorship
+  recorded as `claude`; Danny waiver or Codex co-sign is the
+  remaining step to flip the status to `accepted` under two-eyes.
+- **Blocker A — REP DoS:** open. Proposed clamp + restart remediation
+  documented in [RFC 0012 §Open questions §1](rfc/0012-f2-wide-binops-and-rep-string.md#1-security-high-rep-unbounded-iteration-is-a-host-dos)
+  with the canonical `csel` sketch and the required adversarial test
+  (`RepStos { rcx = (1 << 32) + 1 }` completes in bounded time).
+  Implementation requires a build-capable machine (Apple silicon or
+  Linux ARM64); cannot land from the Windows coordination host.
+
 ---
 
 ## prisma-pr-review — 8-point check
