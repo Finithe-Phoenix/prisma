@@ -63,6 +63,11 @@ npu-models/training/runs/
 *.swp
 *.swo
 
+# Claude Code per-user state (only project-scoped skills are tracked)
+.claude/*
+!.claude/skills/
+!.claude/skills/**
+
 # OS
 .DS_Store
 Thumbs.db
