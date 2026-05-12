@@ -72,7 +72,10 @@ jobs:
           fi
           budget=$(tr -d '[:space:]' < "$budget_file")
           # Count sorry usages in .lean files only (exclude .lake/).
-          actual=$(grep -rn --include='*.lean' '^[[:space:]]*sorry\b' PrismaIR | wc -l | tr -d ' ')
+          # `grep || true` so the "zero matches → exit 1" interaction with
+          # `set -e -o pipefail` does not abort the job when the spec is
+          # already sorry-free.
+          actual=$( { grep -rn --include='*.lean' '^[[:space:]]*sorry\b' PrismaIR || true; } | wc -l | tr -d ' ')
           echo "sorry budget: $budget"
           echo "sorry actual: $actual"
           if [ "$actual" -gt "$budget" ]; then
