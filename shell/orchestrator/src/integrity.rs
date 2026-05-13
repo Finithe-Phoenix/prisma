@@ -9,6 +9,7 @@ use thiserror::Error;
 pub struct Sha256Hash(pub [u8; 32]);
 
 impl Sha256Hash {
+    #[must_use]
     pub fn from_bytes(buf: &[u8]) -> Self {
         let mut h = Sha256::new();
         h.update(buf);
@@ -18,10 +19,12 @@ impl Sha256Hash {
         Self(arr)
     }
 
+    #[must_use]
     pub fn to_hex(&self) -> String {
+        use std::fmt::Write as _;
         let mut s = String::with_capacity(64);
         for b in self.0 {
-            s.push_str(&format!("{:02x}", b));
+            write!(s, "{b:02x}").expect("writing to String cannot fail");
         }
         s
     }
@@ -32,10 +35,8 @@ impl Sha256Hash {
         }
         let mut arr = [0u8; 32];
         for (i, byte_pair) in hex.as_bytes().chunks(2).enumerate() {
-            let s = std::str::from_utf8(byte_pair)
-                .map_err(|_| IntegrityError::BadHexChar)?;
-            arr[i] = u8::from_str_radix(s, 16)
-                .map_err(|_| IntegrityError::BadHexChar)?;
+            let s = std::str::from_utf8(byte_pair).map_err(|_| IntegrityError::BadHexChar)?;
+            arr[i] = u8::from_str_radix(s, 16).map_err(|_| IntegrityError::BadHexChar)?;
         }
         Ok(Self(arr))
     }
@@ -59,7 +60,7 @@ pub fn verify(bytes: &[u8], expected: &Sha256Hash) -> Result<(), IntegrityError>
     } else {
         Err(IntegrityError::Mismatch {
             expected: expected.to_hex(),
-            actual:   actual.to_hex(),
+            actual: actual.to_hex(),
         })
     }
 }
@@ -96,7 +97,10 @@ mod tests {
     fn verify_rejects_mismatch() {
         let buf = b"prisma-test-payload";
         let wrong = Sha256Hash::from_bytes(b"different");
-        assert!(matches!(verify(buf, &wrong), Err(IntegrityError::Mismatch { .. })));
+        assert!(matches!(
+            verify(buf, &wrong),
+            Err(IntegrityError::Mismatch { .. })
+        ));
     }
 
     #[test]

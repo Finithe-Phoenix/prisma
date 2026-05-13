@@ -15,17 +15,17 @@ use crate::integrity::Sha256Hash;
 /// format) — keep in lockstep when that RFC ships v3.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheEntry {
-    pub guest_addr:   u64,
-    pub content_hash: u64,        // FNV-1a of guest bytes (cache key)
-    pub guest_size:   u64,
+    pub guest_addr: u64,
+    pub content_hash: u64, // FNV-1a of guest bytes (cache key)
+    pub guest_size: u64,
     /// SHA-256 of the on-the-wire `code_bytes`. Used by the receiver
     /// to verify integrity before accepting the entry.
-    pub code_sha256:  Sha256Hash,
-    pub code_bytes:   Vec<u8>,
+    pub code_sha256: Sha256Hash,
+    pub code_bytes: Vec<u8>,
     /// Optional zstd compression: when true, `code_bytes` is the
     /// compressed payload; receiver decompresses before verifying
     /// `code_sha256` against the decoded form.
-    pub compressed:   bool,
+    pub compressed: bool,
 }
 
 /// Top-level frame the P2P transport expects. Lets the wire format
@@ -33,18 +33,11 @@ pub struct CacheEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CacheMsg {
     /// "Do you have a translation for `(guest_addr, content_hash)`?"
-    Query {
-        guest_addr:   u64,
-        content_hash: u64,
-    },
+    Query { guest_addr: u64, content_hash: u64 },
     /// Reply: empty if the peer doesn't have it.
-    Reply {
-        entries: Vec<CacheEntry>,
-    },
+    Reply { entries: Vec<CacheEntry> },
     /// Push: peer offers entries unsolicited (gossip mode).
-    Announce {
-        entries: Vec<CacheEntry>,
-    },
+    Announce { entries: Vec<CacheEntry> },
 }
 
 /// Protocol version; bump on incompatible shape changes.
@@ -60,12 +53,12 @@ mod tests {
         // serde_json would also pass.
         let h = Sha256Hash::from_bytes(b"some-entry");
         let e = CacheEntry {
-            guest_addr:   0x1000,
+            guest_addr: 0x1000,
             content_hash: 0xCAFEBABE,
-            guest_size:   16,
-            code_sha256:  h.clone(),
-            code_bytes:   vec![0x90, 0x90, 0xC3],
-            compressed:   false,
+            guest_size: 16,
+            code_sha256: h.clone(),
+            code_bytes: vec![0x90, 0x90, 0xC3],
+            compressed: false,
         };
         // toml needs a wrapper struct because of top-level array
         // restriction. JSON works directly:
@@ -76,12 +69,17 @@ mod tests {
 
     #[test]
     fn cache_msg_query_and_reply_round_trip() {
-        let q = CacheMsg::Query { guest_addr: 0x4000, content_hash: 0xDEADBEEF };
+        let q = CacheMsg::Query {
+            guest_addr: 0x4000,
+            content_hash: 0xDEADBEEF,
+        };
         let s = serde_json::to_string(&q).unwrap();
         let r: CacheMsg = serde_json::from_str(&s).unwrap();
         assert_eq!(q, r);
 
-        let a = CacheMsg::Reply { entries: Vec::new() };
+        let a = CacheMsg::Reply {
+            entries: Vec::new(),
+        };
         let s = serde_json::to_string(&a).unwrap();
         let r: CacheMsg = serde_json::from_str(&s).unwrap();
         assert_eq!(a, r);

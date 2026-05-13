@@ -28,42 +28,42 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PeMachine {
-    I386,    // 0x014C
-    X86_64,  // 0x8664
-    Arm64,   // 0xAA64
+    I386,   // 0x014C
+    X86_64, // 0x8664
+    Arm64,  // 0xAA64
     Other(u16),
 }
 
 impl PeMachine {
-    fn from_u16(m: u16) -> Self {
+    const fn from_u16(m: u16) -> Self {
         match m {
             0x014C => Self::I386,
             0x8664 => Self::X86_64,
             0xAA64 => Self::Arm64,
-            other  => Self::Other(other),
+            other => Self::Other(other),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeSection {
-    pub name:             [u8; 8],
-    pub virtual_size:     u32,
-    pub virtual_address:  u32,
-    pub raw_data_size:    u32,
-    pub raw_data_offset:  u32,
-    pub characteristics:  u32,
+    pub name: [u8; 8],
+    pub virtual_size: u32,
+    pub virtual_address: u32,
+    pub raw_data_size: u32,
+    pub raw_data_offset: u32,
+    pub characteristics: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeImage {
-    pub machine:        PeMachine,
-    pub section_count:  u16,
-    pub timestamp:      u32,
+    pub machine: PeMachine,
+    pub section_count: u16,
+    pub timestamp: u32,
     pub entry_point_rva: u32,
-    pub image_base:     u64,
-    pub size_of_image:  u32,
-    pub sections:       Vec<PeSection>,
+    pub image_base: u64,
+    pub size_of_image: u32,
+    pub sections: Vec<PeSection>,
 }
 
 #[derive(Debug, Error)]
@@ -92,32 +92,39 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
         return Err(PeError::Truncated(bytes.len()));
     }
     let dos_magic = u16::from_le_bytes([bytes[0], bytes[1]]);
-    if dos_magic != 0x5A4D {  // 'MZ' little-endian
+    if dos_magic != 0x5A4D {
+        // 'MZ' little-endian
         return Err(PeError::BadDosMagic(dos_magic));
     }
-    let e_lfanew = u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]])
-        as usize;
+    let e_lfanew =
+        u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]]) as usize;
     if e_lfanew + 24 > bytes.len() {
         return Err(PeError::LfanewOutOfRange(e_lfanew, bytes.len()));
     }
 
     // 2. NT signature — 4 bytes 'PE\0\0' at e_lfanew.
     let nt_magic = u32::from_le_bytes([
-        bytes[e_lfanew], bytes[e_lfanew + 1],
-        bytes[e_lfanew + 2], bytes[e_lfanew + 3],
+        bytes[e_lfanew],
+        bytes[e_lfanew + 1],
+        bytes[e_lfanew + 2],
+        bytes[e_lfanew + 3],
     ]);
-    if nt_magic != 0x0000_4550 {  // 'PE\0\0'
+    if nt_magic != 0x0000_4550 {
+        // 'PE\0\0'
         return Err(PeError::BadNtMagic(nt_magic));
     }
 
     // 3. COFF file header — 20 bytes after NT signature.
     let coff = e_lfanew + 4;
-    let machine        = u16::from_le_bytes([bytes[coff],     bytes[coff + 1]]);
-    let n_sections     = u16::from_le_bytes([bytes[coff + 2], bytes[coff + 3]]);
-    let timestamp      = u32::from_le_bytes([
-        bytes[coff + 4], bytes[coff + 5], bytes[coff + 6], bytes[coff + 7]
+    let machine = u16::from_le_bytes([bytes[coff], bytes[coff + 1]]);
+    let n_sections = u16::from_le_bytes([bytes[coff + 2], bytes[coff + 3]]);
+    let timestamp = u32::from_le_bytes([
+        bytes[coff + 4],
+        bytes[coff + 5],
+        bytes[coff + 6],
+        bytes[coff + 7],
     ]);
-    let opt_hdr_size   = u16::from_le_bytes([bytes[coff + 16], bytes[coff + 17]]) as usize;
+    let opt_hdr_size = u16::from_le_bytes([bytes[coff + 16], bytes[coff + 17]]) as usize;
 
     // 4. Optional header — variable size; first 2 bytes carry magic
     //    (0x010B = PE32, 0x020B = PE32+).
@@ -130,26 +137,41 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
         0x010B => {
             // PE32: image_base is u32 at offset 28.
             let entry = u32::from_le_bytes([
-                bytes[opt + 16], bytes[opt + 17], bytes[opt + 18], bytes[opt + 19]
+                bytes[opt + 16],
+                bytes[opt + 17],
+                bytes[opt + 18],
+                bytes[opt + 19],
             ]);
-            let base = u32::from_le_bytes([
-                bytes[opt + 28], bytes[opt + 29], bytes[opt + 30], bytes[opt + 31]
-            ]) as u64;
+            let base = u64::from(u32::from_le_bytes([
+                bytes[opt + 28],
+                bytes[opt + 29],
+                bytes[opt + 30],
+                bytes[opt + 31],
+            ]));
             let sz = u32::from_le_bytes([
-                bytes[opt + 56], bytes[opt + 57], bytes[opt + 58], bytes[opt + 59]
+                bytes[opt + 56],
+                bytes[opt + 57],
+                bytes[opt + 58],
+                bytes[opt + 59],
             ]);
             (entry, base, sz)
         }
         0x020B => {
             // PE32+: image_base is u64 at offset 24.
             let entry = u32::from_le_bytes([
-                bytes[opt + 16], bytes[opt + 17], bytes[opt + 18], bytes[opt + 19]
+                bytes[opt + 16],
+                bytes[opt + 17],
+                bytes[opt + 18],
+                bytes[opt + 19],
             ]);
             let mut base_buf = [0u8; 8];
-            base_buf.copy_from_slice(&bytes[opt + 24 .. opt + 32]);
+            base_buf.copy_from_slice(&bytes[opt + 24..opt + 32]);
             let base = u64::from_le_bytes(base_buf);
             let sz = u32::from_le_bytes([
-                bytes[opt + 56], bytes[opt + 57], bytes[opt + 58], bytes[opt + 59]
+                bytes[opt + 56],
+                bytes[opt + 57],
+                bytes[opt + 58],
+                bytes[opt + 59],
             ]);
             (entry, base, sz)
         }
@@ -164,15 +186,23 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
             return Err(PeError::Truncated(bytes.len()));
         }
         let mut name = [0u8; 8];
-        name.copy_from_slice(&bytes[sec_off .. sec_off + 8]);
-        let virtual_size    = u32::from_le_bytes(bytes[sec_off + 8 .. sec_off + 12].try_into().unwrap());
-        let virtual_address = u32::from_le_bytes(bytes[sec_off + 12 .. sec_off + 16].try_into().unwrap());
-        let raw_data_size   = u32::from_le_bytes(bytes[sec_off + 16 .. sec_off + 20].try_into().unwrap());
-        let raw_data_offset = u32::from_le_bytes(bytes[sec_off + 20 .. sec_off + 24].try_into().unwrap());
-        let characteristics = u32::from_le_bytes(bytes[sec_off + 36 .. sec_off + 40].try_into().unwrap());
+        name.copy_from_slice(&bytes[sec_off..sec_off + 8]);
+        let virtual_size = u32::from_le_bytes(bytes[sec_off + 8..sec_off + 12].try_into().unwrap());
+        let virtual_address =
+            u32::from_le_bytes(bytes[sec_off + 12..sec_off + 16].try_into().unwrap());
+        let raw_data_size =
+            u32::from_le_bytes(bytes[sec_off + 16..sec_off + 20].try_into().unwrap());
+        let raw_data_offset =
+            u32::from_le_bytes(bytes[sec_off + 20..sec_off + 24].try_into().unwrap());
+        let characteristics =
+            u32::from_le_bytes(bytes[sec_off + 36..sec_off + 40].try_into().unwrap());
         sections.push(PeSection {
-            name, virtual_size, virtual_address,
-            raw_data_size, raw_data_offset, characteristics,
+            name,
+            virtual_size,
+            virtual_address,
+            raw_data_size,
+            raw_data_offset,
+            characteristics,
         });
         sec_off += 40;
     }
@@ -199,7 +229,8 @@ mod tests {
     fn synth_minimal_pe() -> Vec<u8> {
         let mut buf = vec![0u8; 64 + 4 + 20 + 240 + 40];
         // DOS stub.
-        buf[0] = b'M'; buf[1] = b'Z';
+        buf[0] = b'M';
+        buf[1] = b'Z';
         buf[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
         // NT magic 'PE\0\0'.
         buf[64..68].copy_from_slice(b"PE\0\0");
@@ -208,13 +239,13 @@ mod tests {
         buf[coff..coff + 2].copy_from_slice(&0x8664u16.to_le_bytes());
         buf[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes());
         buf[coff + 16..coff + 18].copy_from_slice(&240u16.to_le_bytes()); // SizeOfOptionalHeader
-        // Optional header: PE32+ magic, image_base = 0x140000000.
+                                                                          // Optional header: PE32+ magic, image_base = 0x140000000.
         let opt = coff + 20;
         buf[opt..opt + 2].copy_from_slice(&0x020Bu16.to_le_bytes());
         buf[opt + 16..opt + 20].copy_from_slice(&0x1000u32.to_le_bytes()); // entry RVA
         buf[opt + 24..opt + 32].copy_from_slice(&0x1_4000_0000u64.to_le_bytes());
         buf[opt + 56..opt + 60].copy_from_slice(&0x10000u32.to_le_bytes()); // SizeOfImage
-        // Section: ".text\0\0\0", VA=0x1000, size=0x1000.
+                                                                            // Section: ".text\0\0\0", VA=0x1000, size=0x1000.
         let sec = opt + 240;
         buf[sec..sec + 5].copy_from_slice(b".text");
         buf[sec + 8..sec + 12].copy_from_slice(&0x1000u32.to_le_bytes());

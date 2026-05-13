@@ -4,21 +4,21 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainerConfig {
-    pub wine_version:  String,
-    pub dxvk_version:  Option<String>,
+    pub wine_version: String,
+    pub dxvk_version: Option<String>,
     pub vkd3d_version: Option<String>,
-    pub use_esync:     bool,
-    pub use_fsync:     bool,
+    pub use_esync: bool,
+    pub use_fsync: bool,
 }
 
 impl Default for ContainerConfig {
     fn default() -> Self {
         Self {
-            wine_version:  "9.0".to_owned(),
-            dxvk_version:  Some("2.4".to_owned()),
+            wine_version: "9.0".to_owned(),
+            dxvk_version: Some("2.4".to_owned()),
             vkd3d_version: Some("2.13".to_owned()),
-            use_esync:     true,
-            use_fsync:     true,
+            use_esync: true,
+            use_fsync: true,
         }
     }
 }
@@ -51,11 +51,11 @@ mod tests {
     #[test]
     fn missing_optional_fields_round_trip() {
         let cfg = ContainerConfig {
-            wine_version:  "9.0".to_owned(),
-            dxvk_version:  None,
+            wine_version: "9.0".to_owned(),
+            dxvk_version: None,
             vkd3d_version: None,
-            use_esync:     false,
-            use_fsync:     false,
+            use_esync: false,
+            use_fsync: false,
         };
         let s = toml::to_string(&cfg).unwrap();
         let restored: ContainerConfig = toml::from_str(&s).unwrap();

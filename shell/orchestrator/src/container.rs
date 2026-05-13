@@ -12,7 +12,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Container {
-    pub name:        String,
+    pub name: String,
     pub prefix_path: PathBuf,
     /// Number of installed Windows applications inside the prefix.
     /// Bumped by the importer; consumed by the launcher UI.
@@ -37,13 +37,13 @@ impl Container {
         Ok(())
     }
 
-    pub fn start(&self) -> Result<(), ContainerError> {
+    pub const fn start(&self) -> Result<(), ContainerError> {
         Err(ContainerError::NotImplemented("Container::start"))
     }
-    pub fn stop(&self) -> Result<(), ContainerError> {
+    pub const fn stop(&self) -> Result<(), ContainerError> {
         Err(ContainerError::NotImplemented("Container::stop"))
     }
-    pub fn destroy(&self) -> Result<(), ContainerError> {
+    pub const fn destroy(&self) -> Result<(), ContainerError> {
         Err(ContainerError::NotImplemented("Container::destroy"))
     }
 }
