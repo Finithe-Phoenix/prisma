@@ -3722,6 +3722,72 @@ std::variant<Decoded, DecodeError> decode_one(
             return DecodeError::UnsupportedEncoding;
         }
 
+        // F2-IR-053 — BMI2 GPR ops over the 0F 38 escape (VEX-encoded,
+        // L=0, sub3 == 0xF7): SHLX (pp=01), SARX (pp=02), SHRX (pp=03).
+        // Operand layout (all three): dest = ModRM.reg, src = ModRM.rm,
+        // count = vex.vvvv. W=0 → I32; W=1 → I64. None of them touch
+        // flags (that's the whole point versus the legacy SAR/SHR/SHL
+        // r/m, CL forms).
+        //
+        // Peek at the third byte rather than consuming so the legacy
+        // SSSE3 / SSE4.1 dispatch below can still read it for non-BMI2
+        // opcodes. BMI2 with pp=01 (SHLX) goes through THIS branch,
+        // not the legacy gate, because the legacy gate handles a
+        // disjoint set of `sub3` values.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            cursor < bytes.size() && bytes[cursor] == 0xF7u) {
+            ir::BinOpKind shift_kind = ir::BinOpKind::Shl;
+            int prefix_count = 0;
+            if (has_operand_size_override) {
+                shift_kind = ir::BinOpKind::Shl;   // SHLX
+                ++prefix_count;
+            }
+            if (has_f3) {
+                shift_kind = ir::BinOpKind::Sar;   // SARX
+                ++prefix_count;
+            }
+            if (has_f2) {
+                shift_kind = ir::BinOpKind::Shr;   // SHRX
+                ++prefix_count;
+            }
+            if (prefix_count != 1) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            // Consume the 0xF7 byte we peeked.
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            const ir::Gpr dst   = reg_at(m.reg);
+            const ir::Gpr count = reg_at(vex.vvvv);
+            Decoded d;
+            const ir::Ref r_src   = next_ref++;
+            const ir::Ref r_count = next_ref++;
+            const ir::Ref r_res   = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_count, ir::LoadReg{count, size}});
+            d.stmts.push_back({r_res,
+                ir::BinOp{shift_kind, r_src, r_count, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst, r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-036: 0F 38 escape — SSSE3 / SSE4.1.
         if (subop == 0x38u && has_operand_size_override && !has_lock &&
             !has_f2 && !has_f3) {

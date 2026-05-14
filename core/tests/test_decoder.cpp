@@ -2265,6 +2265,54 @@ TEST_CASE("decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls
     REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts.back().op));
 }
 
+// F2-IR-053 BMI2 variable-count shifts: SHLX / SARX / SHRX. All three
+// share `sub3 == 0xF7`, with the legacy prefix encoded in VEX.pp.
+TEST_CASE("decode SHLX r32a, r/m32, r32b (C4 E2 69 F7 C1) — F2-IR-053") {
+    // VEX 3-byte: C4 mmmmm=02 (0F38) → 0xE2. W=0 vvvv=1101 (~rcx=001 ... actually
+    // vvvv encodes count register; vvvv=1101 → ~r2). L=0 pp=01 (66) → 0x69.
+    // ModRM C1: mod=11 reg=000 (dst rax) rm=001 (src rcx). count_reg = vvvv decoded.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x69, 0xF7, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::BinOp>(s.op)) {
+            const auto& b = std::get<ir::BinOp>(s.op);
+            if (b.op == ir::BinOpKind::Shl) found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode SARX r32a, r/m32, r32b (C4 E2 6A F7 C1) — F2-IR-053") {
+    // VEX byte2 = 0x6A → pp=02 (F3) = SARX.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x6A, 0xF7, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::BinOp>(s.op)) {
+            const auto& b = std::get<ir::BinOp>(s.op);
+            if (b.op == ir::BinOpKind::Sar) found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode SHRX r64a, r/m64, r64b (C4 E2 EB F7 C1) — F2-IR-053") {
+    // VEX byte2 = 0xEB → W=1 pp=03 (F2) = SHRX, 64-bit.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xEB, 0xF7, 0xC1}, r);
+    bool found_shr_i64 = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::BinOp>(s.op)) {
+            const auto& b = std::get<ir::BinOp>(s.op);
+            if (b.op == ir::BinOpKind::Shr && b.size == ir::OpSize::I64) {
+                found_shr_i64 = true;
+            }
+        }
+    }
+    REQUIRE(found_shr_i64);
+}
+
 TEST_CASE("decode VPERMD ymm0, ymm1, ymm2 (C4 E2 75 36 C2) — F2-IR-052") {
     // VEX 3-byte: C4 mmmmm=02 (0F38) → 0xE2. W=0 vvvv=~ymm1=1110 L=1 pp=01 → 0x75.
     // ModRM C2: mod=11 reg=000 (dst ymm0) rm=010 (src ymm2). vvvv → indices ymm1.
