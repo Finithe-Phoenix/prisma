@@ -276,6 +276,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Bswap>) {
                 bump(op.value, i);
             }
+            else if constexpr (std::is_same_v<T, ir::Crc32c>) {
+                bump(op.crc, i); bump(op.data, i);
+            }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1390,6 +1393,21 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "Bswap"};
             }
             emitter_.bswap(rd, rn, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Crc32c>) {
+            // F2-IR-057 CRC32C — direct ARM64 mapping.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Crc32c without result"};
+            }
+            arm64::Reg rcrc, rdata;
+            if (!reg_of(op.crc,  rcrc))  return {false, LowerError::DanglingRef, "Crc32c.crc"};
+            if (!reg_of(op.data, rdata)) return {false, LowerError::DanglingRef, "Crc32c.data"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Crc32c"};
+            }
+            emitter_.crc32c(rd, rcrc, rdata, op.data_size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecBlend>) {

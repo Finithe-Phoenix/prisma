@@ -774,6 +774,18 @@ struct Bswap {
     OpSize size;
 };
 
+// F2-IR-057 — CRC32C (Castagnoli polynomial 0x11EDC6F41). Both x86's
+// SSE4.2 CRC32 family and ARM64's CRC32C{B/H/W/X} compute the same
+// polynomial, so the mapping is direct. `crc` carries the running
+// 32-bit checksum (lhs); `data` supplies the next byte/word/dword/
+// qword input (rhs, sized via `data_size`). Result is the updated
+// 32-bit checksum.
+struct Crc32c {
+    Ref    crc;
+    Ref    data;
+    OpSize data_size;
+};
+
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
 //   Predicate = imm8 & 7 from the x86 encoding:
 //     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
@@ -924,6 +936,7 @@ using Op = std::variant<
     VecTbl2,
     VecAes,
     Bswap,
+    Crc32c,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs
@@ -1052,6 +1065,7 @@ bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexce
 bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept;
 bool operator==(const VecAes& a, const VecAes& b) noexcept;
 bool operator==(const Bswap& a, const Bswap& b) noexcept;
+bool operator==(const Crc32c& a, const Crc32c& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;

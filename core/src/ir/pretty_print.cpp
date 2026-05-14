@@ -384,6 +384,10 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, Bswap>) {
             os << "bswap." << size_suffix(x.size) << ' ';
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Crc32c>) {
+            os << "crc32c." << size_suffix(x.data_size) << ' ';
+            print_ref(os, x.crc); os << ", ";
+            print_ref(os, x.data);
         } else if constexpr (std::is_same_v<T, VecAes>) {
             const char* k = "?";
             switch (x.kind) {

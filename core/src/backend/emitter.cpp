@@ -1278,6 +1278,33 @@ void Emitter::vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx) {
     impl_->masm.Tbl(v_dst, v_lo_dst, v_hi_dst, v_idx);
 }
 
+void Emitter::crc32c(arm64::Reg rd, arm64::Reg rcrc, arm64::Reg rdata,
+                     ir::OpSize data_size) {
+    // ARM64 CRC32C is a feature-flagged extension. The destination
+    // and source CRC inputs are always 32-bit (Wd / Wn); the data
+    // operand width selects the variant. For I64 the data input is
+    // Xn; for the smaller widths, Wn is used and the upper bits are
+    // don't-care per the ARM ARM.
+    switch (data_size) {
+        case ir::OpSize::I8:
+            impl_->masm.Crc32cb(to_vixl_w(rd), to_vixl_w(rcrc),
+                                to_vixl_w(rdata));
+            break;
+        case ir::OpSize::I16:
+            impl_->masm.Crc32ch(to_vixl_w(rd), to_vixl_w(rcrc),
+                                to_vixl_w(rdata));
+            break;
+        case ir::OpSize::I32:
+            impl_->masm.Crc32cw(to_vixl_w(rd), to_vixl_w(rcrc),
+                                to_vixl_w(rdata));
+            break;
+        case ir::OpSize::I64:
+            impl_->masm.Crc32cx(to_vixl_w(rd), to_vixl_w(rcrc),
+                                to_vixl_x(rdata));
+            break;
+    }
+}
+
 void Emitter::bswap(arm64::Reg rd, arm64::Reg rn, ir::OpSize size) {
     // ARM64 has REV for 32 / 64-bit and REV16 for 16-bit byte-pair
     // swap. I8 has no byte order, so fall back to a mov.

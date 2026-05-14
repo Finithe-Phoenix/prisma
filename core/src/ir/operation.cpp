@@ -269,6 +269,9 @@ bool operator==(const VecAes& a, const VecAes& b) noexcept {
 bool operator==(const Bswap& a, const Bswap& b) noexcept {
     return a.value == b.value && a.size == b.size;
 }
+bool operator==(const Crc32c& a, const Crc32c& b) noexcept {
+    return a.crc == b.crc && a.data == b.data && a.data_size == b.data_size;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

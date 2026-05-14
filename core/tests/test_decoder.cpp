@@ -2367,6 +2367,47 @@ TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return"
     REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
+// F2-IR-057 — CRC32C accumulator.
+TEST_CASE("decode CRC32 r32, r/m8 (F2 0F 38 F0 C1) — F2-IR-057") {
+    // ModRM C1: mod=11 reg=000 (dst eax) rm=001 (src cl, 8-bit).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x0F, 0x38, 0xF0, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::Crc32c>(s.op)) {
+            REQUIRE(std::get<ir::Crc32c>(s.op).data_size == ir::OpSize::I8);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode CRC32 r32, r/m16 (66 F2 0F 38 F1 C1) — F2-IR-057") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0xF2, 0x0F, 0x38, 0xF1, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::Crc32c>(s.op)) {
+            REQUIRE(std::get<ir::Crc32c>(s.op).data_size == ir::OpSize::I16);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode CRC32 r64, r/m64 (F2 48 0F 38 F1 C1) — F2-IR-057") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xF2, 0x48, 0x0F, 0x38, 0xF1, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::Crc32c>(s.op)) {
+            REQUIRE(std::get<ir::Crc32c>(s.op).data_size == ir::OpSize::I64);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
 // F2-IR-056 — MOVBE (move-with-byte-swap).
 TEST_CASE("decode MOVBE r32, m32 (0F 38 F0 /r) — F2-IR-056") {
     // 0F 38 F0 01 — MOVBE eax, [rcx]. ModRM 01: mod=00 reg=000 rm=001

@@ -65,6 +65,7 @@ public:
         VecTbl2,
         VecAes,
         Bswap,
+        Crc32c,
         LoadVecRegHi, StoreVecRegHi,
         VecFpFma,
         VecFpScalarFma,

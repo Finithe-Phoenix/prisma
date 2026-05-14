@@ -3854,6 +3854,63 @@ std::variant<Decoded, DecodeError> decode_one(
             return DecodeError::UnsupportedEncoding;
         }
 
+        // F2-IR-057 — CRC32 (F2 0F 38 F0 / F1). SSE4.2's CRC32C
+        // accumulator. Both x86 and ARM64 compute the Castagnoli
+        // polynomial; the mapping is direct.
+        //
+        //   F0: src is 8-bit
+        //   F1: src is 16-bit (with 66 prefix) / 32-bit / 64-bit
+        //       (with REX.W); dst is always 32-bit GPR (zero-extended
+        //       in the 64-bit-dest form).
+        if (subop == 0x38u && has_f2 && !has_f3 && !has_lock &&
+            cursor < bytes.size() &&
+            (bytes[cursor] == 0xF0u || bytes[cursor] == 0xF1u)) {
+            const Byte sub3 = bytes[cursor];
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            ir::OpSize src_size;
+            ir::OpSize dst_size = ir::OpSize::I32;
+            if (sub3 == 0xF0u) {
+                src_size = ir::OpSize::I8;
+            } else if (has_operand_size_override) {
+                src_size = ir::OpSize::I16;
+            } else if (rex.w) {
+                src_size = ir::OpSize::I64;
+                dst_size = ir::OpSize::I64;  // ARM CRC32CX writes Xd
+            } else {
+                src_size = ir::OpSize::I32;
+            }
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            const ir::Ref r_crc  = next_ref++;
+            const ir::Ref r_data = next_ref++;
+            const ir::Ref r_res  = next_ref++;
+            d.stmts.push_back({r_crc,
+                ir::LoadReg{reg_at(m.reg), dst_size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_data,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), src_size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_data,
+                    ir::LoadMem{r_addr, src_size}});
+            }
+            d.stmts.push_back({r_res,
+                ir::Crc32c{r_crc, r_data, src_size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_res, dst_size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-056 — MOVBE (0F 38 F0 / F1). Move-with-byte-swap.
         // Memory ↔ register move that reverses byte order in flight.
         // Size: REX.W → I64; 66 prefix → I16; default → I32.

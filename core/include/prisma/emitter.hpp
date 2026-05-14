@@ -500,6 +500,14 @@ public:
     // (I32), REV16 (I16). I8 emits a plain MOV.
     void bswap(arm64::Reg rd, arm64::Reg rn, ir::OpSize size);
 
+    // F2-IR-057 — x86 CRC32 / ARM64 CRC32C{B/H/W/X}. Both ISAs
+    // accumulate Castagnoli's 0x11EDC6F41 polynomial. The IR /
+    // emitter chose `Crc32c` as the spelling because the C-suffix
+    // is the explicit ARM mnemonic. `data_size` selects the
+    // CRC32C variant; the running CRC is always a 32-bit value.
+    void crc32c(arm64::Reg rd, arm64::Reg rcrc, arm64::Reg rdata,
+                ir::OpSize data_size);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
