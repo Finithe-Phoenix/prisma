@@ -16,6 +16,16 @@ void Dispatcher::add_halt_pc(std::uint64_t pc) {
     halt_pcs_.insert(pc);
 }
 
+void Dispatcher::install_halt_return_stack() {
+    for (auto& slot : halt_return_stack_) slot = 0;
+    // Point RSP at the top slot. The first push (RSP -= 8) lands at
+    // the next slot down; the outermost RET (no preceding push) pops
+    // the slot RSP currently points at, which is 0 → halt.
+    state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] =
+        reinterpret_cast<std::uint64_t>(
+            &halt_return_stack_[kHaltReturnStackSlots - 1]);
+}
+
 DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                                std::size_t max_steps) {
     DispatchStats stats;

@@ -2035,7 +2035,6 @@ TEST_CASE("e2e: real CALL/RET round-trip — F2-IR-054 opt-in semantics") {
         0xB8, 0x33, 0x00, 0x00, 0x00,         // 0x4010
         0xC3,                                   // 0x4015 → ret to 0x400A
     };
-    alignas(8) static std::uint64_t stack_storage[4] = {0, 0, 0, 0};
     auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
         if (pc < 0x4000ull) return {};
         const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
@@ -2044,12 +2043,10 @@ TEST_CASE("e2e: real CALL/RET round-trip — F2-IR-054 opt-in semantics") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
-    // RSP points one slot above the bottom of the buffer so CALL's
-    // RSP -= 8 lands at slot[2], where the saved retaddr 0x400A goes.
-    // The caller's RET after that pops back to 0x400A; the caller's
-    // FINAL RET (at 0x400F) pops slot[3] = 0 = halt sentinel.
-    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] =
-        reinterpret_cast<std::uint64_t>(&stack_storage[3]);
+    // Helper sets up a 16-slot internal halt-return stack and points
+    // RSP at the top slot. The caller's outermost RET (at 0x400F)
+    // will pop a 0 from one of the lower slots → halt sentinel.
+    disp.install_halt_return_stack();
     auto r = disp.run(0x4000, /*max_steps=*/32);
     INFO("dispatch: " << r.message
                       << "  steps=" << r.stats.steps_taken);

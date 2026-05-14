@@ -90,11 +90,27 @@ public:
     [[nodiscard]] CpuStateFrame& state() noexcept { return state_; }
     [[nodiscard]] const CpuStateFrame& state() const noexcept { return state_; }
 
+    // Helper for tests that opt into real CALL/RET semantics on the
+    // translator (`translator::Translator::set_real_call_ret(true)`).
+    // Allocates a small internal halt-return stack (16 × u64 = 128 B,
+    // zero-initialised) and points `state.gpr[Rsp]` at the top slot.
+    //
+    // The bottom slot is `0` (= `CpuStateFrame::kHaltSentinel`), so
+    // the *outermost* RET in a test program pops 0 and the dispatcher
+    // halts cleanly. Inner CALL/RET pairs work normally: CALL pushes
+    // (RSP -= 8 → an interior slot), the callee's RET pops back.
+    //
+    // Safe to call multiple times; each call resets the stack to all
+    // zeroes and re-points Rsp at the top.
+    void install_halt_return_stack();
+
 private:
     translator::Translator& translator_;
     GuestMemoryReader reader_;
     std::unordered_set<std::uint64_t> halt_pcs_;
     CpuStateFrame state_;
+    static constexpr std::size_t kHaltReturnStackSlots = 16;
+    alignas(8) std::uint64_t halt_return_stack_[kHaltReturnStackSlots]{};
 };
 
 }  // namespace prisma::runtime
