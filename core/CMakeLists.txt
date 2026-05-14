@@ -222,6 +222,7 @@ add_library(prisma_passes STATIC
     src/passes/dce.cpp
     src/passes/algebraic.cpp
     src/passes/cse.cpp
+    src/passes/global_cse.cpp
     src/passes/copy_prop.cpp
     src/passes/strength_reduce.cpp
     src/passes/branch_fold.cpp
@@ -434,6 +435,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes_advanced.cpp
         tests/test_passes_more.cpp
         tests/test_passes_mem.cpp
+        tests/test_global_cse.cpp
         tests/test_ir_validate.cpp
         tests/test_ir_serialize.cpp
         tests/test_host_features.cpp

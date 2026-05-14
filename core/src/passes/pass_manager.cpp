@@ -40,6 +40,63 @@ PassManager::run(const std::vector<ir::Stmt>& input) const {
     return {std::move(current), std::move(stats)};
 }
 
+// ---------------------------------------------------------------------------
+// FunctionPassManager — same shape as PassManager but operates on
+// ir::Function. Both lists kept side-by-side rather than unified so
+// the existing PassManager surface stays stable.
+// ---------------------------------------------------------------------------
+
+FunctionPassManager& FunctionPassManager::add(std::string name, PassFn fn) {
+    passes_.push_back({std::move(name), std::move(fn)});
+    return *this;
+}
+
+FunctionPassManager& FunctionPassManager::on_pass_run(DumpHook hook) {
+    hooks_.push_back(std::move(hook));
+    return *this;
+}
+
+namespace {
+std::size_t total_stmts(const ir::Function& fn) {
+    std::size_t n = 0;
+    for (const auto& b : fn.blocks) n += b.stmts.size();
+    return n;
+}
+}  // namespace
+
+std::pair<ir::Function, FunctionPassRunStats>
+FunctionPassManager::run(const ir::Function& input) const {
+    FunctionPassRunStats stats;
+    stats.initial_block_count = input.blocks.size();
+    stats.initial_stmt_count  = total_stmts(input);
+    stats.passes.reserve(passes_.size());
+
+    ir::Function current = input;
+    for (const auto& entry : passes_) {
+        const auto t0 = std::chrono::steady_clock::now();
+        current = entry.fn(current);
+        const auto t1 = std::chrono::steady_clock::now();
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t1 - t0).count();
+        stats.passes.push_back({
+            entry.name,
+            current.blocks.size(),
+            total_stmts(current),
+            static_cast<std::uint64_t>(ns),
+        });
+        for (const auto& hook : hooks_) hook(entry.name, current);
+    }
+    return {std::move(current), std::move(stats)};
+}
+
+FunctionPassManager default_function_pipeline() {
+    // MVP: just global CSE. Future additions (F2-PS-003 LICM, GVN,
+    // partial-redundancy elimination) go here in order.
+    FunctionPassManager pm;
+    pm.add("global_cse", global_cse);
+    return pm;
+}
+
 PassManager default_pipeline() {
     // Order rationale:
     //   1. constant_propagate — folds two-constant BinOps into Constants.

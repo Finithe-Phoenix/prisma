@@ -353,4 +353,76 @@ peephole_optimise_default(const std::vector<ir::Stmt>& stmts);
 // Fase 1+ will grow this; for now these two passes are the whole story.
 [[nodiscard]] PassManager default_pipeline();
 
+// ---------------------------------------------------------------------------
+// F2-PS-004 — Function-level pipeline + Global CSE via dominators.
+// ---------------------------------------------------------------------------
+//
+// The stmt-level `PassManager` runs over a flat `std::vector<Stmt>` and is
+// the workhorse for intra-block transformations (the existing 12 passes).
+// Once the translator starts emitting multi-block `ir::Function`s, we
+// also want passes that see the whole CFG — at minimum to forward
+// available-expression information along dominator-tree edges.
+//
+// Pipeline shape: each pass is `Function → Function`. The manager is
+// otherwise structurally identical to `PassManager`.
+//
+// **Today's translator emits single-block functions** (one x86 instr →
+// one Decoded → one BB), so global CSE on what the translator produces
+// is equivalent to the existing intra-block CSE. The plumbing here
+// is the deliverable; the algorithm unlocks real wins when the
+// translator gains multi-instruction fusion.
+
+struct FunctionPassRunStats {
+    struct PassEntry {
+        std::string   name;
+        std::size_t   blocks_after;
+        std::size_t   stmts_after;
+        std::uint64_t duration_ns{0};
+    };
+    std::size_t initial_block_count{0};
+    std::size_t initial_stmt_count{0};
+    std::vector<PassEntry> passes;
+};
+
+class FunctionPassManager {
+public:
+    using PassFn = std::function<ir::Function(const ir::Function&)>;
+    using DumpHook = std::function<void(
+        const std::string& pass_name,
+        const ir::Function& after)>;
+
+    FunctionPassManager& add(std::string name, PassFn fn);
+    FunctionPassManager& on_pass_run(DumpHook hook);
+    [[nodiscard]] std::size_t size() const noexcept { return passes_.size(); }
+
+    [[nodiscard]] std::pair<ir::Function, FunctionPassRunStats>
+    run(const ir::Function& input) const;
+
+private:
+    struct Entry {
+        std::string name;
+        PassFn fn;
+    };
+    std::vector<Entry>    passes_;
+    std::vector<DumpHook> hooks_;
+};
+
+// Global Common Subexpression Elimination — same canonical-form
+// hashing as intra-block CSE, but forwarded across blocks along
+// dominator-tree edges where the child's only predecessor in the
+// CFG is its immediate dominator. Diamond / join blocks (more than
+// one predecessor) start with an empty available-expression table,
+// which is correct but conservative: a value computed on all
+// incoming paths is not commoned. Tightening this requires a
+// classical available-expressions dataflow analysis, deferred.
+//
+// Within each block the algorithm matches `common_subexpression_eliminate`
+// — flushing on StoreReg / StoreMem / StoreMemTSO / CmpFlags, rewriting
+// a duplicate BinOp to `BinOp Or prev,prev` (the IR's "copy" idiom).
+[[nodiscard]] ir::Function global_cse(const ir::Function& fn);
+
+// Default function-level pipeline. Currently just `global_cse`.
+// **Not yet wired into the translator** — see the caveat above.
+[[nodiscard]] FunctionPassManager default_function_pipeline();
+
 }  // namespace prisma::passes
