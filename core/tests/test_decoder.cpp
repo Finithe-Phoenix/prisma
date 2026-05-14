@@ -2367,6 +2367,45 @@ TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return"
     REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
+TEST_CASE("decode CALL r/m64 (FF D1 = CALL rcx) with real_call_ret pushes + JumpReg") {
+    // 48 FF D1 — REX.W (just makes the size consistent) + Group5 /2.
+    // ModRM D1: mod=11 reg=010 (Group5 /2 = CALL) rm=001 (rcx).
+    ir::Ref r = 0;
+    auto d = decode_ok_real_callret({0x48, 0xFF, 0xD1}, r, /*pc=*/0x5000);
+    int store_rsp = 0, store_mem = 0, jump_reg = 0;
+    bool found_8 = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::StoreReg>(s.op)) {
+            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
+        }
+        if (std::holds_alternative<ir::StoreMem>(s.op))  ++store_mem;
+        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
+        if (std::holds_alternative<ir::Constant>(s.op)) {
+            if (std::get<ir::Constant>(s.op).value == 8u) found_8 = true;
+        }
+    }
+    REQUIRE(store_rsp == 1);   // RSP -= 8
+    REQUIRE(store_mem == 1);   // [RSP_new] = retaddr
+    REQUIRE(jump_reg  == 1);   // jump target
+    REQUIRE(found_8);          // the "-= 8" constant
+}
+
+TEST_CASE("decode CALL r/m64 without real_call_ret stays a plain JumpReg") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0xFF, 0xD1}, r);
+    int store_rsp = 0, store_mem = 0, jump_reg = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::StoreReg>(s.op)) {
+            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
+        }
+        if (std::holds_alternative<ir::StoreMem>(s.op))  ++store_mem;
+        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
+    }
+    REQUIRE(store_rsp == 0);   // no stack push in legacy mode
+    REQUIRE(store_mem == 0);
+    REQUIRE(jump_reg  == 1);
+}
+
 TEST_CASE("decode RET imm16 (C2 04 00) with real_call_ret pops + adjusts + JumpReg") {
     // RET 4 — pop return address AND 4 extra bytes off the stack.
     ir::Ref r = 0;

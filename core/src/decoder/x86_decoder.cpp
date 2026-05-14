@@ -1949,7 +1949,8 @@ DispatchDecodeResult decode_group5_dispatch(
     bool has_operand_size_override,
     bool has_address_size_override,
     std::uint64_t instruction_guest_pc,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    bool real_call_ret) {
     const auto size = checked_operand_size(rex, has_operand_size_override);
     if (!size) return DecodeError::UnsupportedEncoding;
 
@@ -1968,6 +1969,8 @@ DispatchDecodeResult decode_group5_dispatch(
     if (*size != ir::OpSize::I64) return DecodeError::UnsupportedEncoding;
 
     if (m.reg == 4u || m.reg == 2u) {
+        // m.reg == 4u: JMP r/m  (no stack effect).
+        // m.reg == 2u: CALL r/m (real-mode: push return PC, then jump).
         Decoded d;
         const ir::Ref ref_target = next_ref++;
         if (m.mod == 0b11u) {
@@ -1976,6 +1979,26 @@ DispatchDecodeResult decode_group5_dispatch(
             const ir::Ref ref_addr =
                 emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
             d.stmts.push_back({ref_target, ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
+        }
+        if (m.reg == 2u && real_call_ret) {
+            const std::uint64_t return_pc = instruction_guest_pc + cursor;
+            const ir::Ref ref_rsp     = next_ref++;
+            const ir::Ref ref_eight   = next_ref++;
+            const ir::Ref ref_rsp_new = next_ref++;
+            const ir::Ref ref_retaddr = next_ref++;
+            d.stmts.push_back({ref_rsp,
+                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
+            d.stmts.push_back({ref_eight,
+                ir::Constant{8ULL, ir::OpSize::I64}});
+            d.stmts.push_back({ref_rsp_new,
+                ir::BinOp{ir::BinOpKind::Sub, ref_rsp, ref_eight,
+                          ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{ir::Gpr::Rsp, ref_rsp_new, ir::OpSize::I64}});
+            d.stmts.push_back({ref_retaddr,
+                ir::Constant{return_pc, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreMem{ref_rsp_new, ref_retaddr, ir::OpSize::I64}});
         }
         d.stmts.push_back({std::nullopt, ir::JumpReg{ref_target}});
         d.bytes_consumed = cursor;
@@ -2219,7 +2242,8 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
     bool has_address_size_override,
     bool has_f3,
     std::uint64_t instruction_guest_pc,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    bool real_call_ret) {
     const auto entry = kOneByteDispatchTable[opcode];
     switch (entry.kind) {
         case OneByteDispatchKind::None:
@@ -2291,7 +2315,7 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
         }
         case OneByteDispatchKind::Group5:
             return DispatchDecodeResult{decode_group5_dispatch(
-                bytes, cursor, rex, has_operand_size_override, has_address_size_override, instruction_guest_pc, next_ref)};
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override, instruction_guest_pc, next_ref, real_call_ret)};
         case OneByteDispatchKind::Group3:
             return DispatchDecodeResult{decode_group3_dispatch(
                 bytes, cursor, rex, has_operand_size_override, has_address_size_override, next_ref)};
@@ -6564,7 +6588,8 @@ std::variant<Decoded, DecodeError> decode_one(
             has_address_size_override,
             has_f3,
             instruction_guest_pc,
-            next_ref)) {
+            next_ref,
+            real_call_ret)) {
         return *decoded;
     }
 
