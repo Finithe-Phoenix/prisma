@@ -6,7 +6,7 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-13 (in-flight after `47cf67d`).
+Last updated: 2026-05-13 (in-flight after `5811568`).
 
 ## Currently active
 
@@ -29,10 +29,12 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 9b | BMI2 PDEP / PEXT | 2-3 commits | — | ⏸ queued | No direct ARM64 equivalent; need software-emulation IR primitive. |
 | 10 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | 🟢 unblocked-by-#11 | HANDOFF §5.F. Inline RAS tracking; JIT skips dispatcher round-trip on RAS hit. |
 | 11 | Real CALL/RET semantics (opt-in) | 1 commit | `9787f25` | ✅ done | Threaded via `decode_one`'s 4th param + `Translator::set_real_call_ret()`. Decoder emits push/pop sequences when on. Default off keeps the 86 legacy e2e tests untouched. |
-| 11b | Migrate e2e corpus to real CALL/RET by default | ~86 test updates | — | ⏸ queued | Each test that uses `0xC3` adds `disp.state().gpr[Rsp] = (uint64_t)&halt_addr_storage` (= 0); then flip the Translator default. |
+| 11b | Migrate e2e corpus to real CALL/RET by default | ~86 test updates | partial: `dd94171` | 🟡 in_progress | Helper `disp.install_halt_return_stack()` landed; first test migrated as POC. Remaining: mechanical 2-line addition per legacy test, then flip Translator default. |
 | 12 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. `X87Slot` in `cpu_state.hpp:43-48`. |
 | 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | — | ⏸ queued | VSIB encoding + per-element conditional load. |
-| 14 | AES / SHA hardware crypto opcodes | 4-6 commits | — | ⏸ queued | Direct ARM64 mappings via Crypto extensions. Niche but cheap. |
+| 14 | AES hardware crypto opcodes (AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) | 1 commit | `5811568` | ✅ done | New `VecAes` IR op + `vaes` emitter primitive (5-way switch). AESKEYGENASSIST queued separately. |
+| 14b | SHA-NI crypto opcodes | 3-4 commits | — | ⏸ queued | x86 SHA1RNDS4 / SHA1MSGx / SHA256RNDS2 / SHA256MSGx → ARM NEON SHA family. |
+| 14c | AESKEYGENASSIST | 2 commits | — | ⏸ queued | Key-schedule helper. No direct ARM equivalent; software emulation needed. |
 | 15 | Direct branch threading | 4-6 commits | — | ⏸ queued | When CondJumpRel target is already translated, branch directly in JIT instead of dispatcher round-trip. Major perf win for hot loops. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. Reuse `X87Slot` in `cpu_state.hpp:43-48`. |
@@ -70,6 +72,10 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 10 | docs(queue): mark BMI2 done + queue follow-ups | `a82043d` | — |
 | 11 | feat(decoder,translator): F2-IR-054 — real CALL/RET (opt-in) | `9787f25` | 802/802 verde Debug + ASan/UBSan; flag default off for back-compat. |
 | 12 | feat(decoder): F2-IR-053 followup — BMI2 BZHI | `47cf67d` | 803/803 verde Debug + ASan/UBSan. |
+| 13 | feat(decoder): F2-IR-054 followup — RET imm16 real-mode | `9e6ed9c` | 804/804 verde. |
+| 14 | feat(decoder): F2-IR-054 followup — CALL r/m64 real-mode | `779fb17` | 806/806 verde. |
+| 15 | feat(runtime): Dispatcher::install_halt_return_stack() | `dd94171` | 806/806 verde. POC migration of 1 test. |
+| 16 | feat(ir,decoder,backend): F2-IR-055 — AES-NI primitives | `5811568` | 810/810 verde Debug + ASan/UBSan. |
 
 ## Standing decisions (carry across items)
 
