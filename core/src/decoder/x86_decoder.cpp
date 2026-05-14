@@ -2556,6 +2556,9 @@ std::variant<Decoded, DecodeError> decode_one(
                 // VPTEST ymm (66 0F 38 17). F2-IR-049.
                 const bool avx_ptest =
                     vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x17u;
+                // VPERMD ymm (66 0F 38 36). F2-IR-052.
+                const bool avx_permd =
+                    vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x36u;
                 // VPSHUFB ymm (66 0F 38 00) and VPABS B/W/D ymm
                 // (66 0F 38 1C/1D/1E).
                 const bool avx_pshufb_pabs =
@@ -2622,6 +2625,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
                       avx_ptest || avx_blend_vex || avx_permq ||
+                      avx_permd ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -3779,6 +3783,115 @@ std::variant<Decoded, DecodeError> decode_one(
                     d.stmts.push_back({r_flags,
                         ir::WriteFlagsPtest{r_lhs, r_rhs}});
                 }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-052 — VPERMD ymm1, ymm2, ymm3/m256
+            // (VEX.256.66.0F38.W0 36 /r). For each of the eight 32-bit
+            // dst elements, the corresponding ymm2 (vex.vvvv) dword
+            // selects (low 3 bits) one of the eight ymm3 dwords as
+            // the source. Lane-crossing — implemented via the same
+            // VecTbl2 primitive as VPERMQ (F2-IR-051), with the
+            // byte-index vector synthesised at *runtime* from the
+            // vvvv indices instead of from imm8:
+            //
+            //   idx_masked = vvvv_half AND  0x07070707...
+            //   idx_scaled = idx_masked SHL 2 (per-S4 lane)
+            //   idx_broadcast = pshufb(idx_scaled, [0,0,0,0, 4,4,4,4,
+            //                                        8,8,8,8, 12,12,12,12])
+            //                  -- spreads each dword's low byte to all
+            //                     four byte positions of that dword.
+            //   idx_final = idx_broadcast +bytes [0,1,2,3, 0,1,2,3, ...]
+            //   dst_half  = VecTbl2(src_lo, src_hi, idx_final)
+            if (vex.present && vex.L && sub3 == 0x36u) {
+                if (rex.w) return DecodeError::UnsupportedEncoding;
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t indices_xmm =
+                    static_cast<std::uint8_t>(vex.vvvv);
+                const std::uint8_t dst_xmm =
+                    static_cast<std::uint8_t>(m.reg);
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                // Source operand (256-bit pair).
+                const ir::Ref r_src_lo = next_ref++;
+                const ir::Ref r_src_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    const std::uint8_t r_rm =
+                        static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                    d.stmts.push_back({r_src_lo, ir::LoadVecReg{r_rm}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVecRegHi{r_rm}});
+                } else {
+                    const ir::Ref r_off16   = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_lo, ir::LoadVec{*r_addr_lo}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                // Indices (the per-half 4-dword vector from vvvv).
+                const ir::Ref r_idx_lo = next_ref++;
+                const ir::Ref r_idx_hi = next_ref++;
+                d.stmts.push_back({r_idx_lo, ir::LoadVecReg{indices_xmm}});
+                d.stmts.push_back({r_idx_hi, ir::LoadVecRegHi{indices_xmm}});
+                // Three shared constants for the per-half pipeline:
+                //   mask_3:   each byte 0x07 → AND keeps low 3 bits per S4 dword.
+                //   bcast:    [0,0,0,0, 4,4,4,4, 8,8,8,8, 12,12,12,12].
+                //   bytepos:  [0,1,2,3, 0,1,2,3, 0,1,2,3, 0,1,2,3].
+                const ir::Ref r_mask3   = next_ref++;
+                const ir::Ref r_bcast   = next_ref++;
+                const ir::Ref r_bytepos = next_ref++;
+                d.stmts.push_back({r_mask3,
+                    ir::VecConstant{0x0707070707070707ULL,
+                                    0x0707070707070707ULL}});
+                d.stmts.push_back({r_bcast,
+                    ir::VecConstant{0x0404040400000000ULL,
+                                    0x0C0C0C0C08080808ULL}});
+                d.stmts.push_back({r_bytepos,
+                    ir::VecConstant{0x0302010003020100ULL,
+                                    0x0302010003020100ULL}});
+                // Build idx_final and dst for each half. Same shape;
+                // the only difference is which half of the indices we
+                // start from.
+                auto emit_half = [&](ir::Ref idx_src) -> ir::Ref {
+                    const ir::Ref r_masked = next_ref++;
+                    const ir::Ref r_scaled = next_ref++;
+                    const ir::Ref r_bcasted = next_ref++;
+                    const ir::Ref r_final  = next_ref++;
+                    const ir::Ref r_out    = next_ref++;
+                    d.stmts.push_back({r_masked,
+                        ir::VecBinOp{ir::VecBinOpKind::And, idx_src, r_mask3,
+                                     ir::VecLane::B16}});
+                    d.stmts.push_back({r_scaled,
+                        ir::VecShiftImm{ir::VecShiftKind::ShiftL, r_masked,
+                                        2u, ir::VecLane::S4}});
+                    d.stmts.push_back({r_bcasted,
+                        ir::VecPshufb{r_scaled, r_bcast}});
+                    d.stmts.push_back({r_final,
+                        ir::VecBinOp{ir::VecBinOpKind::Add, r_bcasted, r_bytepos,
+                                     ir::VecLane::B16}});
+                    d.stmts.push_back({r_out,
+                        ir::VecTbl2{r_src_lo, r_src_hi, r_final}});
+                    return r_out;
+                };
+                const ir::Ref r_dst_lo = emit_half(r_idx_lo);
+                const ir::Ref r_dst_hi = emit_half(r_idx_hi);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{dst_xmm, r_dst_lo}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{dst_xmm, r_dst_hi}});
                 d.bytes_consumed = cursor;
                 return d;
             }

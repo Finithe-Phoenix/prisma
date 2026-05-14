@@ -2265,6 +2265,41 @@ TEST_CASE("decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls
     REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts.back().op));
 }
 
+TEST_CASE("decode VPERMD ymm0, ymm1, ymm2 (C4 E2 75 36 C2) — F2-IR-052") {
+    // VEX 3-byte: C4 mmmmm=02 (0F38) → 0xE2. W=0 vvvv=~ymm1=1110 L=1 pp=01 → 0x75.
+    // ModRM C2: mod=11 reg=000 (dst ymm0) rm=010 (src ymm2). vvvv → indices ymm1.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x75, 0x36, 0xC2}, r);
+    int tbl2_count = 0;
+    int pshufb_count = 0;
+    int shift_count = 0;
+    int and_count = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecTbl2>(s.op))      ++tbl2_count;
+        if (std::holds_alternative<ir::VecPshufb>(s.op))    ++pshufb_count;
+        if (std::holds_alternative<ir::VecShiftImm>(s.op))  ++shift_count;
+        if (std::holds_alternative<ir::VecBinOp>(s.op)) {
+            const auto& b = std::get<ir::VecBinOp>(s.op);
+            if (b.op == ir::VecBinOpKind::And) ++and_count;
+        }
+    }
+    REQUIRE(tbl2_count   == 2);   // one per output half
+    REQUIRE(pshufb_count == 2);   // byte broadcast per half
+    REQUIRE(shift_count  == 2);   // dword << 2 per half
+    REQUIRE(and_count    == 2);   // low-3-bit mask per half
+}
+
+TEST_CASE("decode VPERMD with W=1 is rejected") {
+    // Same encoding but W=1 (VEX byte2 0xF5 instead of 0x75).
+    ir::Ref r = 0;
+    auto res = decoder::decode_one(
+        std::span<const std::uint8_t>{
+            std::initializer_list<std::uint8_t>{0xC4, 0xE2, 0xF5, 0x36, 0xC2}.begin(),
+            std::initializer_list<std::uint8_t>{0xC4, 0xE2, 0xF5, 0x36, 0xC2}.end()},
+        r);
+    REQUIRE(std::holds_alternative<decoder::DecodeError>(res));
+}
+
 TEST_CASE("decode VPERMQ ymm0, ymm1, 0x1B (C4 E3 FD 00 C1 1B) — F2-IR-051") {
     // VEX 3-byte: C4 mmmmm=03 (0F3A) → 0xE3. W=1 vvvv=1111 (none, VEX.NDS unused)
     // L=1 pp=01 → 0xFD.
