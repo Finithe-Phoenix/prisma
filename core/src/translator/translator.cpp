@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "prisma/abi.hpp"
+#include "prisma/cfg.hpp"
 #include "prisma/cpu_state.hpp"
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
@@ -111,12 +112,18 @@ decode_until_terminator(std::span<const std::uint8_t> bytes,
 
 }  // namespace
 
-Translator::Translator() : pipeline_(passes::default_pipeline()) {}
+Translator::Translator()
+    : pipeline_(passes::default_pipeline()),
+      function_pipeline_(passes::default_function_pipeline()) {}
 
 Translator::~Translator() = default;
 
 void Translator::set_pipeline(passes::PassManager pm) {
     pipeline_ = std::move(pm);
+}
+
+void Translator::set_function_pipeline(passes::FunctionPassManager pm) {
+    function_pipeline_ = std::move(pm);
 }
 
 TranslateResult Translator::translate(
@@ -161,8 +168,30 @@ TranslateResult Translator::translate(
     }
     const auto& dec = std::get<Decoded>(decoded);
 
-    // Optimise.
-    auto [optimised, _stats] = pipeline_.run(dec.stmts);
+    // CFG-aware passes (F2-PS-004 + F2-PS-003). The decoder produces a
+    // flat stmt list; build_cfg splits at every internal terminator
+    // (Trap / Cpuid / Syscall / InlineAsm / RepStos / RepMovs / ...)
+    // so multi-x86-instruction regions can naturally yield multi-block
+    // ir::Function. For single-block functions (the common case today)
+    // we skip the function pipeline — it would be a no-op.
+    std::vector<ir::Stmt> pre_stmt_pipeline_input;
+    {
+        ir::Function fn = ir::build_cfg(dec.stmts);
+        if (fn.blocks.size() > 1) {
+            auto [opt_fn, _fstats] = function_pipeline_.run(fn);
+            pre_stmt_pipeline_input.reserve(dec.stmts.size());
+            for (auto& blk : opt_fn.blocks) {
+                for (auto& st : blk.stmts) {
+                    pre_stmt_pipeline_input.push_back(std::move(st));
+                }
+            }
+        } else {
+            pre_stmt_pipeline_input = dec.stmts;
+        }
+    }
+
+    // Optimise (stmt-level pipeline).
+    auto [optimised, _stats] = pipeline_.run(pre_stmt_pipeline_input);
 
     // Determine the block terminator (if any). The Lowerer emits its
     // own ret for Return / JumpRel / JumpReg / CondJumpRel, so we only

@@ -86,6 +86,14 @@ public:
     // Override the pass pipeline. Defaults to passes::default_pipeline().
     void set_pipeline(passes::PassManager pm);
 
+    // Override the function-level (CFG-aware) pass pipeline. Defaults
+    // to `passes::default_function_pipeline()` (`global_cse` →
+    // `loop_invariant_motion`). The pipeline runs **between** decoding
+    // and the stmt-level pipeline, on the CFG built from the decoded
+    // stmts. For single-block functions (the common case today) the
+    // function pipeline is skipped entirely.
+    void set_function_pipeline(passes::FunctionPassManager pm);
+
     // The underlying cache, for tests and for the eventual runtime to
     // signal page invalidation.
     [[nodiscard]] cache::TranslationCache& cache() noexcept { return cache_; }
@@ -112,8 +120,9 @@ private:
         std::uint64_t content_hash{0};
     };
 
-    passes::PassManager pipeline_;
-    cache::TranslationCache cache_;
+    passes::PassManager           pipeline_;
+    passes::FunctionPassManager   function_pipeline_;
+    cache::TranslationCache       cache_;
     // Pool that owns every translated region. F1-RT-009: replaces the
     // previous one-mmap-per-translation pattern.
     runtime::JitBufferPool pool_;
