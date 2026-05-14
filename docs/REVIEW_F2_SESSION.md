@@ -75,7 +75,7 @@ broader follow-on items now tracked in `docs/WORK_QUEUE.md`:
   (`sorry` for sMulHi/sDiv/sMod). `.sorry-budget` bumped 0 → 3.
   Exhaustive `cases op with` in DCE + ConstProp passes updated.
 - **F2-PS-004 Global CSE** (`0396c19`). `FunctionPassManager` plumbing
-  + dominator-tree-forwarded CSE. Single-block translator caveat
+  plus dominator-tree-forwarded CSE. Single-block translator caveat
   carries.
 - **F2-PS-003 LICM** (`ff41e83`). Loop-invariant code motion via
   natural-loops. Pre-header is unique non-loop predecessor; multi-entry
