@@ -58,7 +58,8 @@ protocol and one missed attacker model.
 ### Follow-on landings (2026-05-13)
 
 After PR #1 went all-green for the first time, the autonomous run
-continued with the F2 hot-spot queue from HANDOFF §5.D:
+continued with the F2 hot-spot queue from HANDOFF §5.D and the
+broader follow-on items now tracked in `docs/WORK_QUEUE.md`:
 
 - **F2-IR-049 VPTEST ymm** (`67a7336`). New `WriteFlagsPtestYmm` IR
   op + `Emitter::vptest_ymm` primitive (composes per-half AND/BIC/ORR
@@ -68,19 +69,52 @@ continued with the F2 hot-spot queue from HANDOFF §5.D:
   VBLENDVPD (`66 0F 3A 4C/4A/4B`) for xmm + ymm. Mask register from
   `imm8[7:4]`, src1 from `vex.vvvv`. Reuses the existing `VecBlend`
   IR op; L=1 emits the parallel high-half.
-- **Lean spec catch-up** (`b7a8f31`). `BinOp` extended with the 6
-  F2-BK-007 variants; `Op` extended with `repStos` / `repMovs`.
+- **Lean spec catch-up** (`b7a8f31` + `9d1660a`). `BinOp` extended with
+  the 6 F2-BK-007 variants; `Op` extended with `repStos` / `repMovs`.
   Unsigned `evalBinOp` cases concrete via `Nat`; signed are placeholders
   (`sorry` for sMulHi/sDiv/sMod). `.sorry-budget` bumped 0 → 3.
+  Exhaustive `cases op with` in DCE + ConstProp passes updated.
+- **F2-PS-004 Global CSE** (`0396c19`). `FunctionPassManager` plumbing
+  + dominator-tree-forwarded CSE. Single-block translator caveat
+  carries.
+- **F2-PS-003 LICM** (`ff41e83`). Loop-invariant code motion via
+  natural-loops. Pre-header is unique non-loop predecessor; multi-entry
+  loops skipped conservatively.
+- **F2-IR-051 VPERMQ ymm** (`fbd714a`). New `VecTbl2` IR op + emitter
+  `vtbl2_q` (copy through V30/V31 fixed scratches, then NEON TBL).
+  Decoder synthesises imm8-controlled byte-index VecConstants at decode
+  time. Reusable for future VPERMD / VPGATHER.
 
-All four follow-ons validated under Debug + ASan + UBSan in the
-container.
+Also a pile of CI cleanup that moved PR #1 from "5/9 failing" at
+session start to all-green:
 
-**Two-eyes tally:** the session's solo IR/decoder/lowering commits now
-total 9 (the original 5 from F2 plus `5756084`, `67a7336`, `6a21ba5`,
-`b7a8f31`). A batched Danny waiver in `docs/REVIEWS/F2-CLAUDE-WAIVER.md`
-or a Codex audit pass over the range `8884efd..HEAD` is the standing
-ask before merge.
+- `08c6cf8` `signal_handler.cpp` missing `#include <cstdlib>`
+- `03f4d88` ir-spec sorry-budget grep + pipefail false-positive
+- `115e69b` zydis stub `!shouldfail+WARN` → `SUCCEED`
+- `bf91c38` shell-stub workflow rustup `--component` syntax
+- `b8d74c6` shell orchestrator `cargo fmt` + clippy cleanup
+
+Plus playbook docs: `docs/WORK_QUEUE.md` (`59ac4c0`) and
+`docs/AGENT_PLAYBOOK.md` (`78868aa`) consolidating the patterns the
+session has standardised.
+
+All landings validated under Debug + ASan + UBSan in the Linux
+x86_64 container that mirrors CI's `ubuntu-latest` runner.
+
+**Two-eyes tally:** the session's solo IR/decoder/lowering/emitter
+commits total 13. A batched Danny waiver in
+`docs/REVIEWS/F2-CLAUDE-WAIVER.md` or a Codex audit pass over
+`8884efd..HEAD` clears the merge gate:
+
+- F2 review's original 5: `a2fabde`, `02c900f`, `afccedd`, `5448c9b`, `8317648`
+- Blocker A reshape: `5756084`
+- F2-IR-049 VPTEST ymm: `67a7336`
+- F2-IR-050 VBLEND VEX: `6a21ba5`
+- Lean spec extension: `b7a8f31`
+- DCE/CP case-splits: `9d1660a`
+- F2-PS-004 GCSE: `0396c19`
+- F2-PS-003 LICM: `ff41e83`
+- F2-IR-051 VPERMQ ymm: `fbd714a`
 
 ---
 
