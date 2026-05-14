@@ -133,7 +133,13 @@ private:
 
     passes::PassManager           pipeline_;
     passes::FunctionPassManager   function_pipeline_;
-    bool                          real_call_ret_{false};
+    // F2-IR-054: defaults ON. Programs that rely on the legacy
+    // halt-on-RET behaviour (a handful of decoder-shape unit tests
+    // that don't run real dispatch) must opt out explicitly via
+    // `set_real_call_ret(false)`. The e2e test corpus migrated to
+    // `disp.install_halt_return_stack()` so the outermost RET pops
+    // 0 → halt sentinel cleanly.
+    bool                          real_call_ret_{true};
     cache::TranslationCache       cache_;
     // Pool that owns every translated region. F1-RT-009: replaces the
     // previous one-mmap-per-translation pattern.

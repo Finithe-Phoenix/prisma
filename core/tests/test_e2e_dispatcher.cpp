@@ -43,6 +43,7 @@ runtime::CpuStateFrame run_blob(std::vector<std::uint8_t> bytes) {
                                              bytes.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto r = disp.run(0x4000, /*max_steps=*/100);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     return disp.state();
@@ -159,6 +160,7 @@ TEST_CASE("e2e: stats — single-block program reports blocks_executed = 1") {
                                              bytes.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto r = disp.run(0x4000, 100);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.stats.blocks_executed == 1);
@@ -186,6 +188,7 @@ TEST_CASE("e2e: PXOR xmm0, xmm0 zeroes xmm0 (idiomatic SSE2 zero)") {
                                              bytes.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[0].lo = 0xDEADBEEFCAFEBABEull;
 
     auto r = disp.run(0x4000, 100);
@@ -213,6 +216,7 @@ TEST_CASE("e2e: ADDPS xmm0, xmm1 — packed-FP add lanes-wise (4×f32)") {
                                              bytes.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
 
     auto pack2f = [](float lo32, float hi32) -> std::uint64_t {
         std::uint32_t a, b;
@@ -252,6 +256,7 @@ TEST_CASE("e2e: ADDSS xmm0, xmm1 — scalar-FP add preserves upper xmm bits") {
                                              bytes.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
 
     auto enc_f32_lo = [](float v) -> std::uint64_t {
         std::uint32_t bits;
@@ -291,6 +296,7 @@ TEST_CASE("e2e: VADDPS xmm2, xmm0, xmm1 — AVX-128 3-operand packed FP add") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -329,6 +335,7 @@ TEST_CASE("e2e: VPXOR xmm2, xmm0, xmm1 — F2-IR-048 AVX-128 3-operand XOR") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[0].lo = 0xFF00FF00FF00FF00ULL;
     disp.state().xmm[0].hi = 0x00FF00FF00FF00FFULL;
     disp.state().xmm[1].lo = 0x0F0F0F0F0F0F0F0FULL;
@@ -356,6 +363,7 @@ TEST_CASE("e2e: PBLENDVB — variable byte blend selected by xmm0 MSB (SSE4.1)")
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // xmm1 = dst (preserved where mask MSB == 0)
     // xmm2 = src (selected where mask MSB == 1)
     // xmm0 = mask (per byte: 0xFF picks src, 0x00 picks dst)
@@ -396,6 +404,7 @@ TEST_CASE("e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // 0x0000_0000_0000_0100 → leading zeros = 55, trailing zeros = 8.
     disp.state()[ir::Gpr::Rcx] = 0x0000000000000100ULL;
     disp.state()[ir::Gpr::Rdx] = 0x0000000000000100ULL;
@@ -420,6 +429,7 @@ TEST_CASE("e2e: POPCNT 0xCAFEBABE counts the bits") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // popcount(0xCAFEBABEDEADBEEF) = 42.
     disp.state()[ir::Gpr::Rcx] = 0xCAFEBABEDEADBEEFULL;
     auto r = disp.run(0x4000, 100);
@@ -443,6 +453,7 @@ TEST_CASE("e2e: ROUNDSD truncates 7.9 to 7.0 (mode=3)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     double v = 7.9;
     std::uint64_t bits;
     std::memcpy(&bits, &v, 8);
@@ -472,6 +483,7 @@ TEST_CASE("e2e: PMOVZXBW — F2-IR-041 zero-extend 8 bytes to 8 halfwords") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // xmm1 low qword bytes 0..7 = {0xFF, 0x80, 0x01, 0x7F, 0xAB, 0xCD, 0x00, 0xEE}
     disp.state().xmm[1].lo = 0xEE'00'CD'AB'7F'01'80'FFULL;
     disp.state().xmm[1].hi = 0;
@@ -505,6 +517,7 @@ TEST_CASE("e2e: PEXTRQ rax, xmm0, 1 — extract upper qword (SSE4.1)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[0].lo = 0x1111111111111111ULL;
     disp.state().xmm[0].hi = 0xDEADBEEFCAFEBABEULL;
     auto r = disp.run(0x4000, 100);
@@ -527,6 +540,7 @@ TEST_CASE("e2e: PALIGNR concat-shift by 4 bytes (SSSE3)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // xmm1 holds bytes 0..15 = 0x10..0x1F.
     // xmm0 holds bytes 16..31 = 0x20..0x2F.
     // PALIGNR with count=4: result = (xmm0 || xmm1) >> (4 bytes), low 16
@@ -560,6 +574,7 @@ TEST_CASE("e2e: PSHUFB byte-permute with MSB-set zero gating (SSSE3)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack8 = [](std::uint8_t* b) {
         std::uint64_t v = 0;
         for (int i = 0; i < 8; ++i)
@@ -602,6 +617,7 @@ TEST_CASE("e2e: CMPLTPS — F2-IR-034 packed FP less-than mask") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -637,6 +653,7 @@ TEST_CASE("e2e: MOVDDUP — F2-IR-033 broadcast low qword to both D2 lanes") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[1].lo = 0xCAFEBABEDEADBEEFULL;
     disp.state().xmm[1].hi = 0xFFFFFFFFFFFFFFFFULL;  // ignored
     auto r = disp.run(0x4000, 100);
@@ -660,6 +677,7 @@ TEST_CASE("e2e: HADDPS — F2-IR-032 horizontal pairwise add of 4 floats") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -692,6 +710,7 @@ TEST_CASE("e2e: PSADBW — F2-IR-031 sum of byte differences (used by memcmp)") 
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // xmm0 bytes 0..7  = {10, 20, 30, 40, 50, 60, 70, 80}
     // xmm1 bytes 0..7  = {15, 15, 35, 35, 55, 55, 75, 75}
     // |diffs|          = { 5,  5,  5,  5,  5,  5,  5,  5} → sum = 40 → 0x28
@@ -733,6 +752,7 @@ TEST_CASE("e2e: PMULUDQ — F2-IR-030 unsigned 32x32→64 lane mul") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -765,6 +785,7 @@ TEST_CASE("e2e: MOVMSKPS extracts 4 sign bits from S4 lanes") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -792,6 +813,7 @@ TEST_CASE("e2e: PSHUFLW reverses low 4 words, high half passes through") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint16_t a, std::uint16_t b,
                     std::uint16_t c, std::uint16_t d) -> std::uint64_t {
         return  static_cast<std::uint64_t>(a)
@@ -822,6 +844,7 @@ TEST_CASE("e2e: PMOVMSKB eax, xmm0 — F2-IR-027 byte-MSB extraction") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // Bytes (little-endian byte order in lo/hi):
     //   lo bytes 0..7: 0x80 (MSB=1), 0x01 (MSB=0), 0xFF (1), 0x7F (0), 0x80 (1), 0x00 (0), 0xC0 (1), 0x40 (0)
     //   hi bytes 8..15: 0x80, 0x80, 0x00, 0x00, 0xFF, 0xFF, 0x01, 0x80
@@ -863,6 +886,7 @@ TEST_CASE("e2e: PMULHW xmm0, xmm1 — F2-IR-025 signed high-half multiply") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4h = [](std::int16_t a, std::int16_t b,
                      std::int16_t c, std::int16_t d) -> std::uint64_t {
         return  static_cast<std::uint64_t>(static_cast<std::uint16_t>(a))
@@ -899,6 +923,7 @@ TEST_CASE("e2e: PADDUSB clamps at 0xFF — F2-IR-023 unsigned sat add") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // Each byte: 0xF0 + 0x20 = 0x110 → clamp to 0xFF.
     disp.state().xmm[0].lo = 0xF0F0F0F0F0F0F0F0ULL;
     disp.state().xmm[0].hi = 0xF0F0F0F0F0F0F0F0ULL;
@@ -925,6 +950,7 @@ TEST_CASE("e2e: PEXTRW eax, xmm0, 3 — F2-IR-022 word extract from lane 3") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // xmm0 lanes (H8): {0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7777, 0x8888}.
     disp.state().xmm[0].lo = 0x4444'3333'2222'1111ULL;
     disp.state().xmm[0].hi = 0x8888'7777'6666'5555ULL;
@@ -948,6 +974,7 @@ TEST_CASE("e2e: MOVSS reg-reg preserves upper xmm bits") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     constexpr std::uint64_t kSentinelLoHi32 = 0xCAFEBABE'00000000ULL;
     constexpr std::uint64_t kSentinelHi     = 0xDEADBEEFFEEDFACEULL;
     disp.state().xmm[0].lo = 0x1111'2222ULL | kSentinelLoHi32;
@@ -981,6 +1008,7 @@ TEST_CASE("e2e: SHUFPS xmm0, xmm1, 0x4E — F2-IR-020 two-source FP shuffle") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -1010,6 +1038,7 @@ TEST_CASE("e2e: SQRTPS — packed sqrt of 4 floats") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -1042,6 +1071,7 @@ TEST_CASE("e2e: SQRTSD round-trip — F2-IR-019 sqrt(16.0) == 4.0") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state()[ir::Gpr::Rax] = 16u;
     auto r = disp.run(0x4000, 100);
     INFO("dispatch message: " << r.message);
@@ -1064,6 +1094,7 @@ TEST_CASE("e2e: MAXSD selects the larger double") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto bits_of = [](double v) -> std::uint64_t {
         std::uint64_t b; std::memcpy(&b, &v, 8); return b;
     };
@@ -1091,6 +1122,7 @@ TEST_CASE("e2e: XORPS xmm0, xmm0 — F2-IR-018 idiomatic FP zero") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[0].lo = 0xDEADBEEFCAFEBABEull;
     disp.state().xmm[0].hi = 0xFEEDFACEDEADBEEFull;
     auto r = disp.run(0x4000, 100);
@@ -1118,6 +1150,7 @@ TEST_CASE("e2e: CVTSS2SD chain — F2-IR-017 single→double round trip via int"
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state()[ir::Gpr::Rax] = 7u;
     auto r = disp.run(0x4000, 100);
     INFO("dispatch message: " << r.message);
@@ -1143,6 +1176,7 @@ TEST_CASE("e2e: CVTSI2SD + CVTTSD2SI — F2-IR-016 round-trip int→f64→int") 
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state()[ir::Gpr::Rax] = 42u;
     auto r = disp.run(0x4000, 100);
     INFO("dispatch message: " << r.message);
@@ -1167,6 +1201,7 @@ TEST_CASE("e2e: PSRLDQ xmm0, 8 — F2-IR-014 byte-shift right by 8") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[0].lo = 0x1122334455667788ull;
     disp.state().xmm[0].hi = 0xAABBCCDDEEFF0011ull;
 
@@ -1194,6 +1229,7 @@ TEST_CASE("e2e: PMULLW xmm0, xmm1 — F2-IR-013 lane-wise i16 multiply") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack8 = [](std::uint16_t a, std::uint16_t b,
                     std::uint16_t c, std::uint16_t d) -> std::uint64_t {
         return  static_cast<std::uint64_t>(a)
@@ -1230,6 +1266,7 @@ TEST_CASE("e2e: PUNPCKLDQ xmm0, xmm1 — F2-IR-011 32-bit interleave low") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) |
                (static_cast<std::uint64_t>(b) << 32);
@@ -1260,6 +1297,7 @@ TEST_CASE("e2e: PSLLD xmm0, 4 — F2-IR-012 per-lane left shift") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) |
                (static_cast<std::uint64_t>(b) << 32);
@@ -1290,6 +1328,7 @@ TEST_CASE("e2e: PSHUFD xmm0, xmm1, 0x1B — F2-IR-010 lane reversal") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) |
                (static_cast<std::uint64_t>(b) << 32);
@@ -1320,6 +1359,7 @@ TEST_CASE("e2e: PCMPEQD xmm0, xmm1 — F2-IR-009 lane-wise equality") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) |
                (static_cast<std::uint64_t>(b) << 32);
@@ -1354,6 +1394,7 @@ TEST_CASE("e2e: MOVQ xmm0, rax + MOVQ rcx, xmm0 — F2-IR-008 GPR↔XMM transfer
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto r = disp.run(0x4000, 100);
     INFO("dispatch message: " << r.message);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
@@ -1376,6 +1417,7 @@ TEST_CASE("e2e: PADDD xmm0, [rcx] — F2-IR-007 SSE2 memory operand") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4 = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) |
                (static_cast<std::uint64_t>(b) << 32);
@@ -1441,6 +1483,7 @@ TEST_CASE("e2e: VADDPS ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed FP add") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -1482,6 +1525,7 @@ TEST_CASE("e2e: VXORPS ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 FP bitwise xor") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[0].lo    = 0xAAAAAAAAAAAAAAAAULL;
     disp.state().xmm[0].hi    = 0x5555555555555555ULL;
     disp.state().ymm_hi[0].lo = 0xFF00FF00FF00FF00ULL;
@@ -1515,6 +1559,7 @@ TEST_CASE("e2e: VPADDD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 32-bit lane add") 
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -1551,6 +1596,7 @@ TEST_CASE("e2e: VPCMPEQD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 32-bit lane equa
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -1593,6 +1639,7 @@ TEST_CASE("e2e: VUNPCKLPS ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 FP lane interle
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -1637,6 +1684,7 @@ TEST_CASE("e2e: VFMADD231PS xmm2, xmm0, xmm1 — F2-IR-006 fused multiply-add") 
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -1674,6 +1722,7 @@ TEST_CASE("e2e: VFMSUB231PS xmm2, xmm0, xmm1 — F2-IR-006 b*c - a") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -1714,6 +1763,7 @@ TEST_CASE("e2e: VINSERTF128 ymm0, ymm1, xmm2, 1 — F2-IR-005 high-lane insert")
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // ymm1.lo = [11 12], ymm1.hi = [13 14] (256-bit) — survives unchanged in ymm0.lo.
     // xmm2 = [99 100] — inserted into ymm0.hi (replacing the original ymm1.hi).
     disp.state().xmm[1].lo    = 0x000000010000000BULL;  // arbitrary
@@ -1753,6 +1803,7 @@ TEST_CASE("e2e: VEXTRACTF128 xmm0, ymm1, 1 — F2-IR-005 high-lane extract") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[1].lo    = 0xAAAAAAAAAAAAAAAAULL;
     disp.state().xmm[1].hi    = 0xBBBBBBBBBBBBBBBBULL;
     disp.state().ymm_hi[1].lo = 0xCCCCCCCCCCCCCCCCULL;
@@ -1792,6 +1843,7 @@ TEST_CASE("e2e: VPERM2F128 ymm0, ymm1, ymm2, 0x21 — F2-IR-005 lane swap") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[1].lo    = 0x1111111111111111ULL;  // ymm1.lo
     disp.state().xmm[1].hi    = 0x2222222222222222ULL;
     disp.state().ymm_hi[1].lo = 0x3333333333333333ULL;  // ymm1.hi (→ ymm0.lo)
@@ -1827,6 +1879,7 @@ TEST_CASE("e2e: VPERM2F128 ymm0, ymm1, ymm2, 0x88 — F2-IR-005 zero both halves
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[1].lo    = 0x1111111111111111ULL;
     disp.state().xmm[1].hi    = 0x2222222222222222ULL;
     disp.state().ymm_hi[1].lo = 0x3333333333333333ULL;
@@ -1862,6 +1915,7 @@ TEST_CASE("e2e: VBROADCASTSS ymm0, xmm1 — F2-IR-005 lane-0 broadcast to all 8"
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -1899,6 +1953,7 @@ TEST_CASE("e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4"
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto u64_of_double = [](double v) -> std::uint64_t {
         std::uint64_t bits; std::memcpy(&bits, &v, 8); return bits;
     };
@@ -1934,6 +1989,7 @@ TEST_CASE("e2e: REP STOSB — F2-BK-008 native loop memset") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0x55ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = 32ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
@@ -1970,6 +2026,7 @@ TEST_CASE("e2e: REP MOVSB — F2-BK-009 native loop memcpy") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = 24ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rsi)] =
         reinterpret_cast<std::uint64_t>(&src_buf[0]);
@@ -2000,6 +2057,7 @@ TEST_CASE("e2e: REP STOSB with RCX=0 — F2-BK-008 zero-iteration skip") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0x99ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = 0ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
@@ -2043,9 +2101,10 @@ TEST_CASE("e2e: real CALL/RET round-trip — F2-IR-054 opt-in semantics") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
-    // Helper sets up a 16-slot internal halt-return stack and points
-    // RSP at the top slot. The caller's outermost RET (at 0x400F)
-    // will pop a 0 from one of the lower slots → halt sentinel.
+    // The helper sets up a 16-slot internal halt-return stack and
+    // points RSP at the top slot. The caller's outermost RET (at
+    // 0x400F) will pop a 0 from one of the lower slots → halt
+    // sentinel.
     disp.install_halt_return_stack();
     auto r = disp.run(0x4000, /*max_steps=*/32);
     INFO("dispatch: " << r.message
@@ -2079,6 +2138,7 @@ TEST_CASE("e2e: REP STOSB beyond clamp — Blocker A re-entry path") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0x42ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] = kCount;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
@@ -2124,6 +2184,7 @@ TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm")
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // xmm1 bytes: 0x01 .. 0x10 across all 16 lanes.
     disp.state().xmm[1].lo = 0x0807060504030201ULL;
     disp.state().xmm[1].hi = 0x100F0E0D0C0B0A09ULL;
@@ -2163,6 +2224,7 @@ TEST_CASE("e2e: VPMOVMSKB rax, ymm0 — F2-IR-005 32-bit MSB extract from ymm") 
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // Set bytes with MSB pattern: alternating 0x80 / 0x00 across the
     // 32 bytes. The mask should be 0x55555555 (bit i set iff lane i has
     // MSB set; even-lane → 0x80 → MSB set).
@@ -2195,6 +2257,7 @@ TEST_CASE("e2e: VMOVDQA ymm0, ymm1 — F2-IR-005 256-bit register-to-register mo
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().xmm[1].lo    = 0x1111111111111111ULL;
     disp.state().xmm[1].hi    = 0x2222222222222222ULL;
     disp.state().ymm_hi[1].lo = 0x3333333333333333ULL;
@@ -2226,6 +2289,7 @@ TEST_CASE("e2e: VPSHUFD ymm0, ymm1, 0x1B — F2-IR-005 32-bit lane reverse ymm")
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -2260,6 +2324,7 @@ TEST_CASE("e2e: VPABSB ymm0, ymm1 — F2-IR-005 byte abs ymm") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // bytes: -1, -2, -3, ...; abs should yield 1, 2, 3, ...
     disp.state().xmm[1].lo    = 0xFFFEFDFCFBFAF9F8ULL;  // -1, -2, -3, ..., -8
     disp.state().xmm[1].hi    = 0xF7F6F5F4F3F2F1F0ULL;  // -9, ..., -16
@@ -2294,6 +2359,7 @@ TEST_CASE("e2e: VPMULLD ymm2, ymm0, ymm1 — F2-IR-005 SSE4.1 32-bit mul ymm") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -2330,6 +2396,7 @@ TEST_CASE("e2e: VPADDSB ymm2, ymm0, ymm1 — F2-IR-005 saturated byte add ymm") 
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // Saturating signed byte add: positive saturation at +127, negative at -128.
     // Use bytes that overflow to test sat clamp.
     disp.state().xmm[0].lo    = 0x7F7F7F7F7F7F7F7FULL;  // all +127
@@ -2366,6 +2433,7 @@ TEST_CASE("e2e: VPMULLW ymm2, ymm0, ymm1 — F2-IR-005 16-bit lane multiply ymm"
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4w = [](std::uint16_t a, std::uint16_t b,
                      std::uint16_t c, std::uint16_t d) -> std::uint64_t {
         return static_cast<std::uint64_t>(a)
@@ -2406,6 +2474,7 @@ TEST_CASE("e2e: MUL r/m64 produces RDX:RAX 128-bit product (F2-BK-007)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     // 0xFFFFFFFFFFFFFFFF * 2 = 0x1FFFFFFFFFFFFFFFE → low = 0xFFFFFFFFFFFFFFFE,
     //   hi = 0x0000000000000001
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0xFFFFFFFFFFFFFFFFULL;
@@ -2435,6 +2504,7 @@ TEST_CASE("e2e: DIV r/m64 → quotient in RAX, remainder in RDX (F2-BK-007)") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 100ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rbx)] = 7ULL;
     disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] = 0xDEADBEEFULL;
@@ -2464,6 +2534,7 @@ TEST_CASE("e2e: VFMADDSUB132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating add/su
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -2505,6 +2576,7 @@ TEST_CASE("e2e: VFMSUBADD132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating sub/ad
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -2546,6 +2618,7 @@ TEST_CASE("e2e: VFMADD231SS xmm2, xmm0, xmm1 — F2-IR-006 scalar single FMA") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -2587,6 +2660,7 @@ TEST_CASE("e2e: VFMSUB132SD xmm2, xmm0, xmm1 — F2-IR-006 scalar double, 132 fo
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto u64_of_double = [](double v) -> std::uint64_t {
         std::uint64_t bits; std::memcpy(&bits, &v, 8); return bits;
     };
@@ -2622,6 +2696,7 @@ TEST_CASE("e2e: VFMADD231PS ymm2, ymm0, ymm1 — F2-IR-006 ymm 256-bit FMA") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -2667,6 +2742,7 @@ TEST_CASE("e2e: VFNMADD231PS xmm2, xmm0, xmm1 — F2-IR-006 a - b*c") {
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack2f = [](float a, float b) -> std::uint64_t {
         std::uint32_t aa, bb;
         std::memcpy(&aa, &a, 4); std::memcpy(&bb, &b, 4);
@@ -2707,6 +2783,7 @@ TEST_CASE("e2e: VFMADD132PD xmm2, xmm0, xmm1 — F2-IR-006 132-form FMA double")
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto u64_of_double = [](double v) -> std::uint64_t {
         std::uint64_t bits; std::memcpy(&bits, &v, 8); return bits;
     };
@@ -2744,6 +2821,7 @@ TEST_CASE("e2e: VSHUFPS ymm2, ymm0, ymm1, 0x1B — F2-IR-005 AVX-256 lane revers
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto pack4i = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
         return static_cast<std::uint64_t>(a) | (static_cast<std::uint64_t>(b) << 32);
     };
@@ -2784,6 +2862,7 @@ TEST_CASE("e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul"
                                              code.size() - off);
     };
     runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
     auto u64_of_double = [](double v) -> std::uint64_t {
         std::uint64_t bits; std::memcpy(&bits, &v, 8); return bits;
     };
