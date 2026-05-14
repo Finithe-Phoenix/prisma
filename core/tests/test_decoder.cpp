@@ -2297,6 +2297,21 @@ TEST_CASE("decode SARX r32a, r/m32, r32b (C4 E2 6A F7 C1) — F2-IR-053") {
     REQUIRE(found);
 }
 
+TEST_CASE("decode RORX r32, r/m32, imm8 (C4 E3 7B F0 C1 0B) — F2-IR-053") {
+    // VEX 3-byte: C4 mmmmm=03 (0F3A) → 0xE3. W=0 vvvv=1111 (unused) L=0 pp=03 (F2) → 0x7B.
+    // ModRM C1: mod=11 reg=000 (dst rax) rm=001 (src rcx). imm8 = 0x0B = 11.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE3, 0x7B, 0xF0, 0xC1, 0x0B}, r);
+    bool found_ror = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::BinOp>(s.op)) {
+            const auto& b = std::get<ir::BinOp>(s.op);
+            if (b.op == ir::BinOpKind::Ror) found_ror = true;
+        }
+    }
+    REQUIRE(found_ror);
+}
+
 TEST_CASE("decode SHRX r64a, r/m64, r64b (C4 E2 EB F7 C1) — F2-IR-053") {
     // VEX byte2 = 0xEB → W=1 pp=03 (F2) = SHRX, 64-bit.
     ir::Ref r = 0;

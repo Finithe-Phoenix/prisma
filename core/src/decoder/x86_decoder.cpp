@@ -3158,6 +3158,53 @@ std::variant<Decoded, DecodeError> decode_one(
             subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
         }
 
+        // F2-IR-053 — BMI2 RORX (0F 3A F0): rotate-right with imm8
+        // count, no flags. Encoded as VEX.LZ.F2.0F3A.W0/1 F0 /r ib.
+        // Distinct from the legacy `ROR r/m, imm8` (which writes
+        // flags) in that the count comes from an immediate byte and
+        // there's NO destination register reuse (dest = ModRM.reg,
+        // src = ModRM.rm; the legacy form has them coincident).
+        if (subop == 0x3Au && vex.present && !vex.L && has_f2 &&
+            !has_lock && cursor < bytes.size() && bytes[cursor] == 0xF0u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t imm8 =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            const ir::Ref r_src   = next_ref++;
+            const ir::Ref r_count = next_ref++;
+            const ir::Ref r_res   = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_count,
+                ir::Constant{static_cast<std::uint64_t>(imm8), size}});
+            d.stmts.push_back({r_res,
+                ir::BinOp{ir::BinOpKind::Ror, r_src, r_count, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-038: 0F 3A escape — SSSE3 / SSE4.1 imm-bearing ops.
         if (subop == 0x3Au && has_operand_size_override && !has_lock &&
             !has_f2 && !has_f3) {
