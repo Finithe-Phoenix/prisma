@@ -6,7 +6,7 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-13 (in-flight after `ff41e83`).
+Last updated: 2026-05-13 (in-flight after `fbd714a`).
 
 ## Currently active
 
@@ -19,9 +19,10 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 |---|------|-------|------|--------|-------|
 | 1 | F2-PS-004 Global CSE via dominators | 1 commit, `core/src/passes/` | `0396c19` | ✅ done | FunctionPassManager + `global_cse`. Wiring into translator deferred (still single-block today). |
 | 2 | F2-PS-003 LICM (loop-invariant code motion) | 1 commit | `ff41e83` | ✅ done | Iterates to fixed point; skips multi-entry loops conservatively. |
-| 3 | docs(playbook): consolidate agent flows | 1 commit | — | 🟡 in_progress | Externalise the patterns this session has fleshed out (new IR op recipe, container workflow, …). |
-| 4 | VPERMD / VPERMQ ymm (lane-crossing perms) | 4-5 commits, needs `tbl`-based emitter primitive | — | ⏸ queued | `66 0F 38 36` (VPERMD vector idx) + `66 0F 3A 00` (VPERMQ imm8). |
-| 5 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | ⏸ queued | HANDOFF §5.F. Today CALL/RET round-trip per instruction. Inline RAS for predicted returns. |
+| 3 | docs(playbook): consolidate agent flows | 1 commit | `78868aa` | ✅ done | AGENT_PLAYBOOK.md landed. |
+| 4 | VPERMQ ymm (lane-crossing qword permute) | 1 commit | `fbd714a` | ✅ done | New `VecTbl2` IR op + `vtbl2_q` emitter primitive. Reusable for VPERMD / VPGATHER followups. |
+| 5 | VPERMD ymm (lane-crossing dword permute) | 2-3 commits | — | 🟢 unblocked-by-#4 | Vector-controlled indices: decoder builds runtime byte-index via existing primitives + `VecTbl2`. |
+| 6 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | ⏸ queued | HANDOFF §5.F. Today CALL/RET round-trip per instruction. Inline RAS for predicted returns. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. Reuse `X87Slot` in `cpu_state.hpp:43-48`. |
 
@@ -48,6 +49,8 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | – | docs: add WORK_QUEUE.md | `59ac4c0` | This file. |
 | 1 | feat(passes): F2-PS-004 — FunctionPassManager + global_cse | `0396c19` | 780/780 verde Debug + ASan/UBSan. |
 | 2 | feat(passes): F2-PS-003 — loop_invariant_motion | `ff41e83` | 788/788 verde Debug + ASan/UBSan. |
+| 3 | docs: AGENT_PLAYBOOK.md | `78868aa` | Container, 13-file IR-op recipe, function-pass authoring, two-eyes, Lean, CI, WORK_QUEUE contract. |
+| 4 | feat(ir,decoder,backend): F2-IR-051 — VPERMQ ymm via VecTbl2 | `fbd714a` | 790/790 verde Debug + ASan/UBSan. |
 
 ## Standing decisions (carry across items)
 
