@@ -128,6 +128,8 @@ theorem cp_fold_op_sound
   | writeFlags _ _ _ _   => rfl
   | readFlag _ _      => rfl
   | condJumpFlags _ _ _ _ => rfl
+  | repStos _ _ _ _   => rfl
+  | repMovs _ _ _ _   => rfl
 
 /-- Corollary: when both operands are known, `cp_fold_op` produces
     a `.constant` with exactly the result the original `binop` would

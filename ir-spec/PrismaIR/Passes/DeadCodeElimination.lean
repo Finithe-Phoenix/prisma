@@ -129,5 +129,7 @@ theorem evalPure_unaffected_by_unread_ref
   | writeFlags _ _ _ _   => rfl
   | readFlag _ _      => rfl
   | condJumpFlags _ _ _ _ => rfl
+  | repStos _ _ _ _   => rfl
+  | repMovs _ _ _ _   => rfl
 
 end PrismaIR.Passes
