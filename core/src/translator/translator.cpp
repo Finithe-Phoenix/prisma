@@ -83,7 +83,8 @@ inline void emit_epilogue_and_ret(backend::Emitter& em) {
 
 std::variant<Decoded, decoder::DecodeError>
 decode_until_terminator(std::span<const std::uint8_t> bytes,
-                        std::uint64_t guest_addr) {
+                        std::uint64_t guest_addr,
+                        bool real_call_ret) {
     Decoded out;
     ir::Ref next = 0;
     std::size_t cursor = 0;
@@ -91,7 +92,8 @@ decode_until_terminator(std::span<const std::uint8_t> bytes,
 
     while (cursor < bytes.size()) {
         const std::uint64_t instr_pc = guest_addr + cursor;
-        auto res = decoder::decode_one(bytes.subspan(cursor), next, instr_pc);
+        auto res = decoder::decode_one(bytes.subspan(cursor), next, instr_pc,
+                                       real_call_ret);
         if (std::holds_alternative<decoder::DecodeError>(res)) {
             return std::get<decoder::DecodeError>(res);
         }
@@ -124,6 +126,10 @@ void Translator::set_pipeline(passes::PassManager pm) {
 
 void Translator::set_function_pipeline(passes::FunctionPassManager pm) {
     function_pipeline_ = std::move(pm);
+}
+
+void Translator::set_real_call_ret(bool enabled) noexcept {
+    real_call_ret_ = enabled;
 }
 
 TranslateResult Translator::translate(
@@ -161,7 +167,8 @@ TranslateResult Translator::translate(
     // that {hits, misses, decode_failures, lower_failures} partitions
     // attempts cleanly.
 
-    auto decoded = decode_until_terminator(guest_bytes, guest_addr);
+    auto decoded = decode_until_terminator(guest_bytes, guest_addr,
+                                           real_call_ret_);
     if (std::holds_alternative<decoder::DecodeError>(decoded)) {
         ++stats_.decode_failures;
         return TranslateError::DecodeFailed;

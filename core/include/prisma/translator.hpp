@@ -94,6 +94,17 @@ public:
     // function pipeline is skipped entirely.
     void set_function_pipeline(passes::FunctionPassManager pm);
 
+    // Enable real CALL / RET semantics in the decoder. Off by default
+    // for back-compat with the e2e test corpus that relies on RET
+    // halting the dispatcher (via the legacy `Return{}` IR op +
+    // halt-sentinel lowering). When on:
+    //   CALL rel32 → push next_pc onto guest stack + JumpRel(target)
+    //   RET (C3)   → load [RSP] → r_target; RSP += 8; JumpReg(r_target)
+    // New tests / real programs should set this to `true`. The
+    // eventual migration goal is to flip the default.
+    void set_real_call_ret(bool enabled) noexcept;
+    [[nodiscard]] bool real_call_ret() const noexcept { return real_call_ret_; }
+
     // The underlying cache, for tests and for the eventual runtime to
     // signal page invalidation.
     [[nodiscard]] cache::TranslationCache& cache() noexcept { return cache_; }
@@ -122,6 +133,7 @@ private:
 
     passes::PassManager           pipeline_;
     passes::FunctionPassManager   function_pipeline_;
+    bool                          real_call_ret_{false};
     cache::TranslationCache       cache_;
     // Pool that owns every translated region. F1-RT-009: replaces the
     // previous one-mmap-per-translation pattern.

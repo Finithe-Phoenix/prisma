@@ -2009,6 +2009,57 @@ TEST_CASE("e2e: REP STOSB with RCX=0 — F2-BK-008 zero-iteration skip") {
     for (auto b : buf) REQUIRE(b == 0xAA);
 }
 
+// F2-IR-054 — real CALL/RET round-trip. With `set_real_call_ret(true)`,
+// CALL pushes the next_pc onto the guest stack and jumps to the
+// callee; the callee's RET pops the saved next_pc and JumpReg's back
+// to it. The test sets up RSP pointing at a 16-byte buffer whose
+// "below RSP" cell holds 0 — so the caller's own RET (after the
+// CALL returns) pops 0, which the dispatcher recognises as the halt
+// sentinel and stops cleanly.
+TEST_CASE("e2e: real CALL/RET round-trip — F2-IR-054 opt-in semantics") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    tx.set_real_call_ret(true);
+    // Layout (PC = 0x4000 base):
+    //   0x4000:  B8 11 00 00 00       MOV EAX, 0x11      ; pre-CALL marker
+    //   0x4005:  E8 06 00 00 00       CALL 0x4010
+    //   0x400A:  B8 22 00 00 00       MOV EAX, 0x22      ; post-CALL marker
+    //   0x400F:  C3                   RET                ; halt via RSP=0 sentinel
+    //   0x4010:  B8 33 00 00 00       MOV EAX, 0x33      ; in callee
+    //   0x4015:  C3                   RET                ; pops 0x400A, returns
+    std::vector<std::uint8_t> code{
+        0xB8, 0x11, 0x00, 0x00, 0x00,         // 0x4000
+        0xE8, 0x06, 0x00, 0x00, 0x00,         // 0x4005 → call 0x4010
+        0xB8, 0x22, 0x00, 0x00, 0x00,         // 0x400A
+        0xC3,                                   // 0x400F
+        0xB8, 0x33, 0x00, 0x00, 0x00,         // 0x4010
+        0xC3,                                   // 0x4015 → ret to 0x400A
+    };
+    alignas(8) static std::uint64_t stack_storage[4] = {0, 0, 0, 0};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    // RSP points one slot above the bottom of the buffer so CALL's
+    // RSP -= 8 lands at slot[2], where the saved retaddr 0x400A goes.
+    // The caller's RET after that pops back to 0x400A; the caller's
+    // FINAL RET (at 0x400F) pops slot[3] = 0 = halt sentinel.
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] =
+        reinterpret_cast<std::uint64_t>(&stack_storage[3]);
+    auto r = disp.run(0x4000, /*max_steps=*/32);
+    INFO("dispatch: " << r.message
+                      << "  steps=" << r.stats.steps_taken);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Final EAX should be 0x22 — the post-CALL marker, executed
+    // *after* the callee's RET resumed at 0x400A.
+    REQUIRE((disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] & 0xFFFFFFFFull)
+            == 0x22ull);
+}
+
 // Blocker A adversarial test: REP STOSB with RCX strictly greater than
 // the per-call clamp must finish correctly across multiple dispatcher
 // hops, not hang the host. RCX = kRepMaxBytesPerCall + small_overflow

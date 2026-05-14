@@ -32,6 +32,14 @@ Decoded decode_ok(std::vector<std::uint8_t> bytes, ir::Ref& ref, std::uint64_t i
     return std::get<Decoded>(r);
 }
 
+Decoded decode_ok_real_callret(std::vector<std::uint8_t> bytes, ir::Ref& ref,
+                               std::uint64_t instruction_guest_pc) {
+    auto r = decode_one(std::span<const std::uint8_t>{bytes}, ref,
+                        instruction_guest_pc, /*real_call_ret=*/true);
+    REQUIRE(std::holds_alternative<Decoded>(r));
+    return std::get<Decoded>(r);
+}
+
 // Same idea for tests that expect a DecodeError.
 auto decode_any(std::vector<std::uint8_t> bytes, ir::Ref& ref) {
     return decode_one(std::span<const std::uint8_t>{bytes}, ref);
@@ -2295,6 +2303,68 @@ TEST_CASE("decode SARX r32a, r/m32, r32b (C4 E2 6A F7 C1) — F2-IR-053") {
         }
     }
     REQUIRE(found);
+}
+
+// F2-IR-054 — real CALL/RET semantics, opt-in via decode_one's
+// `real_call_ret` flag. These tests check the IR *shape* the decoder
+// emits when the flag is on; runtime behaviour is exercised by
+// future e2e tests once the corpus is migrated.
+TEST_CASE("decode CALL rel32 with real_call_ret emits push + JumpRel") {
+    ir::Ref r = 0;
+    // E8 00 00 00 00 — call rel32 = 0 (target = instr_pc + 5).
+    auto d = decode_ok_real_callret({0xE8, 0x00, 0x00, 0x00, 0x00}, r,
+                                    /*pc=*/0x1000);
+    int load_rsp = 0, store_rsp = 0, store_mem = 0, jump_rel = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::LoadReg>(s.op)) {
+            if (std::get<ir::LoadReg>(s.op).reg == ir::Gpr::Rsp) ++load_rsp;
+        }
+        if (std::holds_alternative<ir::StoreReg>(s.op)) {
+            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
+        }
+        if (std::holds_alternative<ir::StoreMem>(s.op))    ++store_mem;
+        if (std::holds_alternative<ir::JumpRel>(s.op))     ++jump_rel;
+    }
+    REQUIRE(load_rsp  == 1);   // read current RSP
+    REQUIRE(store_rsp == 1);   // write RSP -= 8
+    REQUIRE(store_mem == 1);   // [RSP_new] = retaddr
+    REQUIRE(jump_rel  == 1);   // jump to target
+}
+
+TEST_CASE("decode CALL rel32 without real_call_ret stays a plain JumpRel") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xE8, 0x00, 0x00, 0x00, 0x00}, r);
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::JumpRel>(d.stmts[0].op));
+}
+
+TEST_CASE("decode RET (C3) with real_call_ret emits pop + JumpReg") {
+    ir::Ref r = 0;
+    auto d = decode_ok_real_callret({0xC3}, r, /*pc=*/0x2000);
+    int load_rsp = 0, load_mem = 0, store_rsp = 0, jump_reg = 0, return_op = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::LoadReg>(s.op)) {
+            if (std::get<ir::LoadReg>(s.op).reg == ir::Gpr::Rsp) ++load_rsp;
+        }
+        if (std::holds_alternative<ir::LoadMem>(s.op))   ++load_mem;
+        if (std::holds_alternative<ir::StoreReg>(s.op)) {
+            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
+        }
+        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
+        if (std::holds_alternative<ir::Return>(s.op))    ++return_op;
+    }
+    REQUIRE(load_rsp  == 1);
+    REQUIRE(load_mem  == 1);
+    REQUIRE(store_rsp == 1);
+    REQUIRE(jump_reg  == 1);
+    REQUIRE(return_op == 0);   // no halt-sentinel Return in real mode
+}
+
+TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC3}, r);
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
 TEST_CASE("decode MULX r64a, r64b, r/m64 (C4 E2 EB F6 C1) — F2-IR-053 followup") {

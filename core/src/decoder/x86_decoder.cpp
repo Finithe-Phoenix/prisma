@@ -2305,7 +2305,8 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
 std::variant<Decoded, DecodeError> decode_one(
     std::span<const Byte> bytes,
     ir::Ref& next_ref,
-    std::uint64_t instruction_guest_pc) {
+    std::uint64_t instruction_guest_pc,
+    bool real_call_ret) {
 
     std::size_t cursor = 0;
     if (bytes.empty()) return DecodeError::TruncatedInput;
@@ -2755,7 +2756,27 @@ std::variant<Decoded, DecodeError> decode_one(
         if (has_operand_size_override || has_address_size_override) return DecodeError::UnsupportedEncoding;
         if (rex.present) return DecodeError::UnsupportedEncoding;
         Decoded d;
-        d.stmts.push_back({std::nullopt, ir::Return{}});
+        if (real_call_ret) {
+            // Real RET: target ← [RSP], RSP += 8, jump target.
+            const ir::Ref r_rsp     = next_ref++;
+            const ir::Ref r_target  = next_ref++;
+            const ir::Ref r_eight   = next_ref++;
+            const ir::Ref r_rsp_new = next_ref++;
+            d.stmts.push_back({r_rsp,
+                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
+            d.stmts.push_back({r_target,
+                ir::LoadMem{r_rsp, ir::OpSize::I64}});
+            d.stmts.push_back({r_eight,
+                ir::Constant{8ULL, ir::OpSize::I64}});
+            d.stmts.push_back({r_rsp_new,
+                ir::BinOp{ir::BinOpKind::Add, r_rsp, r_eight,
+                          ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{ir::Gpr::Rsp, r_rsp_new, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt, ir::JumpReg{r_target}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::Return{}});
+        }
         d.bytes_consumed = cursor;
         return d;
     }
@@ -2845,6 +2866,11 @@ std::variant<Decoded, DecodeError> decode_one(
     //
     // MVP placeholder: treat CALL as an absolute direct jump. Proper return-address
     // handling is deferred to `F1-IR-008` and runtime stack-call support.
+    //
+    // With `real_call_ret`: emit the full push-then-jump sequence
+    //   RSP -= 8
+    //   [RSP] = (instruction_guest_pc + cursor)         ; return address
+    //   JumpRel target
     if (opcode == 0xE8u) {
         if (rex.present) return DecodeError::UnsupportedEncoding;
         if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
@@ -2855,7 +2881,27 @@ std::variant<Decoded, DecodeError> decode_one(
         const std::int32_t rel = sign_extend_i32<4>(std::get<std::uint64_t>(imm));
         const std::uint64_t target =
             instruction_guest_pc + cursor + static_cast<std::uint64_t>(static_cast<std::int64_t>(rel));
+        const std::uint64_t return_pc = instruction_guest_pc + cursor;
         Decoded d;
+        if (real_call_ret) {
+            const ir::Ref r_rsp     = next_ref++;
+            const ir::Ref r_eight   = next_ref++;
+            const ir::Ref r_rsp_new = next_ref++;
+            const ir::Ref r_retaddr = next_ref++;
+            d.stmts.push_back({r_rsp,
+                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
+            d.stmts.push_back({r_eight,
+                ir::Constant{8ULL, ir::OpSize::I64}});
+            d.stmts.push_back({r_rsp_new,
+                ir::BinOp{ir::BinOpKind::Sub, r_rsp, r_eight,
+                          ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{ir::Gpr::Rsp, r_rsp_new, ir::OpSize::I64}});
+            d.stmts.push_back({r_retaddr,
+                ir::Constant{return_pc, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreMem{r_rsp_new, r_retaddr, ir::OpSize::I64}});
+        }
         d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
         d.bytes_consumed = cursor;
         return d;
