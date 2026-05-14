@@ -2367,6 +2367,31 @@ TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return"
     REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
+TEST_CASE("decode RET imm16 (C2 04 00) with real_call_ret pops + adjusts + JumpReg") {
+    // RET 4 — pop return address AND 4 extra bytes off the stack.
+    ir::Ref r = 0;
+    auto d = decode_ok_real_callret({0xC2, 0x04, 0x00}, r, /*pc=*/0x3000);
+    int load_mem = 0, store_rsp = 0, jump_reg = 0, return_op = 0;
+    bool found_pop_constant = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::LoadMem>(s.op))   ++load_mem;
+        if (std::holds_alternative<ir::StoreReg>(s.op)) {
+            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
+        }
+        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
+        if (std::holds_alternative<ir::Return>(s.op))    ++return_op;
+        if (std::holds_alternative<ir::Constant>(s.op)) {
+            // RSP adjustment by (8 + imm16) = (8 + 4) = 12 bytes.
+            if (std::get<ir::Constant>(s.op).value == 12u) found_pop_constant = true;
+        }
+    }
+    REQUIRE(load_mem  == 1);
+    REQUIRE(store_rsp == 1);
+    REQUIRE(jump_reg  == 1);
+    REQUIRE(return_op == 0);
+    REQUIRE(found_pop_constant);
+}
+
 TEST_CASE("decode BZHI r32a, r/m32, r32b (C4 E2 68 F5 C1) — F2-IR-053 followup") {
     // VEX 3-byte: C4 mmmmm=02 (0F38) → 0xE2. W=0 vvvv=1101 (~rcx)
     // L=0 pp=00 (no prefix) → 0x68. ModRM C1: mod=11 reg=000 (dst rax)

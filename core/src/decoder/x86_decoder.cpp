@@ -2816,14 +2816,29 @@ std::variant<Decoded, DecodeError> decode_one(
         const std::uint64_t pop_bytes = std::get<std::uint64_t>(imm) + 8u;
         Decoded d;
         const ir::Ref ref_rsp = next_ref++;
-        const ir::Ref ref_pop = next_ref++;
+        d.stmts.push_back({ref_rsp,
+            ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
+        std::optional<ir::Ref> ref_target;
+        if (real_call_ret) {
+            // Read the return address BEFORE we adjust RSP, since the
+            // adjustment moves the stack pointer past the saved PC.
+            ref_target = next_ref++;
+            d.stmts.push_back({*ref_target,
+                ir::LoadMem{ref_rsp, ir::OpSize::I64}});
+        }
+        const ir::Ref ref_pop     = next_ref++;
         const ir::Ref ref_new_rsp = next_ref++;
-        d.stmts.push_back({ref_rsp, ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
-        d.stmts.push_back({ref_pop, ir::Constant{pop_bytes, ir::OpSize::I64}});
+        d.stmts.push_back({ref_pop,
+            ir::Constant{pop_bytes, ir::OpSize::I64}});
         d.stmts.push_back({ref_new_rsp,
-                           ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_pop, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::Return{}});
+            ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_pop, ir::OpSize::I64}});
+        d.stmts.push_back({std::nullopt,
+            ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
+        if (real_call_ret) {
+            d.stmts.push_back({std::nullopt, ir::JumpReg{*ref_target}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::Return{}});
+        }
         d.bytes_consumed = cursor;
         return d;
     }
