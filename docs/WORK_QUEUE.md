@@ -6,7 +6,7 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-13 (in-flight after `9d1660a`).
+Last updated: 2026-05-13 (in-flight after `ff41e83`).
 
 ## Currently active
 
@@ -17,13 +17,13 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 
 | # | Item | Scope | SHAs | Status | Notes |
 |---|------|-------|------|--------|-------|
-| 1 | F2-PS-004 Global CSE via dominators | 3-4 commits, `core/src/passes/` | — | 🟡 in_progress | HANDOFF §5.B. `dominators.hpp` ready; needs `FunctionPassFn` + multi-block plumbing. |
-| 2 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | ⏸ queued | HANDOFF §5.F. Today CALL/RET round-trip per instruction. Inline RAS for predicted returns. |
-| 3 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
-| 4 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. Reuse `X87Slot` in `cpu_state.hpp:43-48`. |
-| 5 | F2-PS-003 LICM (loop-invariant code motion) | 3-4 commits, depends on (1) | — | 🚧 blocked-by-1 | HANDOFF §5.C. Needs Function-level passes from F2-PS-004. |
-| 6 | VPERMD / VPERMQ ymm (lane-crossing perms) | 3 commits | — | ⏸ queued | `66 0F 38 36` (VPERMD) + `66 0F 3A 00` (VPERMQ ib). |
-| 7 | VPGATHERDD / VPGATHERQQ specifically | (subset of #3, isolatable) | — | ⏸ queued | If full gather is too large in one session, just the dword forms first. |
+| 1 | F2-PS-004 Global CSE via dominators | 1 commit, `core/src/passes/` | `0396c19` | ✅ done | FunctionPassManager + `global_cse`. Wiring into translator deferred (still single-block today). |
+| 2 | F2-PS-003 LICM (loop-invariant code motion) | 1 commit | `ff41e83` | ✅ done | Iterates to fixed point; skips multi-entry loops conservatively. |
+| 3 | docs(playbook): consolidate agent flows | 1 commit | — | 🟡 in_progress | Externalise the patterns this session has fleshed out (new IR op recipe, container workflow, …). |
+| 4 | VPERMD / VPERMQ ymm (lane-crossing perms) | 4-5 commits, needs `tbl`-based emitter primitive | — | ⏸ queued | `66 0F 38 36` (VPERMD vector idx) + `66 0F 3A 00` (VPERMQ imm8). |
+| 5 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | ⏸ queued | HANDOFF §5.F. Today CALL/RET round-trip per instruction. Inline RAS for predicted returns. |
+| 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
+| 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. Reuse `X87Slot` in `cpu_state.hpp:43-48`. |
 
 ## Completed (this session)
 
@@ -45,6 +45,9 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | – | spec(lean): wide-form BinOps + RepStos/RepMovs | `b7a8f31` | `.sorry-budget` 0 → 3 for signed corner cases. |
 | – | REVIEW: VPTEST/VBLEND/Lean follow-ons + two-eyes tally | `b9b3e7e` | — |
 | – | spec(lean): DCE + ConstProp case-splits for new ops | `9d1660a` | Closes Lean exhaustive-match failure. |
+| – | docs: add WORK_QUEUE.md | `59ac4c0` | This file. |
+| 1 | feat(passes): F2-PS-004 — FunctionPassManager + global_cse | `0396c19` | 780/780 verde Debug + ASan/UBSan. |
+| 2 | feat(passes): F2-PS-003 — loop_invariant_motion | `ff41e83` | 788/788 verde Debug + ASan/UBSan. |
 
 ## Standing decisions (carry across items)
 
