@@ -260,6 +260,9 @@ bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexce
     return a.lo_lhs == b.lo_lhs && a.lo_rhs == b.lo_rhs
         && a.hi_lhs == b.hi_lhs && a.hi_rhs == b.hi_rhs;
 }
+bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept {
+    return a.src_lo == b.src_lo && a.src_hi == b.src_hi && a.idx == b.idx;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

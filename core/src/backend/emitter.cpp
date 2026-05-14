@@ -1259,6 +1259,25 @@ void Emitter::vptest_ymm(FpReg lo_lhs, FpReg lo_rhs,
     impl_->masm.Msr(vixl_aa::NZCV, vixl_aa::Register(to_vixl_x(w_tmp)));
 }
 
+void Emitter::vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx) {
+    // ARM64 TBL with two sources requires consecutive V registers.
+    // Copy through V30/V31 (caller-saved, outside the V0..V23 regalloc
+    // pool — same convention as vptest_ymm's auxiliary scratches).
+    constexpr int kAuxLo = 30;
+    constexpr int kAuxHi = 31;   // == kInternalFpScratchV
+    static_assert(kInternalFpScratchV == kAuxHi,
+                  "vtbl2_q assumes kInternalFpScratchV == V31");
+    const vixl_aa::VRegister v_lo_dst(kAuxLo, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_hi_dst(kAuxHi, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_src_lo(static_cast<int>(src_lo), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_src_hi(static_cast<int>(src_hi), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_idx  (static_cast<int>(idx),    vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst  (static_cast<int>(dst),    vixl_aa::kFormat16B);
+    impl_->masm.Mov(v_lo_dst, v_src_lo);
+    impl_->masm.Mov(v_hi_dst, v_src_hi);
+    impl_->masm.Tbl(v_dst, v_lo_dst, v_hi_dst, v_idx);
+}
+
 void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
     // Sequence:
     //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set

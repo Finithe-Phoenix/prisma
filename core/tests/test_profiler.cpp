@@ -150,12 +150,13 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{46u, VecBlend{14u, 14u, 14u, VecLane::B16}});
     c.visit(Stmt{47u, WriteFlagsPtest{14u, 14u}});
     c.visit(Stmt{48u, WriteFlagsPtestYmm{14u, 14u, 14u, 14u}});
-    c.visit(Stmt{49u, LoadVecRegHi{0u}});
-    c.visit(Stmt{50u, StoreVecRegHi{0u, 14u}});
-    c.visit(Stmt{51u, VecFpFma{14u, 14u, 14u, false, false, VecFpSize::S4}});
-    c.visit(Stmt{52u, VecFpScalarFma{14u, 14u, 14u, 14u, false, false, FpSize::F32}});
-    c.visit(Stmt{53u, RepStos{OpSize::I8, false, 0u, 0u}});
-    c.visit(Stmt{54u, RepMovs{OpSize::I8, false, 0u, 0u}});
+    c.visit(Stmt{49u, VecTbl2{14u, 14u, 14u}});
+    c.visit(Stmt{50u, LoadVecRegHi{0u}});
+    c.visit(Stmt{51u, StoreVecRegHi{0u, 14u}});
+    c.visit(Stmt{52u, VecFpFma{14u, 14u, 14u, false, false, VecFpSize::S4}});
+    c.visit(Stmt{53u, VecFpScalarFma{14u, 14u, 14u, 14u, false, false, FpSize::F32}});
+    c.visit(Stmt{54u, RepStos{OpSize::I8, false, 0u, 0u}});
+    c.visit(Stmt{55u, RepMovs{OpSize::I8, false, 0u, 0u}});
 
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));

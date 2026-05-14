@@ -105,6 +105,9 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) {
             visit(x.lo_lhs); visit(x.lo_rhs); visit(x.hi_lhs); visit(x.hi_rhs);
         }
+        else if constexpr (std::is_same_v<T, VecTbl2>) {
+            visit(x.src_lo); visit(x.src_hi); visit(x.idx);
+        }
         else if constexpr (std::is_same_v<T, StoreVecRegHi>) { visit(x.value); }
         else if constexpr (std::is_same_v<T, VecFpFma>)      { visit(x.a); visit(x.b); visit(x.c); }
         else if constexpr (std::is_same_v<T, VecFpScalarFma>) { visit(x.a); visit(x.b); visit(x.c); visit(x.scalar_upper); }
@@ -171,6 +174,7 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecBlend>
             || std::is_same_v<T, WriteFlagsPtest>
             || std::is_same_v<T, WriteFlagsPtestYmm>
+            || std::is_same_v<T, VecTbl2>
             || std::is_same_v<T, LoadVecRegHi>
             || std::is_same_v<T, VecFpFma>
             || std::is_same_v<T, VecFpScalarFma>;

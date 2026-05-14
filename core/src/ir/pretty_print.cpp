@@ -376,6 +376,11 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.lo_lhs); os << ", "; print_ref(os, x.lo_rhs);
             os << " | ";
             print_ref(os, x.hi_lhs); os << ", "; print_ref(os, x.hi_rhs);
+        } else if constexpr (std::is_same_v<T, VecTbl2>) {
+            os << "vtbl2 ";
+            print_ref(os, x.src_lo); os << ", ";
+            print_ref(os, x.src_hi); os << ", idx=";
+            print_ref(os, x.idx);
         } else if constexpr (std::is_same_v<T, VecBlend>) {
             const char* lane_n = "?";
             switch (x.lane) {

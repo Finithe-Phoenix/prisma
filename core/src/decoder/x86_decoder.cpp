@@ -2582,6 +2582,9 @@ std::variant<Decoded, DecodeError> decode_one(
                     vex.mmmmm == 3 && vex.pp == 1 &&
                     (avx256_op == 0x4Au || avx256_op == 0x4Bu ||
                      avx256_op == 0x4Cu);
+                // VPERMQ ymm: VEX.256.66.0F3A.W1 00 /r ib. F2-IR-051.
+                const bool avx_permq =
+                    vex.mmmmm == 3 && vex.pp == 1 && avx256_op == 0x00u;
                 // VROUNDPS/PD ymm: 66 0F 3A 08/09 /r ib.
                 // Scalar SS/SD (0A/0B) reject in handler with L=1.
                 const bool avx_round =
@@ -2618,7 +2621,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
-                      avx_ptest || avx_blend_vex ||
+                      avx_ptest || avx_blend_vex || avx_permq ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -3321,6 +3324,90 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::StoreVecReg{r_dst, out_lo}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecRegHi{r_dst, out_hi}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-051 — VPERMQ ymm, ymm/m256, imm8
+            // (VEX.256.66.0F3A.W1 00 /r ib). For each of the four dst
+            // qwords, imm8 picks one of the four src qwords. Lowered
+            // via two `VecTbl2` invocations over the 256-bit source
+            // pair, with the byte-index VecConstants synthesised at
+            // decode time.
+            if (vex.present && vex.L && sub3 == 0x00u) {
+                // VPERMQ requires W=1 (the VEX W bit, which the
+                // 3-byte VEX parser folds into rex.w at line 2414).
+                if (!rex.w) return DecodeError::UnsupportedEncoding;
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                // For each dst qword (8 bytes), the source qword index
+                // is `imm8[2*dst_qw+1 : 2*dst_qw]`. Encode the 8 byte
+                // indices for that source qword into a uint64.
+                auto qword_byte_indices = [](std::uint8_t src_qw) -> std::uint64_t {
+                    std::uint64_t r = 0;
+                    for (unsigned b = 0; b < 8u; ++b) {
+                        const std::uint64_t byte_idx =
+                            static_cast<std::uint64_t>(src_qw) * 8u + b;
+                        r |= byte_idx << (8u * b);
+                    }
+                    return r;
+                };
+                const std::uint8_t qw_lo_0 = (imm8 >> 0) & 0x3u;
+                const std::uint8_t qw_lo_1 = (imm8 >> 2) & 0x3u;
+                const std::uint8_t qw_hi_0 = (imm8 >> 4) & 0x3u;
+                const std::uint8_t qw_hi_1 = (imm8 >> 6) & 0x3u;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_src_lo = next_ref++;
+                const ir::Ref r_src_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    const std::uint8_t r_rm =
+                        static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                    d.stmts.push_back({r_src_lo, ir::LoadVecReg{r_rm}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVecRegHi{r_rm}});
+                } else {
+                    const ir::Ref r_off16   = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_lo, ir::LoadVec{*r_addr_lo}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                const ir::Ref r_idx_lo = next_ref++;
+                const ir::Ref r_idx_hi = next_ref++;
+                const ir::Ref r_dst_lo = next_ref++;
+                const ir::Ref r_dst_hi = next_ref++;
+                d.stmts.push_back({r_idx_lo,
+                    ir::VecConstant{qword_byte_indices(qw_lo_0),
+                                    qword_byte_indices(qw_lo_1)}});
+                d.stmts.push_back({r_idx_hi,
+                    ir::VecConstant{qword_byte_indices(qw_hi_0),
+                                    qword_byte_indices(qw_hi_1)}});
+                d.stmts.push_back({r_dst_lo,
+                    ir::VecTbl2{r_src_lo, r_src_hi, r_idx_lo}});
+                d.stmts.push_back({r_dst_hi,
+                    ir::VecTbl2{r_src_lo, r_src_hi, r_idx_hi}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_dst_lo}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_dst_hi}});
                 d.bytes_consumed = cursor;
                 return d;
             }

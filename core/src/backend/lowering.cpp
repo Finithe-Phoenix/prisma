@@ -267,6 +267,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
                 bump(op.lo_lhs, i); bump(op.lo_rhs, i);
                 bump(op.hi_lhs, i); bump(op.hi_rhs, i);
             }
+            else if constexpr (std::is_same_v<T, ir::VecTbl2>) {
+                bump(op.src_lo, i); bump(op.src_hi, i); bump(op.idx, i);
+            }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1333,6 +1336,23 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (s.result.has_value()) {
                 flag_refs_.insert(*s.result);
             }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecTbl2>) {
+            // F2-IR-051 lane-crossing byte permute from a 256-bit
+            // source pair, controlled by a runtime byte-index vector.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecTbl2 without result"};
+            }
+            Emitter::FpReg r_lo, r_hi, r_idx;
+            if (!fp_reg_of(op.src_lo, r_lo)) return {false, LowerError::DanglingRef, "VecTbl2.src_lo"};
+            if (!fp_reg_of(op.src_hi, r_hi)) return {false, LowerError::DanglingRef, "VecTbl2.src_hi"};
+            if (!fp_reg_of(op.idx,    r_idx)) return {false, LowerError::DanglingRef, "VecTbl2.idx"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecTbl2"};
+            }
+            emitter_.vtbl2_q(rd, r_lo, r_hi, r_idx);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecBlend>) {

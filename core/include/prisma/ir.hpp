@@ -729,6 +729,21 @@ struct WriteFlagsPtestYmm {
     Ref hi_rhs;
 };
 
+// F2-IR-051 — Lane-crossing byte permute from a 256-bit source pair.
+//   For each output byte i (0..15):
+//     k = idx[i]            // 0..31, wraps mod 32 by NEON TBL semantics
+//     out[i] = (k < 16) ? src_lo[k] : src_hi[k - 16]
+// Used to lower VPERMQ ymm (imm8-controlled qword permute; the
+// decoder synthesises the byte-index VecConstant at decode time),
+// and is general enough to host VPERMD / VPGATHER-style future
+// extensions where the idx is computed at runtime. Two `VecTbl2`
+// stmts (one per output half) build the full 256-bit result.
+struct VecTbl2 {
+    Ref src_lo;
+    Ref src_hi;
+    Ref idx;
+};
+
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
 //   Predicate = imm8 & 7 from the x86 encoding:
 //     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
@@ -876,6 +891,7 @@ using Op = std::variant<
     VecBlend,
     WriteFlagsPtest,
     WriteFlagsPtestYmm,
+    VecTbl2,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs
@@ -1001,6 +1017,7 @@ bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
 bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept;
+bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;

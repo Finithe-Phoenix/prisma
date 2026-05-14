@@ -2265,6 +2265,46 @@ TEST_CASE("decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls
     REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts.back().op));
 }
 
+TEST_CASE("decode VPERMQ ymm0, ymm1, 0x1B (C4 E3 FD 00 C1 1B) — F2-IR-051") {
+    // VEX 3-byte: C4 mmmmm=03 (0F3A) → 0xE3. W=1 vvvv=1111 (none, VEX.NDS unused)
+    // L=1 pp=01 → 0xFD.
+    // ModRM C1: mod=11 reg=000 (dst ymm0) rm=001 (src ymm1). imm8 = 0x1B = 0b00_01_10_11
+    //   dst qword 0 ← src qword 3, dst qword 1 ← src qword 2,
+    //   dst qword 2 ← src qword 1, dst qword 3 ← src qword 0.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE3, 0xFD, 0x00, 0xC1, 0x1B}, r);
+    int tbl2_count = 0;
+    int vec_const_count = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecTbl2>(s.op)) ++tbl2_count;
+        if (std::holds_alternative<ir::VecConstant>(s.op)) ++vec_const_count;
+    }
+    REQUIRE(tbl2_count == 2);          // one per output half
+    REQUIRE(vec_const_count == 2);     // pre-computed byte-index vectors
+    // Both VecTbl2s share the same src_lo / src_hi.
+    int seen_lo = -1, seen_hi = -1;
+    for (const auto& s : d.stmts) {
+        if (!std::holds_alternative<ir::VecTbl2>(s.op)) continue;
+        const auto& t = std::get<ir::VecTbl2>(s.op);
+        if (seen_lo == -1) { seen_lo = static_cast<int>(t.src_lo); seen_hi = static_cast<int>(t.src_hi); }
+        else {
+            REQUIRE(static_cast<int>(t.src_lo) == seen_lo);
+            REQUIRE(static_cast<int>(t.src_hi) == seen_hi);
+        }
+    }
+}
+
+TEST_CASE("decode VPERMQ ymm with W=0 fails (W=0 is a different op)") {
+    // Same encoding as above but with W=0 in VEX byte2 (0x7D vs 0xFD).
+    ir::Ref r = 0;
+    auto res = decoder::decode_one(
+        std::span<const std::uint8_t>{
+            std::initializer_list<std::uint8_t>{0xC4, 0xE3, 0x7D, 0x00, 0xC1, 0x1B}.begin(),
+            std::initializer_list<std::uint8_t>{0xC4, 0xE3, 0x7D, 0x00, 0xC1, 0x1B}.end()},
+        r);
+    REQUIRE(std::holds_alternative<decoder::DecodeError>(res));
+}
+
 TEST_CASE("decode VPBLENDVB xmm0, xmm1, xmm2, xmm3 (C4 E3 71 4C C2 30) — F2-IR-050") {
     // VEX 3-byte: C4 mmmmm=03 (0F3A) → 0xE3. W=0 vvvv=1110 (=~XMM1) L=0 pp=01 → 0x71.
     // ModRM C2: mod=11 reg=000 (dst xmm0) rm=010 (src2 xmm2). imm8 = 0x30 → mask=xmm3.

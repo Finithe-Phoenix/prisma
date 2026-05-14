@@ -468,6 +468,16 @@ public:
                     FpReg hi_lhs, FpReg hi_rhs,
                     arm64::Reg w_tmp);
 
+    // F2-IR-051 lane-crossing byte permute. Logically:
+    //   for i in 0..15: dst[i] = (idx[i] < 16) ? src_lo[idx[i]] : src_hi[idx[i] - 16]
+    // Implemented via NEON `tbl` with two source vectors. Because the
+    // ARM64 encoding of multi-source TBL requires the two source
+    // registers be *adjacent* in the V file, the emitter copies
+    // `src_lo` and `src_hi` into the fixed V30/V31 scratch pair
+    // (3 extra NEON ops total: two `mov` + the `tbl`) rather than
+    // forcing the regalloc to allocate adjacent pairs.
+    void vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
