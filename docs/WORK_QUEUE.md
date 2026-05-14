@@ -6,7 +6,7 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-13 (in-flight after `fbd714a`).
+Last updated: 2026-05-13 (in-flight after `b0b589b`).
 
 ## Currently active
 
@@ -21,8 +21,17 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 2 | F2-PS-003 LICM (loop-invariant code motion) | 1 commit | `ff41e83` | ✅ done | Iterates to fixed point; skips multi-entry loops conservatively. |
 | 3 | docs(playbook): consolidate agent flows | 1 commit | `78868aa` | ✅ done | AGENT_PLAYBOOK.md landed. |
 | 4 | VPERMQ ymm (lane-crossing qword permute) | 1 commit | `fbd714a` | ✅ done | New `VecTbl2` IR op + `vtbl2_q` emitter primitive. Reusable for VPERMD / VPGATHER followups. |
-| 5 | VPERMD ymm (lane-crossing dword permute) | 2-3 commits | — | 🟢 unblocked-by-#4 | Vector-controlled indices: decoder builds runtime byte-index via existing primitives + `VecTbl2`. |
-| 6 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | ⏸ queued | HANDOFF §5.F. Today CALL/RET round-trip per instruction. Inline RAS for predicted returns. |
+| 5 | F2-IR-052 VPERMD ymm | 1 commit | `ed505a8` | ✅ done | Runtime byte-index build via And + Shl + Pshufb + Add, then VecTbl2. |
+| 6 | feat(translator): wire function pipeline | 1 commit | `a5fc152` | ✅ done | translate() now runs build_cfg → function_pipeline_ → flatten → stmt pipeline. Single-block early-out. |
+| 7 | BMI2 shift family (SHLX/SARX/SHRX/RORX) | 2 commits | `1824167`, `eb31777` | ✅ done | Variable-count + imm-count rotates, all flag-preserving. |
+| 8 | BMI2 MULX | 1 commit | `b0b589b` | ✅ done | Two-dest unsigned multiply, reuses MUL + UMulHi. |
+| 9 | BMI2 BZHI / PDEP / PEXT | 2-3 commits | — | ⏸ queued | BZHI needs count saturation (Select-based). PDEP/PEXT need software emulation (no direct ARM64 equivalent). |
+| 10 | F2-BK-010 Call/Ret return-stack predictor | 4-6 commits, `core/src/runtime/` + dispatcher | — | ⏸ blocked-by-real-RET | HANDOFF §5.F. Prereq: real RET semantics (decoder + dispatcher) currently halt-sentinel only. |
+| 11 | Real CALL/RET semantics (prereq for #10) | 3-4 commits | — | ⏸ queued | Decoder: emit JumpReg from popped RSP; update e2e tests to expect dispatcher continuation rather than halt-on-RET. |
+| 12 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. `X87Slot` in `cpu_state.hpp:43-48`. |
+| 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | — | ⏸ queued | VSIB encoding + per-element conditional load. |
+| 14 | AES / SHA hardware crypto opcodes | 4-6 commits | — | ⏸ queued | Direct ARM64 mappings via Crypto extensions. Niche but cheap. |
+| 15 | Direct branch threading | 4-6 commits | — | ⏸ queued | When CondJumpRel target is already translated, branch directly in JIT instead of dispatcher round-trip. Major perf win for hot loops. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | — | ⏸ queued | HANDOFF §5.E. Treat x87 stack as doubles; document precision divergence. Reuse `X87Slot` in `cpu_state.hpp:43-48`. |
 
@@ -51,6 +60,11 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 2 | feat(passes): F2-PS-003 — loop_invariant_motion | `ff41e83` | 788/788 verde Debug + ASan/UBSan. |
 | 3 | docs: AGENT_PLAYBOOK.md | `78868aa` | Container, 13-file IR-op recipe, function-pass authoring, two-eyes, Lean, CI, WORK_QUEUE contract. |
 | 4 | feat(ir,decoder,backend): F2-IR-051 — VPERMQ ymm via VecTbl2 | `fbd714a` | 790/790 verde Debug + ASan/UBSan. |
+| 5 | feat(decoder): F2-IR-052 — VPERMD ymm | `ed505a8` | 792/792 verde Debug + ASan/UBSan. Runtime byte-index build. |
+| 6 | feat(translator): wire function pipeline into translate() | `a5fc152` | 792/792 verde; GCSE/LICM now live on multi-block decoded regions. |
+| 7 | feat(decoder): F2-IR-053 — SHLX / SARX / SHRX | `1824167` | 795/795 verde Debug + ASan/UBSan. |
+| 8 | feat(decoder): F2-IR-053 followup — RORX | `eb31777` | 796/796 verde. |
+| 9 | feat(decoder): F2-IR-053 followup — MULX | `b0b589b` | 797/797 verde Debug + ASan/UBSan. |
 
 ## Standing decisions (carry across items)
 
