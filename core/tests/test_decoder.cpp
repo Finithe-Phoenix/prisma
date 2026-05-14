@@ -2265,6 +2265,49 @@ TEST_CASE("decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls
     REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts.back().op));
 }
 
+TEST_CASE("decode VPBLENDVB xmm0, xmm1, xmm2, xmm3 (C4 E3 71 4C C2 30) — F2-IR-050") {
+    // VEX 3-byte: C4 mmmmm=03 (0F3A) → 0xE3. W=0 vvvv=1110 (=~XMM1) L=0 pp=01 → 0x71.
+    // ModRM C2: mod=11 reg=000 (dst xmm0) rm=010 (src2 xmm2). imm8 = 0x30 → mask=xmm3.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE3, 0x71, 0x4C, 0xC2, 0x30}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecBlend>(s.op)) {
+            const auto& vb = std::get<ir::VecBlend>(s.op);
+            REQUIRE(vb.lane == ir::VecLane::B16);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VBLENDVPS xmm0, xmm1, xmm2, xmm3 (C4 E3 71 4A C2 30) — F2-IR-050") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE3, 0x71, 0x4A, 0xC2, 0x30}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecBlend>(s.op)) {
+            REQUIRE(std::get<ir::VecBlend>(s.op).lane == ir::VecLane::S4);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VBLENDVPD ymm0, ymm1, ymm2, ymm3 (C4 E3 75 4B C2 30) — F2-IR-050 AVX-256") {
+    // VEX byte2 0x75 = L=1. Two VecBlend statements expected (lo+hi).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE3, 0x75, 0x4B, 0xC2, 0x30}, r);
+    int blend_count = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecBlend>(s.op)) {
+            REQUIRE(std::get<ir::VecBlend>(s.op).lane == ir::VecLane::D2);
+            ++blend_count;
+        }
+    }
+    REQUIRE(blend_count == 2);
+}
+
 TEST_CASE("decode VPTEST ymm0, ymm1 (C4 E2 7D 17 C1) — F2-IR-049 AVX-256 form") {
     // VEX 3-byte: C4 mmmmm=02 W=0 vvvv=1111 L=1 pp=01 → C4 E2 7D.
     ir::Ref r = 0;

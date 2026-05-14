@@ -2576,6 +2576,12 @@ std::variant<Decoded, DecodeError> decode_one(
                 // VPALIGNR ymm: 66 0F 3A 0F /r ib (mmmmm=3, pp=01, op=0x0F).
                 const bool avx_palignr =
                     vex.mmmmm == 3 && vex.pp == 1 && avx256_op == 0x0Fu;
+                // VBLENDVPS/PD + VPBLENDVB ymm: 66 0F 3A 4A/4B/4C /r ib.
+                // F2-IR-050.
+                const bool avx_blend_vex =
+                    vex.mmmmm == 3 && vex.pp == 1 &&
+                    (avx256_op == 0x4Au || avx256_op == 0x4Bu ||
+                     avx256_op == 0x4Cu);
                 // VROUNDPS/PD ymm: 66 0F 3A 08/09 /r ib.
                 // Scalar SS/SD (0A/0B) reject in handler with L=1.
                 const bool avx_round =
@@ -2612,7 +2618,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
-                      avx_ptest ||
+                      avx_ptest || avx_blend_vex ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -3315,6 +3321,96 @@ std::variant<Decoded, DecodeError> decode_one(
                     ir::StoreVecReg{r_dst, out_lo}});
                 d.stmts.push_back({std::nullopt,
                     ir::StoreVecRegHi{r_dst, out_hi}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-050 — VEX-encoded VPBLENDVB / VBLENDVPS / VBLENDVPD:
+            //   VEX.NDS.128.66.0F3A.W0 4A /r ib — VBLENDVPS xmm
+            //   VEX.NDS.128.66.0F3A.W0 4B /r ib — VBLENDVPD xmm
+            //   VEX.NDS.128.66.0F3A.W0 4C /r ib — VPBLENDVB xmm
+            // and VEX.256 forms for the ymm variants. Operand layout
+            // differs from the legacy SSE4.1 BLEND* family (66 0F 38
+            // 10/14/15 above): the mask register is encoded as the
+            // upper nibble of imm8 (not implicit XMM0), and the source
+            // for "src1" is `vex.vvvv` rather than ModRM.reg. The
+            // destination is ModRM.reg.
+            if (vex.present &&
+                (sub3 == 0x4Au || sub3 == 0x4Bu || sub3 == 0x4Cu)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                const std::uint8_t mask_xmm =
+                    static_cast<std::uint8_t>((imm8 >> 4) & 0x0Fu);
+                const std::uint8_t src1_xmm =
+                    static_cast<std::uint8_t>(vex.vvvv);
+                const std::uint8_t dst_xmm =
+                    static_cast<std::uint8_t>(m.reg);
+                const ir::VecLane lane =
+                    sub3 == 0x4Cu ? ir::VecLane::B16 :
+                    sub3 == 0x4Au ? ir::VecLane::S4  :
+                                    ir::VecLane::D2;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_dst  = next_ref++;
+                const ir::Ref r_src  = next_ref++;
+                const ir::Ref r_mask = next_ref++;
+                const ir::Ref r_res  = next_ref++;
+                d.stmts.push_back({r_dst, ir::LoadVecReg{src1_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+                }
+                d.stmts.push_back({r_mask, ir::LoadVecReg{mask_xmm}});
+                d.stmts.push_back({r_res,
+                    ir::VecBlend{r_dst, r_src, r_mask, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{dst_xmm, r_res}});
+                if (vex.L) {
+                    const ir::Ref r_dst_hi  = next_ref++;
+                    const ir::Ref r_src_hi  = next_ref++;
+                    const ir::Ref r_mask_hi = next_ref++;
+                    const ir::Ref r_res_hi  = next_ref++;
+                    d.stmts.push_back({r_dst_hi,
+                        ir::LoadVecRegHi{src1_xmm}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_src_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16   = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_src_hi,
+                            ir::LoadVec{r_addr_hi}});
+                    }
+                    d.stmts.push_back({r_mask_hi,
+                        ir::LoadVecRegHi{mask_xmm}});
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecBlend{r_dst_hi, r_src_hi, r_mask_hi, lane}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_res_hi}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }
