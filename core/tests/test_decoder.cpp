@@ -2367,6 +2367,26 @@ TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return"
     REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
+TEST_CASE("decode BZHI r32a, r/m32, r32b (C4 E2 68 F5 C1) — F2-IR-053 followup") {
+    // VEX 3-byte: C4 mmmmm=02 (0F38) → 0xE2. W=0 vvvv=1101 (~rcx)
+    // L=0 pp=00 (no prefix) → 0x68. ModRM C1: mod=11 reg=000 (dst rax)
+    // rm=001 (src rcx). count = vvvv decoded → r2.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x68, 0xF5, 0xC1}, r);
+    bool found_cmp = false, found_sel = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::CmpFlags>(s.op)) found_cmp = true;
+        if (std::holds_alternative<ir::Select>(s.op)) {
+            const auto& sel = std::get<ir::Select>(s.op);
+            // The select picks `masked_src` when count < width (Ult).
+            REQUIRE(sel.cc == ir::CondCode::Ult);
+            found_sel = true;
+        }
+    }
+    REQUIRE(found_cmp);
+    REQUIRE(found_sel);
+}
+
 TEST_CASE("decode MULX r64a, r64b, r/m64 (C4 E2 EB F6 C1) — F2-IR-053 followup") {
     // VEX 3-byte: C4 mmmmm=02 → 0xE2. W=1 vvvv=1101 (~rcx=001) L=0 pp=03 (F2) → 0xEB.
     // ModRM C1: mod=11 reg=000 (dst_hi rax) rm=001 (src2 rcx). src1 = rdx (implicit).

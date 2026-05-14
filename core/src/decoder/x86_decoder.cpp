@@ -3815,6 +3815,83 @@ std::variant<Decoded, DecodeError> decode_one(
             return DecodeError::UnsupportedEncoding;
         }
 
+        // F2-IR-053 followup — BMI2 BZHI (0F 38 F5, no prefix):
+        // dst = src & mask_of_count, where the mask keeps the low
+        // `count` bits and zeroes the rest. Edge case from Intel SDM:
+        // "If the value of N [the count] exceeds OperandSize, no bits
+        // are cleared." — i.e. the result is `src` unchanged.
+        //
+        // Lowered as:
+        //   count8 = count AND 0xFF       (BZHI only inspects [7:0])
+        //   cmp_flags  count8 vs bit_width
+        //   mask  = (1 << count8) - 1
+        //   masked_src = src AND mask
+        //   result = (count8 < bit_width) ? masked_src : src     (Select)
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && !has_f2 && !has_f3 &&
+            cursor < bytes.size() && bytes[cursor] == 0xF5u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const std::uint64_t bit_width = rex.w ? 64u : 32u;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            const ir::Ref r_src        = next_ref++;
+            const ir::Ref r_count_raw  = next_ref++;
+            const ir::Ref r_ff         = next_ref++;
+            const ir::Ref r_count      = next_ref++;
+            const ir::Ref r_width      = next_ref++;
+            const ir::Ref r_one        = next_ref++;
+            const ir::Ref r_shifted    = next_ref++;
+            const ir::Ref r_mask       = next_ref++;
+            const ir::Ref r_masked_src = next_ref++;
+            const ir::Ref r_result     = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_count_raw,
+                ir::LoadReg{reg_at(vex.vvvv), size}});
+            d.stmts.push_back({r_ff,
+                ir::Constant{0xFFULL, size}});
+            d.stmts.push_back({r_count,
+                ir::BinOp{ir::BinOpKind::And, r_count_raw, r_ff, size}});
+            d.stmts.push_back({r_width,
+                ir::Constant{bit_width, size}});
+            d.stmts.push_back({r_one,
+                ir::Constant{1ULL, size}});
+            d.stmts.push_back({r_shifted,
+                ir::BinOp{ir::BinOpKind::Shl, r_one, r_count, size}});
+            d.stmts.push_back({r_mask,
+                ir::BinOp{ir::BinOpKind::Sub, r_shifted, r_one, size}});
+            d.stmts.push_back({r_masked_src,
+                ir::BinOp{ir::BinOpKind::And, r_src, r_mask, size}});
+            // CmpFlags must come *immediately* before the Select so
+            // the implicit NZCV from this compare drives the cmov.
+            // BinOps don't touch flags, so the earlier And/Sub/Shl
+            // here are flag-preserving.
+            d.stmts.push_back({std::nullopt,
+                ir::CmpFlags{r_count, r_width, size}});
+            d.stmts.push_back({r_result,
+                ir::Select{ir::CondCode::Ult,
+                           r_masked_src, r_src, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_result, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-053 followup — BMI2 MULX (0F 38 F6, pp=03 = F2 prefix):
         // unsigned multiply with two destination GPRs and no flags.
         //   src1   = rdx implicit
