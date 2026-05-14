@@ -2297,6 +2297,24 @@ TEST_CASE("decode SARX r32a, r/m32, r32b (C4 E2 6A F7 C1) — F2-IR-053") {
     REQUIRE(found);
 }
 
+TEST_CASE("decode MULX r64a, r64b, r/m64 (C4 E2 EB F6 C1) — F2-IR-053 followup") {
+    // VEX 3-byte: C4 mmmmm=02 → 0xE2. W=1 vvvv=1101 (~rcx=001) L=0 pp=03 (F2) → 0xEB.
+    // ModRM C1: mod=11 reg=000 (dst_hi rax) rm=001 (src2 rcx). src1 = rdx (implicit).
+    // dst_lo = vex.vvvv → rcx (encoded).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xEB, 0xF6, 0xC1}, r);
+    bool found_mul = false;
+    bool found_umulhi = false;
+    for (const auto& s : d.stmts) {
+        if (!std::holds_alternative<ir::BinOp>(s.op)) continue;
+        const auto& b = std::get<ir::BinOp>(s.op);
+        if (b.op == ir::BinOpKind::Mul    && b.size == ir::OpSize::I64) found_mul = true;
+        if (b.op == ir::BinOpKind::UMulHi && b.size == ir::OpSize::I64) found_umulhi = true;
+    }
+    REQUIRE(found_mul);
+    REQUIRE(found_umulhi);
+}
+
 TEST_CASE("decode RORX r32, r/m32, imm8 (C4 E3 7B F0 C1 0B) — F2-IR-053") {
     // VEX 3-byte: C4 mmmmm=03 (0F3A) → 0xE3. W=0 vvvv=1111 (unused) L=0 pp=03 (F2) → 0x7B.
     // ModRM C1: mod=11 reg=000 (dst rax) rm=001 (src rcx). imm8 = 0x0B = 11.

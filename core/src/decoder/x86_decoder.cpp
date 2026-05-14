@@ -3769,6 +3769,56 @@ std::variant<Decoded, DecodeError> decode_one(
             return DecodeError::UnsupportedEncoding;
         }
 
+        // F2-IR-053 followup — BMI2 MULX (0F 38 F6, pp=03 = F2 prefix):
+        // unsigned multiply with two destination GPRs and no flags.
+        //   src1   = rdx implicit
+        //   src2   = ModRM.rm (reg or mem)
+        //   dst_lo = vex.vvvv
+        //   dst_hi = ModRM.reg
+        // Reuses `BinOp{Mul}` (low half) + `BinOp{UMulHi}` (high half),
+        // the same pair that backs the legacy MUL/IMUL writeback in
+        // F2-BK-007 / sha 8317648.
+        if (subop == 0x38u && vex.present && !vex.L && has_f2 &&
+            !has_lock && cursor < bytes.size() && bytes[cursor] == 0xF6u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            const ir::Gpr dst_hi = reg_at(m.reg);
+            const ir::Gpr dst_lo = reg_at(vex.vvvv);
+            Decoded d;
+            const ir::Ref r_a   = next_ref++;
+            const ir::Ref r_b   = next_ref++;
+            const ir::Ref r_lo  = next_ref++;
+            const ir::Ref r_hi  = next_ref++;
+            d.stmts.push_back({r_a, ir::LoadReg{ir::Gpr::Rdx, size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_b,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_b, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_lo,
+                ir::BinOp{ir::BinOpKind::Mul,    r_a, r_b, size}});
+            d.stmts.push_back({r_hi,
+                ir::BinOp{ir::BinOpKind::UMulHi, r_a, r_b, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_lo, r_lo, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_hi, r_hi, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-053 — BMI2 GPR ops over the 0F 38 escape (VEX-encoded,
         // L=0, sub3 == 0xF7): SHLX (pp=01), SARX (pp=02), SHRX (pp=03).
         // Operand layout (all three): dest = ModRM.reg, src = ModRM.rm,
