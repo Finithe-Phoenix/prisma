@@ -145,11 +145,11 @@ TEST_CASE("global_cse: FunctionPassManager runs the pipeline end-to-end") {
         {std::nullopt, Return{}},
     }});
     const auto pm = passes::default_function_pipeline();
-    REQUIRE(pm.size() == 1);
+    REQUIRE(pm.size() >= 1);  // global_cse + (currently) LICM
     const auto [out, stats] = pm.run(fn);
     REQUIRE(stats.initial_block_count == 1);
     REQUIRE(stats.initial_stmt_count  == 5);
-    REQUIRE(stats.passes.size() == 1);
+    REQUIRE(stats.passes.size() == pm.size());
     REQUIRE(stats.passes[0].name == "global_cse");
     REQUIRE(expect_copy(out.blocks[0].stmts[3]) == 2u);
 }

@@ -90,10 +90,16 @@ FunctionPassManager::run(const ir::Function& input) const {
 }
 
 FunctionPassManager default_function_pipeline() {
-    // MVP: just global CSE. Future additions (F2-PS-003 LICM, GVN,
-    // partial-redundancy elimination) go here in order.
+    // Order rationale:
+    //   1. global_cse runs first so duplicate computations across
+    //      blocks collapse to copies before LICM scans for invariants
+    //      — a hoist-then-cse pass would either miss the copy idiom
+    //      or hoist redundant work.
+    //   2. loop_invariant_motion follows. Future additions (GVN,
+    //      partial-redundancy elimination) go here in order.
     FunctionPassManager pm;
-    pm.add("global_cse", global_cse);
+    pm.add("global_cse",           global_cse);
+    pm.add("loop_invariant_motion", loop_invariant_motion);
     return pm;
 }
 

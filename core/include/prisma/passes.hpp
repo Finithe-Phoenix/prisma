@@ -421,6 +421,15 @@ private:
 // a duplicate BinOp to `BinOp Or prev,prev` (the IR's "copy" idiom).
 [[nodiscard]] ir::Function global_cse(const ir::Function& fn);
 
+// F2-PS-003 Loop-Invariant Code Motion. Hoists pure statements whose
+// operands are all defined outside a natural loop's body to that
+// loop's preheader. Preheader detection requires a single non-loop
+// predecessor of the header; multi-entry loops are skipped (correct
+// but conservative). Pure-op set matches the DCE classifier: Constant,
+// LoadReg, LoadSegBase, BinOp, Compare, Extend, Truncate. Iterates to
+// fixed point per loop so chains of dependent invariants all hoist.
+[[nodiscard]] ir::Function loop_invariant_motion(const ir::Function& fn);
+
 // Default function-level pipeline. Currently just `global_cse`.
 // **Not yet wired into the translator** — see the caveat above.
 [[nodiscard]] FunctionPassManager default_function_pipeline();
