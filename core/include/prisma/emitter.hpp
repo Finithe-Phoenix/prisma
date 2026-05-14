@@ -458,6 +458,16 @@ public:
     // Maps to x86 ZF/CF via the existing integer-source ReadFlag path.
     void vptest(FpReg lhs, FpReg rhs, arm64::Reg w_tmp);
 
+    // F2-IR-049 PTEST over the 256-bit register pair (VPTEST ymm).
+    // ARM Z = ((lo_lhs & lo_rhs) | (hi_lhs & hi_rhs)) == 0
+    // ARM C = NOT (((~lo_lhs & lo_rhs) | (~hi_lhs & hi_rhs)) == 0)
+    // ARM N = ARM V = 0
+    // Same x86 ZF / CF mapping as `vptest`; the only difference is the
+    // pair-of-Vec128 input shape.
+    void vptest_ymm(FpReg lo_lhs, FpReg lo_rhs,
+                    FpReg hi_lhs, FpReg hi_rhs,
+                    arm64::Reg w_tmp);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

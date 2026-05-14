@@ -61,6 +61,7 @@ public:
         Popcnt, Lzcnt, Tzcnt,
         VecBlend,
         WriteFlagsPtest,
+        WriteFlagsPtestYmm,
         LoadVecRegHi, StoreVecRegHi,
         VecFpFma,
         VecFpScalarFma,

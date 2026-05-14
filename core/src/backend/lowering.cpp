@@ -263,6 +263,10 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Tzcnt>)         { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecBlend>)      { bump(op.dst, i); bump(op.src, i); bump(op.mask, i); }
             else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) {
+                bump(op.lo_lhs, i); bump(op.lo_rhs, i);
+                bump(op.hi_lhs, i); bump(op.hi_rhs, i);
+            }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1310,6 +1314,24 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 flag_refs_.insert(*s.result);
                 // Integer-source mapping: ReadFlag(Carry) → cset cc → returns 1 when ARM C=0.
                 // Our PTEST builds NZCV with ARM C = NOT is_zero_b, so cset cc → is_zero_b = x86 CF. ✓
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) {
+            // F2-IR-049 VPTEST ymm. Same flag semantics as PTEST xmm
+            // applied to the lo+hi 128-bit pair (see ir.hpp).
+            Emitter::FpReg r_ll, r_lr, r_hl, r_hr;
+            if (!fp_reg_of(op.lo_lhs, r_ll)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.lo_lhs"};
+            if (!fp_reg_of(op.lo_rhs, r_lr)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.lo_rhs"};
+            if (!fp_reg_of(op.hi_lhs, r_hl)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.hi_lhs"};
+            if (!fp_reg_of(op.hi_rhs, r_hr)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.hi_rhs"};
+            arm64::Reg w_tmp;
+            if (!allocate_temporary(w_tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "VPTEST_ymm tmp"};
+            }
+            emitter_.vptest_ymm(r_ll, r_lr, r_hl, r_hr, w_tmp);
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
             }
             return {};
         }

@@ -111,11 +111,12 @@ enum class OpKind : std::uint8_t {
     kVecFpScalarFma = 75,
     kRepStos       = 76,
     kRepMovs       = 77,
+    kWriteFlagsPtestYmm = 78,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kRepMovs);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kWriteFlagsPtestYmm);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -310,6 +311,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecFpScalarFma>) return OpKind::kVecFpScalarFma;
         else if constexpr (std::is_same_v<T, RepStos>)       return OpKind::kRepStos;
         else if constexpr (std::is_same_v<T, RepMovs>)       return OpKind::kRepMovs;
+        else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) return OpKind::kWriteFlagsPtestYmm;
     }, op);
 }
 
@@ -678,6 +680,12 @@ void write_payload(std::vector<std::uint8_t>& out, const VecBlend& x) {
 void write_payload(std::vector<std::uint8_t>& out, const WriteFlagsPtest& x) {
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
+}
+void write_payload(std::vector<std::uint8_t>& out, const WriteFlagsPtestYmm& x) {
+    put_u32(out, x.lo_lhs);
+    put_u32(out, x.lo_rhs);
+    put_u32(out, x.hi_lhs);
+    put_u32(out, x.hi_rhs);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -1158,6 +1166,15 @@ DeserializeError read_payload_write_flags_ptest(Cursor& c, Stmt& s) {
     s.op = WriteFlagsPtest{lhs, rhs};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_write_flags_ptest_ymm(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 4 + 4)) return DeserializeError::Truncated;
+    const std::uint32_t lo_lhs = c.take_u32();
+    const std::uint32_t lo_rhs = c.take_u32();
+    const std::uint32_t hi_lhs = c.take_u32();
+    const std::uint32_t hi_rhs = c.take_u32();
+    s.op = WriteFlagsPtestYmm{lo_lhs, lo_rhs, hi_lhs, hi_rhs};
+    return DeserializeError::Ok;
+}
 
 DeserializeError read_payload_vec_blend(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 4 + 1)) return DeserializeError::Truncated;
@@ -1537,6 +1554,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecFpScalarFma: return read_payload_vec_fp_scalar_fma(c, s);
         case OpKind::kRepStos:     return read_payload_rep_stos(c, s);
         case OpKind::kRepMovs:     return read_payload_rep_movs(c, s);
+        case OpKind::kWriteFlagsPtestYmm: return read_payload_write_flags_ptest_ymm(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

@@ -2257,6 +2257,29 @@ TEST_CASE("decode PTEST xmm0, xmm1 (66 0F 38 17 C1) — F2-IR-047 SSE4.1 bitwise
     REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts[2].op));
 }
 
+TEST_CASE("decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls back to xmm shape") {
+    // VEX 3-byte: C4 mmmmm=02 (0F38) W=0 vvvv=1111 L=0 pp=01 → C4 E2 79.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x79, 0x17, 0xC1}, r);
+    // Same shape as legacy PTEST xmm — a WriteFlagsPtest, NOT the ymm form.
+    REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts.back().op));
+}
+
+TEST_CASE("decode VPTEST ymm0, ymm1 (C4 E2 7D 17 C1) — F2-IR-049 AVX-256 form") {
+    // VEX 3-byte: C4 mmmmm=02 W=0 vvvv=1111 L=1 pp=01 → C4 E2 7D.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x7D, 0x17, 0xC1}, r);
+    REQUIRE(std::holds_alternative<ir::WriteFlagsPtestYmm>(d.stmts.back().op));
+    const auto& w = std::get<ir::WriteFlagsPtestYmm>(d.stmts.back().op);
+    // Four distinct operand refs feed the flag write: lhs-lo, rhs-lo,
+    // lhs-hi, rhs-hi. Their identity doesn't matter here; that they
+    // are *distinct* is the relevant invariant the lowerer relies on.
+    REQUIRE(w.lo_lhs != w.lo_rhs);
+    REQUIRE(w.hi_lhs != w.hi_rhs);
+    REQUIRE(w.lo_lhs != w.hi_lhs);
+    REQUIRE(w.lo_rhs != w.hi_rhs);
+}
+
 TEST_CASE("decode PBLENDVB xmm0, xmm1 (66 0F 38 10 C1) — F2-IR-046 byte blend") {
     ir::Ref r = 0;
     auto d = decode_ok({0x66, 0x0F, 0x38, 0x10, 0xC1}, r);

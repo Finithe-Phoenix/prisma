@@ -1261,6 +1261,32 @@ TEST_CASE("Lowerer: RepStos clamps RCX and emits PC-conditional epilogue") {
     REQUIRE(d.find("#0x4002") != std::string::npos);
 }
 
+// F2-IR-049 VPTEST ymm. The lowering composes two AND+OR pairs across
+// the lo/hi halves before reducing to NZCV. The disassembly should
+// reveal both AND/BIC pairs + the existing umaxv/cset/msr scaffold.
+TEST_CASE("Lowerer: WriteFlagsPtestYmm emits per-half AND + BIC + OR + msr nzcv") {
+    std::vector<ir::Stmt> stmts = {
+        {0u,  ir::LoadVecReg{0u}},
+        {1u,  ir::LoadVecReg{1u}},
+        {2u,  ir::LoadVecRegHi{0u}},
+        {3u,  ir::LoadVecRegHi{1u}},
+        {4u,  ir::WriteFlagsPtestYmm{0u, 1u, 2u, 3u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // The emitter splits the work into:
+    //   2x and (one per half) + 1x orr → ZF input
+    //   2x bic (one per half) + 1x orr → CF input
+    //   umaxv (twice) + cmp + cset + lsl + orr + msr  → NZCV
+    REQUIRE(d.find("and v")   != std::string::npos);
+    REQUIRE(d.find("bic v")   != std::string::npos);
+    REQUIRE(d.find("orr v")   != std::string::npos);
+    REQUIRE(d.find("umaxv")   != std::string::npos);
+    REQUIRE(d.find("msr nzcv") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {
     constexpr std::uint64_t kPcRep   = 0x5000ull;
     constexpr std::uint64_t kPcAfter = 0x5003ull;  // 3-byte F3 48 A5

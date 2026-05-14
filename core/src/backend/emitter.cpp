@@ -1207,6 +1207,58 @@ void Emitter::vptest(FpReg lhs, FpReg rhs, arm64::Reg w_tmp) {
     impl_->masm.Msr(vixl_aa::NZCV, vixl_aa::Register(to_vixl_x(w_tmp)));
 }
 
+void Emitter::vptest_ymm(FpReg lo_lhs, FpReg lo_rhs,
+                         FpReg hi_lhs, FpReg hi_rhs,
+                         arm64::Reg w_tmp) {
+    // Same shape as `vptest`, but the two inputs to the NZCV-build are
+    // OR-reductions across the two 128-bit halves:
+    //   v_a = (lo_lhs & lo_rhs) | (hi_lhs & hi_rhs)        ; ZF source
+    //   v_b = (lo_rhs & ~lo_lhs) | (hi_rhs & ~hi_lhs)      ; CF source
+    // Then umaxv → cmp 0 → cset → shift+orr into w_tmp → msr NZCV,
+    // identical to the xmm path.
+    //
+    // Uses three caller-saved VRegs (V29..V31) as scratch.
+    // V0..V23 are the FP regalloc pool (F2-BK-006); V24..V31 are
+    // reserved for emitter internals.
+    constexpr int kAux2 = 30;
+    constexpr int kAux3 = 29;
+    const vixl_aa::VRegister v_a (kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b (kAux2,               vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_t (kAux3,               vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_ll(static_cast<int>(lo_lhs), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_lr(static_cast<int>(lo_rhs), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_hl(static_cast<int>(hi_lhs), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_hr(static_cast<int>(hi_rhs), vixl_aa::kFormat16B);
+    // ZF input:  v_a = (lo_lhs & lo_rhs) | (hi_lhs & hi_rhs).
+    impl_->masm.And(v_a, v_ll, v_lr);
+    impl_->masm.And(v_t, v_hl, v_hr);
+    impl_->masm.Orr(v_a, v_a, v_t);
+    // CF input:  v_b = (lo_rhs &~ lo_lhs) | (hi_rhs &~ hi_lhs).
+    impl_->masm.Bic(v_b, v_lr, v_ll);
+    impl_->masm.Bic(v_t, v_hr, v_hl);
+    impl_->masm.Orr(v_b, v_b, v_t);
+    // NZCV build — identical to `vptest`.
+    const vixl_aa::BRegister b_a(kInternalFpScratchV);
+    const vixl_aa::BRegister b_b(kAux2);
+    impl_->masm.Umaxv(b_a, v_a);
+    impl_->masm.Umaxv(b_b, v_b);
+    vixl_aa::UseScratchRegisterScope temps(&impl_->masm);
+    const vixl_aa::Register x_a = temps.AcquireX();
+    const vixl_aa::Register x_b = temps.AcquireX();
+    impl_->masm.Umov(vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), v_a.V16B(), 0);
+    impl_->masm.Umov(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())), v_b.V16B(), 0);
+    impl_->masm.Cmp(vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), 0);
+    impl_->masm.Cset(vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), vixl_aa::eq);
+    impl_->masm.Cmp(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())), 0);
+    impl_->masm.Cset(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())), vixl_aa::ne);
+    impl_->masm.Lsl(to_vixl_w(w_tmp),
+                    vixl_aa::WRegister(static_cast<int>(x_a.GetCode())), 30);
+    impl_->masm.Orr(to_vixl_w(w_tmp), to_vixl_w(w_tmp),
+                    vixl_aa::Operand(vixl_aa::WRegister(static_cast<int>(x_b.GetCode())),
+                                     vixl_aa::LSL, 29));
+    impl_->masm.Msr(vixl_aa::NZCV, vixl_aa::Register(to_vixl_x(w_tmp)));
+}
+
 void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
     // Sequence:
     //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set

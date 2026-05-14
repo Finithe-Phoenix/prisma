@@ -256,6 +256,10 @@ bool operator==(const VecBlend& a, const VecBlend& b) noexcept {
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept {
     return a.lhs == b.lhs && a.rhs == b.rhs;
 }
+bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept {
+    return a.lo_lhs == b.lo_lhs && a.lo_rhs == b.lo_rhs
+        && a.hi_lhs == b.hi_lhs && a.hi_rhs == b.hi_rhs;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

@@ -2553,6 +2553,9 @@ std::variant<Decoded, DecodeError> decode_one(
                      avx256_op == 0x29u || avx256_op == 0x37u ||
                      avx256_op == 0x40u ||
                      (avx256_op >= 0x38u && avx256_op <= 0x3Fu));
+                // VPTEST ymm (66 0F 38 17). F2-IR-049.
+                const bool avx_ptest =
+                    vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x17u;
                 // VPSHUFB ymm (66 0F 38 00) and VPABS B/W/D ymm
                 // (66 0F 38 1C/1D/1E).
                 const bool avx_pshufb_pabs =
@@ -2609,6 +2612,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_broadcast || avx_lane_xfer ||
                       avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
+                      avx_ptest ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -3540,6 +3544,9 @@ std::variant<Decoded, DecodeError> decode_one(
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
             // SSE4.1 PTEST (66 0F 38 17 /r). Sets NZCV via WriteFlagsPtest.
+            // F2-IR-049: VEX.256.66.0F38 17 /r → VPTEST ymm; lower half
+            // via the same WriteFlagsPtest shape, high half via the
+            // new WriteFlagsPtestYmm.
             if (sub3 == 0x17u) {
                 auto modrm = parse_modrm(bytes, cursor, rex,
                                          has_address_size_override);
@@ -3550,20 +3557,45 @@ std::variant<Decoded, DecodeError> decode_one(
                 Decoded d;
                 const ir::Ref r_lhs = next_ref++;
                 const ir::Ref r_rhs = next_ref++;
-                const ir::Ref r_flags = next_ref++;
                 d.stmts.push_back({r_lhs,
                     ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                std::optional<ir::Ref> r_addr_lo;
                 if (m.mod == 0b11) {
                     d.stmts.push_back({r_rhs,
                         ir::LoadVecReg{static_cast<std::uint8_t>(
                             static_cast<unsigned>(m.base))}});
                 } else {
-                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
-                                                        instruction_guest_pc + cursor);
-                    d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
                 }
-                d.stmts.push_back({r_flags,
-                    ir::WriteFlagsPtest{r_lhs, r_rhs}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_lhs_hi = next_ref++;
+                    const ir::Ref r_rhs_hi = next_ref++;
+                    d.stmts.push_back({r_lhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_rhs_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16   = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    const ir::Ref r_flags = next_ref++;
+                    d.stmts.push_back({r_flags,
+                        ir::WriteFlagsPtestYmm{r_lhs, r_rhs, r_lhs_hi, r_rhs_hi}});
+                } else {
+                    const ir::Ref r_flags = next_ref++;
+                    d.stmts.push_back({r_flags,
+                        ir::WriteFlagsPtest{r_lhs, r_rhs}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }

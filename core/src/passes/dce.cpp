@@ -44,6 +44,7 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::ReadFlag>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) return true;
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) return true;
         else if constexpr (std::is_same_v<T, ir::JumpReg>) return false;
         // Everything else is impure: StoreReg, StoreMem*, LoadMemTSO,
         // Jump, JumpReg, CondJump, Return, CmpFlags (sets implicit flags),
@@ -165,6 +166,9 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.dst); into.insert(x.src); into.insert(x.mask);
         } else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) {
             into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) {
+            into.insert(x.lo_lhs); into.insert(x.lo_rhs);
+            into.insert(x.hi_lhs); into.insert(x.hi_rhs);
         }
         // F2-PS-002: pull flag-related and AVX-256/FMA operand refs
         // through the live-set so DCE can correctly see what's used.

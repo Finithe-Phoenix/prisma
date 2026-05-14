@@ -717,6 +717,18 @@ struct WriteFlagsPtest {
     Ref rhs;
 };
 
+// F2-IR-049 — VPTEST ymm (VEX.256.66.0F38 17 /r). Same flag semantics as
+// PTEST xmm, but over the full 256-bit register pair: ZF = ((lo_lhs &
+// lo_rhs) | (hi_lhs & hi_rhs)) == 0; CF = ((~lo_lhs & lo_rhs) |
+// (~hi_lhs & hi_rhs)) == 0. Lowered as 5 NEON ops + the existing scalar
+// NZCV-build sequence — see `Emitter::vptest_ymm`.
+struct WriteFlagsPtestYmm {
+    Ref lo_lhs;
+    Ref lo_rhs;
+    Ref hi_lhs;
+    Ref hi_rhs;
+};
+
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
 //   Predicate = imm8 & 7 from the x86 encoding:
 //     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
@@ -863,6 +875,7 @@ using Op = std::variant<
     Lzcnt, Tzcnt,
     VecBlend,
     WriteFlagsPtest,
+    WriteFlagsPtestYmm,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs
@@ -987,6 +1000,7 @@ bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
 bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
 bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
+bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;
