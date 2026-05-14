@@ -32,7 +32,7 @@ block merge to `main`:
 Both must be addressed. Code quality itself is good; this is about
 protocol and one missed attacker model.
 
-### Status update (later 2026-05-12 session)
+### Status update (later 2026-05-12 / 2026-05-13 session)
 
 - **Blocker B — Two-eyes:** option 2 (post-hoc RFCs) satisfied via
   [RFC 0011](rfc/0011-f2-avx256-fma-lowering.md) (pair-of-Vec128 + FMA
@@ -54,6 +54,33 @@ protocol and one missed attacker model.
   full buffer filled, RCX=0) is wired but ARM64-only — gets
   `SUCCEED("skipped on non-ARM64 host")` until validated on Apple
   silicon or `linux/arm64` CI.
+
+### Follow-on landings (2026-05-13)
+
+After PR #1 went all-green for the first time, the autonomous run
+continued with the F2 hot-spot queue from HANDOFF §5.D:
+
+- **F2-IR-049 VPTEST ymm** (`67a7336`). New `WriteFlagsPtestYmm` IR
+  op + `Emitter::vptest_ymm` primitive (composes per-half AND/BIC/ORR
+  before the existing NZCV-build). Decoder branches on `vex.L` in the
+  legacy `0F 38 17` handler.
+- **F2-IR-050 VBLEND VEX family** (`6a21ba5`). VPBLENDVB / VBLENDVPS /
+  VBLENDVPD (`66 0F 3A 4C/4A/4B`) for xmm + ymm. Mask register from
+  `imm8[7:4]`, src1 from `vex.vvvv`. Reuses the existing `VecBlend`
+  IR op; L=1 emits the parallel high-half.
+- **Lean spec catch-up** (`b7a8f31`). `BinOp` extended with the 6
+  F2-BK-007 variants; `Op` extended with `repStos` / `repMovs`.
+  Unsigned `evalBinOp` cases concrete via `Nat`; signed are placeholders
+  (`sorry` for sMulHi/sDiv/sMod). `.sorry-budget` bumped 0 → 3.
+
+All four follow-ons validated under Debug + ASan + UBSan in the
+container.
+
+**Two-eyes tally:** the session's solo IR/decoder/lowering commits now
+total 9 (the original 5 from F2 plus `5756084`, `67a7336`, `6a21ba5`,
+`b7a8f31`). A batched Danny waiver in `docs/REVIEWS/F2-CLAUDE-WAIVER.md`
+or a Codex audit pass over the range `8884efd..HEAD` is the standing
+ask before merge.
 
 ---
 
