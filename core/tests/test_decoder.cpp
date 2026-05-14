@@ -2367,6 +2367,59 @@ TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return"
     REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
+// F2-IR-055 — AES-NI round primitives.
+TEST_CASE("decode AESENC xmm0, xmm1 (66 0F 38 DC C1) — F2-IR-055") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0xDC, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecAes>(s.op)) {
+            REQUIRE(std::get<ir::VecAes>(s.op).kind == ir::VecAesKind::Enc);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode AESENCLAST xmm0, xmm1 (66 0F 38 DD C1) — F2-IR-055") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0xDD, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecAes>(s.op)) {
+            REQUIRE(std::get<ir::VecAes>(s.op).kind == ir::VecAesKind::EncLast);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode AESDEC xmm0, xmm1 (66 0F 38 DE C1) — F2-IR-055") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0xDE, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecAes>(s.op)) {
+            REQUIRE(std::get<ir::VecAes>(s.op).kind == ir::VecAesKind::Dec);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode AESIMC xmm0, xmm1 (66 0F 38 DB C1) — F2-IR-055") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x38, 0xDB, 0xC1}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecAes>(s.op)) {
+            REQUIRE(std::get<ir::VecAes>(s.op).kind == ir::VecAesKind::Imc);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
 TEST_CASE("decode CALL r/m64 (FF D1 = CALL rcx) with real_call_ret pushes + JumpReg") {
     // 48 FF D1 — REX.W (just makes the size consistent) + Group5 /2.
     // ModRM D1: mod=11 reg=010 (Group5 /2 = CALL) rm=001 (rcx).

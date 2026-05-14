@@ -478,6 +478,23 @@ public:
     // forcing the regalloc to allocate adjacent pairs.
     void vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx);
 
+    // F2-IR-055 — x86 AES-NI round primitives mapped onto ARM NEON
+    // AES. The semantic gap from x86 to ARM is that x86 applies
+    // ShiftRows → SubBytes BEFORE the AddRoundKey, while ARM's AESE
+    // applies AddRoundKey → SubBytes → ShiftRows. To match x86:
+    //
+    //   AESENC:      AESE(temp, 0) ; AESMC(dst, temp)    ; veor dst, dst, key
+    //   AESENCLAST:  AESE(temp, 0) ; veor dst, temp, key
+    //   AESDEC:      AESD(temp, 0) ; AESIMC(dst, temp)   ; veor dst, dst, key
+    //   AESDECLAST:  AESD(temp, 0) ; veor dst, temp, key
+    //   AESIMC:      AESIMC(dst, src)                    ; `key` ignored
+    //
+    // `temp` is the V31 internal scratch (consistent with vtbl2_q /
+    // vptest_ymm). The "AESE(temp, 0)" idiom — XOR with zero — gives
+    // us ShiftRows + SubBytes without an AddRoundKey, then AESMC
+    // adds MixColumns separately; finally we XOR with the round key.
+    void vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

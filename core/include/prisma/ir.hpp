@@ -744,6 +744,28 @@ struct VecTbl2 {
     Ref idx;
 };
 
+// F2-IR-055 — AES round primitives (AES-NI). Each maps to a short
+// NEON sequence; the kind enum selects the variant.
+//   AesEnc      ← AESENC      = MixColumns(SubBytes(ShiftRows(src))) ^ key
+//   AesEncLast  ← AESENCLAST  = SubBytes(ShiftRows(src)) ^ key
+//   AesDec      ← AESDEC      = InvMixColumns(InvShiftRows(InvSubBytes(src))) ^ key
+//   AesDecLast  ← AESDECLAST  = InvShiftRows(InvSubBytes(src)) ^ key
+//   AesImc      ← AESIMC      = InvMixColumns(src)              (no key)
+// For AesImc the `key` Ref is ignored at lower time but must still
+// be a valid Ref (operand_refs walker visits it; pass src twice if
+// no separate key value is available).
+enum class VecAesKind : std::uint8_t {
+    Enc = 0, EncLast,
+    Dec,     DecLast,
+    Imc,
+};
+
+struct VecAes {
+    Ref        src;
+    Ref        key;
+    VecAesKind kind;
+};
+
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
 //   Predicate = imm8 & 7 from the x86 encoding:
 //     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
@@ -892,6 +914,7 @@ using Op = std::variant<
     WriteFlagsPtest,
     WriteFlagsPtestYmm,
     VecTbl2,
+    VecAes,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs
@@ -1018,6 +1041,7 @@ bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept;
 bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept;
+bool operator==(const VecAes& a, const VecAes& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;

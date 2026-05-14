@@ -270,6 +270,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecTbl2>) {
                 bump(op.src_lo, i); bump(op.src_hi, i); bump(op.idx, i);
             }
+            else if constexpr (std::is_same_v<T, ir::VecAes>) {
+                bump(op.src, i); bump(op.key, i);
+            }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1353,6 +1356,21 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecTbl2"};
             }
             emitter_.vtbl2_q(rd, r_lo, r_hi, r_idx);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecAes>) {
+            // F2-IR-055 AES round.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecAes without result"};
+            }
+            Emitter::FpReg r_src, r_key;
+            if (!fp_reg_of(op.src, r_src)) return {false, LowerError::DanglingRef, "VecAes.src"};
+            if (!fp_reg_of(op.key, r_key)) return {false, LowerError::DanglingRef, "VecAes.key"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecAes"};
+            }
+            emitter_.vaes(rd, r_src, r_key, op.kind);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecBlend>) {

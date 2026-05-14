@@ -263,6 +263,9 @@ bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexce
 bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept {
     return a.src_lo == b.src_lo && a.src_hi == b.src_hi && a.idx == b.idx;
 }
+bool operator==(const VecAes& a, const VecAes& b) noexcept {
+    return a.src == b.src && a.key == b.key && a.kind == b.kind;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

@@ -4055,6 +4055,76 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // F2-IR-055 — AES-NI round primitives.
+            //   sub3 = 0xDB → AESIMC
+            //   sub3 = 0xDC → AESENC
+            //   sub3 = 0xDD → AESENCLAST
+            //   sub3 = 0xDE → AESDEC
+            //   sub3 = 0xDF → AESDECLAST
+            // All have layout `xmm1, xmm2/m128` where xmm1 is read-
+            // modify-write (= state) and xmm2/m128 supplies the
+            // round key (for Imc the key is ignored).
+            if (sub3 == 0xDBu || sub3 == 0xDCu || sub3 == 0xDDu ||
+                sub3 == 0xDEu || sub3 == 0xDFu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                ir::VecAesKind kind = ir::VecAesKind::Enc;
+                switch (sub3) {
+                    case 0xDBu: kind = ir::VecAesKind::Imc;     break;
+                    case 0xDCu: kind = ir::VecAesKind::Enc;     break;
+                    case 0xDDu: kind = ir::VecAesKind::EncLast; break;
+                    case 0xDEu: kind = ir::VecAesKind::Dec;     break;
+                    case 0xDFu: kind = ir::VecAesKind::DecLast; break;
+                }
+                Decoded d;
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                ir::Ref r_key = r_src;   // default for AESIMC (ignored)
+                if (kind != ir::VecAesKind::Imc) {
+                    r_key = next_ref++;
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_key,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(
+                            d.stmts, m, next_ref,
+                            instruction_guest_pc + cursor);
+                        d.stmts.push_back({r_key,
+                            ir::LoadVec{r_addr}});
+                    }
+                } else if (m.mod != 0b11) {
+                    // AESIMC reads xmm2/m128 too (it's the source).
+                    // The IR shape ignores `key` for Imc, so we route
+                    // the memory operand through r_src instead.
+                    const ir::Ref r_addr = emit_address(
+                        d.stmts, m, next_ref,
+                        instruction_guest_pc + cursor);
+                    // Override r_src to be the memory value.
+                    d.stmts.pop_back();
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                } else {
+                    // AESIMC reg-direct: r_src already loaded; the
+                    // /r-encoded ModRM.reg is the destination, but
+                    // for Imc we read from ModRM.rm. Re-load:
+                    d.stmts.pop_back();
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                }
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res, ir::VecAes{r_src, r_key, kind}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 PTEST (66 0F 38 17 /r). Sets NZCV via WriteFlagsPtest.
             // F2-IR-049: VEX.256.66.0F38 17 /r → VPTEST ymm; lower half
             // via the same WriteFlagsPtest shape, high half via the

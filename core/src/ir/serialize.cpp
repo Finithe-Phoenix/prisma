@@ -113,11 +113,12 @@ enum class OpKind : std::uint8_t {
     kRepMovs       = 77,
     kWriteFlagsPtestYmm = 78,
     kVecTbl2            = 79,
+    kVecAes             = 80,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecTbl2);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kVecAes);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -314,6 +315,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, RepMovs>)       return OpKind::kRepMovs;
         else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) return OpKind::kWriteFlagsPtestYmm;
         else if constexpr (std::is_same_v<T, VecTbl2>)       return OpKind::kVecTbl2;
+        else if constexpr (std::is_same_v<T, VecAes>)        return OpKind::kVecAes;
     }, op);
 }
 
@@ -693,6 +695,11 @@ void write_payload(std::vector<std::uint8_t>& out, const VecTbl2& x) {
     put_u32(out, x.src_lo);
     put_u32(out, x.src_hi);
     put_u32(out, x.idx);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecAes& x) {
+    put_u32(out, x.src);
+    put_u32(out, x.key);
+    put_u8(out, static_cast<std::uint8_t>(x.kind));
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -1190,6 +1197,17 @@ DeserializeError read_payload_vec_tbl2(Cursor& c, Stmt& s) {
     s.op = VecTbl2{src_lo, src_hi, idx};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_vec_aes(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t src  = c.take_u32();
+    const std::uint32_t key  = c.take_u32();
+    const std::uint8_t  kind = c.take_u8();
+    if (kind > static_cast<std::uint8_t>(VecAesKind::Imc)) {
+        return DeserializeError::BadSize;
+    }
+    s.op = VecAes{src, key, static_cast<VecAesKind>(kind)};
+    return DeserializeError::Ok;
+}
 
 DeserializeError read_payload_vec_blend(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 4 + 1)) return DeserializeError::Truncated;
@@ -1571,6 +1589,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kRepMovs:     return read_payload_rep_movs(c, s);
         case OpKind::kWriteFlagsPtestYmm: return read_payload_write_flags_ptest_ymm(c, s);
         case OpKind::kVecTbl2:     return read_payload_vec_tbl2(c, s);
+        case OpKind::kVecAes:      return read_payload_vec_aes(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

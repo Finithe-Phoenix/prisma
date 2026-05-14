@@ -381,6 +381,18 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.src_lo); os << ", ";
             print_ref(os, x.src_hi); os << ", idx=";
             print_ref(os, x.idx);
+        } else if constexpr (std::is_same_v<T, VecAes>) {
+            const char* k = "?";
+            switch (x.kind) {
+                case VecAesKind::Enc:     k = "enc";       break;
+                case VecAesKind::EncLast: k = "enc_last";  break;
+                case VecAesKind::Dec:     k = "dec";       break;
+                case VecAesKind::DecLast: k = "dec_last";  break;
+                case VecAesKind::Imc:     k = "imc";       break;
+            }
+            os << "vaes." << k << ' ';
+            print_ref(os, x.src); os << ", ";
+            print_ref(os, x.key);
         } else if constexpr (std::is_same_v<T, VecBlend>) {
             const char* lane_n = "?";
             switch (x.lane) {

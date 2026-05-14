@@ -1278,6 +1278,61 @@ void Emitter::vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx) {
     impl_->masm.Tbl(v_dst, v_lo_dst, v_hi_dst, v_idx);
 }
 
+void Emitter::vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind) {
+    // V31 (= kInternalFpScratchV) is used as the working scratch.
+    const vixl_aa::VRegister v_tmp(kInternalFpScratchV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_src(static_cast<int>(src), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_key(static_cast<int>(key), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst(static_cast<int>(dst), vixl_aa::kFormat16B);
+
+    if (kind == ir::VecAesKind::Imc) {
+        // Single AESIMC, no key involvement.
+        impl_->masm.Aesimc(v_dst, v_src);
+        return;
+    }
+
+    // For Enc/EncLast/Dec/DecLast we first need to compute the
+    // ShiftRows + SubBytes (or their inverses) on `src` without
+    // XOR-ing the key in. ARM AESE/AESD always XOR with their Vn,
+    // so we feed them a zero vector via `eor v_tmp.16b, v_src.16b, v_src.16b`
+    // and then AESE/AESD against it. Equivalent: `mov v_tmp, v_src`
+    // + `eor v_tmp, v_tmp, v_tmp` would lose `src`, so instead we
+    // initialise v_tmp to v_src first (the AES family is destructive
+    // on its first operand).
+    impl_->masm.Mov(v_tmp, v_src);
+    // Zero a vector to XOR-with-zero (== identity AddRoundKey).
+    // vixl provides Movi for immediate-zero load.
+    constexpr int kAuxZero = 30;
+    const vixl_aa::VRegister v_zero(kAuxZero, vixl_aa::kFormat16B);
+    impl_->masm.Movi(v_zero, 0);
+
+    switch (kind) {
+        case ir::VecAesKind::Enc:
+        case ir::VecAesKind::EncLast:
+            impl_->masm.Aese(v_tmp, v_zero);
+            if (kind == ir::VecAesKind::Enc) {
+                impl_->masm.Aesmc(v_dst, v_tmp);
+                impl_->masm.Eor(v_dst, v_dst, v_key);
+            } else {
+                impl_->masm.Eor(v_dst, v_tmp, v_key);
+            }
+            break;
+        case ir::VecAesKind::Dec:
+        case ir::VecAesKind::DecLast:
+            impl_->masm.Aesd(v_tmp, v_zero);
+            if (kind == ir::VecAesKind::Dec) {
+                impl_->masm.Aesimc(v_dst, v_tmp);
+                impl_->masm.Eor(v_dst, v_dst, v_key);
+            } else {
+                impl_->masm.Eor(v_dst, v_tmp, v_key);
+            }
+            break;
+        case ir::VecAesKind::Imc:
+            // Unreachable — handled above.
+            break;
+    }
+}
+
 void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
     // Sequence:
     //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set
