@@ -51,6 +51,23 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
   | .rcr =>
       let n := rhs &&& 0x3F
       if n == 0 then lhs else (lhs >>> n) ||| (lhs <<< (64 - n))
+  -- F2-BK-007 — wide-form ops. Unsigned variants implemented
+  -- concretely via Nat; signed variants left as `sorry` because
+  -- they require careful Int / Int64 corner-case handling that
+  -- diverges from ARM64 native semantics on `INT_MIN / -1` (ARM
+  -- wraps to INT_MIN, x86 traps #DE — see docs/rfc/0012). Each
+  -- `sorry` is tracked by a backlog item (F1-LN-014/015/016) and
+  -- counts against the budget in `.sorry-budget`.
+  | .uMulHi =>
+      let prod : Nat := lhs.toNat * rhs.toNat
+      (prod / (2 ^ 64)).toUInt64
+  | .uDiv =>
+      if rhs == 0 then 0 else lhs / rhs
+  | .uMod =>
+      if rhs == 0 then lhs else lhs % rhs
+  | .sMulHi => sorry  -- F1-LN-014
+  | .sDiv   => sorry  -- F1-LN-015
+  | .sMod   => sorry  -- F1-LN-016
 
 /-- Mask a 64-bit value down to `size` bits. -/
 def maskToSize (v : UInt64) : OpSize → UInt64

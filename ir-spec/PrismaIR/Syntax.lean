@@ -50,6 +50,16 @@ inductive BinOp where
   | shl | shr | sar
   | rol | ror
   | rcl | rcr
+  -- F2-BK-007 — wide-form integer ops for x86 MUL/IMUL/DIV/IDIV
+  -- writeback to rdx:rax / rax:rdx. uMulHi/sMulHi return the upper
+  -- 64 bits of the unsigned/signed 64×64→128 product (i.e. rdx of
+  -- the implicit rdx:rax pair). uDiv/sDiv return the quotient
+  -- (rax of the implicit rax:rdx pair); uMod/sMod the remainder
+  -- (rdx). See `evalBinOp` in `Semantics.lean` for the concrete
+  -- semantics + the documented ARM64-on-zero-divisor divergence.
+  | uMulHi | sMulHi
+  | uDiv   | sDiv
+  | uMod   | sMod
   deriving DecidableEq, Repr, BEq
 
 /-- x86 condition codes used by conditional branches and SETcc-like compare.
@@ -179,6 +189,17 @@ inductive Op where
   | readFlag     (flags : Ref) (which : FlagBit)              : Op
   | condJumpFlags (flags : Ref) (cc : CondCode)
                   (ifTrue ifFalse : Nat)                      : Op
+
+  -- F2-BK-008/009 — REP STOSB/MOVSB with bounded iteration. Block
+  -- terminators; the lowering caps per-call iterations and re-enters
+  -- via pcOfRep when RCX is non-zero post-loop. See
+  -- `core/include/prisma/ir.hpp::kRepMaxBytesPerCall`. Semantics
+  -- (iteration step relation) deferred to the MachineState-aware
+  -- model; today the C++ runtime is the source of truth.
+  | repStos      (size : OpSize) (reverse : Bool)
+                 (pcOfRep pcAfterRep : UInt64)                : Op
+  | repMovs      (size : OpSize) (reverse : Bool)
+                 (pcOfRep pcAfterRep : UInt64)                : Op
 
   deriving Repr
 
