@@ -64,6 +64,7 @@ public:
         WriteFlagsPtestYmm,
         VecTbl2,
         VecAes,
+        Bswap,
         LoadVecRegHi, StoreVecRegHi,
         VecFpFma,
         VecFpScalarFma,

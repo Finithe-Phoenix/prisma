@@ -495,6 +495,11 @@ public:
     // adds MixColumns separately; finally we XOR with the round key.
     void vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind);
 
+    // F2-IR-056 — byte-reverse the contents of `rn` interpreted at
+    // `size` and write to `rd`. Maps to ARM64 REV (I64), REV W
+    // (I32), REV16 (I16). I8 emits a plain MOV.
+    void bswap(arm64::Reg rd, arm64::Reg rn, ir::OpSize size);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

@@ -273,6 +273,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecAes>) {
                 bump(op.src, i); bump(op.key, i);
             }
+            else if constexpr (std::is_same_v<T, ir::Bswap>) {
+                bump(op.value, i);
+            }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -1371,6 +1374,22 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecAes"};
             }
             emitter_.vaes(rd, r_src, r_key, op.kind);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Bswap>) {
+            // F2-IR-056 byte reverse — maps to ARM64 REV / REV16
+            // depending on size. I8 is a no-op (single byte has no
+            // byte order to reverse).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Bswap without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Bswap.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Bswap"};
+            }
+            emitter_.bswap(rd, rn, op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecBlend>) {

@@ -1278,6 +1278,29 @@ void Emitter::vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx) {
     impl_->masm.Tbl(v_dst, v_lo_dst, v_hi_dst, v_idx);
 }
 
+void Emitter::bswap(arm64::Reg rd, arm64::Reg rn, ir::OpSize size) {
+    // ARM64 has REV for 32 / 64-bit and REV16 for 16-bit byte-pair
+    // swap. I8 has no byte order, so fall back to a mov.
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rn));
+            break;
+        case ir::OpSize::I16: {
+            // REV16 wd, wn reverses bytes within each 16-bit half of
+            // the 32-bit register. We only need the low half — the
+            // high half is don't-care for guest I16 ops.
+            impl_->masm.Rev16(to_vixl_w(rd), to_vixl_w(rn));
+            break;
+        }
+        case ir::OpSize::I32:
+            impl_->masm.Rev(to_vixl_w(rd), to_vixl_w(rn));
+            break;
+        case ir::OpSize::I64:
+            impl_->masm.Rev(to_vixl_x(rd), to_vixl_x(rn));
+            break;
+    }
+}
+
 void Emitter::vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind) {
     // V31 (= kInternalFpScratchV) is used as the working scratch.
     const vixl_aa::VRegister v_tmp(kInternalFpScratchV, vixl_aa::kFormat16B);

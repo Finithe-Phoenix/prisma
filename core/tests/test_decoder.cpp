@@ -2367,6 +2367,52 @@ TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return"
     REQUIRE(std::holds_alternative<ir::Return>(d.stmts[0].op));
 }
 
+// F2-IR-056 — MOVBE (move-with-byte-swap).
+TEST_CASE("decode MOVBE r32, m32 (0F 38 F0 /r) — F2-IR-056") {
+    // 0F 38 F0 01 — MOVBE eax, [rcx]. ModRM 01: mod=00 reg=000 rm=001
+    // (memory at [rcx] with no displacement).
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x38, 0xF0, 0x01}, r);
+    bool found_bswap = false;
+    bool found_store_reg = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::Bswap>(s.op)) {
+            REQUIRE(std::get<ir::Bswap>(s.op).size == ir::OpSize::I32);
+            found_bswap = true;
+        }
+        if (std::holds_alternative<ir::StoreReg>(s.op)) found_store_reg = true;
+    }
+    REQUIRE(found_bswap);
+    REQUIRE(found_store_reg);
+}
+
+TEST_CASE("decode MOVBE m64, r64 (48 0F 38 F1 /r) — F2-IR-056 64-bit store") {
+    // REX.W (48) + 0F 38 F1 01 — MOVBE [rcx], rax.
+    ir::Ref r = 0;
+    auto d = decode_ok({0x48, 0x0F, 0x38, 0xF1, 0x01}, r);
+    bool found_bswap_i64 = false;
+    bool found_store_mem = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::Bswap>(s.op)) {
+            if (std::get<ir::Bswap>(s.op).size == ir::OpSize::I64) found_bswap_i64 = true;
+        }
+        if (std::holds_alternative<ir::StoreMem>(s.op)) found_store_mem = true;
+    }
+    REQUIRE(found_bswap_i64);
+    REQUIRE(found_store_mem);
+}
+
+TEST_CASE("decode MOVBE r/m=reg is rejected (memory operand required)") {
+    // 0F 38 F0 C1 — modrm mod=11 → reg-reg. MOVBE requires memory.
+    ir::Ref r = 0;
+    auto res = decoder::decode_one(
+        std::span<const std::uint8_t>{
+            std::initializer_list<std::uint8_t>{0x0F, 0x38, 0xF0, 0xC1}.begin(),
+            std::initializer_list<std::uint8_t>{0x0F, 0x38, 0xF0, 0xC1}.end()},
+        r);
+    REQUIRE(std::holds_alternative<decoder::DecodeError>(res));
+}
+
 // F2-IR-055 — AES-NI round primitives.
 TEST_CASE("decode AESENC xmm0, xmm1 (66 0F 38 DC C1) — F2-IR-055") {
     ir::Ref r = 0;

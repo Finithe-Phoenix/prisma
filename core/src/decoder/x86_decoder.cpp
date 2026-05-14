@@ -3854,6 +3854,59 @@ std::variant<Decoded, DecodeError> decode_one(
             return DecodeError::UnsupportedEncoding;
         }
 
+        // F2-IR-056 — MOVBE (0F 38 F0 / F1). Move-with-byte-swap.
+        // Memory ↔ register move that reverses byte order in flight.
+        // Size: REX.W → I64; 66 prefix → I16; default → I32.
+        //   F0 /r: MOVBE Gv, Mv  (load + bswap → reg)
+        //   F1 /r: MOVBE Mv, Gv  (reg → bswap → store)
+        // Requires a memory operand (mod != 11); reg-reg encoding is
+        // CRC32 territory (different prefix) or undefined.
+        if (subop == 0x38u && !has_lock && !has_f2 && !has_f3 &&
+            cursor < bytes.size() &&
+            (bytes[cursor] == 0xF0u || bytes[cursor] == 0xF1u)) {
+            const Byte sub3 = bytes[cursor];
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod == 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::OpSize size = rex.w ? ir::OpSize::I64
+                                          : (has_operand_size_override
+                                                 ? ir::OpSize::I16
+                                                 : ir::OpSize::I32);
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            if (sub3 == 0xF0u) {
+                // MOVBE reg, mem.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_rev = next_ref++;
+                d.stmts.push_back({r_val, ir::LoadMem{r_addr, size}});
+                d.stmts.push_back({r_rev, ir::Bswap{r_val, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{reg_at(m.reg), r_rev, size}});
+            } else {
+                // MOVBE mem, reg.
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_rev = next_ref++;
+                d.stmts.push_back({r_val,
+                    ir::LoadReg{reg_at(m.reg), size}});
+                d.stmts.push_back({r_rev, ir::Bswap{r_val, size}});
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreMem{r_addr, r_rev, size}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-053 followup — BMI2 BZHI (0F 38 F5, no prefix):
         // dst = src & mask_of_count, where the mask keeps the low
         // `count` bits and zeroes the rest. Edge case from Intel SDM:
