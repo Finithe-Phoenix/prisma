@@ -13,14 +13,14 @@
 //      CmpFlags/Fence/GuestPc) have `result == nullopt`. Pure ops (Constant/LoadReg/
 //      BinOp/Extend/Truncate/Compare/Select/LoadMem*) have
 //      `result != nullopt`.
+//   4. Every SSA Ref carries an OpSize inferred from its defining op, and
+//      users must consume it at a compatible size.
 //
-// Out of scope for MVP (future IR-015 work):
-//   * Cross-ref size consistency (BinOp.size vs lhs.size vs rhs.size).
+// Out of scope for MVP:
 //   * CFG-level validation (block entry/exit coherence).
 //
-// The validator is O(n) in the number of statements and allocates one
-// flat-hash set + one map. Cheap enough to run in debug builds on every
-// translation.
+// The validator is O(n) in the number of statements and allocates one ref-size
+// map. Cheap enough to run in debug builds on every translation.
 
 #pragma once
 
@@ -37,6 +37,7 @@ enum class ValidationCode {
     DuplicateResult,     // two stmts define the same ref
     ImpureHasResult,     // a store/jump/return has result != nullopt
     PureLacksResult,     // a Constant/BinOp/... has result == nullopt
+    SizeMismatch,        // operand Ref size is incompatible with its use
 };
 
 struct ValidationError {

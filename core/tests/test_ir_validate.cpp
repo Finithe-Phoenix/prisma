@@ -93,6 +93,52 @@ TEST_CASE("validate: StoreMem with undef value ref is flagged") {
     REQUIRE(r.error->bad_ref == 99u);
 }
 
+TEST_CASE("validate: BinOp rejects operand size mismatch") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I32}},
+        {2u, ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 2u);
+}
+
+TEST_CASE("validate: StoreReg rejects value too narrow for store size") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 1u);
+}
+
+TEST_CASE("validate: StoreReg permits storing low bits from wider value") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I16}},
+    };
+    REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: StoreMem rejects value size mismatch") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Constant{1, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreMem{0u, 1u, ir::OpSize::I64}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 2u);
+}
+
 TEST_CASE("validate: Select with all operands defined passes") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{1, ir::OpSize::I64}},
@@ -100,6 +146,19 @@ TEST_CASE("validate: Select with all operands defined passes") {
         {2u, ir::Select{ir::CondCode::Eq, 0u, 1u, ir::OpSize::I64}},
     };
     REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: CmpFlags rejects operand size mismatch") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I32}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 2u);
 }
 
 TEST_CASE("validate: Extend and Truncate read their source ref") {
@@ -117,6 +176,73 @@ TEST_CASE("validate: Extend and Truncate read their source ref") {
     REQUIRE_FALSE(r.ok);
     REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
     REQUIRE(r.error->bad_ref == 99u);
+}
+
+TEST_CASE("validate: Extend rejects from_size mismatch") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xFF, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I16, ir::OpSize::I64, false}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 1u);
+}
+
+TEST_CASE("validate: Extend may read low bits from a wider source") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I16, true}},
+    };
+    REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: LoadMem with I64 addr and matching value sizes passes") {
+    std::vector<ir::Stmt> load_to_reg = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadMem{0u, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I32}},
+    };
+    REQUIRE(ir::validate(load_to_reg).ok);
+
+    std::vector<ir::Stmt> load_to_mem = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadMem{0u, ir::OpSize::I16}},
+        {std::nullopt, ir::StoreMem{0u, 1u, ir::OpSize::I16}},
+    };
+    REQUIRE(ir::validate(load_to_mem).ok);
+}
+
+TEST_CASE("validate: LoadMem rejects non-I64 address") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}},
+        {1u, ir::LoadMem{0u, ir::OpSize::I64}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 1u);
+}
+
+TEST_CASE("validate: Compare materializes an I64 boolean value for current IR") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I64}},
+        {2u, ir::Compare{ir::CondCode::Eq, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::BinOp{ir::BinOpKind::And, 2u, 2u, ir::OpSize::I64}},
+    };
+    REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: shift count ref may use a different integer size") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I16}},
+        {1u, ir::Constant{15, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Sar, 0u, 1u, ir::OpSize::I16}},
+    };
+    REQUIRE(ir::validate(s).ok);
 }
 
 TEST_CASE("validate: Fence is side-effecting and has no result") {
