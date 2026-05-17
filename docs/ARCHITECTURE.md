@@ -280,6 +280,15 @@ cleanly. Translator block metadata also exposes call/ret terminator
 shape, and the dispatcher keeps RAS-style push/pop/hit/miss counters
 for return prediction work.
 
+The first direct-threading stage is live in the dispatcher. For direct
+`JumpRel` and `CondJumpRel` exits, block metadata records target and
+fallthrough guest PCs. If the selected successor is already translated
+and the current guest bytes still match the cached content hash, the
+dispatcher executes that cached block immediately instead of re-entering
+`Translator::translate()`. This preserves SMC safety, halt-PC checks,
+and step limits while leaving deeper in-JIT patching for the next
+runtime optimization stage.
+
 ### Blocker A — REP STOS / MOVSB DoS clamp
 
 `RepStos` and `RepMovs` (commit 5756084) are now **block terminators**

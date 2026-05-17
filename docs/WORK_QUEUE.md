@@ -6,11 +6,11 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-17 (in-flight after x87 baseline + F2-PS-001 + BMI2 PDEP/PEXT + F2-BK-010).
+Last updated: 2026-05-17 (in-flight after x87 baseline + F2-PS-001 + BMI2 PDEP/PEXT + F2-BK-010 + direct-thread cache).
 
 ## Currently active
 
-Branch: `claude/hopeful-taussig-051239` (== PR #1).
+Branch: `work-f2-ps-004`.
 CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅, shell-stub ✅.
 
 ## Queue (priority order)
@@ -26,20 +26,20 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 7 | BMI2 shift family (SHLX/SARX/SHRX/RORX) | 2 commits | `1824167`, `eb31777` | ✅ done | Variable-count + imm-count rotates, all flag-preserving. |
 | 8 | BMI2 MULX | 1 commit | `b0b589b` | ✅ done | Two-dest unsigned multiply, reuses MUL + UMulHi. |
 | 9 | BMI2 BZHI | 1 commit | `47cf67d` | ✅ done | Count-saturation via CmpFlags + Select(Ult). |
-| 9b | BMI2 PDEP / PEXT | 1 commit | pending commit | ✅ done | New Pdep/Pext BinOps, VEX decoder, const-folding, software ARM64 bit-loop lowering, and ARM-only e2e coverage. |
-| 10 | F2-BK-010 Call/Ret return-stack predictor | 1 commit | pending commit | ✅ done | CallRel/CallReg/RetAdjusted decoder path, guest-stack lowering, translator exit metadata, dispatcher RAS stats. |
+| 9b | BMI2 PDEP / PEXT | 1 commit | `d9f12b5` | ✅ done | New Pdep/Pext BinOps, VEX decoder, const-folding, software ARM64 bit-loop lowering, and ARM-only e2e coverage. |
+| 10 | F2-BK-010 Call/Ret return-stack predictor | 1 commit | `d9f12b5` | ✅ done | CallRel/CallReg/RetAdjusted decoder path, guest-stack lowering, translator exit metadata, dispatcher RAS stats. |
 | 11 | Real CALL/RET semantics (opt-in) | 1 commit | `9787f25` | ✅ done | Threaded via `decode_one`'s 4th param + `Translator::set_real_call_ret()`. Decoder emits push/pop sequences when on. Default off keeps the 86 legacy e2e tests untouched. |
 | 11b | Migrate e2e corpus to real CALL/RET by default | done in batch | `710ae71` | ✅ done | All 79 e2e tests migrated to `install_halt_return_stack()` AND Translator default flipped to `real_call_ret=true`. Programs with function calls now translate with real semantics by default. |
-| 12 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | pending commit | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
+| 12 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 | 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | — | ⏸ queued | VSIB encoding + per-element conditional load. |
 | 14 | AES hardware crypto opcodes (AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) | 1 commit | `5811568` | ✅ done | New `VecAes` IR op + `vaes` emitter primitive (5-way switch). AESKEYGENASSIST queued separately. |
 | 14b | SHA-NI crypto opcodes | 3-4 commits | — | ⏸ queued | x86 SHA1RNDS4 / SHA1MSGx / SHA256RNDS2 / SHA256MSGx → ARM NEON SHA family. SHA256RNDS2's implicit xmm0 dependency needs careful IR plumbing. |
 | 14c | AESKEYGENASSIST | 2 commits | — | ⏸ queued | Key-schedule helper. No direct ARM equivalent; software emulation needed. |
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
-| 15 | Direct branch threading | 4-6 commits | — | ⏸ queued | When CondJumpRel target is already translated, branch directly in JIT instead of dispatcher round-trip. Major perf win for hot loops. |
+| 15 | Direct branch threading | 4-6 commits | pending commit | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
-| 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | pending commit | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
+| 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 
 ## Completed (this session)
 
@@ -82,8 +82,10 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 18 | feat(ir,decoder,backend): F2-IR-056 — MOVBE / Bswap | `4e4828c` | 813/813 verde Debug + ASan/UBSan. |
 | 19 | feat(translator): flip real_call_ret default + migrate corpus | `710ae71` | 813/813 verde Debug + ASan/UBSan. **The real CALL/RET unlock.** |
 | 20 | feat(ir,decoder,backend): F2-IR-057 — CRC32 / Crc32c | `de95485` | 816/816 verde Debug + ASan/UBSan. |
-| 21 | feat(ir,decoder,backend): BMI2 PDEP / PEXT | pending commit | 844/844 verde Debug; software ARM64 loop lowering + const-folding + ARM-only e2e. |
-| 22 | feat(runtime,backend): F2-BK-010 call/ret return-stack | pending commit | 848/848 verde Debug; first-class call/ret terminators + dispatcher RAS hit/miss counters. |
+| 21 | feat(ir,decoder,backend): BMI2 PDEP / PEXT | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; software ARM64 loop lowering + const-folding + ARM-only e2e. |
+| 22 | feat(runtime,backend): F2-BK-010 call/ret return-stack | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; first-class call/ret terminators + dispatcher RAS hit/miss counters. |
+| 23 | feat(core): x87 reduced-F64 bridge + stack forwarding | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; RFC 0013 documents precision scope. |
+| 24 | feat(runtime): dispatcher direct-thread cache | pending commit | Direct branch successors can run from the executable cache without another translate() call; SMC hash checks preserved. |
 
 ## Standing decisions (carry across items)
 

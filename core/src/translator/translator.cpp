@@ -44,6 +44,8 @@ bool is_block_terminator(const ir::Op& op) noexcept {
 
 struct ExitMetadata {
     BlockExitKind kind{BlockExitKind::None};
+    std::uint64_t target_guest_pc{0};
+    std::uint64_t fallthrough_guest_pc{0};
     std::uint64_t return_guest_pc{0};
 };
 
@@ -52,23 +54,29 @@ ExitMetadata exit_metadata(const std::vector<ir::Stmt>& body) noexcept {
     return std::visit([](const auto& op) -> ExitMetadata {
         using T = std::decay_t<decltype(op)>;
         if constexpr (std::is_same_v<T, ir::Return>) {
-            return {BlockExitKind::Return, 0};
+            return {BlockExitKind::Return, 0, 0, 0};
         } else if constexpr (std::is_same_v<T, ir::JumpRel>) {
-            return {BlockExitKind::JumpRel, 0};
+            return {BlockExitKind::JumpRel, op.target_guest_pc, 0, 0};
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
-            return {BlockExitKind::JumpReg, 0};
+            return {BlockExitKind::JumpReg, 0, 0, 0};
         } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
-            return {BlockExitKind::CondJumpRel, 0};
+            return {BlockExitKind::CondJumpRel,
+                    op.target_guest_pc,
+                    op.fallthrough_guest_pc,
+                    0};
         } else if constexpr (std::is_same_v<T, ir::CallRel>) {
-            return {BlockExitKind::CallRel, op.return_guest_pc};
+            return {BlockExitKind::CallRel,
+                    op.target_guest_pc,
+                    0,
+                    op.return_guest_pc};
         } else if constexpr (std::is_same_v<T, ir::CallReg>) {
-            return {BlockExitKind::CallReg, op.return_guest_pc};
+            return {BlockExitKind::CallReg, 0, 0, op.return_guest_pc};
         } else if constexpr (std::is_same_v<T, ir::RetAdjusted>) {
-            return {BlockExitKind::RetAdjusted, 0};
+            return {BlockExitKind::RetAdjusted, 0, 0, 0};
         } else if constexpr (std::is_same_v<T, ir::RepStos>) {
-            return {BlockExitKind::RepStos, 0};
+            return {BlockExitKind::RepStos, op.pc_of_rep, op.pc_after_rep, 0};
         } else if constexpr (std::is_same_v<T, ir::RepMovs>) {
-            return {BlockExitKind::RepMovs, 0};
+            return {BlockExitKind::RepMovs, op.pc_of_rep, op.pc_after_rep, 0};
         } else {
             return {};
         }
@@ -169,6 +177,26 @@ void Translator::set_real_call_ret(bool enabled) noexcept {
     real_call_ret_ = enabled;
 }
 
+std::optional<TranslatedBlock> Translator::lookup_cached(
+    std::uint64_t guest_addr,
+    std::span<const std::uint8_t> guest_bytes) const {
+    if (guest_bytes.empty()) return std::nullopt;
+    const std::uint64_t hash_of_input = cache::fnv1a_64(guest_bytes);
+    auto it = by_addr_.find(guest_addr);
+    if (it == by_addr_.end()) return std::nullopt;
+    const Record& rec = it->second;
+    if (rec.content_hash != hash_of_input) return std::nullopt;
+    return TranslatedBlock{
+        rec.entry,
+        rec.code_size,
+        rec.guest_size,
+        /*from_cache=*/true,
+        rec.exit_kind,
+        rec.target_guest_pc,
+        rec.fallthrough_guest_pc,
+        rec.return_guest_pc};
+}
+
 TranslateResult Translator::translate(
     std::uint64_t guest_addr,
     std::span<const std::uint8_t> guest_bytes) {
@@ -197,6 +225,8 @@ TranslateResult Translator::translate(
                 rec.guest_size,
                 /*from_cache=*/true,
                 rec.exit_kind,
+                rec.target_guest_pc,
+                rec.fallthrough_guest_pc,
                 rec.return_guest_pc};
         }
         // SMC: the guest bytes at this address changed. Drop the record,
@@ -308,6 +338,8 @@ TranslateResult Translator::translate(
         dec.consumed,
         hash_of_input,
         exit.kind,
+        exit.target_guest_pc,
+        exit.fallthrough_guest_pc,
         exit.return_guest_pc};
 
     ++stats_.cache_misses;  // accounted only on success; see comment above.
@@ -317,6 +349,8 @@ TranslateResult Translator::translate(
         dec.consumed,
         /*from_cache=*/false,
         exit.kind,
+        exit.target_guest_pc,
+        exit.fallthrough_guest_pc,
         exit.return_guest_pc};
 }
 

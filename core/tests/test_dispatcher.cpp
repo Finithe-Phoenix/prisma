@@ -163,10 +163,10 @@ TEST_CASE("Dispatcher: step limit trips when the program loops forever",
     REQUIRE(r.stats.blocks_executed == 5);
     REQUIRE(r.final_pc == 0x3000u);
 
-    // Second call with the same PC should hit the cache and not
-    // retranslate — but the Dispatcher only knows blocks_executed, not
-    // cache_hits directly. Check the Translator's stats instead.
-    REQUIRE(t.stats().cache_hits >= 4);  // 5 iters, first is miss, 4 hits.
+    // The direct-thread cache keeps hot direct loops inside the dispatcher
+    // once the first translation is installed.
+    REQUIRE(r.stats.direct_thread_hits >= 4);  // 5 iters, first is miss, 4 hits.
+    REQUIRE(r.stats.direct_thread_misses == 0);
 }
 
 TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",

@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -73,6 +74,8 @@ struct TranslatedBlock {
     // Terminator metadata used by runtime predictors/linkers. For
     // CallRel/CallReg, `return_guest_pc` is the predicted return site.
     BlockExitKind exit_kind{BlockExitKind::None};
+    std::uint64_t target_guest_pc{0};
+    std::uint64_t fallthrough_guest_pc{0};
     std::uint64_t return_guest_pc{0};
 };
 
@@ -99,6 +102,13 @@ public:
     [[nodiscard]] TranslateResult translate(
         std::uint64_t guest_addr,
         std::span<const std::uint8_t> guest_bytes);
+
+    // Probe the in-process executable cache without decoding or
+    // mutating translation stats. The caller still supplies current
+    // guest bytes so the content hash can reject stale SMC entries.
+    [[nodiscard]] std::optional<TranslatedBlock> lookup_cached(
+        std::uint64_t guest_addr,
+        std::span<const std::uint8_t> guest_bytes) const;
 
     // Override the pass pipeline. Defaults to passes::default_pipeline().
     void set_pipeline(passes::PassManager pm);
@@ -144,6 +154,8 @@ private:
         std::size_t guest_size{0};
         std::uint64_t content_hash{0};
         BlockExitKind exit_kind{BlockExitKind::None};
+        std::uint64_t target_guest_pc{0};
+        std::uint64_t fallthrough_guest_pc{0};
         std::uint64_t return_guest_pc{0};
     };
 

@@ -2588,7 +2588,8 @@ std::variant<Decoded, DecodeError> decode_one(
                 vex.present = true;
                 rex.present = true;
                 rex.r = (v1 & 0x80u) == 0;            // R̅ (inverted)
-                vex.vvvv = static_cast<std::uint8_t>(((~v1) >> 3) & 0x0Fu);
+                vex.vvvv = static_cast<std::uint8_t>(
+                    ((v1 ^ 0xFFu) >> 3) & 0x0Fu);
                 vex.L    = (v1 & 0x04u) != 0;
                 vex.pp   = static_cast<std::uint8_t>(v1 & 0x03u);
                 vex.mmmmm = 1;                         // implied 0F
@@ -2604,7 +2605,8 @@ std::variant<Decoded, DecodeError> decode_one(
                 rex.b = (v1 & 0x20u) == 0;
                 vex.mmmmm = static_cast<std::uint8_t>(v1 & 0x1Fu);
                 rex.w = (v2 & 0x80u) != 0;
-                vex.vvvv = static_cast<std::uint8_t>(((~v2) >> 3) & 0x0Fu);
+                vex.vvvv = static_cast<std::uint8_t>(
+                    ((v2 ^ 0xFFu) >> 3) & 0x0Fu);
                 vex.L    = (v2 & 0x04u) != 0;
                 vex.pp   = static_cast<std::uint8_t>(v2 & 0x03u);
                 cursor += 3;
