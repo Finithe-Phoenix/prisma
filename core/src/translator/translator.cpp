@@ -219,7 +219,7 @@ TranslateResult Translator::translate(
     backend::Emitter em;
 
     // Prologue: load guest state from the CpuStateFrame* passed in x0
-    // into pinned host regs x10..x25 and save the state ptr in x19.
+    // into pinned host regs x10..x25 and save the state ptr in x27.
     emit_prologue(em);
 
     // Body: lower with `emit_ret_on_terminator = false` so terminators
