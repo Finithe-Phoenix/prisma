@@ -114,6 +114,21 @@ struct CpuStateFrame {
     [[nodiscard]] static constexpr std::int32_t ymm_hi_offset_bytes(std::size_t idx) noexcept {
         return 400 + static_cast<std::int32_t>(idx) * 16;
     }
+
+    // F2-IR-007 — byte offset to `frame.x87[idx].lo`. x87[] follows
+    // ymm_hi[16] tightly (400 + 256 = 656). Each slot is 16 bytes; the
+    // low 8 bytes hold the 64-bit double bits used by our reduced-
+    // precision x87 model (cf. RFC 0013).
+    [[nodiscard]] static constexpr std::int32_t x87_offset_bytes(std::size_t idx) noexcept {
+        return 656 + static_cast<std::int32_t>(idx) * 16;
+    }
+
+    // F2-IR-007 — byte offset to the TOS byte in `x87_status_control`.
+    // We model TOS as a 3-bit counter stored in the byte at status_control
+    // + 4 (= byte 4 of the u64, little-endian). Generated x87 code does
+    // ldrb / strb at this offset, no bitfield gymnastics needed.
+    static constexpr std::int32_t kX87StatusControlOffset = 656 + 8 * 16;  // = 784
+    static constexpr std::int32_t kX87TosByteOffset       = 784 + 4;       // = 788
 };
 
 // Guarantees the C++ struct layout matches what the Translator emits
@@ -134,5 +149,10 @@ static_assert(offsetof(CpuStateFrame, ymm_hi) == 400,
 static_assert(sizeof(XmmReg) == 16, "XmmReg is 128 bits");
 static_assert(alignof(XmmReg) == 16, "XmmReg is naturally aligned");
 static_assert(sizeof(X87Slot) == 16, "X87Slot is 16 bytes (10 used + 6 pad)");
+static_assert(offsetof(CpuStateFrame, x87) == 656,
+              "x87[] starts at 656 (ymm_hi[16] ends at 400+256=656)");
+static_assert(offsetof(CpuStateFrame, x87_status_control)
+              == CpuStateFrame::kX87StatusControlOffset,
+              "kX87StatusControlOffset must match offsetof(x87_status_control)");
 
 }  // namespace prisma::runtime

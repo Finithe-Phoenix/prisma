@@ -70,6 +70,7 @@ enum class BinOpKind : std::uint8_t {
                         //              writeback to rdx).
     UDiv,    SDiv,      // F2-BK-007 — quotient (rax for x86 DIV/IDIV).
     UMod,    SMod,      // F2-BK-007 — remainder (rdx for x86 DIV/IDIV).
+    Pdep,    Pext,      // BMI2 bit deposit/extract software-lowered ops.
 };
 
 enum class CondCode : std::uint8_t {
@@ -865,6 +866,29 @@ struct VecFpScalarFma {
 struct FpConstant { std::uint64_t bits; FpSize size; };
 struct FpBinOp    { FpBinOpKind op; Ref lhs; Ref rhs; FpSize size; };
 
+// F2-IR-007 — reduced-precision x87 stack primitives. The runtime model
+// treats every slot as a 64-bit double, sacrificing the extra 16 bits of
+// x87 extended precision for ARM64 fast-path use. Precision divergence
+// is documented in RFC 0013.
+//
+// `st_index` is a logical x87 stack index: 0 = ST(0), 1 = ST(1), etc.
+// The lowerer maps it to the physical frame slot `(TOS + st_index) mod 8`.
+struct X87Load  { std::uint8_t st_index; };
+struct X87Store { std::uint8_t st_index; Ref value; };
+
+// Push a 64-bit value (FP bits) onto the x87 stack.
+//
+//   TOS = (TOS - 1) mod 8
+//   ST(0) <- value (low 64 bits of slot)
+struct X87Push { Ref value; };
+
+// Pop the top of the x87 stack. Result Ref is the I64-typed FP bits read
+// from ST(0); TOS post-increments modulo 8.
+//
+//   value = ST(0).lo
+//   TOS = (TOS + 1) mod 8
+struct X87Pop {};
+
 // ---- InlineAsm escape hatch (F1-IR-013) ------------------------------
 //
 // Last resort for guest instructions our decoder + lowerer can't handle
@@ -939,7 +963,8 @@ using Op = std::variant<
     Crc32c,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
-    RepStos, RepMovs
+    RepStos, RepMovs,
+    X87Load, X87Store, X87Push, X87Pop
 >;
 
 // ---------------------------------------------------------------------------
@@ -1072,6 +1097,10 @@ bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;
 bool operator==(const VecFpScalarFma& a, const VecFpScalarFma& b) noexcept;
 bool operator==(const RepStos&       a, const RepStos&       b) noexcept;
 bool operator==(const RepMovs&       a, const RepMovs&       b) noexcept;
+bool operator==(const X87Load&       a, const X87Load&       b) noexcept;
+bool operator==(const X87Store&      a, const X87Store&      b) noexcept;
+bool operator==(const X87Push&       a, const X87Push&       b) noexcept;
+bool operator==(const X87Pop&,         const X87Pop&)          noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 

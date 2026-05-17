@@ -49,6 +49,7 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::VecAes>) return true;
         else if constexpr (std::is_same_v<T, ir::Bswap>) return true;
         else if constexpr (std::is_same_v<T, ir::Crc32c>) return true;
+        else if constexpr (std::is_same_v<T, ir::X87Load>) return true;
         else if constexpr (std::is_same_v<T, ir::JumpReg>) return false;
         // Everything else is impure: StoreReg, StoreMem*, LoadMemTSO,
         // Jump, JumpReg, CondJump, Return, CmpFlags (sets implicit flags),
@@ -90,6 +91,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::Jump>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
+            into.insert(x.target);
+        } else if constexpr (std::is_same_v<T, ir::CallReg>) {
             into.insert(x.target);
         } else if constexpr (std::is_same_v<T, ir::CondJump>) {
             into.insert(x.cond);
@@ -181,6 +184,14 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::Crc32c>) {
             into.insert(x.crc); into.insert(x.data);
+        } else if constexpr (std::is_same_v<T, ir::X87Load>) {
+            (void)x;
+        } else if constexpr (std::is_same_v<T, ir::X87Store>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::X87Push>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::X87Pop>) {
+            (void)x;
         }
         // F2-PS-002: pull flag-related and AVX-256/FMA operand refs
         // through the live-set so DCE can correctly see what's used.

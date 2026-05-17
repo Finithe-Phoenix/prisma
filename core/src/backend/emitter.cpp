@@ -1328,6 +1328,95 @@ void Emitter::bswap(arm64::Reg rd, arm64::Reg rn, ir::OpSize size) {
     }
 }
 
+void Emitter::x87_load(arm64::Reg state_ptr, arm64::Reg dst,
+                       arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                       std::int32_t array_offset, std::int32_t tos_byte_offset,
+                       std::uint8_t st_index) {
+    // Load logical ST(i): physical slot = (TOS + i) mod 8.
+    impl_->masm.Ldrb(to_vixl_w(scratch_tos),
+                     vixl_aa::MemOperand(to_vixl_x(state_ptr), tos_byte_offset));
+    if (st_index != 0u) {
+        impl_->masm.Add(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos),
+                        static_cast<unsigned>(st_index));
+        impl_->masm.And(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos), 0x7);
+    }
+    impl_->masm.Lsl(to_vixl_x(scratch_slot), to_vixl_x(scratch_tos), 4);
+    impl_->masm.Add(to_vixl_x(scratch_slot), to_vixl_x(state_ptr),
+                    to_vixl_x(scratch_slot));
+    impl_->masm.Ldr(to_vixl_x(dst),
+                    vixl_aa::MemOperand(to_vixl_x(scratch_slot), array_offset));
+}
+
+void Emitter::x87_store(arm64::Reg state_ptr, arm64::Reg value,
+                        arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                        std::int32_t array_offset, std::int32_t tos_byte_offset,
+                        std::uint8_t st_index) {
+    // Store logical ST(i): physical slot = (TOS + i) mod 8.
+    impl_->masm.Ldrb(to_vixl_w(scratch_tos),
+                     vixl_aa::MemOperand(to_vixl_x(state_ptr), tos_byte_offset));
+    if (st_index != 0u) {
+        impl_->masm.Add(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos),
+                        static_cast<unsigned>(st_index));
+        impl_->masm.And(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos), 0x7);
+    }
+    impl_->masm.Lsl(to_vixl_x(scratch_slot), to_vixl_x(scratch_tos), 4);
+    impl_->masm.Add(to_vixl_x(scratch_slot), to_vixl_x(state_ptr),
+                    to_vixl_x(scratch_slot));
+    impl_->masm.Str(to_vixl_x(value),
+                    vixl_aa::MemOperand(to_vixl_x(scratch_slot), array_offset));
+}
+
+void Emitter::x87_push(arm64::Reg state_ptr, arm64::Reg value,
+                       arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                       std::int32_t array_offset, std::int32_t tos_byte_offset) {
+    // F2-IR-007. Push `value` (I64 FP bits) onto the x87 stack. TOS is
+    // a 3-bit counter modeled as a u8 at `[state_ptr, tos_byte_offset]`.
+    //
+    //   ldrb w_tos, [state_ptr, tos_byte_offset]
+    //   sub  x_tos, x_tos, #1                ; decrement (wraps under mod 8)
+    //   and  x_tos, x_tos, #7                ; modulo 8
+    //   strb w_tos, [state_ptr, tos_byte_offset]
+    //   lsl  x_slot, x_tos, #4              ; * sizeof(X87Slot) = 16
+    //   add  x_slot, state_ptr, x_slot
+    //   str  x_value, [x_slot, array_offset]
+    impl_->masm.Ldrb(to_vixl_w(scratch_tos),
+                     vixl_aa::MemOperand(to_vixl_x(state_ptr), tos_byte_offset));
+    impl_->masm.Sub(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos), 1);
+    impl_->masm.And(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos), 0x7);
+    impl_->masm.Strb(to_vixl_w(scratch_tos),
+                     vixl_aa::MemOperand(to_vixl_x(state_ptr), tos_byte_offset));
+    impl_->masm.Lsl(to_vixl_x(scratch_slot), to_vixl_x(scratch_tos), 4);
+    impl_->masm.Add(to_vixl_x(scratch_slot), to_vixl_x(state_ptr),
+                    to_vixl_x(scratch_slot));
+    impl_->masm.Str(to_vixl_x(value),
+                    vixl_aa::MemOperand(to_vixl_x(scratch_slot), array_offset));
+}
+
+void Emitter::x87_pop(arm64::Reg state_ptr, arm64::Reg dst,
+                      arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                      std::int32_t array_offset, std::int32_t tos_byte_offset) {
+    // F2-IR-008. Pop the top of the x87 stack into `dst` (I64 FP bits).
+    //
+    //   ldrb w_tos, [state_ptr, tos_byte_offset]
+    //   lsl  x_slot, x_tos, #4
+    //   add  x_slot, state_ptr, x_slot
+    //   ldr  x_dst, [x_slot, array_offset]
+    //   add  x_tos, x_tos, #1
+    //   and  x_tos, x_tos, #7
+    //   strb w_tos, [state_ptr, tos_byte_offset]
+    impl_->masm.Ldrb(to_vixl_w(scratch_tos),
+                     vixl_aa::MemOperand(to_vixl_x(state_ptr), tos_byte_offset));
+    impl_->masm.Lsl(to_vixl_x(scratch_slot), to_vixl_x(scratch_tos), 4);
+    impl_->masm.Add(to_vixl_x(scratch_slot), to_vixl_x(state_ptr),
+                    to_vixl_x(scratch_slot));
+    impl_->masm.Ldr(to_vixl_x(dst),
+                    vixl_aa::MemOperand(to_vixl_x(scratch_slot), array_offset));
+    impl_->masm.Add(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos), 1);
+    impl_->masm.And(to_vixl_x(scratch_tos), to_vixl_x(scratch_tos), 0x7);
+    impl_->masm.Strb(to_vixl_w(scratch_tos),
+                     vixl_aa::MemOperand(to_vixl_x(state_ptr), tos_byte_offset));
+}
+
 void Emitter::vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind) {
     // V31 (= kInternalFpScratchV) is used as the working scratch.
     const vixl_aa::VRegister v_tmp(kInternalFpScratchV, vixl_aa::kFormat16B);

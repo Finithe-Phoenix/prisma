@@ -13,21 +13,21 @@
 //          (0 is the halt sentinel, CpuStateFrame::kHaltSentinel.)
 //        * IR::JumpRel     → mov x0, <target> ; ret
 //        * IR::CondJumpRel → csel + ret (x0 is taken or fallthrough).
+//        * IR::Call*       → push guest return PC, x0 = callee.
+//        * IR::RetAdjusted → pop guest return PC, x0 = popped target.
 //
 //   2. The dispatcher invokes the block via a function pointer cast of
 //      the code_entry; `blr` (AArch64 calling convention) sets the link
 //      register, the block's `ret` returns, and the function-call return
 //      value is whatever was in x0. That's the next guest PC.
 //
-//   3. Cross-block guest state persistence is NOT YET implemented. The
-//      dispatcher holds a CpuStateFrame for future use; the Lowerer will
-//      gain awareness of a state pointer in a follow-up so that reads
-//      and writes of pinned host registers land in the frame. Until
-//      then, tests that exercise multi-block chains must not rely on
-//      guest GPR values surviving across block boundaries.
+//   3. Cross-block guest state persists through CpuStateFrame. The
+//      translator prologue loads pinned guest registers from the frame;
+//      its epilogue writes them back before returning to the dispatcher.
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -59,6 +59,12 @@ struct DispatchStats {
     std::size_t blocks_executed{0};
     std::size_t steps_taken{0};
     std::size_t unique_pcs_seen{0};
+    std::size_t ras_pushes{0};
+    std::size_t ras_pops{0};
+    std::size_t ras_hits{0};
+    std::size_t ras_misses{0};
+    std::size_t ras_overflows{0};
+    std::size_t ras_underflows{0};
 };
 
 struct DispatchResult {
@@ -109,6 +115,9 @@ private:
     GuestMemoryReader reader_;
     std::unordered_set<std::uint64_t> halt_pcs_;
     CpuStateFrame state_;
+    static constexpr std::size_t kReturnStackSlots = 32;
+    std::array<std::uint64_t, kReturnStackSlots> return_stack_{};
+    std::size_t return_stack_depth_{0};
     static constexpr std::size_t kHaltReturnStackSlots = 16;
     alignas(8) std::uint64_t halt_return_stack_[kHaltReturnStackSlots]{};
 };

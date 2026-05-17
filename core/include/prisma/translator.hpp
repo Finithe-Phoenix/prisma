@@ -46,6 +46,19 @@ enum class TranslateError {
     JitAllocFailed,      // could not allocate a JitBuffer.
 };
 
+enum class BlockExitKind {
+    None,
+    Return,
+    JumpRel,
+    JumpReg,
+    CondJumpRel,
+    CallRel,
+    CallReg,
+    RetAdjusted,
+    RepStos,
+    RepMovs,
+};
+
 struct TranslatedBlock {
     // Pointer to the executable code. Owned by the Translator; invalid
     // after Translator destruction or after cache eviction of the key.
@@ -57,6 +70,10 @@ struct TranslatedBlock {
     std::size_t guest_size{0};
     // True iff the result came from the cache (not freshly translated).
     bool from_cache{false};
+    // Terminator metadata used by runtime predictors/linkers. For
+    // CallRel/CallReg, `return_guest_pc` is the predicted return site.
+    BlockExitKind exit_kind{BlockExitKind::None};
+    std::uint64_t return_guest_pc{0};
 };
 
 using TranslateResult = std::variant<TranslatedBlock, TranslateError>;
@@ -94,14 +111,11 @@ public:
     // function pipeline is skipped entirely.
     void set_function_pipeline(passes::FunctionPassManager pm);
 
-    // Enable real CALL / RET semantics in the decoder. Off by default
-    // for back-compat with the e2e test corpus that relies on RET
-    // halting the dispatcher (via the legacy `Return{}` IR op +
-    // halt-sentinel lowering). When on:
-    //   CALL rel32 → push next_pc onto guest stack + JumpRel(target)
-    //   RET (C3)   → load [RSP] → r_target; RSP += 8; JumpReg(r_target)
-    // New tests / real programs should set this to `true`. The
-    // eventual migration goal is to flip the default.
+    // Enable real CALL / RET semantics in the decoder. On by default:
+    //   CALL rel32 → CallRel(target, next_pc)
+    //   CALL r/m64 → CallReg(target, next_pc)
+    //   RET (C3)   → RetAdjusted(0)
+    // Legacy decoder-shape tests can still opt out explicitly.
     void set_real_call_ret(bool enabled) noexcept;
     [[nodiscard]] bool real_call_ret() const noexcept { return real_call_ret_; }
 
@@ -129,6 +143,8 @@ private:
         std::size_t code_size{0};
         std::size_t guest_size{0};
         std::uint64_t content_hash{0};
+        BlockExitKind exit_kind{BlockExitKind::None};
+        std::uint64_t return_guest_pc{0};
     };
 
     passes::PassManager           pipeline_;

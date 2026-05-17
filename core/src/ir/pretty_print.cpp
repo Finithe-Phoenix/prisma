@@ -48,6 +48,7 @@ constexpr std::string_view binop_name(BinOpKind k) noexcept {
         case BinOpKind::UMulHi: return "umulhi"; case BinOpKind::SMulHi: return "smulhi";
         case BinOpKind::UDiv:   return "udiv";   case BinOpKind::SDiv:   return "sdiv";
         case BinOpKind::UMod:   return "umod";   case BinOpKind::SMod:   return "smod";
+        case BinOpKind::Pdep:   return "pdep";   case BinOpKind::Pext:   return "pext";
     }
     return "?";
 }
@@ -251,6 +252,17 @@ std::string pretty_print(const Op& op) {
                << (x.reverse ? ".rev" : "")
                << " (pc=" << x.pc_of_rep
                << " -> " << x.pc_after_rep << ")";
+        } else if constexpr (std::is_same_v<T, X87Load>) {
+            os << "x87_load st(" << static_cast<unsigned>(x.st_index) << ")";
+        } else if constexpr (std::is_same_v<T, X87Store>) {
+            os << "x87_store st(" << static_cast<unsigned>(x.st_index) << "), ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, X87Push>) {
+            os << "x87_push ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, X87Pop>) {
+            (void)x;
+            os << "x87_pop";
         } else if constexpr (std::is_same_v<T, VecBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

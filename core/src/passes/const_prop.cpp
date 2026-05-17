@@ -27,6 +27,30 @@ namespace prisma::passes {
 
 namespace {
 
+std::uint64_t bit_deposit(std::uint64_t src, std::uint64_t mask) noexcept {
+    std::uint64_t out = 0;
+    std::uint64_t bit = 1;
+    while (mask != 0) {
+        const std::uint64_t low = mask & (0 - mask);
+        if ((src & bit) != 0) out |= low;
+        mask &= mask - 1;
+        bit <<= 1;
+    }
+    return out;
+}
+
+std::uint64_t bit_extract(std::uint64_t src, std::uint64_t mask) noexcept {
+    std::uint64_t out = 0;
+    std::uint64_t bit = 1;
+    while (mask != 0) {
+        const std::uint64_t low = mask & (0 - mask);
+        if ((src & low) != 0) out |= bit;
+        mask &= mask - 1;
+        bit <<= 1;
+    }
+    return out;
+}
+
 // Exact mirror of the Lean `evalBinOp` definition, with size-masking
 // applied here so the producer of the Constant sees a canonical value.
 std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noexcept {
@@ -103,6 +127,8 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
             }
             return static_cast<std::uint64_t>(sa % sb);
         }
+        case ir::BinOpKind::Pdep: return bit_deposit(a, b);
+        case ir::BinOpKind::Pext: return bit_extract(a, b);
     }
     return 0;  // unreachable
 }

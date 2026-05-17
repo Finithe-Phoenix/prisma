@@ -154,6 +154,18 @@ bool operator==(const RepMovs& a, const RepMovs& b) noexcept {
         && a.pc_of_rep == b.pc_of_rep
         && a.pc_after_rep == b.pc_after_rep;
 }
+bool operator==(const X87Load& a, const X87Load& b) noexcept {
+    return a.st_index == b.st_index;
+}
+bool operator==(const X87Store& a, const X87Store& b) noexcept {
+    return a.st_index == b.st_index && a.value == b.value;
+}
+bool operator==(const X87Push& a, const X87Push& b) noexcept {
+    return a.value == b.value;
+}
+bool operator==(const X87Pop&, const X87Pop&) noexcept {
+    return true;
+}
 bool operator==(const VecFpBinOp& a, const VecFpBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }

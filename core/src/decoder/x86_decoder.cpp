@@ -1982,25 +1982,10 @@ DispatchDecodeResult decode_group5_dispatch(
         }
         if (m.reg == 2u && real_call_ret) {
             const std::uint64_t return_pc = instruction_guest_pc + cursor;
-            const ir::Ref ref_rsp     = next_ref++;
-            const ir::Ref ref_eight   = next_ref++;
-            const ir::Ref ref_rsp_new = next_ref++;
-            const ir::Ref ref_retaddr = next_ref++;
-            d.stmts.push_back({ref_rsp,
-                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
-            d.stmts.push_back({ref_eight,
-                ir::Constant{8ULL, ir::OpSize::I64}});
-            d.stmts.push_back({ref_rsp_new,
-                ir::BinOp{ir::BinOpKind::Sub, ref_rsp, ref_eight,
-                          ir::OpSize::I64}});
-            d.stmts.push_back({std::nullopt,
-                ir::StoreReg{ir::Gpr::Rsp, ref_rsp_new, ir::OpSize::I64}});
-            d.stmts.push_back({ref_retaddr,
-                ir::Constant{return_pc, ir::OpSize::I64}});
-            d.stmts.push_back({std::nullopt,
-                ir::StoreMem{ref_rsp_new, ref_retaddr, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt, ir::CallReg{ref_target, return_pc}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::JumpReg{ref_target}});
         }
-        d.stmts.push_back({std::nullopt, ir::JumpReg{ref_target}});
         d.bytes_consumed = cursor;
         return d;
     }
@@ -2322,6 +2307,188 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
     }
 
     return std::nullopt;
+}
+
+ir::Ref emit_bits_to_fp64(Decoded& d, ir::Ref bits, ir::OpSize bit_size,
+                          ir::Ref& next_ref) {
+    const ir::Ref fp = next_ref++;
+    d.stmts.push_back({fp, ir::XmmFromGpr{bits, bit_size}});
+    if (bit_size == ir::OpSize::I64) return fp;
+
+    const ir::Ref widened = next_ref++;
+    d.stmts.push_back({widened,
+        ir::FpCvtScalar{fp, fp, ir::FpSize::F32, ir::FpSize::F64}});
+    return widened;
+}
+
+ir::Ref emit_fp64_to_bits(Decoded& d, ir::Ref fp, ir::OpSize bit_size,
+                          ir::Ref& next_ref) {
+    if (bit_size == ir::OpSize::I64) {
+        const ir::Ref bits = next_ref++;
+        d.stmts.push_back({bits, ir::GprFromXmm{fp, ir::OpSize::I64}});
+        return bits;
+    }
+
+    const ir::Ref narrowed = next_ref++;
+    d.stmts.push_back({narrowed,
+        ir::FpCvtScalar{fp, fp, ir::FpSize::F64, ir::FpSize::F32}});
+    const ir::Ref bits = next_ref++;
+    d.stmts.push_back({bits, ir::GprFromXmm{narrowed, ir::OpSize::I32}});
+    return bits;
+}
+
+ir::Ref emit_x87_load_fp64(Decoded& d, std::uint8_t st_index,
+                           ir::Ref& next_ref) {
+    const ir::Ref bits = next_ref++;
+    d.stmts.push_back({bits, ir::X87Load{st_index}});
+    return emit_bits_to_fp64(d, bits, ir::OpSize::I64, next_ref);
+}
+
+void emit_x87_store_fp64(Decoded& d, std::uint8_t st_index, ir::Ref fp,
+                         ir::Ref& next_ref) {
+    const ir::Ref bits = emit_fp64_to_bits(d, fp, ir::OpSize::I64, next_ref);
+    d.stmts.push_back({std::nullopt, ir::X87Store{st_index, bits}});
+}
+
+void emit_x87_binary_to_st0(Decoded& d, ir::FpBinOpKind op,
+                            ir::Ref lhs_fp, ir::Ref rhs_fp,
+                            ir::Ref& next_ref, bool reverse = false) {
+    const ir::Ref op_lhs = reverse ? rhs_fp : lhs_fp;
+    const ir::Ref op_rhs = reverse ? lhs_fp : rhs_fp;
+    const ir::Ref result_fp = next_ref++;
+    d.stmts.push_back({result_fp,
+        ir::FpBinOp{op, op_lhs, op_rhs, ir::FpSize::F64}});
+    emit_x87_store_fp64(d, 0u, result_fp, next_ref);
+}
+
+std::optional<ir::FpBinOpKind> x87_arith_kind(unsigned subop) noexcept {
+    switch (subop) {
+        case 0u: return ir::FpBinOpKind::Add;
+        case 1u: return ir::FpBinOpKind::Mul;
+        case 4u:
+        case 5u: return ir::FpBinOpKind::Sub;
+        case 6u:
+        case 7u: return ir::FpBinOpKind::Div;
+        default: return std::nullopt;
+    }
+}
+
+std::variant<Decoded, DecodeError> decode_x87(
+    Byte opcode,
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    const RexPrefix& rex,
+    bool has_operand_size_override,
+    bool has_address_size_override,
+    bool has_f2,
+    bool has_f3,
+    bool has_lock,
+    std::uint64_t instruction_guest_pc,
+    ir::Ref& next_ref) {
+    if (rex.present || has_operand_size_override || has_f2 || has_f3 || has_lock) {
+        return DecodeError::UnsupportedEncoding;
+    }
+
+    auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+
+    Decoded d;
+    const bool mem = m.mod != 0b11u;
+    if (mem) {
+        const bool is_f32 = opcode == 0xD8u || opcode == 0xD9u;
+        const bool is_f64 = opcode == 0xDCu || opcode == 0xDDu;
+        if (!is_f32 && !is_f64) return DecodeError::UnsupportedEncoding;
+        const ir::OpSize mem_size = is_f32 ? ir::OpSize::I32 : ir::OpSize::I64;
+        const ir::Ref addr = emit_address(d.stmts, m, next_ref,
+                                          instruction_guest_pc + cursor);
+
+        if ((opcode == 0xD9u || opcode == 0xDDu) && m.reg == 0u) {
+            // FLD m32fp/m64fp: convert to the reduced 64-bit stack form.
+            const ir::Ref bits = next_ref++;
+            d.stmts.push_back({bits, ir::LoadMemTSO{addr, mem_size}});
+            const ir::Ref fp64 = emit_bits_to_fp64(d, bits, mem_size, next_ref);
+            const ir::Ref stack_bits =
+                emit_fp64_to_bits(d, fp64, ir::OpSize::I64, next_ref);
+            d.stmts.push_back({std::nullopt, ir::X87Push{stack_bits}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        if ((opcode == 0xD9u || opcode == 0xDDu) &&
+            (m.reg == 2u || m.reg == 3u)) {
+            // FST/FSTP m32fp/m64fp.
+            const ir::Ref stack_bits = next_ref++;
+            if (m.reg == 2u) {
+                d.stmts.push_back({stack_bits, ir::X87Load{0u}});
+            } else {
+                d.stmts.push_back({stack_bits, ir::X87Pop{}});
+            }
+            const ir::Ref fp64 = emit_bits_to_fp64(d, stack_bits,
+                                                   ir::OpSize::I64, next_ref);
+            const ir::Ref out_bits = emit_fp64_to_bits(d, fp64, mem_size, next_ref);
+            d.stmts.push_back({std::nullopt, ir::StoreMemTSO{addr, out_bits, mem_size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        if (auto kind = x87_arith_kind(m.reg);
+            (opcode == 0xD8u || opcode == 0xDCu) && kind.has_value()) {
+            // FADD/FMUL/FSUB/FSUBR/FDIV/FDIVR m32fp/m64fp update ST(0).
+            const ir::Ref st0_fp = emit_x87_load_fp64(d, 0u, next_ref);
+            const ir::Ref bits = next_ref++;
+            d.stmts.push_back({bits, ir::LoadMemTSO{addr, mem_size}});
+            const ir::Ref rhs_fp = emit_bits_to_fp64(d, bits, mem_size, next_ref);
+            const bool reverse = m.reg == 5u || m.reg == 7u;
+            emit_x87_binary_to_st0(d, *kind, st0_fp, rhs_fp, next_ref, reverse);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        return DecodeError::UnsupportedEncoding;
+    }
+
+    const std::uint8_t st = static_cast<std::uint8_t>(
+        static_cast<unsigned>(m.base) & 0x7u);
+
+    if (opcode == 0xD9u && m.reg == 0u) {
+        // FLD ST(i).
+        const ir::Ref bits = next_ref++;
+        d.stmts.push_back({bits, ir::X87Load{st}});
+        d.stmts.push_back({std::nullopt, ir::X87Push{bits}});
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    if (opcode == 0xD9u && m.reg == 1u) {
+        // FXCH ST(i). FXCH ST(0) is a real no-op.
+        if (st != 0u) {
+            const ir::Ref st0 = next_ref++;
+            const ir::Ref sti = next_ref++;
+            d.stmts.push_back({st0, ir::X87Load{0u}});
+            d.stmts.push_back({sti, ir::X87Load{st}});
+            d.stmts.push_back({std::nullopt, ir::X87Store{0u, sti}});
+            d.stmts.push_back({std::nullopt, ir::X87Store{st, st0}});
+        }
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    if (opcode == 0xD8u) {
+        if (auto kind = x87_arith_kind(m.reg); kind.has_value()) {
+            // FADD/FMUL/FSUB/FSUBR/FDIV/FDIVR ST(0), ST(i).
+            const ir::Ref st0_fp = emit_x87_load_fp64(d, 0u, next_ref);
+            const ir::Ref sti_fp = emit_x87_load_fp64(d, st, next_ref);
+            const bool reverse = m.reg == 5u || m.reg == 7u;
+            emit_x87_binary_to_st0(d, *kind, st0_fp, sti_fp, next_ref, reverse);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+    }
+
+    return DecodeError::UnsupportedEncoding;
 }
 
 }  // namespace
@@ -2728,6 +2895,16 @@ std::variant<Decoded, DecodeError> decode_one(
         return DecodeError::UnsupportedEncoding;
     }
 
+    // --- x87 reduced-precision subset (D8..DF) ----------------------------
+    if (opcode >= 0xD8u && opcode <= 0xDFu) {
+        return decode_x87(opcode, bytes, cursor, rex,
+                          has_operand_size_override,
+                          has_address_size_override,
+                          has_f2, has_f3, has_lock,
+                          instruction_guest_pc,
+                          next_ref);
+    }
+
     // --- INT3 (0xCC) -------------------------------------------------------
     if (opcode == 0xCCu) {
         if (rex.present || has_operand_size_override || has_address_size_override) {
@@ -2781,23 +2958,7 @@ std::variant<Decoded, DecodeError> decode_one(
         if (rex.present) return DecodeError::UnsupportedEncoding;
         Decoded d;
         if (real_call_ret) {
-            // Real RET: target ← [RSP], RSP += 8, jump target.
-            const ir::Ref r_rsp     = next_ref++;
-            const ir::Ref r_target  = next_ref++;
-            const ir::Ref r_eight   = next_ref++;
-            const ir::Ref r_rsp_new = next_ref++;
-            d.stmts.push_back({r_rsp,
-                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
-            d.stmts.push_back({r_target,
-                ir::LoadMem{r_rsp, ir::OpSize::I64}});
-            d.stmts.push_back({r_eight,
-                ir::Constant{8ULL, ir::OpSize::I64}});
-            d.stmts.push_back({r_rsp_new,
-                ir::BinOp{ir::BinOpKind::Add, r_rsp, r_eight,
-                          ir::OpSize::I64}});
-            d.stmts.push_back({std::nullopt,
-                ir::StoreReg{ir::Gpr::Rsp, r_rsp_new, ir::OpSize::I64}});
-            d.stmts.push_back({std::nullopt, ir::JumpReg{r_target}});
+            d.stmts.push_back({std::nullopt, ir::RetAdjusted{0u}});
         } else {
             d.stmts.push_back({std::nullopt, ir::Return{}});
         }
@@ -2827,9 +2988,9 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- RET imm16 (0xC2) ---------------------------------------------------
     //
-    // MVP placeholder: performs `RSP += imm16 + 8`, then emits Return.
-    // Correct pop-into-return is not modelled yet; lowering still treats Return
-    // as the block terminator with x0 = halt sentinel.
+    // Legacy mode performs `RSP += imm16 + 8`, then emits Return.
+    // Real-call mode uses the RetAdjusted terminator; lowering pops the
+    // return address and then adds the extra imm16 bytes.
     if (opcode == 0xC2u) {
         if (has_operand_size_override || has_address_size_override) return DecodeError::UnsupportedEncoding;
         if (rex.present) return DecodeError::UnsupportedEncoding;
@@ -2837,30 +2998,23 @@ std::variant<Decoded, DecodeError> decode_one(
         if (std::holds_alternative<DecodeError>(imm)) {
             return std::get<DecodeError>(imm);
         }
-        const std::uint64_t pop_bytes = std::get<std::uint64_t>(imm) + 8u;
+        const std::uint64_t imm16 = std::get<std::uint64_t>(imm);
+        const std::uint64_t pop_bytes = imm16 + 8u;
         Decoded d;
-        const ir::Ref ref_rsp = next_ref++;
-        d.stmts.push_back({ref_rsp,
-            ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
-        std::optional<ir::Ref> ref_target;
         if (real_call_ret) {
-            // Read the return address BEFORE we adjust RSP, since the
-            // adjustment moves the stack pointer past the saved PC.
-            ref_target = next_ref++;
-            d.stmts.push_back({*ref_target,
-                ir::LoadMem{ref_rsp, ir::OpSize::I64}});
-        }
-        const ir::Ref ref_pop     = next_ref++;
-        const ir::Ref ref_new_rsp = next_ref++;
-        d.stmts.push_back({ref_pop,
-            ir::Constant{pop_bytes, ir::OpSize::I64}});
-        d.stmts.push_back({ref_new_rsp,
-            ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_pop, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt,
-            ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
-        if (real_call_ret) {
-            d.stmts.push_back({std::nullopt, ir::JumpReg{*ref_target}});
+            d.stmts.push_back({std::nullopt, ir::RetAdjusted{imm16}});
         } else {
+            const ir::Ref ref_rsp = next_ref++;
+            d.stmts.push_back({ref_rsp,
+                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
+            const ir::Ref ref_pop     = next_ref++;
+            const ir::Ref ref_new_rsp = next_ref++;
+            d.stmts.push_back({ref_pop,
+                ir::Constant{pop_bytes, ir::OpSize::I64}});
+            d.stmts.push_back({ref_new_rsp,
+                ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_pop, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
             d.stmts.push_back({std::nullopt, ir::Return{}});
         }
         d.bytes_consumed = cursor;
@@ -2903,13 +3057,9 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- CALL rel32 (E8 cd) -------------------------------------------------
     //
-    // MVP placeholder: treat CALL as an absolute direct jump. Proper return-address
-    // handling is deferred to `F1-IR-008` and runtime stack-call support.
-    //
-    // With `real_call_ret`: emit the full push-then-jump sequence
-    //   RSP -= 8
-    //   [RSP] = (instruction_guest_pc + cursor)         ; return address
-    //   JumpRel target
+    // Legacy mode treats CALL as an absolute direct jump. With
+    // `real_call_ret`, emit the first-class CallRel terminator; lowering
+    // performs the guest-stack push and returns the callee target PC.
     if (opcode == 0xE8u) {
         if (rex.present) return DecodeError::UnsupportedEncoding;
         if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
@@ -2923,25 +3073,10 @@ std::variant<Decoded, DecodeError> decode_one(
         const std::uint64_t return_pc = instruction_guest_pc + cursor;
         Decoded d;
         if (real_call_ret) {
-            const ir::Ref r_rsp     = next_ref++;
-            const ir::Ref r_eight   = next_ref++;
-            const ir::Ref r_rsp_new = next_ref++;
-            const ir::Ref r_retaddr = next_ref++;
-            d.stmts.push_back({r_rsp,
-                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
-            d.stmts.push_back({r_eight,
-                ir::Constant{8ULL, ir::OpSize::I64}});
-            d.stmts.push_back({r_rsp_new,
-                ir::BinOp{ir::BinOpKind::Sub, r_rsp, r_eight,
-                          ir::OpSize::I64}});
-            d.stmts.push_back({std::nullopt,
-                ir::StoreReg{ir::Gpr::Rsp, r_rsp_new, ir::OpSize::I64}});
-            d.stmts.push_back({r_retaddr,
-                ir::Constant{return_pc, ir::OpSize::I64}});
-            d.stmts.push_back({std::nullopt,
-                ir::StoreMem{r_rsp_new, r_retaddr, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt, ir::CallRel{target, return_pc}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
         }
-        d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
         d.bytes_consumed = cursor;
         return d;
     }
@@ -4037,6 +4172,49 @@ std::variant<Decoded, DecodeError> decode_one(
                            r_masked_src, r_src, size}});
             d.stmts.push_back({std::nullopt,
                 ir::StoreReg{reg_at(m.reg), r_result, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // BMI2 PDEP/PEXT (0F 38 F5, pp=F2/F3):
+        //   PDEP: dst = deposit(src=vex.vvvv, mask=ModRM.rm)
+        //   PEXT: dst = extract(src=vex.vvvv, mask=ModRM.rm)
+        // Operand size is VEX.W-selected I32/I64. Both preserve flags.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && (has_f2 || has_f3) &&
+            cursor < bytes.size() && bytes[cursor] == 0xF5u) {
+            if (has_f2 == has_f3) return DecodeError::UnsupportedEncoding;
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+
+            Decoded d;
+            const ir::Ref r_src  = next_ref++;
+            const ir::Ref r_mask = next_ref++;
+            const ir::Ref r_res  = next_ref++;
+            d.stmts.push_back({r_src,
+                ir::LoadReg{reg_at(vex.vvvv), size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_mask,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_mask, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_res,
+                ir::BinOp{has_f2 ? ir::BinOpKind::Pdep : ir::BinOpKind::Pext,
+                          r_src, r_mask, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_res, size}});
             d.bytes_consumed = cursor;
             return d;
         }

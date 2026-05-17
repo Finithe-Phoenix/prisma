@@ -30,6 +30,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                                std::size_t max_steps) {
     DispatchStats stats;
     std::unordered_set<std::uint64_t> seen_pcs;
+    return_stack_depth_ = 0;
 
     std::uint64_t pc = entry_pc;
     state_.guest_pc = pc;
@@ -65,6 +66,30 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
         using Fn = std::uint64_t (*)(CpuStateFrame*);
         Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(block.code_entry));
         const std::uint64_t next_pc = fn(&state_);
+
+        if (block.exit_kind == translator::BlockExitKind::CallRel
+            || block.exit_kind == translator::BlockExitKind::CallReg) {
+            ++stats.ras_pushes;
+            if (return_stack_depth_ == return_stack_.size()) {
+                return_stack_[return_stack_.size() - 1] = block.return_guest_pc;
+                ++stats.ras_overflows;
+            } else {
+                return_stack_[return_stack_depth_++] = block.return_guest_pc;
+            }
+        } else if (block.exit_kind == translator::BlockExitKind::RetAdjusted) {
+            ++stats.ras_pops;
+            if (return_stack_depth_ == 0) {
+                ++stats.ras_underflows;
+            } else {
+                const std::uint64_t predicted =
+                    return_stack_[--return_stack_depth_];
+                if (predicted == next_pc) {
+                    ++stats.ras_hits;
+                } else {
+                    ++stats.ras_misses;
+                }
+            }
+        }
 
         ++stats.blocks_executed;
         ++stats.steps_taken;

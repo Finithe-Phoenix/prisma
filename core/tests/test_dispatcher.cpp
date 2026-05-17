@@ -86,6 +86,34 @@ TEST_CASE("Dispatcher: JMP chain reaches a RET and halts",
     REQUIRE(r.stats.blocks_executed == 3);  // JMP, JMP, RET
 }
 
+TEST_CASE("Dispatcher: return-stack predictor hits on direct CALL/RET",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) { SUCCEED("skipped"); return; }
+
+    // 0x4100: E8 01 00 00 00  call 0x4106
+    // 0x4105: C3              outer RET pops the halt sentinel
+    // 0x4106: C3              callee RET returns to 0x4105
+    GuestMemory mem;
+    mem.segments[0x4100] = {
+        0xE8, 0x01, 0x00, 0x00, 0x00,
+        0xC3,
+        0xC3,
+    };
+
+    translator::Translator t;
+    runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+    d.install_halt_return_stack();
+
+    auto r = d.run(0x4100, /*max_steps=*/10);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(r.stats.blocks_executed == 3);
+    REQUIRE(r.stats.ras_pushes == 1);
+    REQUIRE(r.stats.ras_pops == 2);
+    REQUIRE(r.stats.ras_hits == 1);
+    REQUIRE(r.stats.ras_misses == 0);
+    REQUIRE(r.stats.ras_underflows == 1);
+}
+
 TEST_CASE("Dispatcher: CMP + JE branches to the taken leg on equal operands",
           "[arm64-only]") {
     if constexpr (!is_arm64) { SUCCEED("skipped"); return; }

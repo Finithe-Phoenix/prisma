@@ -116,11 +116,15 @@ enum class OpKind : std::uint8_t {
     kVecAes             = 80,
     kBswap              = 81,
     kCrc32c             = 82,
+    kX87Load            = 83,
+    kX87Store           = 84,
+    kX87Push            = 85,
+    kX87Pop             = 86,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kCrc32c);
+constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kX87Pop);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -200,7 +204,7 @@ struct Cursor {
     return v <= static_cast<std::uint8_t>(SegmentReg::Gs);
 }
 [[nodiscard]] bool is_valid_binop(std::uint8_t v) noexcept {
-    return v <= static_cast<std::uint8_t>(BinOpKind::Rcr);
+    return v <= static_cast<std::uint8_t>(BinOpKind::Pext);
 }
 [[nodiscard]] bool is_valid_cc(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(CondCode::Pl);
@@ -320,6 +324,10 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecAes>)        return OpKind::kVecAes;
         else if constexpr (std::is_same_v<T, Bswap>)         return OpKind::kBswap;
         else if constexpr (std::is_same_v<T, Crc32c>)        return OpKind::kCrc32c;
+        else if constexpr (std::is_same_v<T, X87Load>)       return OpKind::kX87Load;
+        else if constexpr (std::is_same_v<T, X87Store>)      return OpKind::kX87Store;
+        else if constexpr (std::is_same_v<T, X87Push>)       return OpKind::kX87Push;
+        else if constexpr (std::is_same_v<T, X87Pop>)        return OpKind::kX87Pop;
     }, op);
 }
 
@@ -530,6 +538,17 @@ void write_payload(std::vector<std::uint8_t>& out, const RepMovs& x) {
     put_u64(out, x.pc_of_rep);
     put_u64(out, x.pc_after_rep);
 }
+void write_payload(std::vector<std::uint8_t>& out, const X87Load& x) {
+    put_u8(out, x.st_index);
+}
+void write_payload(std::vector<std::uint8_t>& out, const X87Store& x) {
+    put_u8(out, x.st_index);
+    put_u32(out, x.value);
+}
+void write_payload(std::vector<std::uint8_t>& out, const X87Push& x) {
+    put_u32(out, x.value);
+}
+void write_payload(std::vector<std::uint8_t>& /*out*/, const X87Pop&) {}
 void write_payload(std::vector<std::uint8_t>& out, const VecFpBinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
     put_u32(out, x.lhs);
@@ -1158,6 +1177,35 @@ DeserializeError read_payload_rep_movs(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_x87_load(Cursor& c, Stmt& s) {
+    if (!c.remaining(1)) return DeserializeError::Truncated;
+    const std::uint8_t st = c.take_u8();
+    if (st >= 8u) return DeserializeError::BadSize;
+    s.op = X87Load{st};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_x87_store(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4)) return DeserializeError::Truncated;
+    const std::uint8_t st = c.take_u8();
+    if (st >= 8u) return DeserializeError::BadSize;
+    const std::uint32_t v = c.take_u32();
+    s.op = X87Store{st, v};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_x87_push(Cursor& c, Stmt& s) {
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    const std::uint32_t v = c.take_u32();
+    s.op = X87Push{v};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_x87_pop(Cursor& /*c*/, Stmt& s) {
+    s.op = X87Pop{};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_binop(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  op   = c.take_u8();
@@ -1626,6 +1674,10 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecAes:      return read_payload_vec_aes(c, s);
         case OpKind::kBswap:       return read_payload_bswap(c, s);
         case OpKind::kCrc32c:      return read_payload_crc32c(c, s);
+        case OpKind::kX87Load:     return read_payload_x87_load(c, s);
+        case OpKind::kX87Store:    return read_payload_x87_store(c, s);
+        case OpKind::kX87Push:     return read_payload_x87_push(c, s);
+        case OpKind::kX87Pop:      return read_payload_x87_pop(c, s);
         case OpKind::kReserved:    break;
     }
     return DeserializeError::UnknownOpKind;

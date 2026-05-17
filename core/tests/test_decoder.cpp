@@ -2305,30 +2305,18 @@ TEST_CASE("decode SARX r32a, r/m32, r32b (C4 E2 6A F7 C1) — F2-IR-053") {
     REQUIRE(found);
 }
 
-// F2-IR-054 — real CALL/RET semantics, opt-in via decode_one's
-// `real_call_ret` flag. These tests check the IR *shape* the decoder
-// emits when the flag is on; runtime behaviour is exercised by
-// future e2e tests once the corpus is migrated.
-TEST_CASE("decode CALL rel32 with real_call_ret emits push + JumpRel") {
+// F2-IR-054/F2-BK-010 — real CALL/RET semantics via first-class
+// call/return terminators.
+TEST_CASE("decode CALL rel32 with real_call_ret emits CallRel") {
     ir::Ref r = 0;
     // E8 00 00 00 00 — call rel32 = 0 (target = instr_pc + 5).
     auto d = decode_ok_real_callret({0xE8, 0x00, 0x00, 0x00, 0x00}, r,
                                     /*pc=*/0x1000);
-    int load_rsp = 0, store_rsp = 0, store_mem = 0, jump_rel = 0;
-    for (const auto& s : d.stmts) {
-        if (std::holds_alternative<ir::LoadReg>(s.op)) {
-            if (std::get<ir::LoadReg>(s.op).reg == ir::Gpr::Rsp) ++load_rsp;
-        }
-        if (std::holds_alternative<ir::StoreReg>(s.op)) {
-            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
-        }
-        if (std::holds_alternative<ir::StoreMem>(s.op))    ++store_mem;
-        if (std::holds_alternative<ir::JumpRel>(s.op))     ++jump_rel;
-    }
-    REQUIRE(load_rsp  == 1);   // read current RSP
-    REQUIRE(store_rsp == 1);   // write RSP -= 8
-    REQUIRE(store_mem == 1);   // [RSP_new] = retaddr
-    REQUIRE(jump_rel  == 1);   // jump to target
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::CallRel>(d.stmts[0].op));
+    const auto& call = std::get<ir::CallRel>(d.stmts[0].op);
+    REQUIRE(call.target_guest_pc == 0x1005u);
+    REQUIRE(call.return_guest_pc == 0x1005u);
 }
 
 TEST_CASE("decode CALL rel32 without real_call_ret stays a plain JumpRel") {
@@ -2338,26 +2326,12 @@ TEST_CASE("decode CALL rel32 without real_call_ret stays a plain JumpRel") {
     REQUIRE(std::holds_alternative<ir::JumpRel>(d.stmts[0].op));
 }
 
-TEST_CASE("decode RET (C3) with real_call_ret emits pop + JumpReg") {
+TEST_CASE("decode RET (C3) with real_call_ret emits RetAdjusted") {
     ir::Ref r = 0;
     auto d = decode_ok_real_callret({0xC3}, r, /*pc=*/0x2000);
-    int load_rsp = 0, load_mem = 0, store_rsp = 0, jump_reg = 0, return_op = 0;
-    for (const auto& s : d.stmts) {
-        if (std::holds_alternative<ir::LoadReg>(s.op)) {
-            if (std::get<ir::LoadReg>(s.op).reg == ir::Gpr::Rsp) ++load_rsp;
-        }
-        if (std::holds_alternative<ir::LoadMem>(s.op))   ++load_mem;
-        if (std::holds_alternative<ir::StoreReg>(s.op)) {
-            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
-        }
-        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
-        if (std::holds_alternative<ir::Return>(s.op))    ++return_op;
-    }
-    REQUIRE(load_rsp  == 1);
-    REQUIRE(load_mem  == 1);
-    REQUIRE(store_rsp == 1);
-    REQUIRE(jump_reg  == 1);
-    REQUIRE(return_op == 0);   // no halt-sentinel Return in real mode
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::RetAdjusted>(d.stmts[0].op));
+    REQUIRE(std::get<ir::RetAdjusted>(d.stmts[0].op).pop_bytes == 0u);
 }
 
 TEST_CASE("decode RET (C3) without real_call_ret keeps the halt-sentinel Return") {
@@ -2507,27 +2481,17 @@ TEST_CASE("decode AESIMC xmm0, xmm1 (66 0F 38 DB C1) — F2-IR-055") {
     REQUIRE(found);
 }
 
-TEST_CASE("decode CALL r/m64 (FF D1 = CALL rcx) with real_call_ret pushes + JumpReg") {
+TEST_CASE("decode CALL r/m64 (FF D1 = CALL rcx) with real_call_ret emits CallReg") {
     // 48 FF D1 — REX.W (just makes the size consistent) + Group5 /2.
     // ModRM D1: mod=11 reg=010 (Group5 /2 = CALL) rm=001 (rcx).
     ir::Ref r = 0;
     auto d = decode_ok_real_callret({0x48, 0xFF, 0xD1}, r, /*pc=*/0x5000);
-    int store_rsp = 0, store_mem = 0, jump_reg = 0;
-    bool found_8 = false;
-    for (const auto& s : d.stmts) {
-        if (std::holds_alternative<ir::StoreReg>(s.op)) {
-            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
-        }
-        if (std::holds_alternative<ir::StoreMem>(s.op))  ++store_mem;
-        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
-        if (std::holds_alternative<ir::Constant>(s.op)) {
-            if (std::get<ir::Constant>(s.op).value == 8u) found_8 = true;
-        }
-    }
-    REQUIRE(store_rsp == 1);   // RSP -= 8
-    REQUIRE(store_mem == 1);   // [RSP_new] = retaddr
-    REQUIRE(jump_reg  == 1);   // jump target
-    REQUIRE(found_8);          // the "-= 8" constant
+    REQUIRE(d.stmts.size() == 2);
+    REQUIRE(std::holds_alternative<ir::LoadReg>(d.stmts[0].op));
+    REQUIRE(std::holds_alternative<ir::CallReg>(d.stmts[1].op));
+    const auto& call = std::get<ir::CallReg>(d.stmts[1].op);
+    REQUIRE(call.target == d.stmts[0].result.value());
+    REQUIRE(call.return_guest_pc == 0x5003u);
 }
 
 TEST_CASE("decode CALL r/m64 without real_call_ret stays a plain JumpReg") {
@@ -2546,29 +2510,13 @@ TEST_CASE("decode CALL r/m64 without real_call_ret stays a plain JumpReg") {
     REQUIRE(jump_reg  == 1);
 }
 
-TEST_CASE("decode RET imm16 (C2 04 00) with real_call_ret pops + adjusts + JumpReg") {
+TEST_CASE("decode RET imm16 (C2 04 00) with real_call_ret emits RetAdjusted") {
     // RET 4 — pop return address AND 4 extra bytes off the stack.
     ir::Ref r = 0;
     auto d = decode_ok_real_callret({0xC2, 0x04, 0x00}, r, /*pc=*/0x3000);
-    int load_mem = 0, store_rsp = 0, jump_reg = 0, return_op = 0;
-    bool found_pop_constant = false;
-    for (const auto& s : d.stmts) {
-        if (std::holds_alternative<ir::LoadMem>(s.op))   ++load_mem;
-        if (std::holds_alternative<ir::StoreReg>(s.op)) {
-            if (std::get<ir::StoreReg>(s.op).reg == ir::Gpr::Rsp) ++store_rsp;
-        }
-        if (std::holds_alternative<ir::JumpReg>(s.op))   ++jump_reg;
-        if (std::holds_alternative<ir::Return>(s.op))    ++return_op;
-        if (std::holds_alternative<ir::Constant>(s.op)) {
-            // RSP adjustment by (8 + imm16) = (8 + 4) = 12 bytes.
-            if (std::get<ir::Constant>(s.op).value == 12u) found_pop_constant = true;
-        }
-    }
-    REQUIRE(load_mem  == 1);
-    REQUIRE(store_rsp == 1);
-    REQUIRE(jump_reg  == 1);
-    REQUIRE(return_op == 0);
-    REQUIRE(found_pop_constant);
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::RetAdjusted>(d.stmts[0].op));
+    REQUIRE(std::get<ir::RetAdjusted>(d.stmts[0].op).pop_bytes == 4u);
 }
 
 TEST_CASE("decode BZHI r32a, r/m32, r32b (C4 E2 68 F5 C1) — F2-IR-053 followup") {
@@ -2589,6 +2537,38 @@ TEST_CASE("decode BZHI r32a, r/m32, r32b (C4 E2 68 F5 C1) — F2-IR-053 followup
     }
     REQUIRE(found_cmp);
     REQUIRE(found_sel);
+}
+
+TEST_CASE("decode PDEP r64a, r64b, r/m64 (C4 E2 F3 F5 C2) — BMI2") {
+    // W=1, pp=F2, vvvv=rcx. ModRM C2: dst rax, mask rdx.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xF3, 0xF5, 0xC2}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op ==
+            ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op ==
+            ir::Op{ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Pdep, 0u, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+}
+
+TEST_CASE("decode PEXT r32a, r32b, r/m32 (C4 E2 72 F5 C2) — BMI2") {
+    // W=0, pp=F3, vvvv=rcx. ModRM C2: dst eax, mask edx.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x72, 0xF5, 0xC2}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op ==
+            ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I32}});
+    REQUIRE(d.stmts[1].op ==
+            ir::Op{ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I32}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Pext, 0u, 1u, ir::OpSize::I32}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I32}});
 }
 
 TEST_CASE("decode MULX r64a, r64b, r/m64 (C4 E2 EB F6 C1) — F2-IR-053 followup") {
@@ -3947,6 +3927,93 @@ TEST_CASE("NOP + MOV imm64 + RET sequence decodes cleanly one at a time") {
     REQUIRE(decoded_count == 3);
     REQUIRE(cursor == bytes.size());
     REQUIRE(r == 1);  // only the MOV contributed an SSA ref
+}
+
+// ---------------------------------------------------------------------
+// F2-IR-007/F2-IR-008 x87 reduced-precision subset
+// ---------------------------------------------------------------------
+
+TEST_CASE("decode FLD qword [rax] (DD 00) pushes reduced x87 FP64 bits") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xDD, 0x00}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadMemTSO{0u, ir::OpSize::I64}});
+    REQUIRE(std::holds_alternative<ir::XmmFromGpr>(d.stmts[2].op));
+    REQUIRE(std::holds_alternative<ir::GprFromXmm>(d.stmts[3].op));
+    REQUIRE(d.stmts[4].op == ir::Op{ir::X87Push{3u}});
+    REQUIRE(r == 4);
+}
+
+TEST_CASE("decode FSTP qword [rax] (DD 18) pops x87 ST0 to memory") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xDD, 0x18}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::X87Pop{}});
+    REQUIRE(std::holds_alternative<ir::XmmFromGpr>(d.stmts[2].op));
+    REQUIRE(std::holds_alternative<ir::GprFromXmm>(d.stmts[3].op));
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreMemTSO{0u, 3u, ir::OpSize::I64}});
+    REQUIRE(r == 4);
+}
+
+TEST_CASE("decode FXCH ST(1) (D9 C9) swaps logical x87 stack slots") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xD9, 0xC9}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::X87Load{0u}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::X87Load{1u}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::X87Store{0u, 1u}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::X87Store{1u, 0u}});
+    REQUIRE(r == 2);
+}
+
+TEST_CASE("decode FADD ST(0), ST(1) (D8 C1) updates ST0") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xD8, 0xC1}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 7);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::X87Load{0u}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::X87Load{1u}});
+    const auto& op = std::get<ir::FpBinOp>(d.stmts[4].op);
+    REQUIRE(op.op == ir::FpBinOpKind::Add);
+    REQUIRE(op.size == ir::FpSize::F64);
+    REQUIRE(std::holds_alternative<ir::GprFromXmm>(d.stmts[5].op));
+    REQUIRE(d.stmts[6].op == ir::Op{ir::X87Store{0u, 5u}});
+    REQUIRE(r == 6);
+}
+
+TEST_CASE("decode FMUL ST(0), ST(1) (D8 C9) updates ST0") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xD8, 0xC9}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 7);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::X87Load{0u}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::X87Load{1u}});
+    const auto& op = std::get<ir::FpBinOp>(d.stmts[4].op);
+    REQUIRE(op.op == ir::FpBinOpKind::Mul);
+    REQUIRE(op.size == ir::FpSize::F64);
+    REQUIRE(d.stmts[6].op == ir::Op{ir::X87Store{0u, 5u}});
+    REQUIRE(r == 6);
+}
+
+TEST_CASE("decode FDIV ST(0), ST(1) (D8 F1) updates ST0") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xD8, 0xF1}, r);
+    REQUIRE(d.bytes_consumed == 2);
+    REQUIRE(d.stmts.size() == 7);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::X87Load{0u}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::X87Load{1u}});
+    const auto& op = std::get<ir::FpBinOp>(d.stmts[4].op);
+    REQUIRE(op.op == ir::FpBinOpKind::Div);
+    REQUIRE(op.lhs == 1u);
+    REQUIRE(op.rhs == 3u);
+    REQUIRE(op.size == ir::FpSize::F64);
+    REQUIRE(d.stmts[6].op == ir::Op{ir::X87Store{0u, 5u}});
+    REQUIRE(r == 6);
 }
 
 // ---------------------------------------------------------------------

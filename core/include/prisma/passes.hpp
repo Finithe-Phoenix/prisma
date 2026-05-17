@@ -114,6 +114,21 @@ common_subexpression_eliminate(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 copy_propagate(const std::vector<ir::Stmt>& stmts);
 
+// x87 stack elimination / forwarding (F2-PS-001).
+//
+// The reduced-precision x87 bridge models ST(i) through explicit
+// X87Load/X87Store/X87Push/X87Pop operations against CpuStateFrame.
+// This pass tracks the logical x87 stack within one flat statement list
+// and rewrites redundant X87Load operations to the existing SSA ref when
+// the slot value is known. It deliberately keeps X87Store/X87Push/X87Pop
+// in place so block-boundary CPU state remains materialised.
+//
+// Rewrite shape: `%dst = X87Load{n}` becomes `%dst = Or %known,%known`.
+// The existing copy_propagate + DCE pair then forwards consumers to
+// `%known` and removes the copy when possible.
+[[nodiscard]] std::vector<ir::Stmt>
+x87_stack_eliminate(const std::vector<ir::Stmt>& stmts);
+
 // Strength reduction — cheaper primitive for the same value.
 //
 // For integer constants:

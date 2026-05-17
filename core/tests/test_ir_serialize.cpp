@@ -63,6 +63,8 @@ TEST_CASE("ir_serialize: BinOp round-trip", "[ir_serialize]") {
         Op{BinOp{BinOpKind::Mul, Ref{1u}, Ref{2u}, OpSize::I64}}});
     check_single_stmt_roundtrip(Stmt{Ref{6u},
         Op{BinOp{BinOpKind::Rcr, Ref{3u}, Ref{4u}, OpSize::I16}}});
+    check_single_stmt_roundtrip(Stmt{Ref{7u},
+        Op{BinOp{BinOpKind::Pext, Ref{3u}, Ref{4u}, OpSize::I64}}});
 }
 
 TEST_CASE("ir_serialize: Compare round-trip", "[ir_serialize]") {
@@ -252,6 +254,13 @@ TEST_CASE("ir_serialize: FpConstant + FpBinOp round-trip", "[ir_serialize]") {
         Op{FpBinOp{FpBinOpKind::Add, Ref{1u}, Ref{2u}, FpSize::F64}}});
     check_single_stmt_roundtrip(Stmt{Ref{4u},
         Op{FpBinOp{FpBinOpKind::Div, Ref{1u}, Ref{2u}, FpSize::F32}}});
+}
+
+TEST_CASE("ir_serialize: x87 stack ops round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{1u}, Op{X87Load{0u}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{X87Store{3u, Ref{1u}}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{X87Push{Ref{1u}}}});
+    check_single_stmt_roundtrip(Stmt{Ref{2u}, Op{X87Pop{}}});
 }
 
 TEST_CASE("ir_serialize: InlineAsm round-trip preserves the byte payload",

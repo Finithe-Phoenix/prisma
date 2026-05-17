@@ -61,15 +61,17 @@ public:
         Popcnt, Lzcnt, Tzcnt,
         VecBlend,
         WriteFlagsPtest,
+        LoadVecRegHi, StoreVecRegHi,
+        VecFpFma,
+        VecFpScalarFma,
+        RepStos, RepMovs,
         WriteFlagsPtestYmm,
         VecTbl2,
         VecAes,
         Bswap,
         Crc32c,
-        LoadVecRegHi, StoreVecRegHi,
-        VecFpFma,
-        VecFpScalarFma,
-        RepStos, RepMovs,
+        X87Load, X87Store,
+        X87Push, X87Pop,
         kCount  // sentinel
     };
 

@@ -79,11 +79,29 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
     Stmt s_add{2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}};
     REQUIRE(pretty_print(s_add) == "%2 = add.i64 %0, %1");
 
+    Stmt s_pdep{3u, BinOp{BinOpKind::Pdep, 0u, 1u, OpSize::I64}};
+    REQUIRE(pretty_print(s_pdep) == "%3 = pdep.i64 %0, %1");
+
     Stmt s_ret{std::nullopt, Return{}};
     REQUIRE(pretty_print(s_ret) == "ret");
 
     Stmt s_store_tso{std::nullopt, StoreMemTSO{/*addr=*/5u, /*value=*/6u, OpSize::I32}};
     REQUIRE(pretty_print(s_store_tso) == "store.tso.i32 [%5], %6");
+}
+
+TEST_CASE("x87 stack ops have structural equality and stable pretty-print") {
+    REQUIRE(Op{X87Load{2u}} == Op{X87Load{2u}});
+    REQUIRE_FALSE(Op{X87Load{2u}} == Op{X87Load{3u}});
+    REQUIRE(Op{X87Store{1u, 7u}} == Op{X87Store{1u, 7u}});
+    REQUIRE_FALSE(Op{X87Store{1u, 7u}} == Op{X87Store{2u, 7u}});
+    REQUIRE(Op{X87Push{7u}} == Op{X87Push{7u}});
+    REQUIRE(Op{X87Pop{}} == Op{X87Pop{}});
+
+    REQUIRE(pretty_print(Stmt{0u, X87Load{2u}}) == "%0 = x87_load st(2)");
+    REQUIRE(pretty_print(Stmt{std::nullopt, X87Store{1u, 7u}}) ==
+            "x87_store st(1), %7");
+    REQUIRE(pretty_print(Stmt{std::nullopt, X87Push{7u}}) == "x87_push %7");
+    REQUIRE(pretty_print(Stmt{8u, X87Pop{}}) == "%8 = x87_pop");
 }
 
 TEST_CASE("kInvalidRef renders as %?") {

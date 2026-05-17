@@ -93,6 +93,10 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, VecFpScalarFma>) return OpCounter::Kind::VecFpScalarFma;
         else if constexpr (std::is_same_v<T, RepStos>)       return OpCounter::Kind::RepStos;
         else if constexpr (std::is_same_v<T, RepMovs>)       return OpCounter::Kind::RepMovs;
+        else if constexpr (std::is_same_v<T, X87Load>)       return OpCounter::Kind::X87Load;
+        else if constexpr (std::is_same_v<T, X87Store>)      return OpCounter::Kind::X87Store;
+        else if constexpr (std::is_same_v<T, X87Push>)       return OpCounter::Kind::X87Push;
+        else if constexpr (std::is_same_v<T, X87Pop>)        return OpCounter::Kind::X87Pop;
     }, op);
 }
 

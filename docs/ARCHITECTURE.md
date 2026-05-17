@@ -265,21 +265,20 @@ multi-entry loops skipped). Both are no-ops when the translator
 produces a single-block function (the common case today), which
 makes the wiring safe for back-compat.
 
-### Real CALL/RET semantics (F2-IR-054, opt-in)
+### Real CALL/RET semantics (F2-IR-054 + F2-BK-010)
 
-The translator gained `set_real_call_ret(bool)` (default off for
-the existing 86 e2e tests that rely on the legacy `Return{}` IR op
-halting the dispatcher). When on, the decoder emits real
-push-and-jump / pop-and-jump sequences for CALL rel32, CALL r/m64,
-RET, and RET imm16. The Dispatcher has
-`install_halt_return_stack()` which allocates an internal
-zero-initialised stack and points `state.gpr[Rsp]` at it — the
-outermost RET pops a 0 (= `kHaltSentinel`) and the dispatcher
-exits cleanly.
+The translator exposes `set_real_call_ret(bool)` and defaults it on.
+When enabled, the decoder emits first-class `CallRel`, `CallReg`, and
+`RetAdjusted` terminators for CALL rel32, CALL r/m64, RET, and RET
+imm16. Lowering performs the guest-stack push/pop directly and returns
+the callee or popped return target in `x0`.
 
-This is the prereq for F2-BK-010 (RAS predictor). The eventual
-migration goal is to flip the default; bulk test corpus migration
-is queued as item #11b in WORK_QUEUE.
+The Dispatcher has `install_halt_return_stack()` which allocates an
+internal zero-initialised stack and points `state.gpr[Rsp]` at it; the
+outermost RET pops a 0 (= `kHaltSentinel`) and the dispatcher exits
+cleanly. Translator block metadata also exposes call/ret terminator
+shape, and the dispatcher keeps RAS-style push/pop/hit/miss counters
+for return prediction work.
 
 ### Blocker A — REP STOS / MOVSB DoS clamp
 

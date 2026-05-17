@@ -146,6 +146,33 @@ TEST_CASE("Lowerer: each BinOpKind emits the right ARM64 mnemonic") {
     }
 }
 
+TEST_CASE("Lowerer: BMI2 PDEP/PEXT emit software bit loops") {
+    auto try_op = [](ir::BinOpKind k) {
+        std::vector<ir::Stmt> s = {
+            {0u, ir::Constant{0b1011u, ir::OpSize::I64}},
+            {1u, ir::Constant{0b0101'0100u, ir::OpSize::I64}},
+            {2u, ir::BinOp{k, 0u, 1u, ir::OpSize::I64}},
+        };
+        bool ok;
+        return std::pair{ok, lower_to_disasm(s, ok)};
+    };
+
+    {
+        auto [ok, d] = try_op(ir::BinOpKind::Pdep);
+        REQUIRE(ok);
+        REQUIRE(d.find("cbz") != std::string::npos);
+        REQUIRE(d.find("neg") != std::string::npos);
+        REQUIRE(d.find("orr") != std::string::npos);
+    }
+    {
+        auto [ok, d] = try_op(ir::BinOpKind::Pext);
+        REQUIRE(ok);
+        REQUIRE(d.find("cbz") != std::string::npos);
+        REQUIRE(d.find("neg") != std::string::npos);
+        REQUIRE(d.find("orr") != std::string::npos);
+    }
+}
+
 TEST_CASE("Lowerer: DanglingRef error on StoreReg that references unknown Ref") {
     // Missing the Constant that should bind %0.
     std::vector<ir::Stmt> stmts = {
@@ -299,6 +326,24 @@ TEST_CASE("Lowerer: StoreMemTSO emits stlr") {
     const std::string d = lower_to_disasm(stmts, ok);
     REQUIRE(ok);
     REQUIRE(d.find("stlr x1, [x0]") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: x87 stack ops touch TOS and 64-bit stack slots") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{0u}},
+        {1u, ir::X87Load{0u}},
+        {std::nullopt, ir::X87Store{1u, 1u}},
+        {2u, ir::X87Pop{}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldrb") != std::string::npos);
+    REQUIRE(d.find("strb") != std::string::npos);
+    REQUIRE(d.find("ldr x") != std::string::npos);
+    REQUIRE(d.find("str x") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -750,13 +795,28 @@ TEST_CASE("Lowerer: LoadSegBase materialises a value in a scratch reg") {
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
-TEST_CASE("Lowerer: CallRel parks target_guest_pc in x0 then ret") {
+TEST_CASE("Lowerer: CallRel pushes return_guest_pc then returns target") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::CallRel{0xDEAD'BEEFu, 0xCAFE'BABEu}},
     };
     bool ok;
     const std::string d = lower_to_disasm(stmts, ok);
     REQUIRE(ok);
+    REQUIRE(d.find("x0") != std::string::npos);
+    REQUIRE(d.find("sub") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: RetAdjusted pops target and advances RSP") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::RetAdjusted{4u}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldr") != std::string::npos);
+    REQUIRE(d.find("add") != std::string::npos);
     REQUIRE(d.find("x0") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }

@@ -62,10 +62,23 @@ ir::Op rewrite(ir::Op op,
         } else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::FpBinOp>) {
+            x.lhs = resolve(x.lhs, alias);
+            x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::XmmFromGpr>) {
+            x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
+            x.value = resolve(x.value, alias);
         } else if constexpr (std::is_same_v<T, ir::CondJump>) {
             x.cond = resolve(x.cond, alias);
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
             x.target = resolve(x.target, alias);
+        } else if constexpr (std::is_same_v<T, ir::CallReg>) {
+            x.target = resolve(x.target, alias);
+        } else if constexpr (std::is_same_v<T, ir::X87Store>) {
+            x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::X87Push>) {
+            x.value = resolve(x.value, alias);
         }
         return ir::Op{std::move(x)};
     }, std::move(op));

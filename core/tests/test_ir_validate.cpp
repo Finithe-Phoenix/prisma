@@ -193,3 +193,35 @@ TEST_CASE("validate: Select operands sharing the declared size passes") {
     };
     REQUIRE(ir::validate(s).ok);
 }
+
+TEST_CASE("validate: x87 stack ops require I64 payload refs") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{0u}},
+        {1u, ir::X87Load{0u}},
+        {std::nullopt, ir::X87Store{1u, 1u}},
+        {2u, ir::X87Pop{}},
+    };
+    REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: x87 push with non-I64 value is rejected") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1u, ir::OpSize::I32}},
+        {std::nullopt, ir::X87Push{0u}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->bad_ref == 0u);
+}
+
+TEST_CASE("validate: x87 store with undefined value is rejected") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::X87Store{0u, 99u}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
+    REQUIRE(r.error->bad_ref == 99u);
+}

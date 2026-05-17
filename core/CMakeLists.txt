@@ -225,6 +225,7 @@ add_library(prisma_passes STATIC
     src/passes/global_cse.cpp
     src/passes/licm.cpp
     src/passes/copy_prop.cpp
+    src/passes/x87_stack.cpp
     src/passes/strength_reduce.cpp
     src/passes/branch_fold.cpp
     src/passes/flag_write_elim.cpp

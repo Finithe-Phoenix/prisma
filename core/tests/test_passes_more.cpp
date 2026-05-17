@@ -73,6 +73,30 @@ TEST_CASE("copy_prop: rewrites BinOp operands through the alias") {
     REQUIRE(b.rhs == 1u);  // was %2, now %1
 }
 
+TEST_CASE("copy_prop: rewrites x87 stack value operands through the alias") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::BinOp{ir::BinOpKind::Or, 0u, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{1u}},
+        {std::nullopt, ir::X87Store{2u, 1u}},
+    };
+    auto out = passes::copy_propagate(s);
+    REQUIRE(std::get<ir::X87Push>(out[2].op).value == 0u);
+    REQUIRE(std::get<ir::X87Store>(out[3].op).value == 0u);
+}
+
+TEST_CASE("copy_prop: rewrites GPR/XMM bridge operands through the alias") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::BinOp{ir::BinOpKind::Or, 0u, 0u, ir::OpSize::I64}},
+        {2u, ir::XmmFromGpr{1u, ir::OpSize::I64}},
+        {3u, ir::GprFromXmm{1u, ir::OpSize::I64}},
+    };
+    auto out = passes::copy_propagate(s);
+    REQUIRE(std::get<ir::XmmFromGpr>(out[2].op).value == 0u);
+    REQUIRE(std::get<ir::GprFromXmm>(out[3].op).value == 0u);
+}
+
 TEST_CASE("copy_prop: idempotent") {
     std::vector<ir::Stmt> s = {
         {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
@@ -82,6 +106,69 @@ TEST_CASE("copy_prop: idempotent") {
     auto once  = passes::copy_propagate(s);
     auto twice = passes::copy_propagate(once);
     REQUIRE(once == twice);
+}
+
+// ---------------------------------------------------------------------
+// x87_stack_eliminate
+// ---------------------------------------------------------------------
+
+TEST_CASE("x87_stack_eliminate: forwards load after store to same ST slot") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Store{0u, 0u}},
+        {1u, ir::X87Load{0u}},
+    };
+
+    auto out = passes::x87_stack_eliminate(s);
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::X87Store>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::BinOp>(out[2].op));
+    const auto& copy = std::get<ir::BinOp>(out[2].op);
+    REQUIRE(copy.op == ir::BinOpKind::Or);
+    REQUIRE(copy.lhs == 0u);
+    REQUIRE(copy.rhs == 0u);
+    REQUIRE(copy.size == ir::OpSize::I64);
+}
+
+TEST_CASE("x87_stack_eliminate: tracks push depth for ST(0) and ST(1)") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {1u, ir::Constant{0x4000'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{0u}},
+        {std::nullopt, ir::X87Push{1u}},
+        {2u, ir::X87Load{0u}},
+        {3u, ir::X87Load{1u}},
+    };
+
+    auto out = passes::x87_stack_eliminate(s);
+    REQUIRE(std::holds_alternative<ir::BinOp>(out[4].op));
+    REQUIRE(std::holds_alternative<ir::BinOp>(out[5].op));
+    const auto& st0 = std::get<ir::BinOp>(out[4].op);
+    const auto& st1 = std::get<ir::BinOp>(out[5].op);
+    REQUIRE(st0.lhs == 1u);
+    REQUIRE(st0.rhs == 1u);
+    REQUIRE(st1.lhs == 0u);
+    REQUIRE(st1.rhs == 0u);
+}
+
+TEST_CASE("pipeline: x87 forwarded load feeds GPR/XMM bridge without X87Load") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{0u}},
+        {1u, ir::X87Load{0u}},
+        {2u, ir::XmmFromGpr{1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreVecReg{0u, 2u}},
+    };
+
+    auto pm = passes::default_pipeline();
+    auto [out, _stats] = pm.run(s);
+
+    for (const auto& st : out) {
+        REQUIRE_FALSE(std::holds_alternative<ir::X87Load>(st.op));
+        if (std::holds_alternative<ir::XmmFromGpr>(st.op)) {
+            REQUIRE(std::get<ir::XmmFromGpr>(st.op).value == 0u);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -426,6 +513,17 @@ TEST_CASE("pipeline: flag-write elimination removes dead CmpFlags after branch_f
     REQUIRE(std::holds_alternative<ir::JumpRel>(out[0].op));
     REQUIRE(std::get<ir::JumpRel>(out[0].op).target_guest_pc == 0x100u);
     REQUIRE_FALSE(std::holds_alternative<ir::CmpFlags>(out[0].op));
+}
+
+TEST_CASE("dce: CallReg keeps its target ref live") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {std::nullopt, ir::CallReg{0u, 0x1003u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 2);
+    REQUIRE(std::holds_alternative<ir::LoadReg>(out[0].op));
+    REQUIRE(std::holds_alternative<ir::CallReg>(out[1].op));
 }
 
 // ---------------------------------------------------------------------

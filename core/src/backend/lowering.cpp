@@ -74,8 +74,58 @@ LowerResult emit_binop(Emitter& em,
             // lower_stmt to materialise q before the msub.
             return {false, LowerError::UnsupportedOp,
                     "UMod/SMod requires a temporary scratch register"};
+        case ir::BinOpKind::Pdep:
+        case ir::BinOpKind::Pext:
+            return {false, LowerError::UnsupportedOp,
+                    "PDEP/PEXT requires a software loop"};
     }
     return {false, LowerError::UnsupportedOp, "unknown BinOpKind"};
+}
+
+void emit_bit_permute(Emitter& em,
+                      bool deposit,
+                      arm64::Reg rd,
+                      arm64::Reg rn,
+                      arm64::Reg rm,
+                      arm64::Reg rsrc,
+                      arm64::Reg rmask,
+                      arm64::Reg rbit,
+                      arm64::Reg rone,
+                      arm64::Reg rlowbit,
+                      arm64::Reg rtmp,
+                      ir::OpSize size) {
+    em.mov_reg_reg(rsrc, rn);
+    em.mov_reg_reg(rmask, rm);
+    if (size == ir::OpSize::I32) {
+        em.uxtw(rsrc, rsrc);
+        em.uxtw(rmask, rmask);
+    }
+
+    em.mov_imm64(rd, 0);
+    em.mov_imm64(rbit, 1);
+    em.mov_imm64(rone, 1);
+
+    const auto loop = em.create_label();
+    const auto skip = em.create_label();
+    const auto done = em.create_label();
+
+    em.bind(loop);
+    em.cbz(rmask, done);
+    em.neg(rlowbit, rmask);
+    em.and_(rlowbit, rlowbit, rmask);
+    em.and_(rtmp, rsrc, deposit ? rbit : rlowbit);
+    em.cbz(rtmp, skip);
+    em.orr(rd, rd, deposit ? rlowbit : rbit);
+    em.bind(skip);
+    em.sub(rtmp, rmask, rone);
+    em.and_(rmask, rmask, rtmp);
+    em.add(rbit, rbit, rbit);
+    em.branch(loop);
+    em.bind(done);
+
+    if (size == ir::OpSize::I32) {
+        em.uxtw(rd, rd);
+    }
 }
 
 }  // namespace
@@ -279,6 +329,18 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Crc32c>) {
                 bump(op.crc, i); bump(op.data, i);
             }
+            else if constexpr (std::is_same_v<T, ir::X87Load>) {
+                (void)op;
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Store>) {
+                bump(op.value, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Push>) {
+                bump(op.value, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Pop>) {
+                (void)op;
+            }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
             // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
             // have no operand refs — nothing to bump.
@@ -475,6 +537,24 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                     return {false, LowerError::OutOfScratchRegs, "BinOp temporary"};
                 }
                 emitter_.rol(rd, rn, rm, tmp);
+                return {};
+            }
+            if (op.op == ir::BinOpKind::Pdep || op.op == ir::BinOpKind::Pext) {
+                arm64::Reg rsrc, rmask, rbit, rone, rlowbit, rtmp;
+                if (!allocate_temporary(rsrc) ||
+                    !allocate_temporary(rmask) ||
+                    !allocate_temporary(rbit) ||
+                    !allocate_temporary(rone) ||
+                    !allocate_temporary(rlowbit) ||
+                    !allocate_temporary(rtmp)) {
+                    return {false, LowerError::OutOfScratchRegs,
+                            "PDEP/PEXT temporaries"};
+                }
+                emit_bit_permute(emitter_,
+                                 op.op == ir::BinOpKind::Pdep,
+                                 rd, rn, rm,
+                                 rsrc, rmask, rbit, rone, rlowbit, rtmp,
+                                 op.size);
                 return {};
             }
             // F2-BK-007 — UMod / SMod = n - (n / m) * m.
@@ -1410,6 +1490,84 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.crc32c(rd, rcrc, rdata, op.data_size);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::X87Load>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "X87Load without result"};
+            }
+            if (op.st_index >= 8u) {
+                return {false, LowerError::UnsupportedOp, "X87Load st_index"};
+            }
+            arm64::Reg rd, tos, slot;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Load"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Load tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Load slot"};
+            }
+            emitter_.x87_load(arm64::Reg::X27, rd, tos, slot,
+                              runtime::CpuStateFrame::x87_offset_bytes(0),
+                              runtime::CpuStateFrame::kX87TosByteOffset,
+                              op.st_index);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Store>) {
+            if (op.st_index >= 8u) {
+                return {false, LowerError::UnsupportedOp, "X87Store st_index"};
+            }
+            arm64::Reg value, tos, slot;
+            if (!reg_of(op.value, value)) {
+                return {false, LowerError::DanglingRef, "X87Store.value"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Store tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Store slot"};
+            }
+            emitter_.x87_store(arm64::Reg::X27, value, tos, slot,
+                               runtime::CpuStateFrame::x87_offset_bytes(0),
+                               runtime::CpuStateFrame::kX87TosByteOffset,
+                               op.st_index);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Push>) {
+            arm64::Reg value, tos, slot;
+            if (!reg_of(op.value, value)) {
+                return {false, LowerError::DanglingRef, "X87Push.value"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Push tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Push slot"};
+            }
+            emitter_.x87_push(arm64::Reg::X27, value, tos, slot,
+                              runtime::CpuStateFrame::x87_offset_bytes(0),
+                              runtime::CpuStateFrame::kX87TosByteOffset);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Pop>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "X87Pop without result"};
+            }
+            arm64::Reg rd, tos, slot;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Pop"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Pop tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Pop slot"};
+            }
+            emitter_.x87_pop(arm64::Reg::X27, rd, tos, slot,
+                             runtime::CpuStateFrame::x87_offset_bytes(0),
+                             runtime::CpuStateFrame::kX87TosByteOffset);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::VecBlend>) {
             // F2-IR-046 PBLENDVB / BLENDVPS / BLENDVPD.
             if (!s.result.has_value()) {
@@ -1958,25 +2116,39 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
         else if constexpr (std::is_same_v<T, ir::CallRel>
                         || std::is_same_v<T, ir::CallReg>
                         || std::is_same_v<T, ir::RetAdjusted>) {
-            // Placeholder terminator until the dispatcher learns about
-            // guest call/ret. For now: park the (next) target PC in x0
-            // and ret to the dispatcher; it'll loop back in for the
-            // next translation. Stack management for RetAdjusted's
-            // pop_bytes is deferred to F1-RT-008 follow-up.
-            std::uint64_t next_pc = 0;
-            if constexpr (std::is_same_v<T, ir::CallRel>) {
-                next_pc = op.target_guest_pc;
-            } else if constexpr (std::is_same_v<T, ir::CallReg>) {
-                arm64::Reg rt;
-                if (!reg_of(op.target, rt)) {
-                    return {false, LowerError::DanglingRef, "CallReg.target"};
-                }
-                emitter_.mov_reg_reg(arm64::Reg::X0, rt);
-                if (options_.emit_ret_on_terminator) emitter_.ret();
-                return {};
+            const arm64::Reg rsp_host = arm64::host_reg_for(ir::Gpr::Rsp);
+            arm64::Reg tmp;
+            arm64::Reg tmp2;
+            if (!allocate_temporary(tmp) || !allocate_temporary(tmp2)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "Call/Ret temporaries"};
             }
-            // CallRel / RetAdjusted both fall through with next_pc above.
-            emitter_.mov_imm64(arm64::Reg::X0, next_pc);
+
+            if constexpr (std::is_same_v<T, ir::RetAdjusted>) {
+                // target = [RSP]; RSP += 8 + pop_bytes; x0 = target.
+                emitter_.load(tmp, rsp_host, ir::OpSize::I64);
+                emitter_.mov_imm64(tmp2, 8ULL + op.pop_bytes);
+                emitter_.add(rsp_host, rsp_host, tmp2);
+                emitter_.mov_reg_reg(arm64::Reg::X0, tmp);
+            } else {
+                // CALL pushes return_guest_pc, then transfers to the
+                // callee target through x0 for the dispatcher.
+                emitter_.mov_imm64(tmp, 8ULL);
+                emitter_.sub(rsp_host, rsp_host, tmp);
+                emitter_.mov_imm64(tmp2, op.return_guest_pc);
+                emitter_.store(tmp2, rsp_host, ir::OpSize::I64);
+
+                if constexpr (std::is_same_v<T, ir::CallRel>) {
+                    emitter_.mov_imm64(arm64::Reg::X0, op.target_guest_pc);
+                } else {
+                    arm64::Reg rt;
+                    if (!reg_of(op.target, rt)) {
+                        return {false, LowerError::DanglingRef,
+                                "CallReg.target"};
+                    }
+                    emitter_.mov_reg_reg(arm64::Reg::X0, rt);
+                }
+            }
             if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }

@@ -81,6 +81,25 @@ TEST_CASE("Translator: same bytes at different guest_addr produce independent en
     REQUIRE(t.cache().entry_count() == 2);
 }
 
+TEST_CASE("Translator: exposes call/return terminator metadata") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> call = {
+        0xE8, 0x00, 0x00, 0x00, 0x00,  // call +0 -> 0x1005
+    };
+    auto rc = t.translate(0x1000, call);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(rc));
+    const auto& bc = std::get<translator::TranslatedBlock>(rc);
+    REQUIRE(bc.exit_kind == translator::BlockExitKind::CallRel);
+    REQUIRE(bc.return_guest_pc == 0x1005u);
+
+    const std::vector<std::uint8_t> ret = {0xC3};
+    auto rr = t.translate(0x1005, ret);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(rr));
+    const auto& br = std::get<translator::TranslatedBlock>(rr);
+    REQUIRE(br.exit_kind == translator::BlockExitKind::RetAdjusted);
+}
+
 TEST_CASE("Translator: modifying guest bytes at same addr triggers re-translation") {
     const std::vector<std::uint8_t> v1 = {
         0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

@@ -55,6 +55,14 @@ TEST_CASE("CpuStateFrame: x87 stack is 8 deep × 16 bytes per slot") {
     REQUIRE(sizeof(runtime::X87Slot) == 16);
 }
 
+TEST_CASE("CpuStateFrame: x87 offsets expose stack base and TOS byte") {
+    REQUIRE(runtime::CpuStateFrame::x87_offset_bytes(0) == 656);
+    REQUIRE(runtime::CpuStateFrame::x87_offset_bytes(1) == 672);
+    REQUIRE(runtime::CpuStateFrame::x87_offset_bytes(7) == 656 + 7 * 16);
+    REQUIRE(runtime::CpuStateFrame::kX87StatusControlOffset == 784);
+    REQUIRE(runtime::CpuStateFrame::kX87TosByteOffset == 788);
+}
+
 TEST_CASE("CpuStateFrame: MXCSR defaults to 0x1F80 (mask all exceptions)") {
     runtime::CpuStateFrame f;
     REQUIRE(f.mxcsr == 0x1F80u);

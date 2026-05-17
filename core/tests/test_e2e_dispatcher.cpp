@@ -107,6 +107,30 @@ TEST_CASE("e2e: bitwise — mov rax,0xFF; mov rcx,0x0F; and rax,rcx; ret = 0x0F"
     REQUIRE(state[ir::Gpr::Rax] == 0x0Fu);
 }
 
+TEST_CASE("e2e: BMI2 PDEP deposits low source bits into mask positions") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    auto state = run_blob({
+        0x48, 0xB9, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rcx, 0b1011
+        0x48, 0xBA, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rdx, 0b01010100
+        0xC4, 0xE2, 0xF3, 0xF5, 0xC2,                                // pdep rax, rcx, rdx
+        0xC3,
+    });
+    REQUIRE(state[ir::Gpr::Rax] == 0x14u);
+}
+
+TEST_CASE("e2e: BMI2 PEXT extracts masked source bits into low bits") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    auto state = run_blob({
+        0x48, 0xB9, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rcx, 0b01010100
+        0x48, 0xBA, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rdx, 0b01010100
+        0xC4, 0xE2, 0xF2, 0xF5, 0xC2,                                // pext rax, rcx, rdx
+        0xC3,
+    });
+    REQUIRE(state[ir::Gpr::Rax] == 0x7u);
+}
+
 TEST_CASE("e2e: xor reg,reg zeros the register (idiomatic x86)") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
 

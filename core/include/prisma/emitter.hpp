@@ -508,6 +508,33 @@ public:
     void crc32c(arm64::Reg rd, arm64::Reg rcrc, arm64::Reg rdata,
                 ir::OpSize data_size);
 
+    // F2-IR-007 / F2-IR-008 — reduced-precision x87 stack access.
+    //
+    // The x87 stack lives in `CpuStateFrame::x87[]` (16 bytes per slot,
+    // base offset = `array_offset`); the 3-bit TOS counter is the u8
+    // at `tos_byte_offset` within `CpuStateFrame::x87_status_control`.
+    // The two scratch registers are owned by the caller — `scratch_tos`
+    // holds the TOS counter across the sequence, `scratch_slot` holds
+    // the slot's effective address.
+    //
+    //   x87_push: TOS = (TOS - 1) mod 8; slot[TOS] = value
+    //   x87_pop:  dst = slot[TOS]; TOS = (TOS + 1) mod 8
+    //   x87_load/store address logical ST(i) as slot[(TOS + i) mod 8]
+    void x87_load(arm64::Reg state_ptr, arm64::Reg dst,
+                  arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                  std::int32_t array_offset, std::int32_t tos_byte_offset,
+                  std::uint8_t st_index);
+    void x87_store(arm64::Reg state_ptr, arm64::Reg value,
+                   arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                   std::int32_t array_offset, std::int32_t tos_byte_offset,
+                   std::uint8_t st_index);
+    void x87_push(arm64::Reg state_ptr, arm64::Reg value,
+                  arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                  std::int32_t array_offset, std::int32_t tos_byte_offset);
+    void x87_pop (arm64::Reg state_ptr, arm64::Reg dst,
+                  arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                  std::int32_t array_offset, std::int32_t tos_byte_offset);
+
     // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
     void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
     void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);

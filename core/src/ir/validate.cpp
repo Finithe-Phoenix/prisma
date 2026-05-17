@@ -36,6 +36,8 @@ std::optional<OpSize> result_size_static(const Op& op) {
         else if constexpr (std::is_same_v<T, Select>)      return x.size;
         else if constexpr (std::is_same_v<T, LoadMem>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadMemTSO>)  return x.size;
+        else if constexpr (std::is_same_v<T, X87Load>)     return OpSize::I64;
+        else if constexpr (std::is_same_v<T, X87Pop>)      return OpSize::I64;
         else if constexpr (std::is_same_v<T, Extend>)      return x.to_size;
         else if constexpr (std::is_same_v<T, Truncate>)    return x.to_size;
         else if constexpr (std::is_same_v<T, ReadFlag>)    return OpSize::I8;
@@ -122,6 +124,10 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, VecFpScalarFma>) { visit(x.a); visit(x.b); visit(x.c); visit(x.scalar_upper); }
         else if constexpr (std::is_same_v<T, RepStos>)       { (void)x; }   // no operand refs
         else if constexpr (std::is_same_v<T, RepMovs>)       { (void)x; }
+        else if constexpr (std::is_same_v<T, X87Load>)       { (void)x; }   // no operand refs
+        else if constexpr (std::is_same_v<T, X87Store>)      { visit(x.value); }
+        else if constexpr (std::is_same_v<T, X87Push>)       { visit(x.value); }
+        else if constexpr (std::is_same_v<T, X87Pop>)        { (void)x; }   // no operand refs
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg,
@@ -189,7 +195,9 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, Crc32c>
             || std::is_same_v<T, LoadVecRegHi>
             || std::is_same_v<T, VecFpFma>
-            || std::is_same_v<T, VecFpScalarFma>;
+            || std::is_same_v<T, VecFpScalarFma>
+            || std::is_same_v<T, X87Load>
+            || std::is_same_v<T, X87Pop>;
     }, op);
 }
 
@@ -218,6 +226,10 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
         } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
             if (r == x.value) return x.size;
             if (r == x.addr)  return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, X87Store>) {
+            if (r == x.value) return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, X87Push>) {
+            if (r == x.value) return OpSize::I64;
         } else if constexpr (std::is_same_v<T, LoadMem>) {
             if (r == x.addr)  return OpSize::I64;
         } else if constexpr (std::is_same_v<T, LoadMemTSO>) {

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <memory>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -34,8 +35,44 @@ bool is_block_terminator(const ir::Op& op) noexcept {
         || std::holds_alternative<ir::JumpRel>(op)
         || std::holds_alternative<ir::JumpReg>(op)
         || std::holds_alternative<ir::CondJumpRel>(op)
+        || std::holds_alternative<ir::CallRel>(op)
+        || std::holds_alternative<ir::CallReg>(op)
+        || std::holds_alternative<ir::RetAdjusted>(op)
         || std::holds_alternative<ir::RepStos>(op)
         || std::holds_alternative<ir::RepMovs>(op);
+}
+
+struct ExitMetadata {
+    BlockExitKind kind{BlockExitKind::None};
+    std::uint64_t return_guest_pc{0};
+};
+
+ExitMetadata exit_metadata(const std::vector<ir::Stmt>& body) noexcept {
+    if (body.empty()) return {};
+    return std::visit([](const auto& op) -> ExitMetadata {
+        using T = std::decay_t<decltype(op)>;
+        if constexpr (std::is_same_v<T, ir::Return>) {
+            return {BlockExitKind::Return, 0};
+        } else if constexpr (std::is_same_v<T, ir::JumpRel>) {
+            return {BlockExitKind::JumpRel, 0};
+        } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
+            return {BlockExitKind::JumpReg, 0};
+        } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
+            return {BlockExitKind::CondJumpRel, 0};
+        } else if constexpr (std::is_same_v<T, ir::CallRel>) {
+            return {BlockExitKind::CallRel, op.return_guest_pc};
+        } else if constexpr (std::is_same_v<T, ir::CallReg>) {
+            return {BlockExitKind::CallReg, op.return_guest_pc};
+        } else if constexpr (std::is_same_v<T, ir::RetAdjusted>) {
+            return {BlockExitKind::RetAdjusted, 0};
+        } else if constexpr (std::is_same_v<T, ir::RepStos>) {
+            return {BlockExitKind::RepStos, 0};
+        } else if constexpr (std::is_same_v<T, ir::RepMovs>) {
+            return {BlockExitKind::RepMovs, 0};
+        } else {
+            return {};
+        }
+    }, body.back().op);
 }
 
 // ---------------------------------------------------------------------
@@ -155,7 +192,12 @@ TranslateResult Translator::translate(
         if (rec.content_hash == hash_of_input) {
             ++stats_.cache_hits;
             return TranslatedBlock{
-                rec.entry, rec.code_size, rec.guest_size, /*from_cache=*/true};
+                rec.entry,
+                rec.code_size,
+                rec.guest_size,
+                /*from_cache=*/true,
+                rec.exit_kind,
+                rec.return_guest_pc};
         }
         // SMC: the guest bytes at this address changed. Drop the record,
         // drop the persistent cache entry, fall through to retranslate.
@@ -206,17 +248,9 @@ TranslateResult Translator::translate(
     // terminator
     // (ran off the end of guest_bytes — unusual but possible).
     std::vector<ir::Stmt> body = std::move(optimised);
-    bool body_has_terminator = false;
-    if (!body.empty()) {
-        if (std::holds_alternative<ir::Return>(body.back().op)) {
-            // Pure Return: let Lowerer handle it; it already emits ret.
-            body_has_terminator = true;
-        } else if (std::holds_alternative<ir::JumpRel>(body.back().op)
-                || std::holds_alternative<ir::JumpReg>(body.back().op)
-                || std::holds_alternative<ir::CondJumpRel>(body.back().op)) {
-            body_has_terminator = true;
-        }
-    }
+    const ExitMetadata exit = exit_metadata(body);
+    const bool body_has_terminator =
+        !body.empty() && is_block_terminator(body.back().op);
 
     backend::Emitter em;
 
@@ -269,10 +303,21 @@ TranslateResult Translator::translate(
 
     // In-process record for the next call.
     by_addr_[guest_addr] = Record{
-        entry, code_size, dec.consumed, hash_of_input};
+        entry,
+        code_size,
+        dec.consumed,
+        hash_of_input,
+        exit.kind,
+        exit.return_guest_pc};
 
     ++stats_.cache_misses;  // accounted only on success; see comment above.
-    return TranslatedBlock{entry, code_size, dec.consumed, /*from_cache=*/false};
+    return TranslatedBlock{
+        entry,
+        code_size,
+        dec.consumed,
+        /*from_cache=*/false,
+        exit.kind,
+        exit.return_guest_pc};
 }
 
 }  // namespace prisma::translator

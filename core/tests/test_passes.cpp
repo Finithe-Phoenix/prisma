@@ -70,6 +70,18 @@ TEST_CASE("const_prop: result is size-masked (i32 addition overflow)") {
     REQUIRE(std::get<ir::Constant>(out[2].op).size  == ir::OpSize::I32);
 }
 
+TEST_CASE("const_prop: folds BMI2 PDEP and PEXT constants") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0b1011u, ir::OpSize::I64}},
+        {1u, ir::Constant{0b0101'0100u, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Pdep, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::BinOp{ir::BinOpKind::Pext, 1u, 1u, ir::OpSize::I64}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[2].op).value == 0b0001'0100u);
+    REQUIRE(std::get<ir::Constant>(out[3].op).value == 0b111u);
+}
+
 TEST_CASE("const_prop: BinOp with a non-constant operand is NOT folded") {
     // %0 = loadreg rax   (unknown value)
     // %1 = const 7
@@ -270,6 +282,24 @@ TEST_CASE("dce: plain LoadMem (non-TSO) IS removable when its result is dead") {
     };
     auto out = passes::dead_code_eliminate(s);
     REQUIRE(out.empty());
+}
+
+TEST_CASE("dce: x87 stack mutations stay but unused x87 loads disappear") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{0u}},
+        {1u, ir::X87Load{0u}},  // dead read
+        {2u, ir::X87Pop{}},     // mutates TOS even if result is unused
+        {std::nullopt, ir::X87Store{1u, 0u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 4);
+    for (const auto& st : out) {
+        REQUIRE_FALSE(std::holds_alternative<ir::X87Load>(st.op));
+    }
+    REQUIRE(std::holds_alternative<ir::X87Push>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::X87Pop>(out[2].op));
+    REQUIRE(std::holds_alternative<ir::X87Store>(out[3].op));
 }
 
 TEST_CASE("dce: idempotent") {
