@@ -6,7 +6,7 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-17 (in-flight after x87 baseline + F2-PS-001 + BMI2 PDEP/PEXT + F2-BK-010 + direct-thread cache).
+Last updated: 2026-05-17 (after direct-thread cache stage 1).
 
 ## Currently active
 
@@ -37,7 +37,7 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 14c | AESKEYGENASSIST | 2 commits | — | ⏸ queued | Key-schedule helper. No direct ARM equivalent; software emulation needed. |
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
-| 15 | Direct branch threading | 4-6 commits | pending commit | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
+| 15 | Direct branch threading | 4-6 commits | `5a4fb7e` | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 
@@ -85,7 +85,7 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 21 | feat(ir,decoder,backend): BMI2 PDEP / PEXT | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; software ARM64 loop lowering + const-folding + ARM-only e2e. |
 | 22 | feat(runtime,backend): F2-BK-010 call/ret return-stack | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; first-class call/ret terminators + dispatcher RAS hit/miss counters. |
 | 23 | feat(core): x87 reduced-F64 bridge + stack forwarding | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; RFC 0013 documents precision scope. |
-| 24 | feat(runtime): dispatcher direct-thread cache | pending commit | Direct branch successors can run from the executable cache without another translate() call; SMC hash checks preserved. |
+| 24 | feat(runtime): dispatcher direct-thread cache | `5a4fb7e` | Direct branch successors can run from the executable cache without another translate() call; SMC hash checks preserved. |
 
 ## Standing decisions (carry across items)
 
