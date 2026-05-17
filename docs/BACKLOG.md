@@ -288,7 +288,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
-- [~|codex] F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
+- [x] (pending commit) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
 - [ ] F1-BK-023: Lowering of Fence (dmb ish / dsb).
 - [ ] F1-BK-024: Lowering of Select via csel.
 

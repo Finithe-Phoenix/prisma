@@ -169,16 +169,36 @@ TEST_CASE("Lowerer: UnsupportedOp for ops not yet implemented") {
     REQUIRE(r.error == backend::LowerError::UnsupportedOp);
 }
 
-TEST_CASE("Lowerer: Extend and Truncate remain unsupported until F1-BK-022") {
+TEST_CASE("Lowerer: Extend and Truncate emit width canonicalisation") {
     std::vector<ir::Stmt> stmts = {
         {0u, ir::Constant{0x80, ir::OpSize::I8}},
         {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
+        {2u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, false}},
+        {3u, ir::Truncate{1u, ir::OpSize::I16}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I16}},
     };
-    backend::Emitter em;
-    backend::Lowerer lw(em);
-    auto r = lw.lower(stmts);
-    REQUIRE_FALSE(r.success);
-    REQUIRE(r.error == backend::LowerError::UnsupportedOp);
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sxtb") != std::string::npos);
+    REQUIRE(d.find("uxtb") != std::string::npos);
+    REQUIRE(d.find("uxth") != std::string::npos);
+    REQUIRE(d.find("x10")  != std::string::npos);
+}
+
+TEST_CASE("Lowerer: signed Extend to sub-64-bit result masks after sign extension") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I16, true}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I16}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sxtb") != std::string::npos);
+    REQUIRE(d.find("uxth") != std::string::npos);
 }
 
 TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {

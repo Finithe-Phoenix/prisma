@@ -75,6 +75,18 @@ public:
     void cls  (arm64::Reg rd, arm64::Reg rn);
     void rbit (arm64::Reg rd, arm64::Reg rn);
 
+    // Width canonicalisation for Extend / Truncate lowering (F1-BK-022).
+    //
+    // Results live in X registers, but the upper bits must match the IR's
+    // logical value:
+    //   zero_extend(..., I8/I16/I32) -> low N bits, high bits zero
+    //   sign_extend(..., I8/I16/I32) -> sign bit replicated to bit 63
+    //   truncate(..., I8/I16/I32)    -> low N bits, high bits zero
+    // I64 forms are plain register copies.
+    void zero_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size);
+    void sign_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size);
+    void truncate   (arm64::Reg rd, arm64::Reg rn, ir::OpSize to_size);
+
     // Multi-output mul/div (F1-BK-011).
     //
     // x86 IMUL / MUL write a 128-bit result split across RDX:RAX. On ARM64

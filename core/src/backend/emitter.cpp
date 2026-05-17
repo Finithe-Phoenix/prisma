@@ -110,6 +110,44 @@ void Emitter::rbit(arm64::Reg rd, arm64::Reg rn) {
     impl_->masm.Rbit(to_vixl_x(rd), to_vixl_x(rn));
 }
 
+void Emitter::zero_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size) {
+    switch (from_size) {
+        case ir::OpSize::I8:
+            impl_->masm.Uxtb(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+        case ir::OpSize::I16:
+            impl_->masm.Uxth(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+        case ir::OpSize::I32:
+            impl_->masm.Uxtw(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+        case ir::OpSize::I64:
+            impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+    }
+}
+
+void Emitter::sign_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size) {
+    switch (from_size) {
+        case ir::OpSize::I8:
+            impl_->masm.Sxtb(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+        case ir::OpSize::I16:
+            impl_->masm.Sxth(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+        case ir::OpSize::I32:
+            impl_->masm.Sxtw(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+        case ir::OpSize::I64:
+            impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rn));
+            return;
+    }
+}
+
+void Emitter::truncate(arm64::Reg rd, arm64::Reg rn, ir::OpSize to_size) {
+    zero_extend(rd, rn, to_size);
+}
+
 void Emitter::umulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Umulh(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }

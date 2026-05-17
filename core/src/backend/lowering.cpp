@@ -306,6 +306,51 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             return emit_binop(emitter_, op.op, rd, rn, rm);
         }
+        else if constexpr (std::is_same_v<T, ir::Extend>) {
+            if (!s.result) return {false, LowerError::DanglingRef, "Extend without result ref"};
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Extend.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Extend"};
+            }
+
+            if (!op.is_signed) {
+                emitter_.zero_extend(rd, rn, op.from_size);
+                if (ir::bit_width(op.to_size) < ir::bit_width(op.from_size)) {
+                    emitter_.truncate(rd, rd, op.to_size);
+                }
+                return {};
+            }
+
+            if (op.to_size == ir::OpSize::I64
+                || ir::bit_width(op.to_size) <= ir::bit_width(op.from_size)) {
+                emitter_.sign_extend(rd, rn, op.from_size);
+                if (op.to_size != ir::OpSize::I64) {
+                    emitter_.truncate(rd, rd, op.to_size);
+                }
+                return {};
+            }
+
+            arm64::Reg tmp;
+            if (!allocate_temporary(tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "Extend temporary"};
+            }
+            emitter_.sign_extend(tmp, rn, op.from_size);
+            emitter_.truncate(rd, tmp, op.to_size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            if (!s.result) return {false, LowerError::DanglingRef, "Truncate without result ref"};
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Truncate.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Truncate"};
+            }
+            emitter_.truncate(rd, rn, op.to_size);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Compare>) {
             // Compare produces a 0/1 value in an SSA ref. Lower to
             // cmp + cset. Size-specific comparison is a future concern

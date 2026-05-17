@@ -131,6 +131,21 @@ TEST_CASE("Emitter: rbit emits an rbit instruction") {
     REQUIRE(text.find("rbit") != std::string::npos);
 }
 
+TEST_CASE("Emitter: width canonicalisation emits extend aliases") {
+    backend::Emitter em;
+    em.zero_extend(arm64::Reg::X0, arm64::Reg::X1, ir::OpSize::I8);
+    em.zero_extend(arm64::Reg::X2, arm64::Reg::X3, ir::OpSize::I16);
+    em.sign_extend(arm64::Reg::X4, arm64::Reg::X5, ir::OpSize::I8);
+    em.sign_extend(arm64::Reg::X6, arm64::Reg::X7, ir::OpSize::I32);
+    em.finalize();
+
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("uxtb") != std::string::npos);
+    REQUIRE(text.find("uxth") != std::string::npos);
+    REQUIRE(text.find("sxtb") != std::string::npos);
+    REQUIRE(text.find("sxtw") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // F1-BK-011 mul/div multi-output
 // ---------------------------------------------------------------------------
