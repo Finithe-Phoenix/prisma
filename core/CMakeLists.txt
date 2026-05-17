@@ -214,6 +214,7 @@ add_library(prisma_passes STATIC
     src/passes/dce.cpp
     src/passes/algebraic.cpp
     src/passes/cse.cpp
+    src/passes/peephole.cpp
     src/passes/copy_prop.cpp
     src/passes/strength_reduce.cpp
     src/passes/branch_fold.cpp

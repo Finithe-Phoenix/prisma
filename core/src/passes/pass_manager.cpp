@@ -53,21 +53,23 @@ PassManager default_pipeline() {
     //   5. redundant_load_eliminate — dedupe repeated LoadMems through
     //                                  a stable addr ref. Emits copy
     //                                  idioms that copy_propagate
-    //                                  consumes in step 7.
-    //   6. common_subexpression_eliminate — kill duplicated BinOps
+    //                                  consumes in step 8.
+    //   6. peephole_match — local adjacent rewrites such as
+    //                        StoreReg→LoadReg forwarding.
+    //   7. common_subexpression_eliminate — kill duplicated BinOps
     //                                        post-simplification. Emits
     //                                        `Or x, x` copy idioms.
-    //   7. copy_propagate — chase the copy idioms RLE + CSE emit so
+    //   8. copy_propagate — chase the copy idioms RLE + CSE emit so
     //                        downstream refs see the canonical source.
-    //   8. dead_store_eliminate — drop StoreMems overwritten before any
+    //   9. dead_store_eliminate — drop StoreMems overwritten before any
     //                              read. Runs AFTER copy_propagate so
     //                              addr refs are canonical.
-    //   9. branch_fold — statically-resolve CondJumpRel whose CmpFlags
+    //  10. branch_fold — statically-resolve CondJumpRel whose CmpFlags
     //                     compares two now-Constant operands.
-    //  10. flag_write_elimination — branch_fold can orphan CmpFlags
+    //  11. flag_write_elimination — branch_fold can orphan CmpFlags
     //                                after replacing CondJumpRel with
     //                                JumpRel.
-    //  11. dead_code_eliminate — sweep defs that the earlier passes
+    //  12. dead_code_eliminate — sweep defs that the earlier passes
     //                             made unreachable (including the
     //                             post-CSE/copy-prop/RLE copies).
     //
@@ -79,6 +81,7 @@ PassManager default_pipeline() {
     pm.add("strength_reduce",                strength_reduce);
     pm.add("constant_propagate_2",           constant_propagate);
     pm.add("redundant_load_eliminate",       redundant_load_eliminate);
+    pm.add("peephole_match",                 peephole_match);
     pm.add("common_subexpression_eliminate", common_subexpression_eliminate);
     pm.add("copy_propagate",                 copy_propagate);
     pm.add("dead_store_eliminate",           dead_store_eliminate);

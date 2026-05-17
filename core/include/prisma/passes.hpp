@@ -95,6 +95,21 @@ algebraic_simplify(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 common_subexpression_eliminate(const std::vector<ir::Stmt>& stmts);
 
+// Peephole matcher — local IR patterns that are too small to justify
+// whole-program data-flow.
+//
+// MVP patterns:
+//   * `StoreReg r, %x; LoadReg r` with identical size rewrites the
+//     LoadReg to a copy of `%x` (`Or %x, %x`). The StoreReg stays
+//     because it updates guest architectural state.
+//   * `StoreReg r, %x; StoreReg r, %y` with identical size drops the
+//     first store because it is immediately overwritten before any read.
+//
+// The pass is strictly adjacent-statement only. Wider register-value
+// forwarding belongs in a later data-flow pass.
+[[nodiscard]] std::vector<ir::Stmt>
+peephole_match(const std::vector<ir::Stmt>& stmts);
+
 // Copy propagation — chase "move" chains produced by CSE.
 //
 // When CSE dedupes a duplicate BinOp, it emits `%b = Or %a, %a` (our

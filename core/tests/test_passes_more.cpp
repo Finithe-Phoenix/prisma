@@ -11,6 +11,66 @@
 using namespace prisma;
 
 // ---------------------------------------------------------------------
+// peephole_match
+// ---------------------------------------------------------------------
+
+TEST_CASE("peephole: StoreReg followed by same-size LoadReg forwards as copy") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1234, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I64}},
+    };
+
+    auto out = passes::peephole_match(s);
+    REQUIRE(out.size() == 4);
+    REQUIRE(std::holds_alternative<ir::BinOp>(out[2].op));
+    const auto& copy = std::get<ir::BinOp>(out[2].op);
+    REQUIRE(copy.op == ir::BinOpKind::Or);
+    REQUIRE(copy.lhs == 0u);
+    REQUIRE(copy.rhs == 0u);
+    REQUIRE(copy.size == ir::OpSize::I64);
+}
+
+TEST_CASE("peephole: StoreReg forwarding requires exact register and size") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1234, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}},
+        {2u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+    };
+
+    auto out = passes::peephole_match(s);
+    REQUIRE(out == s);
+}
+
+TEST_CASE("peephole: adjacent same-register StoreReg overwrite drops first store") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I64}},
+    };
+
+    auto out = passes::peephole_match(s);
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::StoreReg>(out[2].op));
+    REQUIRE(std::get<ir::StoreReg>(out[2].op).value == 1u);
+}
+
+TEST_CASE("peephole: adjacent StoreReg overwrite requires exact size") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 1u, ir::OpSize::I32}},
+    };
+
+    auto out = passes::peephole_match(s);
+    REQUIRE(out == s);
+}
+
+// ---------------------------------------------------------------------
 // copy_propagate
 // ---------------------------------------------------------------------
 
