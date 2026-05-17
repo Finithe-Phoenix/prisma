@@ -305,7 +305,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-PS-009: Peephole pattern matcher (IR-level patterns).
 - [ ] F1-PS-010: Constant folding on Extend / Truncate.
 - [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
-- [x] (pending commit) F1-PS-012: Flag-write elimination when no reader exists.
+- [x] (57bc8b7) F1-PS-012: Flag-write elimination when no reader exists.
 - [x] (pending commit) F1-PS-013: CFG simplification (remove empty blocks).
 - [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
 - [x] (pending commit) F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
