@@ -250,7 +250,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
 - [x] (b5c305a) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
 - [x] (b5c305a) F1-IR-011: Add `Truncate{value, to_size}`.
-- [ ] F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
+- [~|codex] F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
 - [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
 - [ ] F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [ ] F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
@@ -289,7 +289,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
 - [x] (709803f) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
-- [ ] F1-BK-023: Lowering of Fence (dmb ish / dsb).
+- [~|codex] F1-BK-023: Lowering of Fence (dmb ish / dsb).
 - [x] (f1fd6e8) F1-BK-024: Lowering of Select via csel.
 
 ### F1-PS — Passes
