@@ -12,6 +12,9 @@ bool operator==(const Constant& a, const Constant& b) noexcept {
 bool operator==(const LoadReg& a, const LoadReg& b) noexcept {
     return a.reg == b.reg && a.size == b.size;
 }
+bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept {
+    return a.segment == b.segment;
+}
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept {
     return a.reg == b.reg && a.value == b.value && a.size == b.size;
 }
@@ -55,6 +58,25 @@ bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept {
 }
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept {
     return a.target_guest_pc == b.target_guest_pc;
+}
+bool operator==(const CallRel& a, const CallRel& b) noexcept {
+    return a.target_guest_pc == b.target_guest_pc
+        && a.return_guest_pc == b.return_guest_pc;
+}
+bool operator==(const CallReg& a, const CallReg& b) noexcept {
+    return a.target == b.target && a.return_guest_pc == b.return_guest_pc;
+}
+bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept {
+    return a.pop_bytes == b.pop_bytes;
+}
+bool operator==(const Cpuid&, const Cpuid&) noexcept {
+    return true;
+}
+bool operator==(const Syscall&, const Syscall&) noexcept {
+    return true;
+}
+bool operator==(const Trap& a, const Trap& b) noexcept {
+    return a.kind == b.kind;
 }
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept {
     return a.cc == b.cc

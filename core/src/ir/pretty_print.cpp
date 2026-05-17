@@ -63,6 +63,21 @@ constexpr std::string_view cc_name(CondCode cc) noexcept {
     return "?";
 }
 
+constexpr std::string_view segment_name(SegmentReg s) noexcept {
+    switch (s) {
+        case SegmentReg::Fs: return "fs";
+        case SegmentReg::Gs: return "gs";
+    }
+    return "?";
+}
+
+constexpr std::string_view trap_name(TrapKind k) noexcept {
+    switch (k) {
+        case TrapKind::Sigtrap: return "sigtrap";
+    }
+    return "?";
+}
+
 void print_ref(std::ostream& os, Ref r) {
     if (r == kInvalidRef) { os << "%?"; } else { os << "%" << r; }
 }
@@ -77,6 +92,8 @@ std::string pretty_print(const Op& op) {
             os << "const." << size_suffix(x.size) << " 0x" << std::hex << x.value;
         } else if constexpr (std::is_same_v<T, LoadReg>) {
             os << "loadreg." << size_suffix(x.size) << " " << gpr_name(x.reg);
+        } else if constexpr (std::is_same_v<T, LoadSegBase>) {
+            os << "loadsegbase " << segment_name(x.segment);
         } else if constexpr (std::is_same_v<T, StoreReg>) {
             os << "storereg." << size_suffix(x.size) << " " << gpr_name(x.reg) << ", ";
             print_ref(os, x.value);
@@ -115,6 +132,21 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, JumpRel>) {
             os << "jmprel 0x" << std::hex << x.target_guest_pc;
+        } else if constexpr (std::is_same_v<T, CallRel>) {
+            os << "callrel target=0x" << std::hex << x.target_guest_pc
+               << ", ret=0x" << std::hex << x.return_guest_pc;
+        } else if constexpr (std::is_same_v<T, CallReg>) {
+            os << "callreg ";
+            print_ref(os, x.target);
+            os << ", ret=0x" << std::hex << x.return_guest_pc;
+        } else if constexpr (std::is_same_v<T, RetAdjusted>) {
+            os << "retadjusted " << std::dec << x.pop_bytes;
+        } else if constexpr (std::is_same_v<T, Cpuid>) {
+            os << "cpuid";
+        } else if constexpr (std::is_same_v<T, Syscall>) {
+            os << "syscall";
+        } else if constexpr (std::is_same_v<T, Trap>) {
+            os << "trap." << trap_name(x.kind);
         } else if constexpr (std::is_same_v<T, CondJumpRel>) {
             os << "condjmprel." << cc_name(x.cc)
                << " taken=0x" << std::hex << x.target_guest_pc

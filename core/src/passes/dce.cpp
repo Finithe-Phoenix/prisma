@@ -31,6 +31,7 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, ir::Constant>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadReg>) return true;
+        else if constexpr (std::is_same_v<T, ir::LoadSegBase>) return true;
         else if constexpr (std::is_same_v<T, ir::BinOp>) return true;
         else if constexpr (std::is_same_v<T, ir::Compare>) return true;
         else if constexpr (std::is_same_v<T, ir::Select>) return true;
@@ -51,6 +52,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         if constexpr (std::is_same_v<T, ir::Constant>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::LoadReg>) {
+            (void)x;
+        } else if constexpr (std::is_same_v<T, ir::LoadSegBase>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::StoreReg>) {
             into.insert(x.value);
@@ -76,6 +79,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::Jump>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
+            into.insert(x.target);
+        } else if constexpr (std::is_same_v<T, ir::CallReg>) {
             into.insert(x.target);
         } else if constexpr (std::is_same_v<T, ir::CondJump>) {
             into.insert(x.cond);

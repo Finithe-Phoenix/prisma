@@ -272,19 +272,12 @@ TEST_CASE("branch_fold: flag-direct cc (Cc) is conservatively untouched") {
          ir::CondJumpRel{ir::CondCode::Cc, 0x100, 0x200}},
     };
     auto out = passes::branch_fold(s);
-    // Pass returns false for flag-direct — so the "not taken" direction
-    // is still folded, but to the fallthrough JumpRel. That's consistent
-    // and correct-per-doc but arguably suboptimal. The spec says: the
-    // pass conservatively treats "undecidable" as "not taken", which
-    // emits a JumpRel(fallthrough). Check that.
-    bool saw_jump = false;
+    bool kept_cond = false;
     for (const auto& st : out) {
-        if (std::holds_alternative<ir::JumpRel>(st.op)) {
-            REQUIRE(std::get<ir::JumpRel>(st.op).target_guest_pc == 0x200u);
-            saw_jump = true;
-        }
+        REQUIRE_FALSE(std::holds_alternative<ir::JumpRel>(st.op));
+        if (std::holds_alternative<ir::CondJumpRel>(st.op)) kept_cond = true;
     }
-    REQUIRE(saw_jump);
+    REQUIRE(kept_cond);
 }
 
 // ---------------------------------------------------------------------

@@ -27,12 +27,13 @@ struct KnownConst {
 };
 
 // Evaluate `a cc b` on two 64-bit values with size-specific masking.
-// Returns true iff the condition holds — which, in x86 CMP semantics,
-// is the "taken" direction for the corresponding Jcc.
-bool eval_cond(ir::CondCode cc,
-               std::uint64_t a,
-               std::uint64_t b,
-               ir::OpSize size) noexcept {
+// Returns true/false when the condition can be decided. Returns nullopt
+// for flag-direct cases whose carry/overflow/sign semantics are not
+// modelled by this MVP pass.
+std::optional<bool> eval_cond(ir::CondCode cc,
+                              std::uint64_t a,
+                              std::uint64_t b,
+                              ir::OpSize size) noexcept {
     // Mask to operand size — the comparison sees truncated values.
     a = ir::mask_to_size(a, size);
     b = ir::mask_to_size(b, size);
@@ -73,9 +74,9 @@ bool eval_cond(ir::CondCode cc,
         case ir::CondCode::NoOv:
         case ir::CondCode::Mi:
         case ir::CondCode::Pl:
-            return false;  // conservative: "can't decide" ≡ not taken
+            return std::nullopt;
     }
-    return false;
+    return std::nullopt;
 }
 
 }  // namespace
@@ -111,16 +112,19 @@ branch_fold(const std::vector<ir::Stmt>& stmts) {
             const auto it_l = consts.find(last_cmp->lhs);
             const auto it_r = consts.find(last_cmp->rhs);
             if (it_l != consts.end() && it_r != consts.end()) {
-                const bool taken = eval_cond(
+                const auto taken = eval_cond(
                     cj.cc, it_l->second.value, it_r->second.value,
                     last_cmp->size);
-                ir::Stmt folded{std::nullopt,
-                    ir::Op{ir::JumpRel{
-                        taken ? cj.target_guest_pc : cj.fallthrough_guest_pc}}};
-                out.push_back(std::move(folded));
-                last_cmp.reset();
-                continue;
+                if (taken) {
+                    ir::Stmt folded{std::nullopt,
+                        ir::Op{ir::JumpRel{
+                            *taken ? cj.target_guest_pc : cj.fallthrough_guest_pc}}};
+                    out.push_back(std::move(folded));
+                    last_cmp.reset();
+                    continue;
+                }
             }
+            last_cmp.reset();
         }
         // Any ALU op that writes could invalidate NZCV; conservatively
         // flush last_cmp when any BinOp or StoreReg touches flags-

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "prisma/arm64_encoding.hpp"
+#include "prisma/cpu_state.hpp"
 #include "prisma/decoder.hpp"
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
@@ -427,9 +428,10 @@ TEST_CASE("e2e executing: Translator end-to-end for decoded CMP + JE sequence",
     REQUIRE(std::holds_alternative<translator::TranslatedBlock>(r));
     const auto& b = std::get<translator::TranslatedBlock>(r);
 
-    using Fn = std::uint64_t (*)();
+    runtime::CpuStateFrame state;
+    using Fn = std::uint64_t (*)(runtime::CpuStateFrame*);
     Fn fn = reinterpret_cast<Fn>(const_cast<std::uint8_t*>(b.code_entry));
-    REQUIRE(fn() == 0x8029u);  // taken branch PC.
+    REQUIRE(fn(&state) == 0x8029u);  // taken branch PC.
 }
 
 TEST_CASE("e2e executing: decoded x86 `mov rax, [rbx]` JITs and runs",

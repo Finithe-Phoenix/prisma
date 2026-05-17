@@ -36,8 +36,9 @@ enum class FaultKind : int {
 };
 
 // Install SIGSEGV / SIGILL / SIGBUS handlers. Safe to call more than
-// once; subsequent calls are no-ops. Not thread-safe with respect to
-// other code that installs handlers for the same signals.
+// once; each call reasserts Prisma's handlers in case a test framework
+// or embedding host changed them. Not thread-safe with respect to other
+// code that installs handlers for the same signals.
 void install_handlers();
 
 // Thread-local "protected scope" state. A call site does:

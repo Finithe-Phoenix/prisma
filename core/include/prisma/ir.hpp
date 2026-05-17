@@ -76,6 +76,15 @@ enum class CondCode : std::uint8_t {
     Mi,   Pl,               // sign-set / sign-clear pair
 };
 
+enum class SegmentReg : std::uint8_t {
+    Fs = 0,
+    Gs = 1,
+};
+
+enum class TrapKind : std::uint8_t {
+    Sigtrap = 0,
+};
+
 // ---------------------------------------------------------------------------
 // Ref — SSA value identifier.
 // ---------------------------------------------------------------------------
@@ -102,6 +111,7 @@ inline constexpr Ref kInvalidRef = 0xFFFF'FFFFu;
 struct Constant { std::uint64_t value; OpSize size; };
 
 struct LoadReg  { Gpr reg; OpSize size; };
+struct LoadSegBase { SegmentReg segment; };
 struct StoreReg { Gpr reg; Ref value; OpSize size; };
 
 struct BinOp    { BinOpKind op; Ref lhs; Ref rhs; OpSize size; };
@@ -155,6 +165,26 @@ struct JumpRel {
     std::uint64_t target_guest_pc;
 };
 
+struct CallRel {
+    std::uint64_t target_guest_pc;
+    std::uint64_t return_guest_pc;
+};
+
+struct CallReg {
+    Ref target;
+    std::uint64_t return_guest_pc;
+};
+
+struct RetAdjusted {
+    std::uint32_t pop_bytes;
+};
+
+struct Cpuid {};
+struct Syscall {};
+struct Trap {
+    TrapKind kind;
+};
+
 struct CondJumpRel {
     CondCode      cc;
     std::uint64_t target_guest_pc;
@@ -163,7 +193,7 @@ struct CondJumpRel {
 
 using Op = std::variant<
     Constant,
-    LoadReg, StoreReg,
+    LoadReg, LoadSegBase, StoreReg,
     BinOp,
     Compare,
     Select,
@@ -171,7 +201,9 @@ using Op = std::variant<
     LoadMemTSO, StoreMemTSO,
     Jump, CondJump, Return,
     JumpReg,
-    CmpFlags, JumpRel, CondJumpRel
+    CmpFlags, JumpRel, CallRel, CallReg, RetAdjusted,
+    Cpuid, Syscall, Trap,
+    CondJumpRel
 >;
 
 // ---------------------------------------------------------------------------
@@ -212,6 +244,7 @@ struct Function {
 
 bool operator==(const Constant& a, const Constant& b) noexcept;
 bool operator==(const LoadReg& a, const LoadReg& b) noexcept;
+bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept;
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept;
 bool operator==(const BinOp& a, const BinOp& b) noexcept;
 bool operator==(const Compare& a, const Compare& b) noexcept;
@@ -227,6 +260,12 @@ bool operator==(const Return&, const Return&) noexcept;
 
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept;
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept;
+bool operator==(const CallRel& a, const CallRel& b) noexcept;
+bool operator==(const CallReg& a, const CallReg& b) noexcept;
+bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
+bool operator==(const Cpuid&, const Cpuid&) noexcept;
+bool operator==(const Syscall&, const Syscall&) noexcept;
+bool operator==(const Trap& a, const Trap& b) noexcept;
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;

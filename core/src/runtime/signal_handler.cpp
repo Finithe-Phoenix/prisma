@@ -18,16 +18,13 @@
 
 #include <csetjmp>
 #include <csignal>
+#include <cstdlib>
 #include <cstddef>
 #include <cstring>
-#include <mutex>
 
 namespace prisma::runtime {
 
 namespace {
-
-// One-shot install guard.
-std::once_flag g_install_flag;
 
 // Per-thread recovery state.
 thread_local std::jmp_buf* tls_current_jb = nullptr;
@@ -76,11 +73,9 @@ void install_one(int sig) {
 }  // namespace
 
 void install_handlers() {
-    std::call_once(g_install_flag, [] {
-        install_one(SIGSEGV);
-        install_one(SIGILL);
-        install_one(SIGBUS);
-    });
+    install_one(SIGSEGV);
+    install_one(SIGILL);
+    install_one(SIGBUS);
 }
 
 ScopedProtected::ScopedProtected(std::jmp_buf& jb) noexcept

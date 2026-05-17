@@ -64,7 +64,10 @@ PassManager default_pipeline() {
     //                              addr refs are canonical.
     //   9. branch_fold — statically-resolve CondJumpRel whose CmpFlags
     //                     compares two now-Constant operands.
-    //  10. dead_code_eliminate — sweep defs that the earlier passes
+    //  10. flag_write_elimination — branch_fold can orphan CmpFlags
+    //                                after replacing CondJumpRel with
+    //                                JumpRel.
+    //  11. dead_code_eliminate — sweep defs that the earlier passes
     //                             made unreachable (including the
     //                             post-CSE/copy-prop/RLE copies).
     //
@@ -80,6 +83,7 @@ PassManager default_pipeline() {
     pm.add("copy_propagate",                 copy_propagate);
     pm.add("dead_store_eliminate",           dead_store_eliminate);
     pm.add("branch_fold",                    branch_fold);
+    pm.add("flag_write_elimination",         flag_write_elimination);
     pm.add("dead_code_eliminate",            dead_code_eliminate);
     return pm;
 }

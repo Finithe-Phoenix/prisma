@@ -66,6 +66,8 @@ ir::Op rewrite(ir::Op op,
             x.cond = resolve(x.cond, alias);
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
             x.target = resolve(x.target, alias);
+        } else if constexpr (std::is_same_v<T, ir::CallReg>) {
+            x.target = resolve(x.target, alias);
         }
         return ir::Op{std::move(x)};
     }, std::move(op));

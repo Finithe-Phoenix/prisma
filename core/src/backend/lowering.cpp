@@ -181,7 +181,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CmpFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
-            // Constant, LoadReg, Jump, JumpRel, CondJumpRel, Return have
+            else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
+            // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CallRel,
+            // RetAdjusted, Cpuid, Syscall, Trap, CondJumpRel, Return have
             // no operand refs — nothing to bump.
         }, s.op);
     }
