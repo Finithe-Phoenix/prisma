@@ -42,8 +42,19 @@ public:
     // mov Xd, #imm64 (may emit up to 4 instructions: movz + movk*)
     void mov_imm64(arm64::Reg rd, std::uint64_t imm);
 
-    // mov Xd, Xs  (register-to-register copy)
+    // mov Xd, Xs  (64-bit register-to-register copy)
     void mov_reg_reg(arm64::Reg rd, arm64::Reg rs);
+
+    // Copy a sized value from one host register to another, canonicalising
+    // the result into the X destination. I8/I16/I32 zero-extend; I64 is a
+    // plain X-register copy. Used for IR LoadReg results.
+    void mov_reg_reg(arm64::Reg rd, arm64::Reg rs, ir::OpSize size);
+
+    // Write a sized value into a pinned guest-register host register using
+    // x86 GPR write semantics. I8/I16 update only the low bits and preserve
+    // the rest; I32 uses a W-register write and zeroes the high half; I64 is
+    // a plain X-register copy.
+    void store_reg_reg(arm64::Reg rd, arm64::Reg rs, ir::OpSize size);
 
     // --- 64-bit ALU, 3-register form (AArch64 canonical for BinOp lowering) ---
     // Each maps 1-1 to our IR BinOpKind on OpSize::I64.

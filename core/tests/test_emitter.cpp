@@ -146,6 +146,21 @@ TEST_CASE("Emitter: width canonicalisation emits extend aliases") {
     REQUIRE(text.find("sxtw") != std::string::npos);
 }
 
+TEST_CASE("Emitter: sized register copies use x86 GPR write semantics") {
+    backend::Emitter em;
+    em.mov_reg_reg(arm64::Reg::X0, arm64::Reg::X10, ir::OpSize::I32);
+    em.store_reg_reg(arm64::Reg::X11, arm64::Reg::X1, ir::OpSize::I32);
+    em.store_reg_reg(arm64::Reg::X12, arm64::Reg::X2, ir::OpSize::I8);
+    em.store_reg_reg(arm64::Reg::X13, arm64::Reg::X3, ir::OpSize::I16);
+    em.finalize();
+
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("mov w0, w10") != std::string::npos);
+    REQUIRE(text.find("mov w11, w1") != std::string::npos);
+    REQUIRE(text.find("bfxil x12, x2, #0, #8") != std::string::npos);
+    REQUIRE(text.find("bfxil x13, x3, #0, #16") != std::string::npos);
+}
+
 TEST_CASE("Emitter: x86 fences map to ARM barriers") {
     backend::Emitter em;
     em.fence(ir::FenceKind::Mfence);

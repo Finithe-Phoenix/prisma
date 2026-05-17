@@ -83,6 +83,36 @@ TEST_CASE("Lowerer: LoadReg + BinOp + StoreReg → full ALU chain") {
     REQUIRE(d.find("ret")            != std::string::npos);
 }
 
+TEST_CASE("Lowerer: LoadReg and StoreReg honor 32-bit W-register writes") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 0u, ir::OpSize::I32}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("mov w0, w10") != std::string::npos);
+    REQUIRE(d.find("mov w13, w0") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: byte and word StoreReg preserve upper guest-register bits") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I8}},
+        {1u, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I16}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 0u, ir::OpSize::I8}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rdx, 1u, ir::OpSize::I16}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("uxtb") != std::string::npos);
+    REQUIRE(d.find("uxth") != std::string::npos);
+    REQUIRE(d.find("bfxil x13, x0, #0, #8") != std::string::npos);
+    REQUIRE(d.find("bfxil x12, x1, #0, #16") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: each BinOpKind emits the right ARM64 mnemonic") {
     auto try_op = [](ir::BinOpKind k) {
         std::vector<ir::Stmt> s = {

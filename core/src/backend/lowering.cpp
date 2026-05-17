@@ -270,8 +270,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "LoadReg"};
             }
             // Copy the pinned host reg into a scratch so subsequent StoreReg
-            // writes cannot clobber this value.
-            emitter_.mov_reg_reg(rd, arm64::host_reg_for(op.reg));
+            // writes cannot clobber this value. Narrow loads become
+            // canonical zero-extended SSA values.
+            emitter_.mov_reg_reg(rd, arm64::host_reg_for(op.reg), op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::StoreReg>) {
@@ -279,7 +280,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!reg_of(op.value, src)) {
                 return {false, LowerError::DanglingRef, "StoreReg.value"};
             }
-            emitter_.mov_reg_reg(arm64::host_reg_for(op.reg), src);
+            emitter_.store_reg_reg(arm64::host_reg_for(op.reg), src, op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::BinOp>) {

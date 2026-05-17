@@ -29,6 +29,11 @@ vixl_aa::XRegister to_vixl_x(arm64::Reg r) noexcept {
     return vixl_aa::XRegister(static_cast<int>(r));
 }
 
+// Build a vixl WRegister from our Reg enum (for 32-bit forms).
+vixl_aa::WRegister to_vixl_w(arm64::Reg r) noexcept {
+    return vixl_aa::WRegister(static_cast<int>(r));
+}
+
 }  // namespace
 
 struct Emitter::Impl {
@@ -59,6 +64,38 @@ void Emitter::mov_imm64(arm64::Reg rd, std::uint64_t imm) {
 
 void Emitter::mov_reg_reg(arm64::Reg rd, arm64::Reg rs) {
     impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rs));
+}
+
+void Emitter::mov_reg_reg(arm64::Reg rd, arm64::Reg rs, ir::OpSize size) {
+    switch (size) {
+        case ir::OpSize::I8:
+        case ir::OpSize::I16:
+            truncate(rd, rs, size);
+            return;
+        case ir::OpSize::I32:
+            impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rs));
+            return;
+        case ir::OpSize::I64:
+            mov_reg_reg(rd, rs);
+            return;
+    }
+}
+
+void Emitter::store_reg_reg(arm64::Reg rd, arm64::Reg rs, ir::OpSize size) {
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Bfxil(to_vixl_x(rd), to_vixl_x(rs), 0, 8);
+            return;
+        case ir::OpSize::I16:
+            impl_->masm.Bfxil(to_vixl_x(rd), to_vixl_x(rs), 0, 16);
+            return;
+        case ir::OpSize::I32:
+            impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rs));
+            return;
+        case ir::OpSize::I64:
+            mov_reg_reg(rd, rs);
+            return;
+    }
 }
 
 void Emitter::add(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
@@ -182,15 +219,6 @@ void Emitter::msub(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm, arm64::Reg ra) {
 void Emitter::cmp(arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Cmp(to_vixl_x(rn), to_vixl_x(rm));
 }
-
-namespace {
-
-// Build a vixl WRegister from our Reg enum (for 32-bit form loads/stores).
-vixl_aa::WRegister to_vixl_w(arm64::Reg r) noexcept {
-    return vixl_aa::WRegister(static_cast<int>(r));
-}
-
-}  // namespace
 
 void Emitter::load(arm64::Reg rd, arm64::Reg raddr, ir::OpSize size) {
     const vixl_aa::MemOperand mo(to_vixl_x(raddr));
