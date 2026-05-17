@@ -290,7 +290,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
 - [x] (709803f) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
 - [ ] F1-BK-023: Lowering of Fence (dmb ish / dsb).
-- [ ] F1-BK-024: Lowering of Select via csel.
+- [x] (f1fd6e8) F1-BK-024: Lowering of Select via csel.
 
 ### F1-PS — Passes
 
