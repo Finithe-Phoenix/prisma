@@ -271,20 +271,20 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
 - [ ] F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
 - [ ] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
-- [x] (pending commit) F1-BK-005: Emitter label management (vixl Label class).
+- [x] (8b845e1) F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
-- [x] (pending commit) F1-BK-007: Linear-scan register allocator over scratch pool.
-- [x] (pending commit) F1-BK-008: Register spill / reload to stack frame slots.
+- [x] (3f29499) F1-BK-007: Linear-scan register allocator over scratch pool.
+- [x] (7fb57c0) F1-BK-008: Register spill / reload to stack frame slots.
 - [ ] F1-BK-009: Callee-saved register save / restore around guest calls.
 - [x] (b667821) F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
-- [x] (pending commit) F1-BK-011: Emitter for MUL/DIV multi-register output.
+- [x] (6bcb538) F1-BK-011: Emitter for MUL/DIV multi-register output.
 - [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
 - [ ] F1-BK-013: Emitter for floating-point (fadd, fmul, fdiv).
-- [x] (pending commit) F1-BK-014: Emitter for rotates (ror / rol).
-- [x] (pending commit) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
-- [x] (pending commit) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
-- [x] (pending commit) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
-- [x] (pending commit) F1-BK-018: Literal pool management.
+- [x] (946f5c6) F1-BK-014: Emitter for rotates (ror / rol).
+- [x] (946f5c6) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
+- [x] (6bcb538) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
+- [x] (6bcb538) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
+- [x] (90a2796) F1-BK-018: Literal pool management.
 - [x] (7b139a4) F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [x] (f1fd6e8) F1-BK-020: Emit guest-state save on translation entry.
 - [x] (f1fd6e8) F1-BK-021: Emit guest-state restore on translation exit.
