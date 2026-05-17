@@ -47,12 +47,17 @@ TEST_CASE("Structural equality on Op variants") {
     Op m = Fence{FenceKind::Mfence};
     Op n = Fence{FenceKind::Mfence};
     Op o = Fence{FenceKind::Sfence};
+    Op p = GuestPc{0x401000};
+    Op q = GuestPc{0x401000};
+    Op r = GuestPc{0x401001};
 
     REQUIRE(h == i);
     REQUIRE_FALSE(h == j);
     REQUIRE_FALSE(k == l);
     REQUIRE(m == n);
     REQUIRE_FALSE(m == o);
+    REQUIRE(p == q);
+    REQUIRE_FALSE(p == r);
 }
 
 TEST_CASE("Stmt equality includes result binding") {
@@ -102,6 +107,9 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
 
     Stmt s_fence{std::nullopt, Fence{FenceKind::Mfence}};
     REQUIRE(pretty_print(s_fence) == "fence.mfence");
+
+    Stmt s_guest_pc{std::nullopt, GuestPc{0x401000}};
+    REQUIRE(pretty_print(s_guest_pc) == "guestpc 0x401000");
 
     Stmt s_ret{std::nullopt, Return{}};
     REQUIRE(pretty_print(s_ret) == "ret");

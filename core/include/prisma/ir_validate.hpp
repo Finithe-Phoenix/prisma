@@ -9,8 +9,8 @@
 //   1. Every operand Ref references a statement earlier in the list
 //      whose `result` is that same Ref (SSA-def-precedes-use).
 //   2. Every statement's `result` is unique — no Ref is redefined.
-//   3. Side-effecting ops (StoreReg/StoreMem*/Jump*/Return/CondJump*/
-//      CmpFlags/Fence) have `result == nullopt`. Pure ops (Constant/LoadReg/
+//   3. Side-effecting/marker ops (StoreReg/StoreMem*/Jump*/Return/CondJump*/
+//      CmpFlags/Fence/GuestPc) have `result == nullopt`. Pure ops (Constant/LoadReg/
 //      BinOp/Extend/Truncate/Compare/Select/LoadMem*) have
 //      `result != nullopt`.
 //

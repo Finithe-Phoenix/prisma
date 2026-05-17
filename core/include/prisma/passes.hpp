@@ -46,8 +46,8 @@ constant_propagate(const std::vector<ir::Stmt>& stmts);
 // Removes pure statements whose bound Ref is never read by any subsequent
 // statement. "Pure" here means: Constant, LoadReg, LoadSegBase, BinOp,
 // Extend, Truncate, Compare, LoadMem (non-TSO), LoadMemTSO (see note
-// below). Side-effecting statements (StoreReg, StoreMem*, Jump, CondJump,
-// Return) are never removed.
+// below). Side-effecting and marker statements (StoreReg, StoreMem*,
+// GuestPc, Jump, CondJump, Return) are never removed.
 //
 // Note on LoadMemTSO: strictly speaking a TSO load is observable under a
 // weak memory model (it synchronises), so removing it when its value is

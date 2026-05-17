@@ -184,9 +184,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
-            // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CallRel,
-            // RetAdjusted, Cpuid, Syscall, Trap, Fence, CondJumpRel, Return have
-            // no operand refs — nothing to bump.
+            // Constant, LoadReg, LoadSegBase, GuestPc, Jump, JumpRel,
+            // CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
+            // CondJumpRel, Return have no operand refs — nothing to bump.
         }, s.op);
     }
 }
@@ -421,6 +421,11 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!reg_of(op.addr, raddr)) return {false, LowerError::DanglingRef, "StoreMemTSO.addr"};
             if (!reg_of(op.value, rv))   return {false, LowerError::DanglingRef, "StoreMemTSO.value"};
             emitter_.store_release(rv, raddr, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::GuestPc>) {
+            // Debug/cache marker only. It carries guest-PC metadata through
+            // IR and passes but intentionally emits no machine code.
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::CmpFlags>) {

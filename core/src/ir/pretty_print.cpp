@@ -134,6 +134,8 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
             os << "store.tso." << size_suffix(x.size) << " ["; print_ref(os, x.addr);
             os << "], "; print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, GuestPc>) {
+            os << "guestpc 0x" << std::hex << x.pc;
         } else if constexpr (std::is_same_v<T, Jump>) {
             os << "jmp bb" << x.target_block;
         } else if constexpr (std::is_same_v<T, JumpReg>) {

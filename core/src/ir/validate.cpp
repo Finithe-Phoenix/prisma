@@ -36,9 +36,9 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); }
         else if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); }
         else if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); }
-        // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CallRel,
-        // RetAdjusted, Cpuid, Syscall, Trap, Fence, CondJumpRel, Return —
-        // no refs.
+        // Constant, LoadReg, LoadSegBase, GuestPc, Jump, JumpRel,
+        // CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
+        // CondJumpRel, Return — no refs.
     }, op);
 }
 

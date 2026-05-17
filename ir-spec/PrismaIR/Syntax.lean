@@ -89,6 +89,10 @@ inductive Op where
   | loadMemTSO  (addr : Ref)           (size : OpSize) : Op
   | storeMemTSO (addr value : Ref)     (size : OpSize) : Op
 
+  -- Debug/cache marker. Carries a guest PC through IR and passes but
+  -- produces no value and has no runtime semantics.
+  | guestPc (pc : UInt64) : Op
+
   -- Control flow (basic-block indexed, unused in the current MVP)
   | jump     (target : Nat)                          : Op
   | condJump (cond : Ref) (ifTrue ifFalse : Nat)     : Op

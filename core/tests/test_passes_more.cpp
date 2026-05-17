@@ -434,6 +434,25 @@ TEST_CASE("flag_write_elimination: clears stale writes on Compare") {
     REQUIRE(kept_cmp == 0);
 }
 
+TEST_CASE("dce: preserves GuestPc marker between CmpFlags and CondJumpRel") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::GuestPc{0x401000}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Eq, 0x401010, 0x401002}},
+    };
+
+    auto out = passes::dead_code_eliminate(s);
+
+    REQUIRE(out.size() == s.size());
+    REQUIRE(std::holds_alternative<ir::CmpFlags>(out[2].op));
+    REQUIRE(std::holds_alternative<ir::GuestPc>(out[3].op));
+    REQUIRE(std::get<ir::GuestPc>(out[3].op).pc == 0x401000u);
+    REQUIRE(std::holds_alternative<ir::CondJumpRel>(out[4].op));
+}
+
 // ---------------------------------------------------------------------
 // Interaction with default_pipeline
 // ---------------------------------------------------------------------
@@ -487,6 +506,26 @@ TEST_CASE("pipeline: flag-write elimination removes dead CmpFlags after branch_f
     REQUIRE(std::holds_alternative<ir::JumpRel>(out[0].op));
     REQUIRE(std::get<ir::JumpRel>(out[0].op).target_guest_pc == 0x100u);
     REQUIRE_FALSE(std::holds_alternative<ir::CmpFlags>(out[0].op));
+}
+
+TEST_CASE("pipeline: GuestPc marker does not break CmpFlags to CondJumpRel") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::GuestPc{0x402000}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Ne, 0x402020, 0x402002}},
+    };
+
+    auto pm = passes::default_pipeline();
+    auto [out, _stats] = pm.run(s);
+
+    REQUIRE(out.size() == s.size());
+    REQUIRE(std::holds_alternative<ir::CmpFlags>(out[2].op));
+    REQUIRE(std::holds_alternative<ir::GuestPc>(out[3].op));
+    REQUIRE(std::get<ir::GuestPc>(out[3].op).pc == 0x402000u);
+    REQUIRE(std::holds_alternative<ir::CondJumpRel>(out[4].op));
 }
 
 // ---------------------------------------------------------------------

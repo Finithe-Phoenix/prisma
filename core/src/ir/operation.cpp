@@ -49,6 +49,9 @@ bool operator==(const LoadMemTSO& a, const LoadMemTSO& b) noexcept {
 bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept {
     return a.addr == b.addr && a.value == b.value && a.size == b.size;
 }
+bool operator==(const GuestPc& a, const GuestPc& b) noexcept {
+    return a.pc == b.pc;
+}
 bool operator==(const Jump& a, const Jump& b) noexcept {
     return a.target_block == b.target_block;
 }

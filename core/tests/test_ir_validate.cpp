@@ -133,6 +133,21 @@ TEST_CASE("validate: Fence is side-effecting and has no result") {
     REQUIRE(r.error->code == ir::ValidationCode::ImpureHasResult);
 }
 
+TEST_CASE("validate: GuestPc is a no-result marker") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::GuestPc{0x401000}},
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+    };
+    REQUIRE(ir::validate(s).ok);
+
+    std::vector<ir::Stmt> bad = {
+        {0u, ir::GuestPc{0x401000}},
+    };
+    auto r = ir::validate(bad);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::ImpureHasResult);
+}
+
 TEST_CASE("validate: forward self-reference is flagged as undefined") {
     // A ref that references itself before being defined.
     std::vector<ir::Stmt> s = {

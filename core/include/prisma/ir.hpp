@@ -151,6 +151,12 @@ struct StoreMem    { Ref addr; Ref value; OpSize size; };
 struct LoadMemTSO  { Ref addr; OpSize size; };
 struct StoreMemTSO { Ref addr; Ref value; OpSize size; };
 
+// Debug/cache marker for the guest PC associated with the following IR
+// region. It has no result, reads no refs, and lowers to no machine code.
+struct GuestPc {
+    std::uint64_t pc;
+};
+
 struct Jump     { std::uint32_t target_block; };
 struct CondJump { Ref cond; std::uint32_t if_true; std::uint32_t if_false; };
 struct Return   {};
@@ -220,6 +226,7 @@ using Op = std::variant<
     Select,
     LoadMem, StoreMem,
     LoadMemTSO, StoreMemTSO,
+    GuestPc,
     Jump, CondJump, Return,
     JumpReg,
     CmpFlags, JumpRel, CallRel, CallReg, RetAdjusted,
@@ -276,6 +283,7 @@ bool operator==(const LoadMem& a, const LoadMem& b) noexcept;
 bool operator==(const StoreMem& a, const StoreMem& b) noexcept;
 bool operator==(const LoadMemTSO& a, const LoadMemTSO& b) noexcept;
 bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept;
+bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
 bool operator==(const Jump& a, const Jump& b) noexcept;
 bool operator==(const CondJump& a, const CondJump& b) noexcept;
 bool operator==(const JumpReg& a, const JumpReg& b) noexcept;

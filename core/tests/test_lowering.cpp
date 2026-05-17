@@ -274,6 +274,19 @@ TEST_CASE("Lowerer: Syscall returns the halt sentinel as a placeholder terminato
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: GuestPc marker emits no code") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::GuestPc{0x401000}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ret") != std::string::npos);
+    REQUIRE(d.find("0x401000") == std::string::npos);
+}
+
 TEST_CASE("Lowerer: Trap(sigtrap) returns the placeholder terminator sequence") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Trap{ir::TrapKind::Sigtrap}},

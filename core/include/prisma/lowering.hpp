@@ -8,8 +8,8 @@
 //
 //   Supported IR ops include:
 //     Constant, LoadReg, StoreReg, BinOp, Extend, Truncate, Compare,
-//     Select, memory ops, CmpFlags, guest-PC branches, calls/traps, Fence,
-//     and Return.
+//     Select, memory ops, GuestPc markers, CmpFlags, guest-PC branches,
+//     calls/traps, Fence, and Return.
 //
 //   Rejected IR ops (returns LowerError::Unsupported):
 //     Basic-block indexed Jump / CondJump. CFG lowering lands separately.
