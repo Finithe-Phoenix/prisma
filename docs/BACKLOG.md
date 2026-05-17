@@ -252,7 +252,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (b5c305a) F1-IR-011: Add `Truncate{value, to_size}`.
 - [x] (ef49532) F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
 - [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
-- [~|codex] F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
+- [x] (b4e766c) F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [ ] F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
 - [x] (53341ac) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
 - [ ] F1-IR-017: IR serialization to a compact binary form for cache storage.
