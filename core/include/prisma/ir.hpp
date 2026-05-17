@@ -116,6 +116,18 @@ struct StoreReg { Gpr reg; Ref value; OpSize size; };
 
 struct BinOp    { BinOpKind op; Ref lhs; Ref rhs; OpSize size; };
 
+struct Extend {
+    Ref value;
+    OpSize from_size;
+    OpSize to_size;
+    bool is_signed;
+};
+
+struct Truncate {
+    Ref value;
+    OpSize to_size;
+};
+
 struct Compare  { CondCode cc; Ref lhs; Ref rhs; OpSize size; };
 
 // Conditional select (ternary): `result = (cond ? true_value : false_value)`.
@@ -194,7 +206,7 @@ struct CondJumpRel {
 using Op = std::variant<
     Constant,
     LoadReg, LoadSegBase, StoreReg,
-    BinOp,
+    BinOp, Extend, Truncate,
     Compare,
     Select,
     LoadMem, StoreMem,
@@ -247,6 +259,8 @@ bool operator==(const LoadReg& a, const LoadReg& b) noexcept;
 bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept;
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept;
 bool operator==(const BinOp& a, const BinOp& b) noexcept;
+bool operator==(const Extend& a, const Extend& b) noexcept;
+bool operator==(const Truncate& a, const Truncate& b) noexcept;
 bool operator==(const Compare& a, const Compare& b) noexcept;
 bool operator==(const Select& a, const Select& b) noexcept;
 bool operator==(const LoadMem& a, const LoadMem& b) noexcept;

@@ -102,6 +102,23 @@ TEST_CASE("validate: Select with all operands defined passes") {
     REQUIRE(ir::validate(s).ok);
 }
 
+TEST_CASE("validate: Extend and Truncate read their source ref") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xFF, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
+        {2u, ir::Truncate{1u, ir::OpSize::I16}},
+    };
+    REQUIRE(ir::validate(s).ok);
+
+    std::vector<ir::Stmt> bad = {
+        {0u, ir::Truncate{99u, ir::OpSize::I16}},
+    };
+    auto r = ir::validate(bad);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
+    REQUIRE(r.error->bad_ref == 99u);
+}
+
 TEST_CASE("validate: forward self-reference is flagged as undefined") {
     // A ref that references itself before being defined.
     std::vector<ir::Stmt> s = {

@@ -11,7 +11,8 @@
 //   2. Every statement's `result` is unique — no Ref is redefined.
 //   3. Side-effecting ops (StoreReg/StoreMem*/Jump*/Return/CondJump*/
 //      CmpFlags) have `result == nullopt`. Pure ops (Constant/LoadReg/
-//      BinOp/Compare/Select/LoadMem*) have `result != nullopt`.
+//      BinOp/Extend/Truncate/Compare/Select/LoadMem*) have
+//      `result != nullopt`.
 //
 // Out of scope for MVP (future IR-015 work):
 //   * Cross-ref size consistency (BinOp.size vs lhs.size vs rhs.size).

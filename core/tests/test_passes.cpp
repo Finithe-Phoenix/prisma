@@ -70,6 +70,43 @@ TEST_CASE("const_prop: result is size-masked (i32 addition overflow)") {
     REQUIRE(std::get<ir::Constant>(out[2].op).size  == ir::OpSize::I32);
 }
 
+TEST_CASE("const_prop: Extend of a constant folds with signedness") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x80, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
+        {2u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, false}},
+    };
+    auto out = passes::constant_propagate(s);
+
+    REQUIRE(std::get<ir::Constant>(out[1].op) ==
+            ir::Constant{0xFFFF'FFFF'FFFF'FF80ULL, ir::OpSize::I64});
+    REQUIRE(std::get<ir::Constant>(out[2].op) ==
+            ir::Constant{0x80ULL, ir::OpSize::I64});
+}
+
+TEST_CASE("const_prop: Truncate of a constant folds to masked size") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1234'5678ULL, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I16}},
+    };
+    auto out = passes::constant_propagate(s);
+
+    REQUIRE(std::get<ir::Constant>(out[1].op) ==
+            ir::Constant{0x5678ULL, ir::OpSize::I16});
+}
+
+TEST_CASE("const_prop: Extend and Truncate with non-constants are not folded") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
+        {2u, ir::Truncate{0u, ir::OpSize::I16}},
+    };
+    auto out = passes::constant_propagate(s);
+
+    REQUIRE(std::holds_alternative<ir::Extend>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::Truncate>(out[2].op));
+}
+
 TEST_CASE("const_prop: BinOp with a non-constant operand is NOT folded") {
     // %0 = loadreg rax   (unknown value)
     // %1 = const 7
@@ -151,6 +188,18 @@ TEST_CASE("dce: preserves live chain through BinOp") {
     };
     auto out = passes::dead_code_eliminate(s);
     REQUIRE(out.size() == s.size());
+}
+
+TEST_CASE("dce: preserves live chain through Extend and Truncate") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x80, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
+        {2u, ir::Truncate{1u, ir::OpSize::I32}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I32}},
+    };
+
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out == s);
 }
 
 TEST_CASE("dce: const_prop leaves residue, dce cleans it up") {

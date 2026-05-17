@@ -26,6 +26,8 @@ namespace prisma::passes {
 // Transformations:
 //   * `BinOp(op, ca, cb)` where both operands are Constants collapses to
 //     a new Constant whose value is `mask_to_size(evalBinOp(op, ca, cb))`.
+//   * `Extend` / `Truncate` whose operand is a Constant collapses to a
+//     Constant with the requested output size and signedness semantics.
 //   * Any StoreReg / Return / side-effecting op passes through unchanged,
 //     possibly with updated refs where its operand was folded.
 //
@@ -43,8 +45,9 @@ constant_propagate(const std::vector<ir::Stmt>& stmts);
 //
 // Removes pure statements whose bound Ref is never read by any subsequent
 // statement. "Pure" here means: Constant, LoadReg, LoadSegBase, BinOp,
-// Compare, LoadMem (non-TSO), LoadMemTSO (see note below). Side-effecting
-// statements (StoreReg, StoreMem*, Jump, CondJump, Return) are never removed.
+// Extend, Truncate, Compare, LoadMem (non-TSO), LoadMemTSO (see note
+// below). Side-effecting statements (StoreReg, StoreMem*, Jump, CondJump,
+// Return) are never removed.
 //
 // Note on LoadMemTSO: strictly speaking a TSO load is observable under a
 // weak memory model (it synchronises), so removing it when its value is

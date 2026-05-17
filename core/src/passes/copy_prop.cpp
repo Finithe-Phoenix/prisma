@@ -43,6 +43,10 @@ ir::Op rewrite(ir::Op op,
         } else if constexpr (std::is_same_v<T, ir::BinOp>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::Extend>) {
+            x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            x.value = resolve(x.value, alias);
         } else if constexpr (std::is_same_v<T, ir::Compare>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);

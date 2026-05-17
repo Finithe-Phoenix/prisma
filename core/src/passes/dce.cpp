@@ -33,6 +33,8 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::LoadReg>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadSegBase>) return true;
         else if constexpr (std::is_same_v<T, ir::BinOp>) return true;
+        else if constexpr (std::is_same_v<T, ir::Extend>) return true;
+        else if constexpr (std::is_same_v<T, ir::Truncate>) return true;
         else if constexpr (std::is_same_v<T, ir::Compare>) return true;
         else if constexpr (std::is_same_v<T, ir::Select>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadMem>) return true;
@@ -60,6 +62,10 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::BinOp>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::Extend>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::Compare>) {
             into.insert(x.lhs);
             into.insert(x.rhs);

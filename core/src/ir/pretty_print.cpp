@@ -100,6 +100,14 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, BinOp>) {
             os << binop_name(x.op) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, Extend>) {
+            os << (x.is_signed ? "sext" : "zext")
+               << "." << size_suffix(x.from_size)
+               << "->" << size_suffix(x.to_size) << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Truncate>) {
+            os << "trunc." << size_suffix(x.to_size) << " ";
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Compare>) {
             os << "cmp." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);

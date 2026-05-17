@@ -169,6 +169,18 @@ TEST_CASE("Lowerer: UnsupportedOp for ops not yet implemented") {
     REQUIRE(r.error == backend::LowerError::UnsupportedOp);
 }
 
+TEST_CASE("Lowerer: Extend and Truncate remain unsupported until F1-BK-022") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0x80, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
+    };
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    auto r = lw.lower(stmts);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::UnsupportedOp);
+}
+
 TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Cpuid{}},

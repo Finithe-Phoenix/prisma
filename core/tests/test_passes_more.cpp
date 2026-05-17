@@ -133,6 +133,19 @@ TEST_CASE("copy_prop: rewrites BinOp operands through the alias") {
     REQUIRE(b.rhs == 1u);  // was %2, now %1
 }
 
+TEST_CASE("copy_prop: rewrites Extend and Truncate source operands") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::BinOp{ir::BinOpKind::Or, 0u, 0u, ir::OpSize::I64}},
+        {2u, ir::Extend{1u, ir::OpSize::I32, ir::OpSize::I64, false}},
+        {3u, ir::Truncate{1u, ir::OpSize::I16}},
+    };
+
+    auto out = passes::copy_propagate(s);
+    REQUIRE(std::get<ir::Extend>(out[2].op).value == 0u);
+    REQUIRE(std::get<ir::Truncate>(out[3].op).value == 0u);
+}
+
 TEST_CASE("copy_prop: idempotent") {
     std::vector<ir::Stmt> s = {
         {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},

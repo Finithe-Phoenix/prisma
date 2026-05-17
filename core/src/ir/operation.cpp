@@ -21,6 +21,15 @@ bool operator==(const StoreReg& a, const StoreReg& b) noexcept {
 bool operator==(const BinOp& a, const BinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const Extend& a, const Extend& b) noexcept {
+    return a.value == b.value
+        && a.from_size == b.from_size
+        && a.to_size == b.to_size
+        && a.is_signed == b.is_signed;
+}
+bool operator==(const Truncate& a, const Truncate& b) noexcept {
+    return a.value == b.value && a.to_size == b.to_size;
+}
 bool operator==(const Compare& a, const Compare& b) noexcept {
     return a.cc == b.cc && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }

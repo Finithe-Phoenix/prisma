@@ -23,6 +23,8 @@ void for_each_operand_ref(const Op& op, F&& visit) {
     std::visit([&](const auto& x) {
         using T = std::decay_t<decltype(x)>;
         if      constexpr (std::is_same_v<T, BinOp>)      { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, Extend>)     { visit(x.value); }
+        else if constexpr (std::is_same_v<T, Truncate>)   { visit(x.value); }
         else if constexpr (std::is_same_v<T, Compare>)    { visit(x.lhs); visit(x.rhs); }
         else if constexpr (std::is_same_v<T, Select>)     { visit(x.true_value); visit(x.false_value); }
         else if constexpr (std::is_same_v<T, LoadMem>)    { visit(x.addr); }
@@ -48,6 +50,8 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, LoadReg>
             || std::is_same_v<T, LoadSegBase>
             || std::is_same_v<T, BinOp>
+            || std::is_same_v<T, Extend>
+            || std::is_same_v<T, Truncate>
             || std::is_same_v<T, Compare>
             || std::is_same_v<T, Select>
             || std::is_same_v<T, LoadMem>

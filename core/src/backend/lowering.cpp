@@ -171,6 +171,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
         std::visit([&](const auto& op) {
             using T = std::decay_t<decltype(op)>;
             if      constexpr (std::is_same_v<T, ir::BinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Compare>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::Select>)      { bump(op.true_value, i); bump(op.false_value, i); }
             else if constexpr (std::is_same_v<T, ir::LoadMem>)     { bump(op.addr, i); }
