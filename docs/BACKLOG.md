@@ -285,7 +285,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
 - [x] (pending commit) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
 - [x] (pending commit) F1-BK-018: Literal pool management.
-- [ ] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
+- [~|codex] F1-BK-019: Code buffer flushing and I-cache invalidation integration.
 - [ ] F1-BK-020: Emit guest-state save on translation entry.
 - [ ] F1-BK-021: Emit guest-state restore on translation exit.
 - [x] (709803f) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
