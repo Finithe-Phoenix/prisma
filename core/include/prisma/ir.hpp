@@ -85,6 +85,12 @@ enum class TrapKind : std::uint8_t {
     Sigtrap = 0,
 };
 
+enum class FenceKind : std::uint8_t {
+    Mfence = 0,
+    Lfence = 1,
+    Sfence = 2,
+};
+
 // ---------------------------------------------------------------------------
 // Ref — SSA value identifier.
 // ---------------------------------------------------------------------------
@@ -196,6 +202,9 @@ struct Syscall {};
 struct Trap {
     TrapKind kind;
 };
+struct Fence {
+    FenceKind kind;
+};
 
 struct CondJumpRel {
     CondCode      cc;
@@ -214,7 +223,7 @@ using Op = std::variant<
     Jump, CondJump, Return,
     JumpReg,
     CmpFlags, JumpRel, CallRel, CallReg, RetAdjusted,
-    Cpuid, Syscall, Trap,
+    Cpuid, Syscall, Trap, Fence,
     CondJumpRel
 >;
 
@@ -280,6 +289,7 @@ bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
 bool operator==(const Cpuid&, const Cpuid&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
+bool operator==(const Fence& a, const Fence& b) noexcept;
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;

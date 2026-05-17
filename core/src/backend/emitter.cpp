@@ -148,6 +148,20 @@ void Emitter::truncate(arm64::Reg rd, arm64::Reg rn, ir::OpSize to_size) {
     zero_extend(rd, rn, to_size);
 }
 
+void Emitter::fence(ir::FenceKind kind) {
+    switch (kind) {
+        case ir::FenceKind::Mfence:
+            impl_->masm.Dmb(vixl_aa::InnerShareable, vixl_aa::BarrierAll);
+            return;
+        case ir::FenceKind::Lfence:
+            impl_->masm.Dsb(vixl_aa::InnerShareable, vixl_aa::BarrierReads);
+            return;
+        case ir::FenceKind::Sfence:
+            impl_->masm.Dmb(vixl_aa::InnerShareable, vixl_aa::BarrierWrites);
+            return;
+    }
+}
+
 void Emitter::umulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
     impl_->masm.Umulh(to_vixl_x(rd), to_vixl_x(rn), to_vixl_x(rm));
 }

@@ -146,6 +146,19 @@ TEST_CASE("Emitter: width canonicalisation emits extend aliases") {
     REQUIRE(text.find("sxtw") != std::string::npos);
 }
 
+TEST_CASE("Emitter: x86 fences map to ARM barriers") {
+    backend::Emitter em;
+    em.fence(ir::FenceKind::Mfence);
+    em.fence(ir::FenceKind::Lfence);
+    em.fence(ir::FenceKind::Sfence);
+    em.finalize();
+
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("dmb ish")   != std::string::npos);
+    REQUIRE(text.find("dsb ishld") != std::string::npos);
+    REQUIRE(text.find("dmb ishst") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // F1-BK-011 mul/div multi-output
 // ---------------------------------------------------------------------------

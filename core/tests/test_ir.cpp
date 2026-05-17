@@ -44,10 +44,15 @@ TEST_CASE("Structural equality on Op variants") {
     Op j = Extend{0, OpSize::I8, OpSize::I64, false};
     Op k = Truncate{0, OpSize::I16};
     Op l = Truncate{0, OpSize::I32};
+    Op m = Fence{FenceKind::Mfence};
+    Op n = Fence{FenceKind::Mfence};
+    Op o = Fence{FenceKind::Sfence};
 
     REQUIRE(h == i);
     REQUIRE_FALSE(h == j);
     REQUIRE_FALSE(k == l);
+    REQUIRE(m == n);
+    REQUIRE_FALSE(m == o);
 }
 
 TEST_CASE("Stmt equality includes result binding") {
@@ -94,6 +99,9 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
 
     Stmt s_trunc{4u, Truncate{3u, OpSize::I16}};
     REQUIRE(pretty_print(s_trunc) == "%4 = trunc.i16 %3");
+
+    Stmt s_fence{std::nullopt, Fence{FenceKind::Mfence}};
+    REQUIRE(pretty_print(s_fence) == "fence.mfence");
 
     Stmt s_ret{std::nullopt, Return{}};
     REQUIRE(pretty_print(s_ret) == "ret");

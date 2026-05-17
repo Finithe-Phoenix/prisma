@@ -75,7 +75,8 @@ dead_store_eliminate(const std::vector<ir::Stmt>& stmts) {
         }
         else if (std::holds_alternative<ir::LoadMem>(s.op)
               || std::holds_alternative<ir::LoadMemTSO>(s.op)
-              || std::holds_alternative<ir::StoreMemTSO>(s.op)) {
+              || std::holds_alternative<ir::StoreMemTSO>(s.op)
+              || std::holds_alternative<ir::Fence>(s.op)) {
             // Could observe / synchronise with a pending store.
             pending.clear();
         }

@@ -65,8 +65,11 @@ redundant_load_eliminate(const std::vector<ir::Stmt>& stmts) {
             last_load[k] = *s.result;
         }
         else if (std::holds_alternative<ir::StoreMem>(s.op)
-              || std::holds_alternative<ir::StoreMemTSO>(s.op)) {
-            // Any store could alias any tracked address.
+              || std::holds_alternative<ir::StoreMemTSO>(s.op)
+              || std::holds_alternative<ir::Fence>(s.op)) {
+            // Any store could alias any tracked address. A fence can make
+            // surrounding memory operations observable, so do not forward
+            // plain loads across it.
             last_load.clear();
         }
         // LoadMemTSO, Jumps, Calls, CmpFlags, pure ops — no effect on the

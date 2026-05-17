@@ -78,6 +78,15 @@ constexpr std::string_view trap_name(TrapKind k) noexcept {
     return "?";
 }
 
+constexpr std::string_view fence_name(FenceKind k) noexcept {
+    switch (k) {
+        case FenceKind::Mfence: return "mfence";
+        case FenceKind::Lfence: return "lfence";
+        case FenceKind::Sfence: return "sfence";
+    }
+    return "?";
+}
+
 void print_ref(std::ostream& os, Ref r) {
     if (r == kInvalidRef) { os << "%?"; } else { os << "%" << r; }
 }
@@ -155,6 +164,8 @@ std::string pretty_print(const Op& op) {
             os << "syscall";
         } else if constexpr (std::is_same_v<T, Trap>) {
             os << "trap." << trap_name(x.kind);
+        } else if constexpr (std::is_same_v<T, Fence>) {
+            os << "fence." << fence_name(x.kind);
         } else if constexpr (std::is_same_v<T, CondJumpRel>) {
             os << "condjmprel." << cc_name(x.cc)
                << " taken=0x" << std::hex << x.target_guest_pc

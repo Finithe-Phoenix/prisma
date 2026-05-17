@@ -87,6 +87,9 @@ bool operator==(const Syscall&, const Syscall&) noexcept {
 bool operator==(const Trap& a, const Trap& b) noexcept {
     return a.kind == b.kind;
 }
+bool operator==(const Fence& a, const Fence& b) noexcept {
+    return a.kind == b.kind;
+}
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept {
     return a.cc == b.cc
         && a.target_guest_pc == b.target_guest_pc

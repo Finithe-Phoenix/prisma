@@ -185,7 +185,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
             // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CallRel,
-            // RetAdjusted, Cpuid, Syscall, Trap, CondJumpRel, Return have
+            // RetAdjusted, Cpuid, Syscall, Trap, Fence, CondJumpRel, Return have
             // no operand refs — nothing to bump.
         }, s.op);
     }
@@ -455,6 +455,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // trap via block metadata; the machine code just returns.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Fence>) {
+            emitter_.fence(op.kind);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Cpuid>) {

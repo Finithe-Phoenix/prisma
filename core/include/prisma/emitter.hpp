@@ -87,6 +87,10 @@ public:
     void sign_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size);
     void truncate   (arm64::Reg rd, arm64::Reg rn, ir::OpSize to_size);
 
+    // x86 memory fences. MFENCE/SFENCE are DMB barriers; LFENCE uses DSB
+    // for a stronger read-completion barrier.
+    void fence(ir::FenceKind kind);
+
     // Multi-output mul/div (F1-BK-011).
     //
     // x86 IMUL / MUL write a 128-bit result split across RDX:RAX. On ARM64

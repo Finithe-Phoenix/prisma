@@ -288,6 +288,17 @@ TEST_CASE("dce: JumpReg keeps its target ref alive") {
     REQUIRE(std::get<ir::JumpReg>(out[1].op).target == 0u);
 }
 
+TEST_CASE("dce: Fence is impure and preserved") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{99, ir::OpSize::I64}},
+        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
+    };
+
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 1);
+    REQUIRE(out[0].op == ir::Op{ir::Fence{ir::FenceKind::Mfence}});
+}
+
 TEST_CASE("dce: StoreReg with dead Constant keeps the Constant (store is live)") {
     // %0 = const 99
     //      storereg rax, %0     ← impure, keeps %0 alive

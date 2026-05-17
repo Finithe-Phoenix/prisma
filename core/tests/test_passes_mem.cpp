@@ -51,6 +51,17 @@ TEST_CASE("rle: intervening StoreMem flushes the table") {
     REQUIRE(std::holds_alternative<ir::LoadMem>(out[4].op));
 }
 
+TEST_CASE("rle: intervening Fence flushes the table") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadMem{0u, ir::OpSize::I64}},
+        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
+        {2u, ir::LoadMem{0u, ir::OpSize::I64}},
+    };
+    auto out = passes::redundant_load_eliminate(s);
+    REQUIRE(std::holds_alternative<ir::LoadMem>(out[3].op));
+}
+
 TEST_CASE("rle: LoadMemTSO is intentionally never deduped") {
     // Two identical TSO loads — both preserved.
     std::vector<ir::Stmt> s = {
@@ -151,6 +162,23 @@ TEST_CASE("dse: StoreMemTSO flushes the pending table (conservative)") {
         if (std::holds_alternative<ir::StoreMem>(st.op)) ++plain;
     }
     REQUIRE(plain == 2);  // nothing killed
+}
+
+TEST_CASE("dse: Fence protects a pending store") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Constant{1, ir::OpSize::I64}},
+        {2u, ir::Constant{2, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreMem{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
+        {std::nullopt, ir::StoreMem{0u, 2u, ir::OpSize::I64}},
+    };
+    auto out = passes::dead_store_eliminate(s);
+    int plain = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::StoreMem>(st.op)) ++plain;
+    }
+    REQUIRE(plain == 2);
 }
 
 TEST_CASE("dse: three writes in a row leave only the last") {

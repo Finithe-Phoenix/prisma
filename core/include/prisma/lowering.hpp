@@ -6,13 +6,13 @@
 //
 // Scope for this version (Fase 0):
 //
-//   Supported IR ops:
-//     Constant, LoadReg, StoreReg, BinOp (Add/Sub/And/Or/Xor/Shl/Shr/Sar),
-//     Return.
+//   Supported IR ops include:
+//     Constant, LoadReg, StoreReg, BinOp, Extend, Truncate, Compare,
+//     Select, memory ops, CmpFlags, guest-PC branches, calls/traps, Fence,
+//     and Return.
 //
 //   Rejected IR ops (returns LowerError::Unsupported):
-//     Compare, Jump, CondJump, LoadMem, StoreMem, LoadMemTSO, StoreMemTSO.
-//     These land in subsequent sessions (flags, CFG, memory).
+//     Basic-block indexed Jump / CondJump. CFG lowering lands separately.
 //
 // Register allocation strategy:
 //

@@ -201,6 +201,21 @@ TEST_CASE("Lowerer: signed Extend to sub-64-bit result masks after sign extensio
     REQUIRE(d.find("uxth") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: Fence emits the expected ARM barrier") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
+        {std::nullopt, ir::Fence{ir::FenceKind::Lfence}},
+        {std::nullopt, ir::Fence{ir::FenceKind::Sfence}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("dmb ish")   != std::string::npos);
+    REQUIRE(d.find("dsb ishld") != std::string::npos);
+    REQUIRE(d.find("dmb ishst") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Cpuid{}},

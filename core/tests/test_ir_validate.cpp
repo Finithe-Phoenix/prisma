@@ -119,6 +119,20 @@ TEST_CASE("validate: Extend and Truncate read their source ref") {
     REQUIRE(r.error->bad_ref == 99u);
 }
 
+TEST_CASE("validate: Fence is side-effecting and has no result") {
+    std::vector<ir::Stmt> s = {
+        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
+    };
+    REQUIRE(ir::validate(s).ok);
+
+    std::vector<ir::Stmt> bad = {
+        {0u, ir::Fence{ir::FenceKind::Sfence}},
+    };
+    auto r = ir::validate(bad);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::ImpureHasResult);
+}
+
 TEST_CASE("validate: forward self-reference is flagged as undefined") {
     // A ref that references itself before being defined.
     std::vector<ir::Stmt> s = {
