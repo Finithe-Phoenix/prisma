@@ -329,21 +329,21 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-RT-013: Guest stack pointer management (rsp).
 - [x] F1-RT-014: Guest segment registers fs / gs (TLS).
 - [x] F1-RT-015: Helper calls from generated code to C++ runtime (printf-style).
-- [x] (pending commit) F1-RT-016: CPU feature detection: FEAT_LSE2, LRCPC2, FlagM.
-- [x] (pending commit) F1-RT-017: HostFeatures struct + runtime initialisation.
+- [x] (691d669) F1-RT-016: CPU feature detection: FEAT_LSE2, LRCPC2, FlagM.
+- [x] (691d669) F1-RT-017: HostFeatures struct + runtime initialisation.
 
 ### F1-CA — Cache
 
 - [x] F1-CA-001: In-memory cache with FNV-1a SMC detection.
 - [x] F1-CA-002: Page-level invalidation.
-- [x] (PENDING) F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
-- [x] (pending commit) F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
-- [x] (PENDING) F1-CA-005: Cache eviction policy (LRU).
-- [x] (pending commit) F1-CA-006: Size-bounded cache with eviction trigger.
-- [x] (pending commit) F1-CA-007: Translation stats per entry (hit count, last-used).
+- [x] (1ae143b) F1-CA-003: Persistent on-disk cache file format (version + CPU features header).
+- [x] (0d4d17a) F1-CA-004: SHA-256 content hash (for cross-device trust in Fase 2.5).
+- [x] (1ae143b) F1-CA-005: Cache eviction policy (LRU).
+- [x] (381433e) F1-CA-006: Size-bounded cache with eviction trigger.
+- [x] (691d669) F1-CA-007: Translation stats per entry (hit count, last-used).
 - [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
-- [x] (pending commit) F1-CA-009: Cache writer thread (offload serialization).
-- [x] (pending commit) F1-CA-010: zstd compression for on-disk entries.
+- [x] (58e47a9) F1-CA-009: Cache writer thread (offload serialization).
+- [x] (9a9308e) F1-CA-010: zstd compression for on-disk entries.
 
 ### F1-LN — Lean spec expansion
 
