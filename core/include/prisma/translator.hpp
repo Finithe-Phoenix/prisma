@@ -33,10 +33,9 @@
 #include <vector>
 
 #include "prisma/decoder.hpp"
+#include "prisma/jit_memory.hpp"
 #include "prisma/passes.hpp"
 #include "prisma/translation_cache.hpp"
-
-namespace prisma::runtime { class JitBuffer; }
 
 namespace prisma::translator {
 
@@ -115,8 +114,8 @@ private:
 
     passes::PassManager pipeline_;
     cache::TranslationCache cache_;
-    // Owning storage of every executable buffer we've produced.
-    std::vector<std::unique_ptr<runtime::JitBuffer>> buffers_;
+    // Thread-safe owning storage of every executable buffer we've produced.
+    runtime::JitBufferPool buffers_;
     // Lookup by guest_addr → our own Record (for in-process JIT). The
     // persistent TranslationCache is still updated in parallel so that
     // future Fase 2.5 work (P2P distribution) sees entries.

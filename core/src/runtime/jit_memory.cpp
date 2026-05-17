@@ -2,6 +2,7 @@
 
 #include "prisma/jit_memory.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -124,6 +125,48 @@ void JitBuffer::make_executable() {
 
     invalidate_icache(base_, written_size_);
     executable_ = true;
+}
+
+JitBufferPool::JitBufferPool(std::size_t min_buffer_bytes)
+    : min_buffer_bytes_(min_buffer_bytes) {}
+
+JitBufferPool::~JitBufferPool() = default;
+
+std::optional<JitBufferAllocation>
+JitBufferPool::add(std::span<const std::uint8_t> code) {
+    if (code.empty()) return std::nullopt;
+
+    try {
+        auto buffer = std::make_unique<JitBuffer>(
+            std::max(min_buffer_bytes_, code.size()));
+        if (!buffer->write(code)) return std::nullopt;
+        buffer->make_executable();
+
+        JitBufferAllocation allocation{
+            /*index=*/0,
+            /*entry=*/buffer->entry(),
+            /*code_size=*/code.size(),
+            /*capacity=*/buffer->capacity(),
+        };
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        allocation.index = buffers_.size();
+        buffers_.push_back(std::move(buffer));
+        return allocation;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+const JitBuffer* JitBufferPool::get(std::size_t index) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index >= buffers_.size()) return nullptr;
+    return buffers_[index].get();
+}
+
+std::size_t JitBufferPool::size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return buffers_.size();
 }
 
 }  // namespace prisma::runtime

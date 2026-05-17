@@ -3,7 +3,6 @@
 #include "prisma/translator.hpp"
 
 #include <cstring>
-#include <memory>
 #include <span>
 #include <utility>
 #include <variant>
@@ -173,13 +172,15 @@ TranslateResult Translator::translate(
     if (auto it = by_addr_.find(guest_addr); it != by_addr_.end()) {
         const Record& rec = it->second;
         if (rec.content_hash == hash_of_input) {
-            ++stats_.cache_hits;
-            const runtime::JitBuffer* buf = buffers_[rec.buffer_idx].get();
-            return TranslatedBlock{
-                buf->entry(), rec.code_size, rec.guest_size, /*from_cache=*/true};
+            const runtime::JitBuffer* buf = buffers_.get(rec.buffer_idx);
+            if (buf != nullptr) {
+                ++stats_.cache_hits;
+                return TranslatedBlock{
+                    buf->entry(), rec.code_size, rec.guest_size, /*from_cache=*/true};
+            }
         }
-        // SMC: the guest bytes at this address changed. Drop the record,
-        // drop the persistent cache entry, fall through to retranslate.
+        // SMC (or a stale internal record): the guest bytes at this address
+        // changed. Drop the in-process record and fall through to retranslate.
         by_addr_.erase(it);
     }
 
@@ -247,16 +248,14 @@ TranslateResult Translator::translate(
         return TranslateError::LowerFailed;
     }
 
-    auto jit = std::make_unique<runtime::JitBuffer>(emitted.size());
-    if (!jit->write(emitted)) {
+    const auto allocation = buffers_.add(emitted);
+    if (!allocation) {
         return TranslateError::JitAllocFailed;
     }
-    jit->make_executable();
 
-    const std::uint8_t* entry = jit->entry();
-    const std::size_t code_size = emitted.size();
-    const std::size_t buffer_idx = buffers_.size();
-    buffers_.push_back(std::move(jit));
+    const std::uint8_t* entry = allocation->entry;
+    const std::size_t code_size = allocation->code_size;
+    const std::size_t buffer_idx = allocation->index;
 
     // Persistent cache: store bytes for SMC verification + future
     // distribution. The actual executable memory lives in our buffer.

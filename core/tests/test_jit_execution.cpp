@@ -13,8 +13,10 @@
 // JitBuffer mmap/mprotect sequence succeeds.
 
 #include <catch2/catch_test_macros.hpp>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "prisma/arm64_encoding.hpp"
@@ -64,6 +66,59 @@ TEST_CASE("JitBuffer rejects oversized writes without changing written size") {
     const std::vector<std::uint8_t> too_large(buf.capacity() + 1u, 0x00);
     REQUIRE_FALSE(buf.write(too_large));
     REQUIRE(buf.written_size() == sizeof(one_word));
+}
+
+TEST_CASE("JitBufferPool publishes executable buffers with stable indices") {
+    runtime::JitBufferPool pool;
+    const std::uint8_t nops[] = {0x1F, 0x20, 0x03, 0xD5};
+
+    const auto first = pool.add(nops);
+    const auto second = pool.add(nops);
+
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+    REQUIRE(first->index == 0);
+    REQUIRE(second->index == 1);
+    REQUIRE(pool.size() == 2);
+
+    const runtime::JitBuffer* first_buf = pool.get(first->index);
+    const runtime::JitBuffer* second_buf = pool.get(second->index);
+    REQUIRE(first_buf != nullptr);
+    REQUIRE(second_buf != nullptr);
+    REQUIRE(first_buf->entry() == first->entry);
+    REQUIRE(second_buf->entry() == second->entry);
+    REQUIRE(first_buf->is_executable());
+    REQUIRE(second_buf->is_executable());
+}
+
+TEST_CASE("JitBufferPool accepts concurrent publishers") {
+    runtime::JitBufferPool pool;
+    const std::vector<std::uint8_t> nops = {0x1F, 0x20, 0x03, 0xD5};
+    constexpr std::size_t kThreads = 4;
+    constexpr std::size_t kPerThread = 8;
+
+    std::atomic<std::size_t> successful{0};
+    std::vector<std::thread> workers;
+    workers.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+        workers.emplace_back([&] {
+            for (std::size_t i = 0; i < kPerThread; ++i) {
+                const auto allocation = pool.add(nops);
+                if (allocation && allocation->entry != nullptr
+                    && allocation->code_size == nops.size()) {
+                    successful.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    for (auto& worker : workers) worker.join();
+
+    REQUIRE(successful.load(std::memory_order_relaxed) == kThreads * kPerThread);
+    REQUIRE(pool.size() == kThreads * kPerThread);
+    for (std::size_t i = 0; i < pool.size(); ++i) {
+        REQUIRE(pool.get(i) != nullptr);
+    }
 }
 
 TEST_CASE("JIT execution: emit and run `uint64_t f() { return 42; }`",

@@ -23,7 +23,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
+#include <vector>
 
 namespace prisma::runtime {
 
@@ -64,6 +68,42 @@ private:
     std::size_t   capacity_{0};
     std::size_t   written_size_{0};
     bool          executable_{false};
+};
+
+struct JitBufferAllocation {
+    std::size_t         index{0};
+    const std::uint8_t* entry{nullptr};
+    std::size_t         code_size{0};
+    std::size_t         capacity{0};
+};
+
+class JitBufferPool {
+public:
+    explicit JitBufferPool(std::size_t min_buffer_bytes = 0);
+    ~JitBufferPool();
+
+    JitBufferPool(const JitBufferPool&) = delete;
+    JitBufferPool& operator=(const JitBufferPool&) = delete;
+    JitBufferPool(JitBufferPool&&) = delete;
+    JitBufferPool& operator=(JitBufferPool&&) = delete;
+
+    // Allocate a new executable buffer, copy `code` into it, flip it to
+    // executable, then publish it into the pool. Returns nullopt on empty
+    // input or allocation/protection failure.
+    [[nodiscard]] std::optional<JitBufferAllocation>
+    add(std::span<const std::uint8_t> code);
+
+    // Borrow an owned buffer by index. The returned pointer remains stable
+    // until the pool is destroyed; pushing more buffers will not move the
+    // underlying JitBuffer objects.
+    [[nodiscard]] const JitBuffer* get(std::size_t index) const;
+
+    [[nodiscard]] std::size_t size() const;
+
+private:
+    std::size_t min_buffer_bytes_{0};
+    mutable std::mutex mutex_;
+    std::vector<std::unique_ptr<JitBuffer>> buffers_;
 };
 
 }  // namespace prisma::runtime
