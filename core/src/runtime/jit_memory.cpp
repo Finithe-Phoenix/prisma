@@ -98,6 +98,7 @@ bool JitBuffer::write(std::span<const std::uint8_t> src) {
     if (executable_) return false;
     if (src.size() > capacity_) return false;
     std::memcpy(base_, src.data(), src.size());
+    written_size_ = src.size();
     return true;
 }
 
@@ -121,7 +122,7 @@ void JitBuffer::make_executable() {
             std::strerror(e));
     }
 
-    invalidate_icache(base_, capacity_);
+    invalidate_icache(base_, written_size_);
     executable_ = true;
 }
 

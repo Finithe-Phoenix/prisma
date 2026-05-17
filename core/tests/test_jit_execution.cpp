@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "prisma/arm64_encoding.hpp"
 #include "prisma/emitter.hpp"
@@ -34,10 +35,12 @@ constexpr bool is_arm64 =
 TEST_CASE("JitBuffer allocates, accepts writes, and flips to executable") {
     runtime::JitBuffer buf(64);
     REQUIRE(buf.capacity() >= 64);
+    REQUIRE(buf.written_size() == 0);
     REQUIRE_FALSE(buf.is_executable());
 
     const std::uint8_t nops[] = {0x1F, 0x20, 0x03, 0xD5};  // ARM64 NOP, 4 bytes
     REQUIRE(buf.write(nops));
+    REQUIRE(buf.written_size() == sizeof(nops));
 
     buf.make_executable();
     REQUIRE(buf.is_executable());
@@ -49,6 +52,18 @@ TEST_CASE("JitBuffer allocates, accepts writes, and flips to executable") {
 
     // write() after make_executable must refuse.
     REQUIRE_FALSE(buf.write(nops));
+    REQUIRE(buf.written_size() == sizeof(nops));
+}
+
+TEST_CASE("JitBuffer rejects oversized writes without changing written size") {
+    runtime::JitBuffer buf(4);
+    const std::uint8_t one_word[] = {0x1F, 0x20, 0x03, 0xD5};
+    REQUIRE(buf.write(one_word));
+    REQUIRE(buf.written_size() == sizeof(one_word));
+
+    const std::vector<std::uint8_t> too_large(buf.capacity() + 1u, 0x00);
+    REQUIRE_FALSE(buf.write(too_large));
+    REQUIRE(buf.written_size() == sizeof(one_word));
 }
 
 TEST_CASE("JIT execution: emit and run `uint64_t f() { return 42; }`",

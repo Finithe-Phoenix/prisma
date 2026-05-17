@@ -46,7 +46,8 @@ public:
     bool write(std::span<const std::uint8_t> src);
 
     // Flip the buffer to executable. After this call `write()` is a no-op
-    // returning false. I-cache is invalidated across the written range.
+    // returning false. I-cache is invalidated across the bytes most
+    // recently written with write().
     void make_executable();
 
     // Entry point: pointer to the first instruction. Only valid to call
@@ -54,12 +55,14 @@ public:
     [[nodiscard]] const std::uint8_t* entry() const noexcept { return base_; }
 
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
+    [[nodiscard]] std::size_t written_size() const noexcept { return written_size_; }
 
     [[nodiscard]] bool is_executable() const noexcept { return executable_; }
 
 private:
     std::uint8_t* base_{nullptr};
     std::size_t   capacity_{0};
+    std::size_t   written_size_{0};
     bool          executable_{false};
 };
 
