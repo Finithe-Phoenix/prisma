@@ -135,7 +135,19 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
             auto cached = translator_.lookup_cached(pc, next_bytes);
             if (!cached) {
                 ++stats.direct_thread_misses;
-                break;
+                auto installed = translator_.translate(pc, next_bytes);
+                if (std::holds_alternative<translator::TranslateError>(installed)) {
+                    stats.unique_pcs_seen = seen_pcs.size();
+                    return {DispatchExit::TranslationFailed, pc, stats,
+                            "translator rejected the guest region"};
+                }
+                block = std::get<translator::TranslatedBlock>(installed);
+                if (block.from_cache) {
+                    ++stats.direct_thread_hits;
+                } else {
+                    ++stats.direct_thread_installs;
+                }
+                continue;
             }
 
             ++stats.direct_thread_hits;

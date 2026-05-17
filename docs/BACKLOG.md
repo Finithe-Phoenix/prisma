@@ -455,8 +455,8 @@ translator on a reference Linux ARM64 box.
 - [x] (50caa95) F2-IR-004: SSE shuffle / blend. (Closed: PSHUFD, PSHUFLW/HW, SHUFPS/PD, PSHUFB, PUNPCKL/H + UNPCKL/HPS/PD, PALIGNR, BLENDV PS/PD + PBLENDVB landed across F2-IR-010/011/015/036/038/046.)
 - [x] (99d2056) F2-IR-005: AVX 256-bit equivalents (VADDPS, etc.). (First batch — packed FP arith, integer SIMD, FP/int bitwise, PCMPEQ/GT, UNPCK, SHUFPS/PD, HADDPS/PD, CMPxxPS/PD ymm. Lane-crossing ops follow.)
 - [x] (d98bdbb) F2-IR-006: FMA (VFMADD, VFMSUB, etc.). (First batch — packed PS/PD xmm: VFMADD/SUB/NMADD/NMSUB × 132/213/231. Single VecFpFma IR op with neg_addend/neg_mul flags; ARM64 FMLA/FMLS lowering. ymm, scalar SS/SD, MADDSUB/MSUBADD deferred.)
-- [x] (pending commit) F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH). (Reduced-precision F64 bridge; see RFC 0013. Decoder coverage includes FLD/FSTP/FXCH/FADD/FMUL/FDIV.)
-- [x] (pending commit) F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass). (Runtime TOS byte, logical ST(i) access, and conservative intra-block x87 stack forwarding landed.)
+- [x] (d9f12b5) F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH). (Reduced-precision F64 bridge; see RFC 0013. Decoder coverage includes FLD/FSTP/FXCH/FADD/FMUL/FDIV.)
+- [x] (d9f12b5) F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass). (Runtime TOS byte, logical ST(i) access, and conservative intra-block x87 stack forwarding landed.)
 - [ ] F2-IR-009: MMX ops (rare in modern binaries, skip or stub).
 
 ### F2-BK — Backend for full ISA
@@ -465,19 +465,19 @@ translator on a reference Linux ARM64 box.
 - [x] (50caa95) F2-BK-002: SIMD shuffle lowering (ARM tbl / zip / uzp / trn). (Closed alongside F2-BK-001: VecPshufb uses TBL, VecUnpack uses ZIP, VecShuffle{32x4,2Src,H4} use TBL/EXT/INS, VecAlignr uses EXT.)
 - [x] (50caa95) F2-BK-003: Lowering for AVX (use pair of NEON vectors for 256-bit). (Closed: pair-of-Vec128 representation via LoadVecRegHi/StoreVecRegHi + ymm_hi[16] in CpuStateFrame; 256-bit ops compile to two NEON ops on consecutive scratch regs. F2-IR-005 and the FMA ymm extension exercise the pattern end-to-end.)
 - [x] (50caa95) F2-BK-004: Lowering for FMA via NEON FMLA. (Closed: vfmla_q / vfmls_q / vfneg_q / vmov_q primitives plus the VecFpFma lowering arm. F2-IR-006 and its ymm extension exercise the four sign combinations.)
-- [x] (pending commit) F2-BK-005: Lowering for x87 (software emulation for rare cases). (Direct reduced-precision push/pop/load/store lowering landed; full 80-bit helper path deferred.)
+- [x] (d9f12b5) F2-BK-005: Lowering for x87 (software emulation for rare cases). (Direct reduced-precision push/pop/load/store lowering landed; full 80-bit helper path deferred.)
 - [x] (0597402) F2-BK-006: SIMD register allocator (NEON v0-v31). (Pool widened V0..V7 → V0..V23 [05044f8]; FP last-use expiry added [0597402] — same liveness machinery as the GPR allocator. Pair-allocator scaffolding + spill plumbing deferred until measured demand.)
 - [x] (8317648) F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx). (Adds BinOpKind::UMulHi/SMulHi/UDiv/SDiv/UMod/SMod; MUL writes both halves of the 128-bit product; DIV writes UDiv quotient + UMod remainder. Const-prop folds with __int128 for compile-time constants. 64-bit dividend only — full 128/64 with explicit RDX:RAX is a follow-up.)
 - [x] (5448c9b) F2-BK-008: Lowering for REP prefix — loop generation. (RepStos / RepMovs IR ops emit native ARM64 cbz+cbnz loops via existing label/branch infrastructure. Pinned guest regs RCX/RDI/RSI/RAX modified in-place; no scratch SSA refs needed.)
-- [x] (PENDING) F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline. (Closed alongside F2-BK-008. STOSB/STOSW/STOSD/STOSQ + MOVSB/MOVSW/MOVSD/MOVSQ all decoded with F3 prefix → RepStos/RepMovs. CMPSB/SCASB still fall through to InlineAsm; deferred.)
-- [x] (pending commit) F2-BK-010: Call / Return lowering with return-stack. (CallRel/CallReg/RetAdjusted decoder path, guest stack push/pop lowering, translator exit metadata, and dispatcher RAS stats.)
+- [x] (5448c9b) F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline. (Closed alongside F2-BK-008. STOSB/STOSW/STOSD/STOSQ + MOVSB/MOVSW/MOVSD/MOVSQ all decoded with F3 prefix → RepStos/RepMovs. CMPSB/SCASB still fall through to InlineAsm; deferred.)
+- [x] (d9f12b5) F2-BK-010: Call / Return lowering with return-stack. (CallRel/CallReg/RetAdjusted decoder path, guest stack push/pop lowering, translator exit metadata, and dispatcher RAS stats.)
 
 ### F2-PS — Passes for Fase 2
 
-- [x] (pending commit) F2-PS-001: x87 stack elimination pass (FEX-style). (Conservative intra-block x87 stack forwarding pass wired into default_pipeline.)
+- [x] (d9f12b5) F2-PS-001: x87 stack elimination pass (FEX-style). (Conservative intra-block x87 stack forwarding pass wired into default_pipeline.)
 - [x] (cac89f7) F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints). (Extended DCE to mark WriteFlags / ReadFlag / WriteFlagsFp / WriteFlagsPtest as pure, and added missing operand-collect entries for WriteFlags / ReadFlag / CondJumpFlags / StoreVecRegHi / VecFpFma so the live-set is correct. F1's flag_write_elimination [F1-PS-012] handles the CmpFlags pattern; this commit covers the SSA WriteFlags family.)
-- [ ] F2-PS-003: Loop-invariant code motion (LICM).
-- [ ] F2-PS-004: Global CSE via dominator-based analysis.
+- [x] (ff41e83) F2-PS-003: Loop-invariant code motion (LICM).
+- [x] (0396c19) F2-PS-004: Global CSE via dominator-based analysis.
 - [ ] F2-PS-005: Inlining of short helpers.
 
 ### F2-BM — Benchmarks

@@ -9,6 +9,11 @@
 [`docs/BACKLOG.md`](BACKLOG.md) is the shared work queue. Every task has a
 unique ID (`F<phase>-<component>-<num>`). Status markers:
 
+For autonomous follow-on sessions, [`docs/WORK_QUEUE.md`](WORK_QUEUE.md)
+is the active-session overlay. Use it for the exact current execution
+order, partial runtime stages, and per-session completion ledger; keep
+`BACKLOG.md` as the lifetime phase map and cross-agent claim protocol.
+
 | Marker | Meaning | Owner visible? |
 |---|---|---|
 | `[ ]` | TODO, unclaimed. Either agent may take. | no |

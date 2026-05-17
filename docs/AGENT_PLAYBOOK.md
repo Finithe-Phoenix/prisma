@@ -18,6 +18,7 @@
 5. [Lean spec extension etiquette](#5-lean-spec-extension-etiquette)
 6. [CI surface & how to read failures](#6-ci-surface--how-to-read-failures)
 7. [When in doubt: the WORK_QUEUE.md contract](#7-when-in-doubt-the-work_queuemd-contract)
+8. [Runtime direct-threading workflow](#8-runtime-direct-threading-workflow)
 
 ---
 
@@ -31,7 +32,7 @@ exactly:
 docker run -d --name prisma-build ubuntu:24.04 sleep infinity
 docker exec prisma-build bash -c "
   apt-get update -qq &&
-  apt-get install -y -qq cmake ninja-build clang-17 git wget
+  apt-get install -y -qq cmake ninja-build clang git wget
 "
 # CMake 3.30 isn't in apt yet — install from Kitware:
 docker exec prisma-build bash -c "
@@ -49,9 +50,26 @@ docker exec prisma-build bash -c "
   cd /workspace &&
   cmake -S core -B core/build -G Ninja \
     -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_CXX_COMPILER=clang++-17 \
+    -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
 "
+```
+
+The current Codex container image exposes Clang 18 as
+`/usr/bin/clang++`. Older persistent containers may still have
+`clang++-17`; use `command -v clang++ clang++-17` and point CMake at
+the compiler that actually exists.
+
+For the mounted-workspace Docker flow used by Codex, the equivalent
+fast loop is:
+
+```bash
+docker run --rm \
+  -v ${PWD}:/work \
+  -v prisma-build-cache:/build \
+  -w /work/core \
+  prisma-build-env \
+  bash -lc "set -euo pipefail; cmake --build /build --parallel 2; ctest --test-dir /build --output-on-failure"
 ```
 
 After that, every edit cycle is:
@@ -76,18 +94,33 @@ docker exec prisma-build bash -c "
   cd /workspace &&
   cmake -S core -B core/build-asan -G Ninja \
     -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_CXX_COMPILER=clang++-17 \
+    -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -DPRISMA_ENABLE_ASAN=ON \
     -DPRISMA_ENABLE_UBSAN=ON
 "
 # Build + run under sanitizers:
 docker exec prisma-build bash -c "
-  cd /workspace && cmake --build core/build-asan &&
+  cd /workspace && cmake --build core/build-asan --parallel 1 &&
   ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 \
   UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
     core/build-asan/prisma_core_tests --reporter compact '~signal_handler*'
 "
+```
+
+Use `--parallel 1` for sanitizer links when memory is tight; a killed
+linker is an infrastructure/OOM signal, not a sanitizer failure. Re-run
+the sanitizer build by itself before trusting the result.
+
+### Zydis differential build
+
+```bash
+docker run --rm \
+  -v ${PWD}:/work \
+  -v prisma-build-zydis-cache:/build-zydis \
+  -w /work \
+  prisma-build-env \
+  bash -lc "set -euo pipefail; cmake -S core -B /build-zydis -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DPRISMA_ENABLE_ZYDIS=ON; cmake --build /build-zydis --parallel 2; ctest --test-dir /build-zydis --output-on-failure"
 ```
 
 If ASan or UBSan reports anything other than `0 errors`, fix it
@@ -147,15 +180,16 @@ terminator files in a single coherent commit with rich rationale.
 Two pipelines coexist:
 
 - `PassManager` runs `std::vector<Stmt>` → `std::vector<Stmt>` passes
-  (the "intra-block" pipeline; 12 passes today).
+  (the "intra-block" pipeline; 13 passes today, including the x87
+  stack-forwarding pass).
 - `FunctionPassManager` (F2-PS-004) runs `ir::Function` → `ir::Function`
   passes (`global_cse`, `loop_invariant_motion` today).
 
-Today's translator emits **single-block** functions, so the
-`FunctionPassManager` is a no-op against translator output. It runs
-correctly on hand-constructed multi-block functions (see the GCSE
-and LICM tests for examples), and unlocks real wins once the
-translator gains multi-instruction fusion.
+Today's translator commonly emits single-block functions, so the
+`FunctionPassManager` is usually cheap on translator output. It runs
+correctly on hand-constructed multi-block functions (see the GCSE and
+LICM tests for examples), and unlocks real wins as the translator gains
+larger decoded regions.
 
 To add a new function-level pass:
 
@@ -278,3 +312,32 @@ Conventions:
 Danny's review surface for "what is the agent doing right now": the
 top of the queue. If it ever feels misaligned with what's actually
 in the editor / commits, the agent has drifted — re-anchor.
+
+## 8. Runtime direct-threading workflow
+
+Direct-threading is being staged deliberately:
+
+1. `Translator::TranslatedBlock` carries terminator metadata:
+   `exit_kind`, direct target/fallthrough PCs, and call return PC.
+2. `Translator::lookup_cached()` probes the executable cache without
+   decoding and without mutating translation hit/miss stats. Callers
+   must pass current guest bytes so the content hash rejects stale SMC
+   entries.
+3. `Dispatcher` first tries a hash-checked cached successor for direct
+   `JumpRel` / `CondJumpRel` exits.
+4. If the successor is not cached but is fetchable, `Dispatcher`
+   translates it in-place and continues the direct chain. Translation
+   failure and fetch failure are surfaced with the same public exit
+   values as the outer loop.
+5. Halt-PC checks and `max_steps` must be evaluated before every
+   successor execute. Never bypass them for a faster loop.
+
+Useful counters:
+
+- `direct_thread_hits`: successor was already cached and executed.
+- `direct_thread_misses`: cached lookup missed for a direct successor.
+- `direct_thread_installs`: direct successor was translated in-place.
+
+The next stage is in-JIT patching of direct branch exits. Keep it
+behind the same SMC hash discipline: no branch may jump to stale code
+after guest bytes change.

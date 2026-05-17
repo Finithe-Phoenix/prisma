@@ -67,6 +67,7 @@ struct DispatchStats {
     std::size_t ras_underflows{0};
     std::size_t direct_thread_hits{0};
     std::size_t direct_thread_misses{0};
+    std::size_t direct_thread_installs{0};
 };
 
 struct DispatchResult {

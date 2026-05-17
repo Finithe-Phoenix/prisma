@@ -84,6 +84,8 @@ TEST_CASE("Dispatcher: JMP chain reaches a RET and halts",
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.final_pc == 0u);  // kHaltSentinel
     REQUIRE(r.stats.blocks_executed == 3);  // JMP, JMP, RET
+    REQUIRE(r.stats.direct_thread_misses == 2);
+    REQUIRE(r.stats.direct_thread_installs == 2);
 }
 
 TEST_CASE("Dispatcher: return-stack predictor hits on direct CALL/RET",
@@ -145,6 +147,7 @@ TEST_CASE("Dispatcher: CMP + JE branches to the taken leg on equal operands",
     auto r = d.run(0x2000, /*max_steps=*/20);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.stats.blocks_executed >= 2);  // at minimum the CMP+JE block and the RET.
+    REQUIRE(r.stats.direct_thread_installs >= 1);
 }
 
 TEST_CASE("Dispatcher: step limit trips when the program loops forever",
@@ -165,8 +168,9 @@ TEST_CASE("Dispatcher: step limit trips when the program loops forever",
 
     // The direct-thread cache keeps hot direct loops inside the dispatcher
     // once the first translation is installed.
-    REQUIRE(r.stats.direct_thread_hits >= 4);  // 5 iters, first is miss, 4 hits.
+    REQUIRE(r.stats.direct_thread_hits >= 4);  // initial translate, then 4 cache hits.
     REQUIRE(r.stats.direct_thread_misses == 0);
+    REQUIRE(r.stats.direct_thread_installs == 0);
 }
 
 TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",
@@ -189,6 +193,7 @@ TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.final_pc == 0x4020u);
     REQUIRE(r.stats.blocks_executed == 2);  // 0x4000 and 0x4010; halt before 0x4020 runs.
+    REQUIRE(r.stats.direct_thread_installs == 1);
 }
 
 TEST_CASE("Dispatcher: fetch failure when PC leaves known memory",
