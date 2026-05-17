@@ -248,8 +248,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
 - [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
-- [x] (pending commit) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
-- [x] (pending commit) F1-IR-011: Add `Truncate{value, to_size}`.
+- [x] (b5c305a) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
+- [x] (b5c305a) F1-IR-011: Add `Truncate{value, to_size}`.
 - [ ] F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
 - [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
 - [ ] F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
@@ -303,7 +303,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (pending commit) F1-PS-007: Redundant-load elimination across a block.
 - [x] (pending commit) F1-PS-008: Dead-store elimination within a block.
 - [x] (dd292a9) F1-PS-009: Peephole pattern matcher (IR-level patterns).
-- [x] (pending commit) F1-PS-010: Constant folding on Extend / Truncate.
+- [x] (b5c305a) F1-PS-010: Constant folding on Extend / Truncate.
 - [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
 - [x] (57bc8b7) F1-PS-012: Flag-write elimination when no reader exists.
 - [x] (pending commit) F1-PS-013: CFG simplification (remove empty blocks).
