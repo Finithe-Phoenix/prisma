@@ -168,6 +168,23 @@ TEST_CASE("IR analysis: conditional self-targets are deduplicated") {
     REQUIRE(predecessors_of(graph_result.graph, 1u) == std::vector<std::uint32_t>{0u});
 }
 
+TEST_CASE("IR analysis: CondJumpFlags derives direct successors") {
+    Function function;
+    function.entry = 0u;
+    function.blocks = {
+        BasicBlock{0u, {{std::nullopt, CondJumpFlags{CondCode::Eq, 2u, 1u}}}},
+        BasicBlock{1u, {{std::nullopt, Return{}}}},
+        BasicBlock{2u, {{std::nullopt, Return{}}}},
+    };
+
+    const auto graph_result = build_cfg_graph(function);
+
+    REQUIRE(graph_result.ok);
+    REQUIRE(successors_of(graph_result.graph, 0u) == std::vector<std::uint32_t>{1u, 2u});
+    REQUIRE(predecessors_of(graph_result.graph, 1u) == std::vector<std::uint32_t>{0u});
+    REQUIRE(predecessors_of(graph_result.graph, 2u) == std::vector<std::uint32_t>{0u});
+}
+
 TEST_CASE("IR analysis: graph rejects invalid direct block targets") {
     Function function;
     function.entry = 0u;

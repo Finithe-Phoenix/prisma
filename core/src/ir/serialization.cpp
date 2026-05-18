@@ -41,6 +41,7 @@ enum class OpTag : std::uint8_t {
     Trap = 26,
     Fence = 27,
     CondJumpRel = 28,
+    CondJumpFlags = 29,
 };
 
 constexpr std::uint32_t kMaxDeserializedItems = 1'000'000u;
@@ -181,6 +182,11 @@ private:
             } else if constexpr (std::is_same_v<T, CondJump>) {
                 enum8(OpTag::CondJump);
                 u32(x.cond);
+                u32(x.if_true);
+                u32(x.if_false);
+            } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
+                enum8(OpTag::CondJumpFlags);
+                enum8(x.cc);
                 u32(x.if_true);
                 u32(x.if_false);
             } else if constexpr (std::is_same_v<T, Return>) {
@@ -333,7 +339,7 @@ private:
 
 [[nodiscard]] bool decode_tag(std::uint8_t raw, OpTag& out) {
     if (raw < static_cast<std::uint8_t>(OpTag::Constant)
-        || raw > static_cast<std::uint8_t>(OpTag::CondJumpRel)) {
+        || raw > static_cast<std::uint8_t>(OpTag::CondJumpFlags)) {
         return false;
     }
     out = static_cast<OpTag>(raw);
@@ -529,6 +535,16 @@ template <typename E, typename Decode>
                 return reader.error();
             }
             return Op{CondJump{cond, if_true, if_false}};
+        }
+        case OpTag::CondJumpFlags: {
+            auto cc = read_enum<CondCode>(reader, decode_cond);
+            if (std::holds_alternative<IrDeserializeError>(cc)) {
+                return std::get<IrDeserializeError>(cc);
+            }
+            std::uint32_t if_true = 0;
+            std::uint32_t if_false = 0;
+            if (!reader.u32(if_true) || !reader.u32(if_false)) return reader.error();
+            return Op{CondJumpFlags{std::get<CondCode>(cc), if_true, if_false}};
         }
         case OpTag::Return:
             return Op{Return{}};

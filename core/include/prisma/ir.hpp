@@ -159,6 +159,7 @@ struct GuestPc {
 
 struct Jump     { std::uint32_t target_block; };
 struct CondJump { Ref cond; std::uint32_t if_true; std::uint32_t if_false; };
+struct CondJumpFlags { CondCode cc; std::uint32_t if_true; std::uint32_t if_false; };
 struct Return   {};
 
 // ---- Guest-PC-based control flow (MVP, no basic-block index yet) -------
@@ -227,7 +228,7 @@ using Op = std::variant<
     LoadMem, StoreMem,
     LoadMemTSO, StoreMemTSO,
     GuestPc,
-    Jump, CondJump, Return,
+    Jump, CondJump, CondJumpFlags, Return,
     JumpReg,
     CmpFlags, JumpRel, CallRel, CallReg, RetAdjusted,
     Cpuid, Syscall, Trap, Fence,
@@ -286,6 +287,7 @@ bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept;
 bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
 bool operator==(const Jump& a, const Jump& b) noexcept;
 bool operator==(const CondJump& a, const CondJump& b) noexcept;
+bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
 bool operator==(const JumpReg& a, const JumpReg& b) noexcept;
 bool operator==(const Return&, const Return&) noexcept;
 

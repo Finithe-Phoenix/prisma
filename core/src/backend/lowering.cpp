@@ -185,7 +185,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
-            // Constant, LoadReg, LoadSegBase, GuestPc, Jump, JumpRel,
+            // Constant, LoadReg, LoadSegBase, GuestPc, Jump, CondJumpFlags, JumpRel,
             // CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
             // CondJumpRel, Return have no operand refs — nothing to bump.
         }, s.op);
@@ -506,6 +506,26 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.mov_imm64(zero, 0u);
             emitter_.cmp(cond, zero);
             emitter_.branch_cc(true_target->second, ir::CondCode::Ne);
+            emitter_.branch(false_target->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) {
+            if (!active_block_labels_) {
+                return {false, LowerError::UnsupportedOp,
+                        "CondJumpFlags requires Function lowering context"};
+            }
+            auto true_target = active_block_labels_->find(op.if_true);
+            if (true_target == active_block_labels_->end()) {
+                return {false, LowerError::InvalidBlock,
+                        "CondJumpFlags true target block id not found"};
+            }
+            auto false_target = active_block_labels_->find(op.if_false);
+            if (false_target == active_block_labels_->end()) {
+                return {false, LowerError::InvalidBlock,
+                        "CondJumpFlags false target block id not found"};
+            }
+
+            emitter_.branch_cc(true_target->second, op.cc);
             emitter_.branch(false_target->second);
             return {};
         }

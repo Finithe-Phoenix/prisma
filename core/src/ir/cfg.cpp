@@ -26,6 +26,7 @@ using GuestPcMap = std::unordered_map<std::uint64_t, std::size_t>;
 [[nodiscard]] bool is_terminator(const Op& op) noexcept {
     return std::holds_alternative<Jump>(op)
         || std::holds_alternative<CondJump>(op)
+        || std::holds_alternative<CondJumpFlags>(op)
         || std::holds_alternative<Return>(op)
         || std::holds_alternative<JumpReg>(op)
         || std::holds_alternative<JumpRel>(op)

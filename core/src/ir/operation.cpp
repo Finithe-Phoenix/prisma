@@ -61,6 +61,9 @@ bool operator==(const JumpReg& a, const JumpReg& b) noexcept {
 bool operator==(const CondJump& a, const CondJump& b) noexcept {
     return a.cond == b.cond && a.if_true == b.if_true && a.if_false == b.if_false;
 }
+bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept {
+    return a.cc == b.cc && a.if_true == b.if_true && a.if_false == b.if_false;
+}
 bool operator==(const Return&, const Return&) noexcept {
     return true;
 }

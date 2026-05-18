@@ -51,6 +51,9 @@ TEST_CASE("Structural equality on Op variants") {
     Op p = GuestPc{0x401000};
     Op q = GuestPc{0x401000};
     Op r = GuestPc{0x401001};
+    Op cf = CondJumpFlags{CondCode::Eq, 1u, 2u};
+    Op cg = CondJumpFlags{CondCode::Eq, 1u, 2u};
+    Op ch = CondJumpFlags{CondCode::Ne, 1u, 2u};
 
     REQUIRE(h == i);
     REQUIRE_FALSE(h == j);
@@ -59,6 +62,8 @@ TEST_CASE("Structural equality on Op variants") {
     REQUIRE_FALSE(m == o);
     REQUIRE(p == q);
     REQUIRE_FALSE(p == r);
+    REQUIRE(cf == cg);
+    REQUIRE_FALSE(cf == ch);
 }
 
 TEST_CASE("Stmt equality includes result binding") {
@@ -114,6 +119,9 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
 
     Stmt s_ret{std::nullopt, Return{}};
     REQUIRE(pretty_print(s_ret) == "ret");
+
+    Stmt s_cond_flags{std::nullopt, CondJumpFlags{CondCode::Eq, 1u, 2u}};
+    REQUIRE(pretty_print(s_cond_flags) == "condjmpflags.eq bb1, bb2");
 
     Stmt s_store_tso{std::nullopt, StoreMemTSO{/*addr=*/5u, /*value=*/6u, OpSize::I32}};
     REQUIRE(pretty_print(s_store_tso) == "store.tso.i32 [%5], %6");

@@ -268,6 +268,15 @@ CfgGraphResult build_cfg_graph(const Function& function) {
                                                   id, cond->if_true)) {
                 return graph_error(std::move(*error));
             }
+        } else if (const auto* cond_flags = std::get_if<CondJumpFlags>(&op)) {
+            if (auto error = add_direct_successor(graph, block_by_id,
+                                                  id, cond_flags->if_false)) {
+                return graph_error(std::move(*error));
+            }
+            if (auto error = add_direct_successor(graph, block_by_id,
+                                                  id, cond_flags->if_true)) {
+                return graph_error(std::move(*error));
+            }
         } else if (const auto* jump_rel = std::get_if<JumpRel>(&op)) {
             add_optional_successor(graph, id,
                                    guest_target(guest_pcs, jump_rel->target_guest_pc));

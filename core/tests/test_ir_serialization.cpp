@@ -102,6 +102,7 @@ std::vector<Stmt> all_op_variant_stmts() {
         {std::nullopt, GuestPc{0x401000u}},
         {std::nullopt, Jump{2u}},
         {std::nullopt, CondJump{15u, 1u, 2u}},
+        {std::nullopt, CondJumpFlags{CondCode::Eq, 1u, 2u}},
         {std::nullopt, Return{}},
         {std::nullopt, JumpReg{16u}},
         {std::nullopt, CmpFlags{17u, 18u, OpSize::I64}},
@@ -215,6 +216,7 @@ TEST_CASE("IR deserialization: functions round-trip") {
             {0u, Constant{0x1122'3344'5566'7788ULL, OpSize::I64}},
             {1u, LoadReg{Gpr::Rax, OpSize::I64}},
             {2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}},
+            {std::nullopt, CondJumpFlags{CondCode::Ne, 9u, 11u}},
             {std::nullopt, CondJumpRel{CondCode::Eq, 0x401000u, 0x401010u}},
         },
     });

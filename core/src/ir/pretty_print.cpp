@@ -164,6 +164,9 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, CondJump>) {
             os << "condjmp "; print_ref(os, x.cond);
             os << ", bb" << x.if_true << ", bb" << x.if_false;
+        } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
+            os << "condjmpflags." << cc_name(x.cc)
+               << " bb" << x.if_true << ", bb" << x.if_false;
         } else if constexpr (std::is_same_v<T, Return>) {
             os << "ret";
         } else if constexpr (std::is_same_v<T, CmpFlags>) {

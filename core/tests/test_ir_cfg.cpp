@@ -113,17 +113,19 @@ TEST_CASE("IR CFG: direct block-indexed branches are terminators") {
     const std::vector<Stmt> stmts{
         {0u, Constant{1u, OpSize::I64}},
         {std::nullopt, CondJump{0u, 2u, 1u}},
-        {std::nullopt, Jump{2u}},
+        {std::nullopt, CondJumpFlags{CondCode::Eq, 2u, 1u}},
+        {std::nullopt, Jump{3u}},
         {std::nullopt, Return{}},
     };
 
     const auto cfg = build_cfg(stmts);
 
     REQUIRE(cfg.ok);
-    REQUIRE(cfg.function.blocks.size() == 3u);
+    REQUIRE(cfg.function.blocks.size() == 4u);
     REQUIRE(cfg.function.blocks[0].stmts.back().op == Op{CondJump{0u, 2u, 1u}});
-    REQUIRE(cfg.function.blocks[1].stmts.back().op == Op{Jump{2u}});
-    REQUIRE(cfg.function.blocks[2].stmts.back().op == Op{Return{}});
+    REQUIRE(cfg.function.blocks[1].stmts.back().op == Op{CondJumpFlags{CondCode::Eq, 2u, 1u}});
+    REQUIRE(cfg.function.blocks[2].stmts.back().op == Op{Jump{3u}});
+    REQUIRE(cfg.function.blocks[3].stmts.back().op == Op{Return{}});
     REQUIRE(flatten(cfg.function) == stmts);
 }
 

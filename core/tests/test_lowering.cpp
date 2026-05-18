@@ -534,6 +534,54 @@ TEST_CASE("Lowerer: Function CondJump rejects missing true or false target") {
     REQUIRE(missing_false.error == backend::LowerError::InvalidBlock);
 }
 
+TEST_CASE("Lowerer: Function CondJumpFlags lowers to b.cc and fallback branch") {
+    ir::Function fn;
+    fn.entry = 0u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {0u, ir::Constant{1u, ir::OpSize::I64}},
+                {1u, ir::Constant{1u, ir::OpSize::I64}},
+                {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+                {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 2u, 1u}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+        ir::BasicBlock{
+            2u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+    };
+
+    bool ok;
+    const std::string d = lower_function_to_disasm(fn, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("cmp") != std::string::npos);
+    REQUIRE(d.find("b.eq") != std::string::npos);
+    REQUIRE(d.find("b ") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: flat CondJumpFlags is rejected without Function labels") {
+    const std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 1u, 2u}},
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    const auto r = lw.lower(stmts);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::UnsupportedOp);
+}
+
 TEST_CASE("Lowerer: flat CondJump is rejected without Function labels") {
     const std::vector<ir::Stmt> stmts = {
         {0u, ir::Constant{1u, ir::OpSize::I64}},
