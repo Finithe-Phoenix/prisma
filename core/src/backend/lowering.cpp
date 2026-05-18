@@ -16,6 +16,7 @@
 #include "prisma/lowering.hpp"
 
 #include <algorithm>
+#include <unordered_map>
 #include <variant>
 
 namespace prisma::backend {
@@ -250,6 +251,45 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     return {};
 }
 
+LowerResult Lowerer::lower(const ir::Function& function) {
+    std::unordered_map<std::uint32_t, Emitter::Label> labels;
+    labels.reserve(function.blocks.size());
+    const auto* previous_labels = active_block_labels_;
+
+    for (const auto& block : function.blocks) {
+        auto [_, inserted] = labels.emplace(block.id, emitter_.create_label());
+        if (!inserted) {
+            return {false, LowerError::InvalidBlock, "duplicate block id"};
+        }
+    }
+
+    auto entry_it = labels.find(function.entry);
+    if (entry_it == labels.end()) {
+        return {false, LowerError::InvalidBlock, "entry block id not found"};
+    }
+
+    if (!function.blocks.empty() && function.blocks.front().id != function.entry) {
+        emitter_.branch(entry_it->second);
+    }
+
+    active_block_labels_ = &labels;
+    for (const auto& block : function.blocks) {
+        auto label_it = labels.find(block.id);
+        if (label_it == labels.end()) {
+            active_block_labels_ = previous_labels;
+            return {false, LowerError::InvalidBlock, "block id not found"};
+        }
+        emitter_.bind(label_it->second);
+        auto result = lower(block.stmts);
+        if (!result.success) {
+            active_block_labels_ = previous_labels;
+            return result;
+        }
+    }
+    active_block_labels_ = previous_labels;
+    return {};
+}
+
 LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
     return std::visit([&](auto const& op) -> LowerResult {
         using T = std::decay_t<decltype(op)>;
@@ -428,6 +468,18 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // IR and passes but intentionally emits no machine code.
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::Jump>) {
+            if (!active_block_labels_) {
+                return {false, LowerError::UnsupportedOp,
+                        "Jump requires Function lowering context"};
+            }
+            auto target = active_block_labels_->find(op.target_block);
+            if (target == active_block_labels_->end()) {
+                return {false, LowerError::InvalidBlock, "Jump target block id not found"};
+            }
+            emitter_.branch(target->second);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             // Side-effecting: emits ARM64 `cmp`, leaves NZCV set for the
             // NEXT CondJumpRel / SetCC. No result ref; no scratch
@@ -509,8 +561,8 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else {
-            // Compare, Jump, CondJump, LoadMem, StoreMem, LoadMemTSO,
-            // StoreMemTSO — deferred to future sessions.
+            // Basic-block indexed CondJump is deferred to CFG conditional
+            // lowering; most other current ops are handled above.
             return {false, LowerError::UnsupportedOp, "op not yet lowered"};
         }
     }, s.op);

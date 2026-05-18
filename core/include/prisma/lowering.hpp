@@ -12,7 +12,7 @@
 //     calls/traps, Fence, and Return.
 //
 //   Rejected IR ops (returns LowerError::Unsupported):
-//     Basic-block indexed Jump / CondJump. CFG lowering lands separately.
+//     Basic-block indexed CondJump. CFG conditional lowering lands separately.
 //
 // Register allocation strategy:
 //
@@ -48,9 +48,10 @@
 namespace prisma::backend {
 
 enum class LowerError {
-    UnsupportedOp,       // IR op we do not lower yet (e.g. Compare, Jump).
+    UnsupportedOp,       // IR op we do not lower yet (e.g. CondJump).
     OutOfScratchRegs,    // More than 10 simultaneously-live SSA values.
     DanglingRef,         // A statement references a Ref that was never defined.
+    InvalidBlock,        // Function block ids / Jump targets are inconsistent.
 };
 
 struct LowerResult {
@@ -94,6 +95,11 @@ public:
     // an error the Emitter state is undefined — throw it away.
     [[nodiscard]] LowerResult lower(std::span<const ir::Stmt> stmts);
 
+    // Lower a whole Function with labels for block-indexed control flow.
+    // Blocks are still lowered independently; cross-block SSA / phi nodes
+    // are out of scope for this stage.
+    [[nodiscard]] LowerResult lower(const ir::Function& function);
+
     // For tests: the peak number of scratch registers that were
     // simultaneously live during the last call to lower(). A value of 10
     // means the pool was saturated.
@@ -123,6 +129,8 @@ private:
     // Monotonically increasing during lower(): the index of the stmt we
     // are about to emit. Used both for post-stmt expiry and for debug.
     std::size_t stmt_index_{0};
+
+    const std::unordered_map<std::uint32_t, Emitter::Label>* active_block_labels_{nullptr};
 
     // Peak occupancy of ref_to_scratch_ + stmt_temporaries_ observed
     // during the last lower() call. Exposed by scratch_used().

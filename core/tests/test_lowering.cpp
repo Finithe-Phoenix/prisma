@@ -26,6 +26,16 @@ std::string lower_to_disasm(std::span<const ir::Stmt> stmts, bool& ok) {
     return em.disassemble();
 }
 
+std::string lower_function_to_disasm(const ir::Function& fn, bool& ok) {
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    const auto res = lw.lower(fn);
+    ok = res.success;
+    if (!res.success) return {};
+    em.finalize();
+    return em.disassemble();
+}
+
 }  // namespace
 
 TEST_CASE("Lowerer: Constant + StoreReg + Return → mov + mov + ret") {
@@ -187,8 +197,9 @@ TEST_CASE("Lowerer: DanglingRef error on StoreReg that references unknown Ref") 
     REQUIRE(r.error == backend::LowerError::DanglingRef);
 }
 
-TEST_CASE("Lowerer: UnsupportedOp for ops not yet implemented") {
-    // Jump is in the IR but the Lowerer does not emit it yet.
+TEST_CASE("Lowerer: Jump without Function context is still rejected") {
+    // A block-indexed Jump needs a Function-level block table. Lowering a
+    // raw statement span has no labels to target, so it must stay rejected.
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Jump{0u}},
     };
@@ -393,6 +404,148 @@ TEST_CASE("Lowerer: StoreMemTSO emits stlr") {
 // ---------------------------------------------------------------------------
 // Control flow lowering.
 // ---------------------------------------------------------------------------
+
+TEST_CASE("Lowerer: Function Jump lowers to an ARM64 branch between block labels") {
+    ir::Function fn;
+    fn.entry = 0u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {std::nullopt, ir::Jump{2u}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+        ir::BasicBlock{
+            2u,
+            {
+                {0u, ir::Constant{0x2au, ir::OpSize::I64}},
+                {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+                {std::nullopt, ir::Return{}},
+            },
+        },
+    };
+
+    bool ok;
+    const std::string d = lower_function_to_disasm(fn, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("b ") != std::string::npos);
+    REQUIRE(d.find("#0x2a") != std::string::npos);
+    REQUIRE(d.find("x10") != std::string::npos);
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Function Jump supports a backward branch") {
+    ir::Function fn;
+    fn.entry = 1u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Jump{0u}},
+            },
+        },
+    };
+
+    bool ok;
+    const std::string d = lower_function_to_disasm(fn, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("b ") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Function Jump context does not leak into flat lowering") {
+    ir::Function fn;
+    fn.entry = 0u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {std::nullopt, ir::Jump{1u}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    const auto function_result = lw.lower(fn);
+    REQUIRE(function_result.success);
+
+    const std::vector<ir::Stmt> flat = {
+        {std::nullopt, ir::Jump{1u}},
+    };
+    const auto flat_result = lw.lower(flat);
+    REQUIRE_FALSE(flat_result.success);
+    REQUIRE(flat_result.error == backend::LowerError::UnsupportedOp);
+}
+
+TEST_CASE("Lowerer: Function Jump to a missing block is rejected") {
+    ir::Function fn;
+    fn.entry = 0u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {std::nullopt, ir::Jump{99u}},
+            },
+        },
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    const auto r = lw.lower(fn);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::InvalidBlock);
+}
+
+TEST_CASE("Lowerer: Function with duplicate block ids is rejected") {
+    ir::Function fn;
+    fn.entry = 0u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {std::nullopt, ir::Jump{1u}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    const auto r = lw.lower(fn);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::InvalidBlock);
+}
 
 TEST_CASE("Lowerer: JumpRel emits mov + ret") {
     std::vector<ir::Stmt> stmts = {
