@@ -242,8 +242,8 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-IR-001: SSA `Ref` as uint32_t (FEX-style compression).
 - [x] F1-IR-002: Op variants: Constant, LoadReg/StoreReg, BinOp, Compare, Load/Store x4, Jump, CondJump, Return.
 - [~|codex] F1-IR-003: Add `Flags` SSA value type (tuple of carry, zero, sign, overflow, parity, aux).
-- [ ] F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
-- [ ] F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
+- [~|codex] F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
+- [~|codex] F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
 - [x] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
 - [x] (071bae3) F1-IR-007: Add `CondJumpFlags{cc, true_target, false_target}` over implicit flags.
 - [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
