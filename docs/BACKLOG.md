@@ -255,7 +255,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (b4e766c) F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
 - [x] (6e8d16d) F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
 - [x] (53341ac) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
-- [ ] F1-IR-017: IR serialization to a compact binary form for cache storage.
+- [~|codex] F1-IR-017: IR serialization to a compact binary form for cache storage.
 - [ ] F1-IR-018: IR deserialization + round-trip tests.
 - [ ] F1-IR-019: Memoise pretty-printed form for test stability.
 - [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
