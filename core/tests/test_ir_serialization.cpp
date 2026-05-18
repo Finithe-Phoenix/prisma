@@ -56,8 +56,9 @@ void require_error(const std::variant<T, IrDeserializeError>& result, IrDeserial
 
 std::uint16_t read_u16le(const std::vector<std::uint8_t>& bytes, std::size_t off) {
     REQUIRE(off + 2u <= bytes.size());
-    return static_cast<std::uint16_t>(bytes[off])
-         | (static_cast<std::uint16_t>(bytes[off + 1u]) << 8u);
+    const auto value = static_cast<std::uint32_t>(bytes[off])
+                     | (static_cast<std::uint32_t>(bytes[off + 1u]) << 8u);
+    return static_cast<std::uint16_t>(value);
 }
 
 std::uint32_t read_u32le(const std::vector<std::uint8_t>& bytes, std::size_t off) {
