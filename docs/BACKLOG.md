@@ -270,7 +270,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-BK-001: Emitter with mov*, ALU 3-reg, cmp+cset, memory 4-size.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
 - [x] (020c48b) F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
-- [ ] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
+- [~|codex] F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
 - [x] (8b845e1) F1-BK-005: Emitter label management (vixl Label class).
 - [ ] F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (3f29499) F1-BK-007: Linear-scan register allocator over scratch pool.
