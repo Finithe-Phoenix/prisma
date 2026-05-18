@@ -261,7 +261,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
 - [x] (9de2da1) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list.
 - [x] (9de2da1) F1-IR-022: Add `Function` with multiple blocks + entry block.
-- [~|codex] F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
+- [x] (10d6ac3) F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
 - [ ] F1-IR-024: Dominator tree + postorder traversal utilities.
 - [ ] F1-IR-025: Loop detection (natural loops by back-edge analysis).
 
