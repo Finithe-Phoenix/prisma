@@ -151,6 +151,7 @@ target_link_libraries(prisma_warnings INTERFACE prisma_coverage)
 # backend, cache, and runtime are future subtargets (Fase 1+).
 
 add_library(prisma_ir STATIC
+    src/ir/cfg.cpp
     src/ir/operation.cpp
     src/ir/pretty_print.cpp
     src/ir/serialization.cpp
@@ -374,6 +375,7 @@ if(PRISMA_BUILD_TESTS)
 
     add_executable(prisma_core_tests
         tests/test_ir.cpp
+        tests/test_ir_cfg.cpp
         tests/test_ir_serialization.cpp
         tests/test_arm64_encoding.cpp
         tests/test_emitter.cpp
