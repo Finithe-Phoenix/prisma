@@ -153,6 +153,7 @@ target_link_libraries(prisma_warnings INTERFACE prisma_coverage)
 add_library(prisma_ir STATIC
     src/ir/operation.cpp
     src/ir/pretty_print.cpp
+    src/ir/serialization.cpp
     src/ir/validate.cpp
 )
 
@@ -373,6 +374,7 @@ if(PRISMA_BUILD_TESTS)
 
     add_executable(prisma_core_tests
         tests/test_ir.cpp
+        tests/test_ir_serialization.cpp
         tests/test_arm64_encoding.cpp
         tests/test_emitter.cpp
         tests/test_decoder.cpp
