@@ -1,14 +1,14 @@
 // prisma/ir_serialization.hpp - compact binary Prisma IR serialization.
 //
-// F1-IR-017 produces a deterministic, little-endian byte stream for cache
-// storage and future cross-process exchange. Deserialization is intentionally
-// a separate backlog item so this API only writes bytes.
+// Produces and consumes a deterministic, little-endian byte stream for cache
+// storage and future cross-process exchange.
 
 #pragma once
 
 #include <array>
 #include <cstdint>
 #include <span>
+#include <variant>
 #include <vector>
 
 #include "prisma/ir.hpp"
@@ -28,8 +28,29 @@ enum class IrBinaryKind : std::uint8_t {
     Function = 2,
 };
 
+enum class IrDeserializeError {
+    BadMagic,
+    UnsupportedVersion,
+    WrongKind,
+    Truncated,
+    InvalidTag,
+    InvalidEnum,
+    InvalidBool,
+    TooLarge,
+    TrailingBytes,
+};
+
 [[nodiscard]] std::vector<std::uint8_t> serialize_stmts(std::span<const Stmt> stmts);
 [[nodiscard]] std::vector<std::uint8_t> serialize_op(const Op& op);
 [[nodiscard]] std::vector<std::uint8_t> serialize_function(const Function& function);
+
+[[nodiscard]] std::variant<std::vector<Stmt>, IrDeserializeError>
+deserialize_stmts(std::span<const std::uint8_t> bytes);
+
+[[nodiscard]] std::variant<Op, IrDeserializeError>
+deserialize_op(std::span<const std::uint8_t> bytes);
+
+[[nodiscard]] std::variant<Function, IrDeserializeError>
+deserialize_function(std::span<const std::uint8_t> bytes);
 
 }  // namespace prisma::ir
