@@ -257,7 +257,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (53341ac) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
 - [x] (36ae060) F1-IR-017: IR serialization to a compact binary form for cache storage.
 - [x] (230e306) F1-IR-018: IR deserialization + round-trip tests.
-- [ ] F1-IR-019: Memoise pretty-printed form for test stability.
+- [~|codex] F1-IR-019: Memoise pretty-printed form for test stability.
 - [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
 - [x] (9de2da1) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list.
 - [x] (9de2da1) F1-IR-022: Add `Function` with multiple blocks + entry block.
