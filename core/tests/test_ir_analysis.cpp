@@ -40,6 +40,20 @@ Function diamond_function() {
     return function;
 }
 
+Function natural_loop_function() {
+    Function function;
+    function.entry = 0u;
+    function.blocks = {
+        BasicBlock{0u, {{std::nullopt, Jump{1u}}}},
+        BasicBlock{1u, {{0u, Constant{1u, OpSize::I64}},
+                        {std::nullopt, CondJump{0u, 2u, 4u}}}},
+        BasicBlock{2u, {{std::nullopt, Jump{3u}}}},
+        BasicBlock{3u, {{std::nullopt, Jump{1u}}}},
+        BasicBlock{4u, {{std::nullopt, Return{}}}},
+    };
+    return function;
+}
+
 }  // namespace
 
 TEST_CASE("IR analysis: graph derives direct and fallthrough successors") {
@@ -228,24 +242,17 @@ TEST_CASE("IR analysis: dominators handle a diamond") {
 }
 
 TEST_CASE("IR analysis: dominators handle a natural loop") {
-    Function function;
-    function.entry = 0u;
-    function.blocks = {
-        BasicBlock{0u, {{std::nullopt, Jump{1u}}}},
-        BasicBlock{1u, {{0u, Constant{1u, OpSize::I64}},
-                        {std::nullopt, CondJump{0u, 1u, 2u}}}},
-        BasicBlock{2u, {{std::nullopt, Return{}}}},
-    };
-
-    const auto doms = compute_dominators(function);
+    const auto doms = compute_dominators(natural_loop_function());
 
     REQUIRE(doms.ok);
     const auto& tree = doms.tree;
     REQUIRE(tree.immediate_dominator(1u) == std::optional<std::uint32_t>{0u});
     REQUIRE(tree.immediate_dominator(2u) == std::optional<std::uint32_t>{1u});
-    REQUIRE(tree.dominates(1u, 2u));
+    REQUIRE(tree.immediate_dominator(3u) == std::optional<std::uint32_t>{2u});
+    REQUIRE(tree.immediate_dominator(4u) == std::optional<std::uint32_t>{1u});
+    REQUIRE(tree.dominates(1u, 3u));
     REQUIRE(tree.dominates(1u, 1u));
-    REQUIRE_FALSE(tree.dominates(2u, 1u));
+    REQUIRE_FALSE(tree.dominates(3u, 1u));
 }
 
 TEST_CASE("IR analysis: duplicate GuestPc markers are rejected") {
@@ -263,4 +270,93 @@ TEST_CASE("IR analysis: duplicate GuestPc markers are rejected") {
     REQUIRE_FALSE(graph_result.ok);
     REQUIRE(graph_result.error);
     REQUIRE(graph_result.error->code == CfgAnalysisCode::DuplicateGuestPc);
+}
+
+TEST_CASE("IR analysis: natural loop detection finds back edges and loop blocks") {
+    const auto result = detect_natural_loops(natural_loop_function());
+
+    REQUIRE(result.ok);
+    REQUIRE(result.analysis.back_edges.size() == 1u);
+    REQUIRE(result.analysis.back_edges[0].from == 3u);
+    REQUIRE(result.analysis.back_edges[0].to == 1u);
+    REQUIRE(result.analysis.loops.size() == 1u);
+    REQUIRE(result.analysis.loops[0].header == 1u);
+    REQUIRE(result.analysis.loops[0].latches == std::vector<std::uint32_t>{3u});
+    REQUIRE(result.analysis.loops[0].blocks == std::vector<std::uint32_t>{1u, 2u, 3u});
+}
+
+TEST_CASE("IR analysis: self-loop is a natural loop") {
+    Function function;
+    function.entry = 0u;
+    function.blocks = {
+        BasicBlock{0u, {{0u, Constant{1u, OpSize::I64}},
+                        {std::nullopt, CondJump{0u, 0u, 1u}}}},
+        BasicBlock{1u, {{std::nullopt, Return{}}}},
+    };
+
+    const auto result = detect_natural_loops(function);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.analysis.back_edges.size() == 1u);
+    REQUIRE(result.analysis.back_edges[0].from == 0u);
+    REQUIRE(result.analysis.back_edges[0].to == 0u);
+    REQUIRE(result.analysis.loops.size() == 1u);
+    REQUIRE(result.analysis.loops[0].header == 0u);
+    REQUIRE(result.analysis.loops[0].latches == std::vector<std::uint32_t>{0u});
+    REQUIRE(result.analysis.loops[0].blocks == std::vector<std::uint32_t>{0u});
+}
+
+TEST_CASE("IR analysis: irreducible cycle is not reported as a natural loop") {
+    Function function;
+    function.entry = 0u;
+    function.blocks = {
+        BasicBlock{0u, {{0u, Constant{1u, OpSize::I64}},
+                        {std::nullopt, CondJump{0u, 2u, 1u}}}},
+        BasicBlock{1u, {{std::nullopt, Jump{3u}}}},
+        BasicBlock{2u, {{std::nullopt, Jump{3u}}}},
+        BasicBlock{3u, {{std::nullopt, Jump{1u}}}},
+    };
+
+    const auto result = detect_natural_loops(function);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.analysis.back_edges.empty());
+    REQUIRE(result.analysis.loops.empty());
+}
+
+TEST_CASE("IR analysis: multiple latches to one header are merged") {
+    Function function;
+    function.entry = 0u;
+    function.blocks = {
+        BasicBlock{0u, {{std::nullopt, Jump{1u}}}},
+        BasicBlock{1u, {{0u, Constant{1u, OpSize::I64}},
+                        {std::nullopt, CondJump{0u, 2u, 3u}}}},
+        BasicBlock{2u, {{std::nullopt, Jump{1u}}}},
+        BasicBlock{3u, {{0u, Constant{2u, OpSize::I64}},
+                        {std::nullopt, CondJump{0u, 1u, 4u}}}},
+        BasicBlock{4u, {{std::nullopt, Return{}}}},
+    };
+
+    const auto result = detect_natural_loops(function);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.analysis.back_edges.size() == 2u);
+    REQUIRE(result.analysis.loops.size() == 1u);
+    REQUIRE(result.analysis.loops[0].header == 1u);
+    REQUIRE(result.analysis.loops[0].latches == std::vector<std::uint32_t>{2u, 3u});
+    REQUIRE(result.analysis.loops[0].blocks == std::vector<std::uint32_t>{1u, 2u, 3u});
+}
+
+TEST_CASE("IR analysis: loop detection propagates graph errors") {
+    Function function;
+    function.entry = 0u;
+    function.blocks = {
+        BasicBlock{0u, {{std::nullopt, Jump{99u}}}},
+    };
+
+    const auto result = detect_natural_loops(function);
+
+    REQUIRE_FALSE(result.ok);
+    REQUIRE(result.error);
+    REQUIRE(result.error->code == CfgAnalysisCode::InvalidBlockTarget);
 }

@@ -65,9 +65,32 @@ struct DominatorResult {
     std::optional<CfgAnalysisError> error;
 };
 
+struct BackEdge {
+    std::uint32_t from;
+    std::uint32_t to;
+};
+
+struct NaturalLoop {
+    std::uint32_t header;
+    std::vector<std::uint32_t> latches;
+    std::vector<std::uint32_t> blocks;
+};
+
+struct LoopAnalysis {
+    std::vector<BackEdge> back_edges;
+    std::vector<NaturalLoop> loops;
+};
+
+struct LoopAnalysisResult {
+    bool ok{true};
+    LoopAnalysis analysis{};
+    std::optional<CfgAnalysisError> error;
+};
+
 [[nodiscard]] CfgGraphResult build_cfg_graph(const Function& function);
 [[nodiscard]] BlockOrderResult postorder(const Function& function);
 [[nodiscard]] BlockOrderResult reverse_postorder(const Function& function);
 [[nodiscard]] DominatorResult compute_dominators(const Function& function);
+[[nodiscard]] LoopAnalysisResult detect_natural_loops(const Function& function);
 
 }  // namespace prisma::ir

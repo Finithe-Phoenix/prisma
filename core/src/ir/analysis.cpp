@@ -6,6 +6,7 @@
 #include <functional>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -35,6 +36,10 @@ using GuestPcMap = std::unordered_map<std::uint64_t, std::uint32_t>;
 
 [[nodiscard]] DominatorResult dom_error(CfgAnalysisError error) {
     return {false, DominatorTree{}, std::move(error)};
+}
+
+[[nodiscard]] LoopAnalysisResult loop_error(CfgAnalysisError error) {
+    return {false, LoopAnalysis{}, std::move(error)};
 }
 
 void add_unique(std::vector<std::uint32_t>& values, std::uint32_t value) {
@@ -124,6 +129,35 @@ processed_pred(const DominatorTree& tree, std::uint32_t entry, std::uint32_t pre
             return current;
         }
         current = *it->second;
+    }
+}
+
+void add_natural_loop_nodes(std::set<std::uint32_t>& nodes,
+                            const CfgGraph& graph,
+                            const DominatorTree& tree,
+                            std::uint32_t header,
+                            std::uint32_t latch) {
+    std::vector<std::uint32_t> worklist{latch};
+    nodes.insert(header);
+    nodes.insert(latch);
+
+    while (!worklist.empty()) {
+        const auto current = worklist.back();
+        worklist.pop_back();
+
+        const auto pred_it = graph.predecessors.find(current);
+        if (pred_it == graph.predecessors.end()) {
+            continue;
+        }
+
+        for (const auto pred : pred_it->second) {
+            if (pred == header || !tree.is_reachable(pred)) {
+                continue;
+            }
+            if (nodes.insert(pred).second) {
+                worklist.push_back(pred);
+            }
+        }
     }
 }
 
@@ -359,6 +393,68 @@ DominatorResult compute_dominators(const Function& function) {
     }
 
     return {true, std::move(tree), std::nullopt};
+}
+
+LoopAnalysisResult detect_natural_loops(const Function& function) {
+    auto graph_result = build_cfg_graph(function);
+    if (!graph_result.ok) {
+        return loop_error(*graph_result.error);
+    }
+    const auto& graph = graph_result.graph;
+
+    auto dom_result = compute_dominators(function);
+    if (!dom_result.ok) {
+        return loop_error(*dom_result.error);
+    }
+    const auto& tree = dom_result.tree;
+
+    struct LoopAccumulator {
+        std::set<std::uint32_t> latches;
+        std::set<std::uint32_t> blocks;
+    };
+
+    LoopAnalysis analysis;
+    std::unordered_map<std::uint32_t, LoopAccumulator> by_header;
+
+    for (const auto block_id : graph.blocks) {
+        if (!tree.is_reachable(block_id)) {
+            continue;
+        }
+        const auto succ_it = graph.successors.find(block_id);
+        if (succ_it == graph.successors.end()) {
+            continue;
+        }
+
+        for (const auto successor : succ_it->second) {
+            if (!tree.is_reachable(successor) || !tree.dominates(successor, block_id)) {
+                continue;
+            }
+
+            analysis.back_edges.push_back(BackEdge{block_id, successor});
+            auto& loop = by_header[successor];
+            loop.latches.insert(block_id);
+            add_natural_loop_nodes(loop.blocks, graph, tree, successor, block_id);
+        }
+    }
+
+    std::vector<std::uint32_t> headers;
+    headers.reserve(by_header.size());
+    for (const auto& entry : by_header) {
+        headers.push_back(entry.first);
+    }
+    std::sort(headers.begin(), headers.end());
+
+    analysis.loops.reserve(headers.size());
+    for (const auto header : headers) {
+        const auto& loop = by_header.at(header);
+        NaturalLoop natural_loop;
+        natural_loop.header = header;
+        natural_loop.latches.assign(loop.latches.begin(), loop.latches.end());
+        natural_loop.blocks.assign(loop.blocks.begin(), loop.blocks.end());
+        analysis.loops.push_back(std::move(natural_loop));
+    }
+
+    return {true, std::move(analysis), std::nullopt};
 }
 
 }  // namespace prisma::ir
