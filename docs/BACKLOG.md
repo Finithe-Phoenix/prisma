@@ -245,7 +245,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [ ] F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
 - [ ] F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
 - [x] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
-- [ ] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
+- [~|codex] F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
 - [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
 - [x] (b5c305a) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
