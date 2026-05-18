@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "prisma/ir.hpp"
+#include "prisma/ir_pretty_cache.hpp"
 
 using namespace prisma::ir;
 
@@ -121,4 +122,88 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
 TEST_CASE("kInvalidRef renders as %?") {
     Stmt s{kInvalidRef, Constant{0, OpSize::I8}};
     REQUIRE(pretty_print(s) == "%? = const.i8 0x0");
+}
+
+TEST_CASE("PrettyPrintCache memoizes structurally equal statements") {
+    PrettyPrintCache cache;
+    Stmt first{0u, Constant{42, OpSize::I64}};
+    Stmt same{0u, Constant{42, OpSize::I64}};
+    Stmt different{0u, Constant{43, OpSize::I64}};
+
+    const auto& first_text = cache.render(first);
+    REQUIRE(first_text == pretty_print(first));
+    REQUIRE(cache.size() == 1u);
+
+    const auto& same_text = cache.render(same);
+    REQUIRE(&same_text == &first_text);
+    REQUIRE(cache.size() == 1u);
+
+    const auto& different_text = cache.render(different);
+    REQUIRE(different_text == pretty_print(different));
+    REQUIRE(&different_text != &first_text);
+    REQUIRE(cache.size() == 2u);
+
+    cache.clear();
+    REQUIRE(cache.size() == 0u);
+}
+
+TEST_CASE("PrettyPrintCache supports op, block, and function render paths") {
+    PrettyPrintCache cache;
+
+    Op op = BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64};
+    REQUIRE(cache.render(op) == pretty_print(op));
+    REQUIRE(cache.pretty_print(op) == pretty_print(op));
+
+    BasicBlock block;
+    block.id = 7u;
+    block.stmts = {
+        {0u, Constant{1, OpSize::I64}},
+        {std::nullopt, Return{}},
+    };
+    REQUIRE(cache.render(block) == pretty_print(block));
+
+    Function fn;
+    fn.entry = 7u;
+    fn.blocks.push_back(block);
+    REQUIRE(cache.render(fn) == pretty_print(fn));
+    REQUIRE(cache.size() == 3u);
+}
+
+TEST_CASE("PrettyPrintCache reuses structured block and function entries") {
+    PrettyPrintCache cache;
+
+    BasicBlock block_a;
+    block_a.id = 0;
+    block_a.stmts = {
+        {0u, Constant{10, OpSize::I64}},
+        {1u, Constant{32, OpSize::I64}},
+        {2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}},
+        {std::nullopt, Return{}},
+    };
+
+    BasicBlock block_b = block_a;
+    BasicBlock block_c = block_a;
+    block_c.stmts[2] = {2u, BinOp{BinOpKind::Sub, 0u, 1u, OpSize::I64}};
+
+    REQUIRE(cache.render(block_a) == pretty_print(block_a));
+    REQUIRE(cache.size() == 1);
+    REQUIRE(cache.render(block_b) == pretty_print(block_b));
+    REQUIRE(cache.size() == 1);
+    REQUIRE(cache.render(block_c) == pretty_print(block_c));
+    REQUIRE(cache.size() == 2);
+
+    Function fn_a;
+    fn_a.entry = 0;
+    fn_a.blocks.push_back(block_a);
+
+    Function fn_b = fn_a;
+    Function fn_c = fn_a;
+    fn_c.entry = 1;
+
+    REQUIRE(cache.render(fn_a) == pretty_print(fn_a));
+    REQUIRE(cache.size() == 3);
+    REQUIRE(cache.render(fn_b) == pretty_print(fn_b));
+    REQUIRE(cache.size() == 3);
+    REQUIRE(cache.render(fn_c) == pretty_print(fn_c));
+    REQUIRE(cache.size() == 4);
 }

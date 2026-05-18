@@ -4,9 +4,15 @@
 // and debugger output only. Do not parse it.
 
 #include "prisma/ir.hpp"
+#include "prisma/ir_pretty_cache.hpp"
+#include "prisma/ir_serialization.hpp"
 
+#include <cstddef>
+#include <span>
 #include <sstream>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace prisma::ir {
 
@@ -89,6 +95,20 @@ constexpr std::string_view fence_name(FenceKind k) noexcept {
 
 void print_ref(std::ostream& os, Ref r) {
     if (r == kInvalidRef) { os << "%?"; } else { os << "%" << r; }
+}
+
+std::string binary_key(char prefix, const std::vector<std::uint8_t>& bytes) {
+    std::string key;
+    key.reserve(bytes.size() + 1u);
+    key.push_back(prefix);
+    key.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return key;
+}
+
+void append_u32_key(std::string& key, std::uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        key.push_back(static_cast<char>((value >> shift) & 0xFFu));
+    }
 }
 
 }  // namespace
@@ -204,6 +224,55 @@ std::string pretty_print(const Function& fn) {
     }
     os << "}\n";
     return os.str();
+}
+
+const std::string& PrettyPrintCache::render(const Op& op) {
+    return intern(binary_key('o', serialize_op(op)), ::prisma::ir::pretty_print(op));
+}
+
+const std::string& PrettyPrintCache::render(const Stmt& stmt) {
+    return intern(binary_key('s', serialize_stmts(std::span<const Stmt>(&stmt, 1u))),
+                  ::prisma::ir::pretty_print(stmt));
+}
+
+const std::string& PrettyPrintCache::render(const BasicBlock& block) {
+    auto key = binary_key('b', serialize_stmts(block.stmts));
+    append_u32_key(key, block.id);
+    return intern(std::move(key), ::prisma::ir::pretty_print(block));
+}
+
+const std::string& PrettyPrintCache::render(const Function& function) {
+    return intern(binary_key('f', serialize_function(function)), ::prisma::ir::pretty_print(function));
+}
+
+const std::string& PrettyPrintCache::pretty_print(const Op& op) {
+    return render(op);
+}
+
+const std::string& PrettyPrintCache::pretty_print(const Stmt& stmt) {
+    return render(stmt);
+}
+
+const std::string& PrettyPrintCache::pretty_print(const BasicBlock& block) {
+    return render(block);
+}
+
+const std::string& PrettyPrintCache::pretty_print(const Function& function) {
+    return render(function);
+}
+
+std::size_t PrettyPrintCache::size() const noexcept {
+    return cache_.size();
+}
+
+void PrettyPrintCache::clear() {
+    cache_.clear();
+}
+
+const std::string& PrettyPrintCache::intern(std::string key, std::string text) {
+    auto [it, inserted] = cache_.try_emplace(std::move(key), std::move(text));
+    (void)inserted;
+    return it->second;
 }
 
 }  // namespace prisma::ir
