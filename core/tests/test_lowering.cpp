@@ -570,6 +570,57 @@ TEST_CASE("Lowerer: Function CondJumpFlags lowers to b.cc and fallback branch") 
     REQUIRE(d.find("b ") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: CFG function lowering resolves mixed label fixups") {
+    ir::Function fn;
+    fn.entry = 2u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Jump{0u}},
+            },
+        },
+        ir::BasicBlock{
+            2u,
+            {
+                {0u, ir::Constant{7u, ir::OpSize::I64}},
+                {1u, ir::Constant{7u, ir::OpSize::I64}},
+                {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+                {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 4u, 3u}},
+            },
+        },
+        ir::BasicBlock{
+            3u,
+            {
+                {std::nullopt, ir::Jump{1u}},
+            },
+        },
+        ir::BasicBlock{
+            4u,
+            {
+                {0u, ir::Constant{0x55u, ir::OpSize::I64}},
+                {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+                {std::nullopt, ir::Jump{0u}},
+            },
+        },
+    };
+
+    bool ok;
+    const std::string d = lower_function_to_disasm(fn, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("b.eq") != std::string::npos);
+    REQUIRE(d.find("b ") != std::string::npos);
+    REQUIRE(d.find("#0x55") != std::string::npos);
+    REQUIRE(d.find("x10") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: flat CondJumpFlags is rejected without Function labels") {
     const std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 1u, 2u}},
