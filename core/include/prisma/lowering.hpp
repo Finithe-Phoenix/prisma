@@ -12,7 +12,7 @@
 //     calls/traps, Fence, and Return.
 //
 //   Rejected IR ops (returns LowerError::Unsupported):
-//     Basic-block indexed CondJump. CFG conditional lowering lands separately.
+//     Function-only control flow when lowered as a flat statement span.
 //
 // Register allocation strategy:
 //

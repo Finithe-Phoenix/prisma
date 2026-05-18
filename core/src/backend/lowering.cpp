@@ -480,6 +480,35 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.branch(target->second);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::CondJump>) {
+            if (!active_block_labels_) {
+                return {false, LowerError::UnsupportedOp,
+                        "CondJump requires Function lowering context"};
+            }
+            arm64::Reg cond;
+            if (!reg_of(op.cond, cond)) {
+                return {false, LowerError::DanglingRef, "CondJump.cond"};
+            }
+            arm64::Reg zero;
+            if (!allocate_temporary(zero)) {
+                return {false, LowerError::OutOfScratchRegs, "CondJump zero temporary"};
+            }
+
+            auto true_target = active_block_labels_->find(op.if_true);
+            if (true_target == active_block_labels_->end()) {
+                return {false, LowerError::InvalidBlock, "CondJump true target block id not found"};
+            }
+            auto false_target = active_block_labels_->find(op.if_false);
+            if (false_target == active_block_labels_->end()) {
+                return {false, LowerError::InvalidBlock, "CondJump false target block id not found"};
+            }
+
+            emitter_.mov_imm64(zero, 0u);
+            emitter_.cmp(cond, zero);
+            emitter_.branch_cc(true_target->second, ir::CondCode::Ne);
+            emitter_.branch(false_target->second);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             // Side-effecting: emits ARM64 `cmp`, leaves NZCV set for the
             // NEXT CondJumpRel / SetCC. No result ref; no scratch

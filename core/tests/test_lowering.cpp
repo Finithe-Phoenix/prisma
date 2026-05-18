@@ -466,6 +466,87 @@ TEST_CASE("Lowerer: Function Jump supports a backward branch") {
     REQUIRE(d.find("b ") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: Function CondJump lowers to conditional and fallback branches") {
+    ir::Function fn;
+    fn.entry = 0u;
+    fn.blocks = {
+        ir::BasicBlock{
+            0u,
+            {
+                {0u, ir::Constant{1u, ir::OpSize::I64}},
+                {std::nullopt, ir::CondJump{0u, 2u, 1u}},
+            },
+        },
+        ir::BasicBlock{
+            1u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+        ir::BasicBlock{
+            2u,
+            {
+                {std::nullopt, ir::Return{}},
+            },
+        },
+    };
+
+    bool ok;
+    const std::string d = lower_function_to_disasm(fn, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("cmp") != std::string::npos);
+    REQUIRE(d.find("b.ne") != std::string::npos);
+    REQUIRE(d.find("b ") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Function CondJump rejects missing true or false target") {
+    auto try_function = [](std::uint32_t if_true, std::uint32_t if_false) {
+        ir::Function fn;
+        fn.entry = 0u;
+        fn.blocks = {
+            ir::BasicBlock{
+                0u,
+                {
+                    {0u, ir::Constant{1u, ir::OpSize::I64}},
+                    {std::nullopt, ir::CondJump{0u, if_true, if_false}},
+                },
+            },
+            ir::BasicBlock{
+                1u,
+                {
+                    {std::nullopt, ir::Return{}},
+                },
+            },
+        };
+
+        backend::Emitter em;
+        backend::Lowerer lw(em);
+        return lw.lower(fn);
+    };
+
+    const auto missing_true = try_function(99u, 1u);
+    REQUIRE_FALSE(missing_true.success);
+    REQUIRE(missing_true.error == backend::LowerError::InvalidBlock);
+
+    const auto missing_false = try_function(1u, 99u);
+    REQUIRE_FALSE(missing_false.success);
+    REQUIRE(missing_false.error == backend::LowerError::InvalidBlock);
+}
+
+TEST_CASE("Lowerer: flat CondJump is rejected without Function labels") {
+    const std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{1u, ir::OpSize::I64}},
+        {std::nullopt, ir::CondJump{0u, 1u, 2u}},
+    };
+
+    backend::Emitter em;
+    backend::Lowerer lw(em);
+    const auto r = lw.lower(stmts);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(r.error == backend::LowerError::UnsupportedOp);
+}
+
 TEST_CASE("Lowerer: Function Jump context does not leak into flat lowering") {
     ir::Function fn;
     fn.entry = 0u;
