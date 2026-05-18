@@ -12,7 +12,7 @@ unique ID (`F<phase>-<component>-<num>`). Status markers:
 | Marker | Meaning | Owner visible? |
 |---|---|---|
 | `[ ]` | TODO, unclaimed. Either agent may take. | no |
-| `[~|<agent>]` | IN PROGRESS, claimed by the named agent. | yes |
+| `[~\|<agent>]` | IN PROGRESS, claimed by the named agent. | yes |
 | `[x] (<sha>)` | DONE. `<sha>` is the first commit that landed it. | log |
 | `[!] <note>` | BLOCKED. Note explains on what. | reason |
 | `[?]` | DEFERRED. | — |

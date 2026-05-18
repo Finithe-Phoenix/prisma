@@ -4,11 +4,22 @@
 // in living documents.
 {
   "default": true,
+  "MD014": false,         // command prompts in shell snippets are accepted in docs
   "MD013": false,         // line length — long lines are fine in prose
+  "MD022": false,         // heading spacing — legacy notes are intentionally dense
   "MD024": false,         // duplicate headings — research notes repeat sections by design
+  "MD025": false,         // multiple H1s — blog drafts/RFC frontmatter use title blocks
+  "MD031": false,         // fence spacing — legacy docs use compact examples
+  "MD032": false,         // list spacing — living docs often group lists tightly
   "MD033": false,         // inline HTML — we use none, but not worth blocking
+  "MD034": false,         // bare URLs — research notes keep source URLs visible
+  "MD036": false,         // emphasis-as-heading — accepted in rough research notes
   "MD041": false,         // first line h1 — frontmatter triggers this in RFCs
+  "MD040": false,         // fence language — terminal/output snippets are often generic
   "MD046": false,         // code block style — both fenced and indented are fine
+  "MD047": false,         // single trailing newline — imported artifacts may not match
+  "MD049": false,         // emphasis style — both * and _ appear in legacy docs
+  "MD060": false,         // table pipe alignment is style-only for this repo
   "MD007": { "indent": 2 },
   "MD029": false          // ordered list prefix — we don't care about 1.1.1 vs 1.2.3
 }
