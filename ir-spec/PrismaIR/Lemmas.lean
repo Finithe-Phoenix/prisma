@@ -10,6 +10,7 @@
 import PrismaIR.Syntax
 import PrismaIR.Semantics
 import PrismaIR.MachineState
+import Std.Tactic.BVDecide
 
 namespace PrismaIR
 
@@ -82,14 +83,66 @@ example :
 /-!
 ## Masking idempotence.
 
-A one-line statement that `maskToSize (maskToSize v sz) sz = maskToSize v sz`.
-The proof requires AND idempotence on `UInt64`, which lives in mathlib.
-We mark it pending until mathlib is wired into the Lake build (planned
-for Fase 1 week 9 alongside full memory-model work).
+`maskToSize (maskToSize v sz) sz = maskToSize v sz` — applying the
+size mask twice is the same as once. The proof reduces to four cases
+on `sz`; in each case the body is `(v &&& C) &&& C` with `C` a
+concrete constant. `bv_decide` is complete on closed bit-vector
+goals; with the free `v` we instead lift to `BitVec 64` via the
+`UInt64.toBitVec` coercion and apply `BitVec.and_assoc` +
+`BitVec.and_self`.
 -/
 
 theorem maskToSize_idem (v : UInt64) (sz : OpSize) :
     maskToSize (maskToSize v sz) sz = maskToSize v sz := by
-  sorry
+  cases sz <;> simp [maskToSize] <;> first | rfl | bv_decide
+
+/-!
+## Local soundness: constant folding of `binop` preserves `evalPure`.
+
+This is the building block under F1-LN-010 (full
+`constant_propagate` soundness). When both operands of a `binop`
+are known constants in the environment, replacing the `binop`
+with a `constant` carrying the folded value computes the same
+`evalPure` answer.
+
+The bigger proof for F1-LN-010 quantifies over a `pass` function
+acting on a whole `List Stmt` and an `exec → Trace` interpretation.
+Both still TODO — but discharging this local lemma pins the
+arithmetic equivalence the global proof relies on, so it cannot
+silently drift if the C++ pass is changed.
+-/
+
+theorem constant_fold_binop_sound
+    (e : Env) (op : BinOp) (lhs rhs : Ref) (sz : OpSize)
+    (a b folded : UInt64)
+    (ha : e lhs = a) (hb : e rhs = b)
+    (hf : folded = maskToSize (evalBinOp op a b) sz) :
+    evalPure e (.binop op lhs rhs sz)
+      = evalPure e (.constant folded sz) := by
+  -- LHS reduces to `some (maskToSize (evalBinOp op a b) sz)`.
+  -- RHS reduces to `some (maskToSize folded sz)`.
+  -- Apply `maskToSize_idem` to collapse the double-mask on the RHS.
+  simp [evalPure, ha, hb, hf, maskToSize_idem]
+
+/-!
+## Local soundness: `extend` of a known constant matches a
+`constant`-direct evaluation.
+
+Building block for the constant-fold case in F1-PS-010 (the C++
+pass `constant_propagate` already folds Extend of a known
+constant; this lemma is the Lean-side check that the rewrite
+preserves `evalPure`).
+-/
+
+theorem constant_fold_extend_sound
+    (e : Env) (value : Ref) (fromSz toSz : OpSize) (signed : Bool)
+    (v : UInt64)
+    (hv : e value = v) :
+    evalPure e (.extend value fromSz toSz signed)
+      = some (maskToSize
+                (if signed then signExtend v fromSz
+                           else maskToSize v fromSz)
+                toSz) := by
+  simp [evalPure, hv]
 
 end PrismaIR

@@ -81,6 +81,53 @@ TEST_CASE("Translator: same bytes at different guest_addr produce independent en
     REQUIRE(t.cache().entry_count() == 2);
 }
 
+TEST_CASE("Translator: exposes call/return terminator metadata") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> call = {
+        0xE8, 0x00, 0x00, 0x00, 0x00,  // call +0 -> 0x1005
+    };
+    auto rc = t.translate(0x1000, call);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(rc));
+    const auto& bc = std::get<translator::TranslatedBlock>(rc);
+    REQUIRE(bc.exit_kind == translator::BlockExitKind::CallRel);
+    REQUIRE(bc.return_guest_pc == 0x1005u);
+
+    const std::vector<std::uint8_t> ret = {0xC3};
+    auto rr = t.translate(0x1005, ret);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(rr));
+    const auto& br = std::get<translator::TranslatedBlock>(rr);
+    REQUIRE(br.exit_kind == translator::BlockExitKind::RetAdjusted);
+}
+
+TEST_CASE("Translator: exposes direct branch metadata and cache probes") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> loop = {0xEB, 0xFE};  // jmp -2
+    auto translated = t.translate(0x3000, loop);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(translated));
+
+    const auto& block = std::get<translator::TranslatedBlock>(translated);
+    REQUIRE(block.exit_kind == translator::BlockExitKind::JumpRel);
+    REQUIRE(block.target_guest_pc == 0x3000u);
+    REQUIRE(block.fallthrough_guest_pc == 0u);
+    REQUIRE_FALSE(block.from_cache);
+
+    const auto before = t.stats();
+    auto cached = t.lookup_cached(0x3000, loop);
+    REQUIRE(cached.has_value());
+    REQUIRE(cached->from_cache);
+    REQUIRE(cached->code_entry == block.code_entry);
+    REQUIRE(cached->exit_kind == translator::BlockExitKind::JumpRel);
+    REQUIRE(cached->target_guest_pc == 0x3000u);
+    REQUIRE(t.stats().cache_hits == before.cache_hits);
+    REQUIRE(t.stats().cache_misses == before.cache_misses);
+
+    const std::vector<std::uint8_t> stale = {0xEB, 0x00};
+    REQUIRE_FALSE(t.lookup_cached(0x3000, stale).has_value());
+    REQUIRE_FALSE(t.lookup_cached(0x4000, loop).has_value());
+}
+
 TEST_CASE("Translator: modifying guest bytes at same addr triggers re-translation") {
     const std::vector<std::uint8_t> v1 = {
         0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

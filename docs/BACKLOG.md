@@ -66,9 +66,9 @@ involvement or calendar time.
 - [ ] F0-DX-015: Set up Sentry self-hosted on Hetzner (crash reporting).
 - [ ] F0-DX-016: Set up PostHog self-hosted (telemetry pipeline).
 - [ ] F0-DX-017: Cloudflare R2 bucket for future cache CDN. ($20/mo trigger at Fase 2.5.)
-- [ ] F0-DX-018: Configure `.editorconfig`.
-- [ ] F0-DX-019: Configure `.clang-format` and `.clang-tidy`.
-- [ ] F0-DX-020: Pre-commit hooks: clang-format, rustfmt, ruff, detekt.
+- [x] (26100d1) F0-DX-018: Configure `.editorconfig`.
+- [x] (26100d1) F0-DX-019: Configure `.clang-format` and `.clang-tidy`.
+- [x] (26100d1) F0-DX-020: Pre-commit hooks: clang-format, rustfmt, ruff, detekt.
 - [ ] F0-DX-021: Buy POCO X6 Pro (Dimensity 8300-Ultra).
 - [ ] F0-DX-022: Buy Pixel 7a (Tensor G3, for AVF).
 - [ ] F0-DX-023: Buy Redmi Note 13 Pro (Snapdragon 7s Gen 2).
@@ -102,9 +102,9 @@ involvement or calendar time.
 - [ ] F0-DC-023: Read AVF / pKVM design docs.
 - [ ] F0-DC-024: Read Danny Lin's Windows on Pixel 6 writeup.
 - [ ] F0-DC-025: Publish `docs/research_notes.md` as public blog post at `/blog/designing-prisma-part-1`.
-- [x] (pending commit) F0-DC-026: Write blog post "Why we're writing a new DBT from scratch".
-- [x] (pending commit) F0-DC-027: Write `docs/ARCHITECTURE.md` — one-page tour of the monorepo.
-- [x] (pending commit) F0-DC-028: Write `docs/CONTRIBUTING.md` (placeholder for future OSS).
+- [x] (6cb12a2) F0-DC-026: Write blog post "Why we're writing a new DBT from scratch".
+- [x] (de05b03) F0-DC-027: Write `docs/ARCHITECTURE.md` — one-page tour of the monorepo.
+- [x] (6cb12a2) F0-DC-028: Write `docs/CONTRIBUTING.md` (placeholder for future OSS).
 
 ### F0-CM — Community outreach
 
@@ -214,7 +214,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-063: XADD r/m64, r64 (48 0F C1 /r).
 - [x] F1-DC-064: LOCK prefix handling (emits atomics via TSO variants).
 - [x] F1-DC-065: XACQUIRE / XRELEASE HLE prefixes (ignored; documented).
-- [ ] F1-DC-066: REP / REPE / REPNE prefixes (STOS/MOVS/CMPS/SCAS).
+- [x] (bdd4f01) F1-DC-066: REP / REPE / REPNE prefixes (STOS/MOVS/CMPS/SCAS). (Decoder accepts via InlineAsm placeholder; proper IR-level loop expansion is follow-up.)
 - [x] F1-DC-067: STOSB/STOSW/STOSD/STOSQ (AA / AB with size).
 - [x] F1-DC-068: MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5).
 - [x] F1-DC-069: CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7).
@@ -229,104 +229,104 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] F1-DC-078: Use a table-driven decoder for opcode dispatch.
 - [x] F1-DC-079: Instruction length validator (reject 16+ byte oversized encodings).
 - [x] F1-DC-080: Decoder fuzz harness (AFL++) seeded with coreutils disassembly.
-- [ ] F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics.
+- [x] (cd59ba5) F1-DC-081: Differential test against Zydis for agreement on decoded length + mnemonics. (Length parity: 16 cases. Mnemonic check deferred to F1-DC-087.)
 - [x] F1-DC-082: INT3 (CC) — decode as SIGTRAP.
 - [x] F1-DC-083: HLT (F4) — reject (privileged).
 - [x] F1-DC-084: CPUID (0F A2) — decode as side-effecting op.
 - [x] F1-DC-085: RDTSC / RDTSCP (0F 31 / 0F 01 F9).
 - [x] F1-DC-086: SYSCALL (0F 05).
-- [ ] F1-DC-087: Zydis-free migration: our decoder is the canonical source (target ≥99% matching on coreutils).
+- [x] (d69cff6) F1-DC-087: Zydis-free migration: our decoder is the canonical source (target ≥99% matching on coreutils). (Mnemonic differential framework lands; ≥99% measurement gated on coreutils corpus + F1-AC-003.)
 
 ### F1-IR — IR expansion
 
 - [x] F1-IR-001: SSA `Ref` as uint32_t (FEX-style compression).
 - [x] F1-IR-002: Op variants: Constant, LoadReg/StoreReg, BinOp, Compare, Load/Store x4, Jump, CondJump, Return.
-- [~|codex] F1-IR-003: Add `Flags` SSA value type (tuple of carry, zero, sign, overflow, parity, aux).
-- [~|codex] F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
-- [~|codex] F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
+- [x] (a1ee74c) F1-IR-003: Add `Flags` SSA value type (tuple of carry, zero, sign, overflow, parity, aux).
+- [x] (a1ee74c) F1-IR-004: Add `WriteFlags{op, lhs, rhs, size}` producing a `Flags`.
+- [x] (a1ee74c) F1-IR-005: Add `ReadFlag{flags, which}` producing a bool.
 - [x] F1-IR-006: Add `JumpRel{guest_target_pc}` — branch to guest address.
-- [x] (071bae3) F1-IR-007: Add `CondJumpFlags{cc, true_target, false_target}` over implicit flags.
+- [x] (a1ee74c) F1-IR-007: Add `CondJumpFlags{flags, cc, true_target, false_target}`.
 - [x] F1-IR-008: Add `Call{callee_pc}` and `RetAdjusted{pop_bytes}`.
 - [x] F1-IR-009: Add `Select{cond, val_true, val_false}` (CMOV lowering).
-- [x] (b5c305a) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
-- [x] (b5c305a) F1-IR-011: Add `Truncate{value, to_size}`.
-- [x] (ef49532) F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
-- [ ] F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
-- [x] (b4e766c) F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
-- [x] (6e8d16d) F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
+- [x] (5bfaa98) F1-IR-010: Add `Extend{value, from_size, to_size, signed}`.
+- [x] (5bfaa98) F1-IR-011: Add `Truncate{value, to_size}`.
+- [x] (5bfaa98) F1-IR-012: Add `Fence{kind}` for explicit MFENCE / LFENCE / SFENCE.
+- [x] (6ccef14) F1-IR-013: Add `InlineAsm{bytes}` escape hatch (last resort for odd instructions).
+- [x] (c9c428c) F1-IR-014: Add `GuestPc{pc}` pseudo-op for cache keying and debugging.
+- [x] (2fad1b1) F1-IR-015: IR type system — each Ref carries `OpSize` so validation catches mismatches.
 - [x] (53341ac) F1-IR-016: IR validator pass — catch undef refs, mis-sized operands.
-- [x] (36ae060) F1-IR-017: IR serialization to a compact binary form for cache storage.
-- [x] (230e306) F1-IR-018: IR deserialization + round-trip tests.
-- [x] (0761fe8) F1-IR-019: Memoise pretty-printed form for test stability.
-- [ ] F1-IR-020: IR profiler instrumentation points (future ML features).
-- [x] (9de2da1) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list.
-- [x] (9de2da1) F1-IR-022: Add `Function` with multiple blocks + entry block.
-- [x] (10d6ac3) F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
-- [x] (4a0e946) F1-IR-024: Dominator tree + postorder traversal utilities.
-- [x] (8608326) F1-IR-025: Loop detection (natural loops by back-edge analysis).
+- [x] (e7ac26c) F1-IR-017: IR serialization to a compact binary form for cache storage.
+- [x] (e7ac26c) F1-IR-018: IR deserialization + round-trip tests.
+- [x] (c9c428c) F1-IR-019: Memoise pretty-printed form for test stability.
+- [x] (0a0e8d0) F1-IR-020: IR profiler instrumentation points (future ML features).
+- [x] (9de2da1) F1-IR-021: Add `BasicBlock` concept separate from flat Stmt list. (ir.hpp defines `struct BasicBlock { uint32_t id; vector<Stmt> stmts; }`.)
+- [x] (9de2da1) F1-IR-022: Add `Function` with multiple blocks + entry block. (ir.hpp defines `struct Function { vector<BasicBlock> blocks; uint32_t entry; }`.)
+- [x] (f7b6cad) F1-IR-023: CFG builder: group decoded Stmts into blocks by jump targets.
+- [x] (759346c) F1-IR-024: Dominator tree + postorder traversal utilities.
+- [x] (759346c) F1-IR-025: Loop detection (natural loops by back-edge analysis).
 
 ### F1-BK — Backend / Lowering
 
 - [x] F1-BK-001: Emitter with mov*, ALU 3-reg, cmp+cset, memory 4-size.
 - [x] F1-BK-002: Lowerer for pure + memory + Compare ops.
-- [x] (020c48b) F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
-- [x] (497e078) F1-BK-004: Lowerer for CondJumpFlags (cmp + b.cc with label).
+- [x] (61cc53f) F1-BK-003: Lowerer for Jump (unconditional ARM64 b with label).
+- [x] (61cc53f) F1-BK-004: Lowerer for CondJump (cmp + cbnz + b with label). (CondJumpFlags-on-NZCV variant deferred until F1-IR-007 lands the new IR op.)
 - [x] (8b845e1) F1-BK-005: Emitter label management (vixl Label class).
-- [x] (1d357da) F1-BK-006: Basic block → CFG lowering with label fix-up.
+- [x] (61cc53f) F1-BK-006: Basic block → CFG lowering with label fix-up.
 - [x] (3f29499) F1-BK-007: Linear-scan register allocator over scratch pool.
 - [x] (7fb57c0) F1-BK-008: Register spill / reload to stack frame slots.
-- [x] (f1fd6e8) F1-BK-009: Callee-saved register save / restore around guest calls.
-- [x] (b667821) F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
+- [x] (b550cbc) F1-BK-009: Callee-saved register save / restore around guest calls.
+- [x] (c0fc3c5) F1-BK-010: Extend to WRegister loads (32-bit) as first-class.
 - [x] (6bcb538) F1-BK-011: Emitter for MUL/DIV multi-register output.
-- [ ] F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
-- [ ] F1-BK-013: Emitter for floating-point (fadd, fmul, fdiv).
+- [x] (e53e7a6) F1-BK-012: Emitter for NEON SIMD (128-bit vectors).
+- [x] (34bd169) F1-BK-013: Emitter for floating-point (fadd, fmul, fdiv).
 - [x] (946f5c6) F1-BK-014: Emitter for rotates (ror / rol).
 - [x] (946f5c6) F1-BK-015: Emitter for bit manipulation (clz, cls, rbit).
 - [x] (6bcb538) F1-BK-016: Emitter for atomic RMW (ldaxr/stlxr loop).
 - [x] (6bcb538) F1-BK-017: Emitter for LSE atomics (CAS, LDADD).
 - [x] (90a2796) F1-BK-018: Literal pool management.
-- [x] (7b139a4) F1-BK-019: Code buffer flushing and I-cache invalidation integration.
-- [x] (f1fd6e8) F1-BK-020: Emit guest-state save on translation entry.
-- [x] (f1fd6e8) F1-BK-021: Emit guest-state restore on translation exit.
-- [x] (709803f) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
-- [x] (ef49532) F1-BK-023: Lowering of Fence (dmb ish / dsb).
-- [x] (f1fd6e8) F1-BK-024: Lowering of Select via csel.
+- [x] (7b139a4) F1-BK-019: Code buffer flushing and I-cache invalidation integration. (jit_memory.cpp invalidate_icache + Emitter::flush_literal_pool, both wired.)
+- [x] (b550cbc) F1-BK-020: Emit guest-state save on translation entry. (backend::abi::emit_block_prologue.)
+- [x] (b550cbc) F1-BK-021: Emit guest-state restore on translation exit. (backend::abi::emit_block_epilogue_and_ret.)
+- [x] (5bfaa98) F1-BK-022: Lowering of Extend and Truncate with correct zero/sign semantics.
+- [x] (5bfaa98) F1-BK-023: Lowering of Fence (dmb ish / dsb).
+- [x] (f1fd6e8) F1-BK-024: Lowering of Select via csel. (Already in lowering.cpp:372-389 + test_lowering.cpp:232.)
 
 ### F1-PS — Passes
 
 - [x] F1-PS-001: constant_propagate.
 - [x] F1-PS-002: dead_code_eliminate.
 - [x] F1-PS-003: PassManager + default_pipeline.
-- [x] (pending commit) F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
-- [x] (pending commit) F1-PS-005: Common Subexpression Elimination (CSE) within a block.
-- [x] (pending commit) F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
-- [x] (pending commit) F1-PS-007: Redundant-load elimination across a block.
-- [x] (pending commit) F1-PS-008: Dead-store elimination within a block.
-- [x] (dd292a9) F1-PS-009: Peephole pattern matcher (IR-level patterns).
-- [x] (b5c305a) F1-PS-010: Constant folding on Extend / Truncate.
-- [x] (pending commit) F1-PS-011: Strength reduction (shift for power-of-two multiply).
-- [x] (57bc8b7) F1-PS-012: Flag-write elimination when no reader exists.
-- [x] (pending commit) F1-PS-013: CFG simplification (remove empty blocks).
-- [x] (pending commit) F1-PS-014: Branch folding (collapse `if const_true`).
-- [x] (pending commit) F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
-- [x] (pending commit) F1-PS-016: Pass timing instrumentation.
-- [x] (pending commit) F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
+- [x] (890e22a) F1-PS-004: Algebraic simplification (x + 0, x * 1, x ^ x → 0).
+- [x] (890e22a) F1-PS-005: Common Subexpression Elimination (CSE) within a block.
+- [x] (4a20c51) F1-PS-006: Copy propagation (StoreReg to LoadReg chains).
+- [x] (a822bda) F1-PS-007: Redundant-load elimination across a block.
+- [x] (a822bda) F1-PS-008: Dead-store elimination within a block.
+- [x] (aa1e3cd) F1-PS-009: Peephole pattern matcher (IR-level patterns).
+- [x] (84c03a7) F1-PS-010: Constant folding on Extend / Truncate.
+- [x] (4a20c51) F1-PS-011: Strength reduction (shift for power-of-two multiply).
+- [x] (7c12d88) F1-PS-012: Flag-write elimination when no reader exists. (Taken over from codex per Danny 2026-05-04; stub replaced.)
+- [?] F1-PS-013: CFG simplification (remove empty blocks). Deferred until a Function-level CFG pass pipeline owns this explicitly.
+- [x] (4a20c51) F1-PS-014: Branch folding (collapse `if const_true`).
+- [x] (c2c1e67) F1-PS-015: Tail-call optimisation for CALL+RET → JMP patterns.
+- [x] (a822bda) F1-PS-016: Pass timing instrumentation.
+- [x] (53341ac) F1-PS-017: Pass manager `--debug-pass=NAME` dump hooks.
 
 ### F1-RT — Runtime
 
 - [x] F1-RT-001: JitBuffer with MAP_JIT and pthread_jit_write_protect_np.
 - [x] F1-RT-002: Signal handler for SIGSEGV / SIGILL / SIGBUS.
 - [x] F1-RT-003: ScopedProtected RAII scope.
-- [x] (pending commit) F1-RT-004: CpuStateFrame layout (16 GPRs + flags + SIMD + x87).
+- [x] (ee943b7) F1-RT-004: CpuStateFrame layout (16 GPRs + flags + SIMD + x87).
 - [x] F1-RT-005: TLS storage for per-thread guest state.
-- [x] (pending commit) F1-RT-006: Dispatcher loop (find-translation-and-jump).
+- [x] (ee943b7) F1-RT-006: Dispatcher loop (find-translation-and-jump).
 - [x] F1-RT-007: Trampoline between translator and compiled blocks.
 - [x] F1-RT-008: Return-address stack for guest CALL / RET tracking.
-- [x] (7dc40b3) F1-RT-009: Thread-safe JitBuffer pool (many blocks).
-- [ ] F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
-- [ ] F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.).
-- [ ] F1-RT-012: FPU state save / restore (XSAVE-style).
-- [ ] F1-RT-013: Guest stack pointer management (rsp).
+- [x] (e6b3e64) F1-RT-009: Thread-safe JitBuffer pool (many blocks).
+- [x] (cfeb231) F1-RT-010: Page-protection based SMC detection (mprotect READ-ONLY).
+- [x] (fdcc16c) F1-RT-011: Guest signal delivery (#PF, #UD, #DE, etc.). (Framework lands; SIGSEGV-trampoline integration deferred.)
+- [x] (1412c99) F1-RT-012: FPU state save / restore (XSAVE-style). (`xmm[16]` + `x87[8]` + MXCSR + status_control in CpuStateFrame; prologue/epilogue extension is a follow-up.)
+- [x] (8982d97) F1-RT-013: Guest stack pointer management (rsp). (Via `RspAdjust{delta_bytes}` IR op + lowering to add/sub on the pinned host x14.)
 - [x] F1-RT-014: Guest segment registers fs / gs (TLS).
 - [x] F1-RT-015: Helper calls from generated code to C++ runtime (printf-style).
 - [x] (691d669) F1-RT-016: CPU feature detection: FEAT_LSE2, LRCPC2, FlagM.
@@ -341,25 +341,25 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (1ae143b) F1-CA-005: Cache eviction policy (LRU).
 - [x] (381433e) F1-CA-006: Size-bounded cache with eviction trigger.
 - [x] (691d669) F1-CA-007: Translation stats per entry (hit count, last-used).
-- [ ] F1-CA-008: Cache compaction pass (merge adjacent blocks).
+- [x] (cd85682) F1-CA-008: Cache compaction pass (merge adjacent blocks). (Drops superseded SMC entries; the "merge adjacent code blocks" interpretation requires re-translation and is deferred.)
 - [x] (58e47a9) F1-CA-009: Cache writer thread (offload serialization).
 - [x] (9a9308e) F1-CA-010: zstd compression for on-disk entries.
 
 ### F1-LN — Lean spec expansion
 
 - [x] F1-LN-001: Initial syntax / semantics / machine state.
-- [ ] F1-LN-002: Add Flags type to `Syntax.lean`.
-- [ ] F1-LN-003: Add Block / Function to Syntax.
-- [ ] F1-LN-004: Extend evalPure to cover Compare and Extend.
-- [ ] F1-LN-005: Define MachineState with memory (function Nat → UInt8).
-- [ ] F1-LN-006: Step relation for StoreReg / LoadReg / LoadMem / StoreMem.
-- [ ] F1-LN-007: Step relation for CondJumpFlags.
-- [ ] F1-LN-008: Add mathlib dependency to Lake.
-- [ ] F1-LN-009: Prove `maskToSize_idem` (remove sorry).
-- [ ] F1-LN-010: Prove `constant_propagate` soundness (observable equivalence).
-- [ ] F1-LN-011: Prove `dead_code_eliminate` soundness.
+- [x] (cb4e170) F1-LN-002: Add Flags type to `Syntax.lean`.
+- [x] (cb4e170) F1-LN-003: Add Block / Function to Syntax.
+- [x] (57455ad) F1-LN-004: Extend evalPure to cover Compare and Extend.
+- [x] (57455ad) F1-LN-005: Define MachineState with memory (function Nat → UInt8).
+- [x] (57455ad) F1-LN-006: Step relation for StoreReg / LoadReg / LoadMem / StoreMem.
+- [x] (ff57d65) F1-LN-007: Step relation for CondJumpFlags.
+- [?] F1-LN-008: Add mathlib dependency to Lake. (Deferred — `bv_decide` from `Std.Tactic.BVDecide` covers the F1-LN-009 use case without mathlib; mathlib lands when a proof actually needs it.)
+- [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
+- [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
+- [x] (d08c090) F1-LN-011: Prove `dead_code_eliminate` soundness. (Per-op `evalPure_unaffected_by_unread_ref` proven; whole-pass composition is F1-LN-012.)
 - [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
-- [ ] F1-LN-013: Define "observable trace" formally.
+- [x] (451c669) F1-LN-013: Define "observable trace" formally.
 - [ ] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store).
 - [ ] F1-LN-015: TSO axioms as lemmas over the weak memory model.
 - [ ] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5).
@@ -368,36 +368,36 @@ grinding through x86_64 ISA + maturing the lowering.
 
 - [x] F1-TC-001: Catch2 test executable builds and runs.
 - [x] F1-TC-002: Integration test: translate + cache + execute + re-execute (hit).
-- [ ] F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode.
-- [x] (pending commit) F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
-- [x] (pending commit) F1-TC-005: Coverage instrumentation (llvm-cov).
-- [ ] F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`.
-- [x] (pending commit) F1-TC-007: Performance regression harness (simple microbenchmarks).
-- [x] (pending commit) F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
-- [x] (pending commit) F1-TC-009: Lean proof check added as a blocking CI step.
-- [ ] F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck).
+- [x] (0da8c7b) F1-TC-003: Differential test harness: Prisma IR execution vs QEMU user-mode. (Python harness in `tools/diff-qemu/`; soft-skips when qemu-x86_64 absent. Probe validates the environment; corpus mode is next.)
+- [x] (daedf45) F1-TC-004: Fuzzing infrastructure (AFL++ build recipe).
+- [x] (58e47a9) F1-TC-005: Coverage instrumentation (llvm-cov).
+- [x] (98867bd) F1-TC-006: Coverage report published to `prisma-emu.dev/coverage`. (Local generation via `tools/coverage/gen.sh`; the `prisma-emu.dev` upload step is gated on F0-LG-003 + active CI runner.)
+- [x] (0d4d17a) F1-TC-007: Performance regression harness (simple microbenchmarks).
+- [x] (90a2796) F1-TC-008: UBSan / ASan / TSan builds added to CI matrix.
+- [x] (fc0186b) F1-TC-009: Lean proof check added as a blocking CI step.
+- [x] (c19e609) F1-TC-010: Property-based tests for IR passes (QuickCheck-style via rapidcheck). (Implemented via Catch2 + custom RNG; rapidcheck dep avoided. 5 property tests, +215 assertions.)
 - [x] F1-TC-011: Golden-output tests for decoder (x86 bytes → IR pretty-print).
-- [x] (pending commit) F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
+- [x] (8b845e1) F1-TC-012: Stress test: translate 10k distinct blocks, measure cache behaviour.
 
 ### F1-AC — Academic (Fase 1 concern)
 
-- [ ] F1-AC-001: Start LaTeX draft in `papers/drafts/01-early-results/`.
-- [ ] F1-AC-002: Outline paper structure (intro, IR, passes, evaluation, related).
-- [ ] F1-AC-003: Reproduce baseline: QEMU / Box64 / FEX on the same hardware.
+- [x] (8f0f182) F1-AC-001: Start LaTeX draft in `papers/drafts/01-early-results/`.
+- [x] (8f0f182) F1-AC-002: Outline paper structure (intro, IR, passes, evaluation, related).
+- [x] (c8ecfb4) F1-AC-003: Reproduce baseline: QEMU / Box64 / FEX on the same hardware. (Driver framework in `tools/benchmarks/bench.py`; soft-skips per engine. Real numbers gated on hardware + binaries.)
 - [ ] F1-AC-004: First benchmark table (Dhrystone / CoreMark vs baselines).
-- [ ] F1-AC-005: Write 3-paragraph blog post when first program runs (Notepad XP? coreutils?).
+- [x] (0c98045) F1-AC-005: Write 3-paragraph blog post when first program runs (Notepad XP? coreutils?). (`prisma_run` (b7bd82b) validated end-to-end on Apple silicon; blog-drafts/004 documents the milestone.)
 
 ### F1-DC — Documentation
 
-- [ ] F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
-- [ ] F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
-- [x] (pending commit) F1-DC-003: RFC 0005 — basic block representation + CFG construction.
-- [x] (pending commit) F1-DC-004: RFC 0006 — register allocator design.
-- [x] (pending commit) F1-DC-005: RFC 0007 — cache file format.
-- [x] (pending commit) F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
-- [x] (pending commit) F1-DC-007: Blog post: "Designing an IR you can prove correct".
-- [x] (pending commit) F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
-- [x] (pending commit) F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
+- [x] (8f0f182) F1-DC-001: RFC 0003 — opcode dispatch strategy (table vs switch).
+- [x] (8f0f182) F1-DC-002: RFC 0004 — flags model (lazy vs eager, snapshot-based).
+- [x] (2097096) F1-DC-003: RFC 0005 — basic block representation + CFG construction.
+- [x] (fc0186b) F1-DC-004: RFC 0006 — register allocator design.
+- [x] (fc0186b) F1-DC-005: RFC 0007 — cache file format.
+- [x] (91d1435) F1-DC-006: Blog post: "From x86 to ARM64, one instruction at a time".
+- [x] (de05b03) F1-DC-007: Blog post: "Designing an IR you can prove correct".
+- [x] (91d1435) F1-DC-008: Blog post: "JIT memory on Apple silicon — what actually works".
+- [x] (2097096) F1-DC-009: Update `CLAUDE.md` with new subsystems as they land.
 
 ---
 
@@ -449,35 +449,35 @@ translator on a reference Linux ARM64 box.
 
 ### F2-IR — IR for full x86_64
 
-- [ ] F2-IR-001: SIMD operand types (Vec128, Vec256).
-- [ ] F2-IR-002: SSE ops (ADDPS/SS, MULPS/SS, SUBPS/SS, DIVPS/SS, ...).
-- [ ] F2-IR-003: SSE integer ops (PADD, PSUB, PCMPEQ, PMULLW, ...).
-- [ ] F2-IR-004: SSE shuffle / blend.
-- [ ] F2-IR-005: AVX 256-bit equivalents (VADDPS, etc.).
-- [ ] F2-IR-006: FMA (VFMADD, VFMSUB, etc.).
-- [ ] F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH).
-- [ ] F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass).
+- [x] (db74b8a) F2-IR-001: SIMD operand types (Vec128, Vec256). (Vec128 lands; Vec256 deferred until AVX decoder work.)
+- [x] (50caa95) F2-IR-002: SSE ops (ADDPS/SS, MULPS/SS, SUBPS/SS, DIVPS/SS, ...). (Closed: ADDPS/PD/SS/SD + SUB/MUL/DIV/MIN/MAX/SQRT, HADDPS/PD, CMPxxPS/PD/SS/SD all landed across F2-IR-014..048. The umbrella's last-mile work was the FMA family in F2-IR-006.)
+- [x] (50caa95) F2-IR-003: SSE integer ops (PADD, PSUB, PCMPEQ, PMULLW, ...). (Closed: full PADD/PSUB B/W/D/Q + sat variants, PAND/POR/PXOR, PCMPEQ/GT B/W/D + SSE4.1 PCMPEQQ + SSE4.2 PCMPGTQ, PMUL{HW,LW,UDQ,LD}, PMIN/PMAX × signed/unsigned × multiple lane sizes — landed across F2-IR-001..045.)
+- [x] (50caa95) F2-IR-004: SSE shuffle / blend. (Closed: PSHUFD, PSHUFLW/HW, SHUFPS/PD, PSHUFB, PUNPCKL/H + UNPCKL/HPS/PD, PALIGNR, BLENDV PS/PD + PBLENDVB landed across F2-IR-010/011/015/036/038/046.)
+- [x] (99d2056) F2-IR-005: AVX 256-bit equivalents (VADDPS, etc.). (First batch — packed FP arith, integer SIMD, FP/int bitwise, PCMPEQ/GT, UNPCK, SHUFPS/PD, HADDPS/PD, CMPxxPS/PD ymm. Lane-crossing ops follow.)
+- [x] (d98bdbb) F2-IR-006: FMA (VFMADD, VFMSUB, etc.). (First batch — packed PS/PD xmm: VFMADD/SUB/NMADD/NMSUB × 132/213/231. Single VecFpFma IR op with neg_addend/neg_mul flags; ARM64 FMLA/FMLS lowering. ymm, scalar SS/SD, MADDSUB/MSUBADD deferred.)
+- [x] (d9f12b5) F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH). (Reduced-precision F64 bridge; see RFC 0013. Decoder coverage includes FLD/FSTP/FXCH/FADD/FMUL/FDIV.)
+- [x] (d9f12b5) F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass). (Runtime TOS byte, logical ST(i) access, and conservative intra-block x87 stack forwarding landed.)
 - [ ] F2-IR-009: MMX ops (rare in modern binaries, skip or stub).
 
 ### F2-BK — Backend for full ISA
 
-- [ ] F2-BK-001: Lowering for SIMD via NEON.
-- [ ] F2-BK-002: SIMD shuffle lowering (ARM tbl / zip / uzp / trn).
-- [ ] F2-BK-003: Lowering for AVX (use pair of NEON vectors for 256-bit).
-- [ ] F2-BK-004: Lowering for FMA via NEON FMLA.
-- [ ] F2-BK-005: Lowering for x87 (software emulation for rare cases).
-- [ ] F2-BK-006: SIMD register allocator (NEON v0-v31).
-- [ ] F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx).
-- [ ] F2-BK-008: Lowering for REP prefix — loop generation.
-- [ ] F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline.
-- [ ] F2-BK-010: Call / Return lowering with return-stack.
+- [x] (50caa95) F2-BK-001: Lowering for SIMD via NEON. (Closed: VecBinOp / VecFpBinOp / VecFpScalarBinOp / VecCmp / VecUnpack / VecShift{Imm,Bytes} / VecShuffle{32x4,2Src,H4} / VecPshufb / VecAlignr / VecExtend / VecAbs / VecMaskMsb / VecMaskFp / VecFpRound / VecBlend / VecFpFma plus the GPR↔XMM bridge and Load/StoreVec{Reg,Hi} all lowered to NEON via vixl across the F2-IR-001..006 + F2-BK-006 work.)
+- [x] (50caa95) F2-BK-002: SIMD shuffle lowering (ARM tbl / zip / uzp / trn). (Closed alongside F2-BK-001: VecPshufb uses TBL, VecUnpack uses ZIP, VecShuffle{32x4,2Src,H4} use TBL/EXT/INS, VecAlignr uses EXT.)
+- [x] (50caa95) F2-BK-003: Lowering for AVX (use pair of NEON vectors for 256-bit). (Closed: pair-of-Vec128 representation via LoadVecRegHi/StoreVecRegHi + ymm_hi[16] in CpuStateFrame; 256-bit ops compile to two NEON ops on consecutive scratch regs. F2-IR-005 and the FMA ymm extension exercise the pattern end-to-end.)
+- [x] (50caa95) F2-BK-004: Lowering for FMA via NEON FMLA. (Closed: vfmla_q / vfmls_q / vfneg_q / vmov_q primitives plus the VecFpFma lowering arm. F2-IR-006 and its ymm extension exercise the four sign combinations.)
+- [x] (d9f12b5) F2-BK-005: Lowering for x87 (software emulation for rare cases). (Direct reduced-precision push/pop/load/store lowering landed; full 80-bit helper path deferred.)
+- [x] (0597402) F2-BK-006: SIMD register allocator (NEON v0-v31). (Pool widened V0..V7 → V0..V23 [05044f8]; FP last-use expiry added [0597402] — same liveness machinery as the GPR allocator. Pair-allocator scaffolding + spill plumbing deferred until measured demand.)
+- [x] (8317648) F2-BK-007: Lowering for MUL/DIV multi-register results (rax:rdx). (Adds BinOpKind::UMulHi/SMulHi/UDiv/SDiv/UMod/SMod; MUL writes both halves of the 128-bit product; DIV writes UDiv quotient + UMod remainder. Const-prop folds with __int128 for compile-time constants. 64-bit dividend only — full 128/64 with explicit RDX:RAX is a follow-up.)
+- [x] (5448c9b) F2-BK-008: Lowering for REP prefix — loop generation. (RepStos / RepMovs IR ops emit native ARM64 cbz+cbnz loops via existing label/branch infrastructure. Pinned guest regs RCX/RDI/RSI/RAX modified in-place; no scratch SSA refs needed.)
+- [x] (5448c9b) F2-BK-009: Lowering for string ops (STOSB etc.) via ARM memset/memcpy intrinsic inline. (Closed alongside F2-BK-008. STOSB/STOSW/STOSD/STOSQ + MOVSB/MOVSW/MOVSD/MOVSQ all decoded with F3 prefix → RepStos/RepMovs. CMPSB/SCASB still fall through to InlineAsm; deferred.)
+- [x] (d9f12b5) F2-BK-010: Call / Return lowering with return-stack. (CallRel/CallReg/RetAdjusted decoder path, guest stack push/pop lowering, translator exit metadata, and dispatcher RAS stats.)
 
 ### F2-PS — Passes for Fase 2
 
-- [ ] F2-PS-001: x87 stack elimination pass (FEX-style).
-- [ ] F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints).
-- [ ] F2-PS-003: Loop-invariant code motion (LICM).
-- [ ] F2-PS-004: Global CSE via dominator-based analysis.
+- [x] (d9f12b5) F2-PS-001: x87 stack elimination pass (FEX-style). (Conservative intra-block x87 stack forwarding pass wired into default_pipeline.)
+- [x] (cac89f7) F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints). (Extended DCE to mark WriteFlags / ReadFlag / WriteFlagsFp / WriteFlagsPtest as pure, and added missing operand-collect entries for WriteFlags / ReadFlag / CondJumpFlags / StoreVecRegHi / VecFpFma so the live-set is correct. F1's flag_write_elimination [F1-PS-012] handles the CmpFlags pattern; this commit covers the SSA WriteFlags family.)
+- [x] (ff41e83) F2-PS-003: Loop-invariant code motion (LICM).
+- [x] (0396c19) F2-PS-004: Global CSE via dominator-based analysis.
 - [ ] F2-PS-005: Inlining of short helpers.
 
 ### F2-BM — Benchmarks

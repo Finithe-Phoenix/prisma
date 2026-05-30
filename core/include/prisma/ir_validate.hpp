@@ -9,18 +9,17 @@
 //   1. Every operand Ref references a statement earlier in the list
 //      whose `result` is that same Ref (SSA-def-precedes-use).
 //   2. Every statement's `result` is unique — no Ref is redefined.
-//   3. Side-effecting/marker ops (StoreReg/StoreMem*/Jump*/Return/CondJump*/
-//      CmpFlags/Fence/GuestPc) have `result == nullopt`. Pure ops (Constant/LoadReg/
-//      BinOp/Extend/Truncate/Compare/Select/LoadMem*) have
-//      `result != nullopt`.
-//   4. Every SSA Ref carries an OpSize inferred from its defining op, and
-//      users must consume it at a compatible size.
+//   3. Side-effecting ops (StoreReg/StoreMem*/Jump*/Return/CondJump*/
+//      CmpFlags) have `result == nullopt`. Pure ops (Constant/LoadReg/
+//      BinOp/Compare/Select/LoadMem*) have `result != nullopt`.
 //
-// Out of scope for MVP:
+// Out of scope for MVP (future IR-015 work):
+//   * Cross-ref size consistency (BinOp.size vs lhs.size vs rhs.size).
 //   * CFG-level validation (block entry/exit coherence).
 //
-// The validator is O(n) in the number of statements and allocates one ref-size
-// map. Cheap enough to run in debug builds on every translation.
+// The validator is O(n) in the number of statements and allocates one
+// flat-hash set + one map. Cheap enough to run in debug builds on every
+// translation.
 
 #pragma once
 
@@ -37,7 +36,8 @@ enum class ValidationCode {
     DuplicateResult,     // two stmts define the same ref
     ImpureHasResult,     // a store/jump/return has result != nullopt
     PureLacksResult,     // a Constant/BinOp/... has result == nullopt
-    SizeMismatch,        // operand Ref size is incompatible with its use
+    SizeMismatch,        // F1-IR-015: an operand ref's size disagrees
+                         // with the consuming op's declared size
 };
 
 struct ValidationError {

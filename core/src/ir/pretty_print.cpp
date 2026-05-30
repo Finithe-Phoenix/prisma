@@ -4,15 +4,9 @@
 // and debugger output only. Do not parse it.
 
 #include "prisma/ir.hpp"
-#include "prisma/ir_pretty_cache.hpp"
-#include "prisma/ir_serialization.hpp"
 
-#include <cstddef>
-#include <span>
 #include <sstream>
-#include <string>
 #include <string_view>
-#include <vector>
 
 namespace prisma::ir {
 
@@ -51,6 +45,10 @@ constexpr std::string_view binop_name(BinOpKind k) noexcept {
         case BinOpKind::Shr: return "shr"; case BinOpKind::Sar: return "sar";
         case BinOpKind::Rol: return "rol"; case BinOpKind::Ror: return "ror";
         case BinOpKind::Rcl: return "rcl"; case BinOpKind::Rcr: return "rcr";
+        case BinOpKind::UMulHi: return "umulhi"; case BinOpKind::SMulHi: return "smulhi";
+        case BinOpKind::UDiv:   return "udiv";   case BinOpKind::SDiv:   return "sdiv";
+        case BinOpKind::UMod:   return "umod";   case BinOpKind::SMod:   return "smod";
+        case BinOpKind::Pdep:   return "pdep";   case BinOpKind::Pext:   return "pext";
     }
     return "?";
 }
@@ -69,46 +67,8 @@ constexpr std::string_view cc_name(CondCode cc) noexcept {
     return "?";
 }
 
-constexpr std::string_view segment_name(SegmentReg s) noexcept {
-    switch (s) {
-        case SegmentReg::Fs: return "fs";
-        case SegmentReg::Gs: return "gs";
-    }
-    return "?";
-}
-
-constexpr std::string_view trap_name(TrapKind k) noexcept {
-    switch (k) {
-        case TrapKind::Sigtrap: return "sigtrap";
-    }
-    return "?";
-}
-
-constexpr std::string_view fence_name(FenceKind k) noexcept {
-    switch (k) {
-        case FenceKind::Mfence: return "mfence";
-        case FenceKind::Lfence: return "lfence";
-        case FenceKind::Sfence: return "sfence";
-    }
-    return "?";
-}
-
 void print_ref(std::ostream& os, Ref r) {
     if (r == kInvalidRef) { os << "%?"; } else { os << "%" << r; }
-}
-
-std::string binary_key(char prefix, const std::vector<std::uint8_t>& bytes) {
-    std::string key;
-    key.reserve(bytes.size() + 1u);
-    key.push_back(prefix);
-    key.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    return key;
-}
-
-void append_u32_key(std::string& key, std::uint32_t value) {
-    for (unsigned shift = 0; shift < 32; shift += 8) {
-        key.push_back(static_cast<char>((value >> shift) & 0xFFu));
-    }
 }
 
 }  // namespace
@@ -121,22 +81,23 @@ std::string pretty_print(const Op& op) {
             os << "const." << size_suffix(x.size) << " 0x" << std::hex << x.value;
         } else if constexpr (std::is_same_v<T, LoadReg>) {
             os << "loadreg." << size_suffix(x.size) << " " << gpr_name(x.reg);
-        } else if constexpr (std::is_same_v<T, LoadSegBase>) {
-            os << "loadsegbase " << segment_name(x.segment);
         } else if constexpr (std::is_same_v<T, StoreReg>) {
             os << "storereg." << size_suffix(x.size) << " " << gpr_name(x.reg) << ", ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, LoadSegBase>) {
+            const char* s = "?";
+            switch (x.seg) {
+                case SegmentReg::Es: s = "es"; break;
+                case SegmentReg::Cs: s = "cs"; break;
+                case SegmentReg::Ss: s = "ss"; break;
+                case SegmentReg::Ds: s = "ds"; break;
+                case SegmentReg::Fs: s = "fs"; break;
+                case SegmentReg::Gs: s = "gs"; break;
+            }
+            os << "segbase " << s;
         } else if constexpr (std::is_same_v<T, BinOp>) {
             os << binop_name(x.op) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
-        } else if constexpr (std::is_same_v<T, Extend>) {
-            os << (x.is_signed ? "sext" : "zext")
-               << "." << size_suffix(x.from_size)
-               << "->" << size_suffix(x.to_size) << " ";
-            print_ref(os, x.value);
-        } else if constexpr (std::is_same_v<T, Truncate>) {
-            os << "trunc." << size_suffix(x.to_size) << " ";
-            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Compare>) {
             os << "cmp." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
@@ -154,8 +115,6 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
             os << "store.tso." << size_suffix(x.size) << " ["; print_ref(os, x.addr);
             os << "], "; print_ref(os, x.value);
-        } else if constexpr (std::is_same_v<T, GuestPc>) {
-            os << "guestpc 0x" << std::hex << x.pc;
         } else if constexpr (std::is_same_v<T, Jump>) {
             os << "jmp bb" << x.target_block;
         } else if constexpr (std::is_same_v<T, JumpReg>) {
@@ -164,9 +123,6 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, CondJump>) {
             os << "condjmp "; print_ref(os, x.cond);
             os << ", bb" << x.if_true << ", bb" << x.if_false;
-        } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
-            os << "condjmpflags." << cc_name(x.cc)
-               << " bb" << x.if_true << ", bb" << x.if_false;
         } else if constexpr (std::is_same_v<T, Return>) {
             os << "ret";
         } else if constexpr (std::is_same_v<T, CmpFlags>) {
@@ -174,27 +130,390 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, JumpRel>) {
             os << "jmprel 0x" << std::hex << x.target_guest_pc;
+        } else if constexpr (std::is_same_v<T, CondJumpRel>) {
+            os << "condjmprel." << cc_name(x.cc)
+               << " taken=0x" << std::hex << x.target_guest_pc
+               << ", fallthrough=0x" << std::hex << x.fallthrough_guest_pc;
         } else if constexpr (std::is_same_v<T, CallRel>) {
             os << "callrel target=0x" << std::hex << x.target_guest_pc
                << ", ret=0x" << std::hex << x.return_guest_pc;
         } else if constexpr (std::is_same_v<T, CallReg>) {
-            os << "callreg ";
-            print_ref(os, x.target);
+            os << "callreg "; print_ref(os, x.target);
             os << ", ret=0x" << std::hex << x.return_guest_pc;
         } else if constexpr (std::is_same_v<T, RetAdjusted>) {
-            os << "retadjusted " << std::dec << x.pop_bytes;
+            os << "ret pop=" << std::dec << x.pop_bytes;
         } else if constexpr (std::is_same_v<T, Cpuid>) {
             os << "cpuid";
         } else if constexpr (std::is_same_v<T, Syscall>) {
             os << "syscall";
         } else if constexpr (std::is_same_v<T, Trap>) {
-            os << "trap." << trap_name(x.kind);
+            const char* k = "?";
+            switch (x.kind) {
+                case TrapKind::Sigtrap: k = "sigtrap"; break;
+                case TrapKind::Sigill:  k = "sigill";  break;
+                case TrapKind::Sigfpe:  k = "sigfpe";  break;
+            }
+            os << "trap " << k;
+        } else if constexpr (std::is_same_v<T, Extend>) {
+            os << (x.is_signed ? "sext." : "zext.")
+               << size_suffix(x.from_size) << "->" << size_suffix(x.to_size) << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Truncate>) {
+            os << "trunc->" << size_suffix(x.to_size) << " ";
+            print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Fence>) {
-            os << "fence." << fence_name(x.kind);
-        } else if constexpr (std::is_same_v<T, CondJumpRel>) {
-            os << "condjmprel." << cc_name(x.cc)
-               << " taken=0x" << std::hex << x.target_guest_pc
-               << ", fallthrough=0x" << std::hex << x.fallthrough_guest_pc;
+            const char* k = "?";
+            switch (x.kind) {
+                case FenceKind::Mfence: k = "mfence"; break;
+                case FenceKind::Lfence: k = "lfence"; break;
+                case FenceKind::Sfence: k = "sfence"; break;
+            }
+            os << "fence." << k;
+        } else if constexpr (std::is_same_v<T, GuestPc>) {
+            os << "guest_pc 0x" << std::hex << x.pc;
+        } else if constexpr (std::is_same_v<T, InlineAsm>) {
+            os << "inline_asm " << std::dec << x.bytes.size() << "B";
+        } else if constexpr (std::is_same_v<T, FpConstant>) {
+            const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
+            os << "fpconst." << sz << " 0x" << std::hex << x.bits;
+        } else if constexpr (std::is_same_v<T, FpBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case FpBinOpKind::Add: op_n = "fadd"; break;
+                case FpBinOpKind::Sub: op_n = "fsub"; break;
+                case FpBinOpKind::Mul: op_n = "fmul"; break;
+                case FpBinOpKind::Div: op_n = "fdiv"; break;
+            }
+            const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
+            os << op_n << "." << sz << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, WriteFlags>) {
+            os << "writeflags." << binop_name(x.op) << "."
+               << size_suffix(x.size) << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, ReadFlag>) {
+            const char* w = "?";
+            switch (x.which) {
+                case FlagBit::Carry:    w = "cf"; break;
+                case FlagBit::Zero:     w = "zf"; break;
+                case FlagBit::Sign:     w = "sf"; break;
+                case FlagBit::Overflow: w = "of"; break;
+                case FlagBit::Parity:   w = "pf"; break;
+                case FlagBit::Aux:      w = "af"; break;
+            }
+            os << "readflag." << w << " "; print_ref(os, x.flags);
+        } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
+            os << "condjmpflags." << cc_name(x.cc) << " ";
+            print_ref(os, x.flags);
+            os << ", bb" << std::dec << x.if_true
+               << ", bb" << std::dec << x.if_false;
+        } else if constexpr (std::is_same_v<T, RspAdjust>) {
+            os << "rsp_adjust " << std::dec << x.delta_bytes;
+        } else if constexpr (std::is_same_v<T, VecConstant>) {
+            os << "vconst.128 0x" << std::hex << x.hi << ":0x" << std::hex << x.lo;
+        } else if constexpr (std::is_same_v<T, LoadVecReg>) {
+            os << "loadxmm xmm" << std::dec
+               << static_cast<unsigned>(x.xmm_index);
+        } else if constexpr (std::is_same_v<T, StoreVecReg>) {
+            os << "storexmm xmm" << std::dec
+               << static_cast<unsigned>(x.xmm_index) << ", ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, LoadVecRegHi>) {
+            os << "loadymmhi ymm" << std::dec
+               << static_cast<unsigned>(x.ymm_index);
+        } else if constexpr (std::is_same_v<T, StoreVecRegHi>) {
+            os << "storeymmhi ymm" << std::dec
+               << static_cast<unsigned>(x.ymm_index) << ", ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecFpFma>) {
+            const char* mn = x.neg_mul
+                ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
+                : (x.neg_addend ? "vfmsub"  : "vfmadd");
+            os << mn << "." << (x.size == VecFpSize::S4 ? "s4" : "d2") << " ";
+            print_ref(os, x.a); os << ", ";
+            print_ref(os, x.b); os << ", ";
+            print_ref(os, x.c);
+        } else if constexpr (std::is_same_v<T, VecFpScalarFma>) {
+            const char* mn = x.neg_mul
+                ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
+                : (x.neg_addend ? "vfmsub"  : "vfmadd");
+            os << mn << "." << (x.size == FpSize::F32 ? "ss" : "sd") << " ";
+            print_ref(os, x.a); os << ", ";
+            print_ref(os, x.b); os << ", ";
+            print_ref(os, x.c); os << ", upper=";
+            print_ref(os, x.scalar_upper);
+        } else if constexpr (std::is_same_v<T, RepStos>) {
+            os << "rep_stos." << size_suffix(x.size)
+               << (x.reverse ? ".rev" : "")
+               << " (pc=" << x.pc_of_rep
+               << " -> " << x.pc_after_rep << ")";
+        } else if constexpr (std::is_same_v<T, RepMovs>) {
+            os << "rep_movs." << size_suffix(x.size)
+               << (x.reverse ? ".rev" : "")
+               << " (pc=" << x.pc_of_rep
+               << " -> " << x.pc_after_rep << ")";
+        } else if constexpr (std::is_same_v<T, X87Load>) {
+            os << "x87_load st(" << static_cast<unsigned>(x.st_index) << ")";
+        } else if constexpr (std::is_same_v<T, X87Store>) {
+            os << "x87_store st(" << static_cast<unsigned>(x.st_index) << "), ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, X87Push>) {
+            os << "x87_push ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, X87Pop>) {
+            (void)x;
+            os << "x87_pop";
+        } else if constexpr (std::is_same_v<T, VecBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case VecBinOpKind::Add: op_n = "vadd"; break;
+                case VecBinOpKind::Sub: op_n = "vsub"; break;
+                case VecBinOpKind::And: op_n = "vand"; break;
+                case VecBinOpKind::Or:  op_n = "vorr"; break;
+                case VecBinOpKind::Xor: op_n = "veor"; break;
+                case VecBinOpKind::Mul: op_n = "vmul"; break;
+                case VecBinOpKind::SqAdd: op_n = "vsqadd"; break;
+                case VecBinOpKind::UqAdd: op_n = "vuqadd"; break;
+                case VecBinOpKind::SqSub: op_n = "vsqsub"; break;
+                case VecBinOpKind::UqSub: op_n = "vuqsub"; break;
+                case VecBinOpKind::UMin:  op_n = "vumin"; break;
+                case VecBinOpKind::UMax:  op_n = "vumax"; break;
+                case VecBinOpKind::SMin:  op_n = "vsmin"; break;
+                case VecBinOpKind::SMax:  op_n = "vsmax"; break;
+                case VecBinOpKind::SMulHi: op_n = "vsmulhi"; break;
+                case VecBinOpKind::UMulHi: op_n = "vumulhi"; break;
+                case VecBinOpKind::UMul32To64: op_n = "vumul32to64"; break;
+                case VecBinOpKind::SadBw:    op_n = "vsadbw"; break;
+                case VecBinOpKind::PairAddInt: op_n = "vaddp"; break;
+                case VecBinOpKind::PairSubInt: op_n = "vsubp"; break;
+            }
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << op_n << "." << lane_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecFpBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case VecFpBinOpKind::Add: op_n = "vfadd"; break;
+                case VecFpBinOpKind::Sub: op_n = "vfsub"; break;
+                case VecFpBinOpKind::Mul: op_n = "vfmul"; break;
+                case VecFpBinOpKind::Div: op_n = "vfdiv"; break;
+                case VecFpBinOpKind::Min: op_n = "vfmin"; break;
+                case VecFpBinOpKind::Max: op_n = "vfmax"; break;
+                case VecFpBinOpKind::Sqrt: op_n = "vfsqrt"; break;
+                case VecFpBinOpKind::HAdd: op_n = "vfaddp"; break;
+            }
+            const char* size_n = (x.size == VecFpSize::S4) ? "s4" : "d2";
+            os << op_n << "." << size_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, LoadVec>) {
+            os << "loadvec ["; print_ref(os, x.addr); os << "]";
+        } else if constexpr (std::is_same_v<T, StoreVec>) {
+            os << "storevec ["; print_ref(os, x.addr); os << "], ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, XmmFromGpr>) {
+            os << "xmm_from_gpr." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, GprFromXmm>) {
+            os << "gpr_from_xmm." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecUnpack>) {
+            const char* op_n = x.is_high ? "vunpckh" : "vunpckl";
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << op_n << "." << lane_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecShiftBytes>) {
+            os << (x.is_left ? "vshlb " : "vshrb ");
+            print_ref(os, x.src);
+            os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, IntToFpScalar>) {
+            os << "scvtf." << ((x.fp_size == FpSize::F32) ? "f32" : "f64")
+               << ((x.int_size == OpSize::I32) ? ".i32 " : ".i64 ");
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, FpToIntScalar>) {
+            os << "fcvtzs." << ((x.int_size == OpSize::I32) ? "i32" : "i64")
+               << ((x.fp_size == FpSize::F32) ? ".f32 " : ".f64 ");
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecInsertLane>) {
+            os << "vins.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
+            print_ref(os, x.lhs_xmm); os << ", "; print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, VecExtractLaneU>) {
+            os << "vextu.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
+            print_ref(os, x.src_xmm);
+        } else if constexpr (std::is_same_v<T, VecMaskMsb>) {
+            os << "vmask_msb.b16 ";
+            print_ref(os, x.src_xmm);
+        } else if constexpr (std::is_same_v<T, WriteFlagsFp>) {
+            os << "wrflags.fp." << ((x.size == FpSize::F32) ? "f32" : "f64") << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecShuffleH4>) {
+            os << (x.is_high ? "vshufhw " : "vshuflw ");
+            print_ref(os, x.src);
+            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+        } else if constexpr (std::is_same_v<T, VecMaskFp>) {
+            os << (x.is_pd ? "vmaskpd " : "vmaskps ");
+            print_ref(os, x.src_xmm);
+        } else if constexpr (std::is_same_v<T, VecPshufb>) {
+            os << "vpshufb ";
+            print_ref(os, x.src); os << ", "; print_ref(os, x.mask);
+        } else if constexpr (std::is_same_v<T, VecAlignr>) {
+            os << "valignr ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, Popcnt>) {
+            os << "popcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Lzcnt>) {
+            os << "lzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Tzcnt>) {
+            os << "tzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, WriteFlagsPtest>) {
+            os << "wrflags.ptest ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) {
+            os << "wrflags.ptest_ymm ";
+            print_ref(os, x.lo_lhs); os << ", "; print_ref(os, x.lo_rhs);
+            os << " | ";
+            print_ref(os, x.hi_lhs); os << ", "; print_ref(os, x.hi_rhs);
+        } else if constexpr (std::is_same_v<T, VecTbl2>) {
+            os << "vtbl2 ";
+            print_ref(os, x.src_lo); os << ", ";
+            print_ref(os, x.src_hi); os << ", idx=";
+            print_ref(os, x.idx);
+        } else if constexpr (std::is_same_v<T, Bswap>) {
+            os << "bswap." << size_suffix(x.size) << ' ';
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, Crc32c>) {
+            os << "crc32c." << size_suffix(x.data_size) << ' ';
+            print_ref(os, x.crc); os << ", ";
+            print_ref(os, x.data);
+        } else if constexpr (std::is_same_v<T, VecAes>) {
+            const char* k = "?";
+            switch (x.kind) {
+                case VecAesKind::Enc:     k = "enc";       break;
+                case VecAesKind::EncLast: k = "enc_last";  break;
+                case VecAesKind::Dec:     k = "dec";       break;
+                case VecAesKind::DecLast: k = "dec_last";  break;
+                case VecAesKind::Imc:     k = "imc";       break;
+            }
+            os << "vaes." << k << ' ';
+            print_ref(os, x.src); os << ", ";
+            print_ref(os, x.key);
+        } else if constexpr (std::is_same_v<T, VecBlend>) {
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << "vblend." << lane_n << " ";
+            print_ref(os, x.dst); os << ", ";
+            print_ref(os, x.src); os << ", ";
+            print_ref(os, x.mask);
+        } else if constexpr (std::is_same_v<T, VecFpRound>) {
+            const char* modes[] = {"rn","rm","rp","rz","rn","rn","rn","rn"};
+            os << "vfrint." << modes[x.mode & 0x7]
+               << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
+               << (x.is_packed ? "_p " : "_s ");
+            print_ref(os, x.src);
+        } else if constexpr (std::is_same_v<T, VecExtend>) {
+            const char* nl = "?", *wl = "?";
+            switch (x.narrow_lane) {
+                case VecLane::B16: nl = "b"; break; case VecLane::H8: nl = "h"; break;
+                case VecLane::S4:  nl = "s"; break; case VecLane::D2: nl = "d"; break;
+            }
+            switch (x.wide_lane) {
+                case VecLane::B16: wl = "b"; break; case VecLane::H8: wl = "h"; break;
+                case VecLane::S4:  wl = "s"; break; case VecLane::D2: wl = "d"; break;
+            }
+            os << (x.is_signed ? "vsxtl." : "vuxtl.") << nl << "_to_" << wl << " ";
+            print_ref(os, x.src);
+        } else if constexpr (std::is_same_v<T, VecAbs>) {
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << "vabs." << lane_n << " ";
+            print_ref(os, x.src);
+        } else if constexpr (std::is_same_v<T, VecFpCompare>) {
+            const char* preds[] = {"eq","lt","le","unord","neq","nlt","nle","ord"};
+            os << "vfcmp." << preds[static_cast<unsigned>(x.pred)]
+               << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
+               << (x.is_packed ? "_p " : "_s ");
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
+            os << (x.is_pd ? "vshufpd " : "vshufps ");
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+        } else if constexpr (std::is_same_v<T, FpCvtScalar>) {
+            os << "fcvt_s."
+               << ((x.src_size == FpSize::F32) ? "f32" : "f64") << "->"
+               << ((x.dst_size == FpSize::F32) ? "f32" : "f64") << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.src);
+        } else if constexpr (std::is_same_v<T, VecShiftImm>) {
+            const char* op_n = "?";
+            switch (x.kind) {
+                case VecShiftKind::ShiftL:      op_n = "vshl";  break;
+                case VecShiftKind::LogicalShr:  op_n = "vushr"; break;
+                case VecShiftKind::ArithShr:    op_n = "vsshr"; break;
+            }
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << op_n << "." << lane_n << " ";
+            print_ref(os, x.src);
+            os << ", #" << static_cast<unsigned>(x.count);
+        } else if constexpr (std::is_same_v<T, VecShuffle32x4>) {
+            os << "vshuffle.s4 ";
+            print_ref(os, x.src);
+            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+        } else if constexpr (std::is_same_v<T, VecCmp>) {
+            const char* op_n = (x.kind == VecCmpKind::Eq) ? "vcmeq" : "vcmgt";
+            const char* lane_n = "?";
+            switch (x.lane) {
+                case VecLane::B16: lane_n = "b16"; break;
+                case VecLane::H8:  lane_n = "h8";  break;
+                case VecLane::S4:  lane_n = "s4";  break;
+                case VecLane::D2:  lane_n = "d2";  break;
+            }
+            os << op_n << "." << lane_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) {
+            const char* op_n = "?";
+            switch (x.op) {
+                case VecFpBinOpKind::Add: op_n = "vfadd_s"; break;
+                case VecFpBinOpKind::Sub: op_n = "vfsub_s"; break;
+                case VecFpBinOpKind::Mul: op_n = "vfmul_s"; break;
+                case VecFpBinOpKind::Div: op_n = "vfdiv_s"; break;
+                case VecFpBinOpKind::Min: op_n = "vfmin_s"; break;
+                case VecFpBinOpKind::Max: op_n = "vfmax_s"; break;
+                case VecFpBinOpKind::Sqrt: op_n = "vfsqrt_s"; break;
+                case VecFpBinOpKind::HAdd: op_n = "vfaddp_s"; break;
+            }
+            const char* size_n = (x.size == FpSize::F32) ? "f32" : "f64";
+            os << op_n << "." << size_n << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         }
     }, op);
     return os.str();
@@ -229,53 +548,51 @@ std::string pretty_print(const Function& fn) {
     return os.str();
 }
 
-const std::string& PrettyPrintCache::render(const Op& op) {
-    return intern(binary_key('o', serialize_op(op)), ::prisma::ir::pretty_print(op));
+// ---------------------------------------------------------------------------
+// F1-IR-019 — memoised pretty_print for Stmt.
+// ---------------------------------------------------------------------------
+//
+// Per-thread bounded cache. We use std::vector<pair<Stmt,string>> rather
+// than std::unordered_map because Stmt isn't trivially hashable and the
+// expected cache hit rate during test runs is on small constant sets;
+// linear search of <=256 entries is faster than hashing through std::variant
+// for that size. When the cache fills, we drop the oldest entry (FIFO).
+
+namespace {
+
+constexpr std::size_t kMemoisedCapacity = 256;
+
+struct MemoEntry {
+    Stmt        key;
+    std::string value;
+};
+
+std::vector<MemoEntry>& memo_storage() {
+    thread_local std::vector<MemoEntry> storage;
+    return storage;
 }
 
-const std::string& PrettyPrintCache::render(const Stmt& stmt) {
-    return intern(binary_key('s', serialize_stmts(std::span<const Stmt>(&stmt, 1u))),
-                  ::prisma::ir::pretty_print(stmt));
+}  // namespace
+
+std::string pretty_print_memoised(const Stmt& stmt) {
+    auto& store = memo_storage();
+    for (const auto& e : store) {
+        if (e.key == stmt) return e.value;
+    }
+    std::string s = pretty_print(stmt);
+    if (store.size() >= kMemoisedCapacity) {
+        store.erase(store.begin());  // FIFO eviction
+    }
+    store.push_back({stmt, s});
+    return s;
 }
 
-const std::string& PrettyPrintCache::render(const BasicBlock& block) {
-    auto key = binary_key('b', serialize_stmts(block.stmts));
-    append_u32_key(key, block.id);
-    return intern(std::move(key), ::prisma::ir::pretty_print(block));
+void pretty_print_memoised_clear() noexcept {
+    memo_storage().clear();
 }
 
-const std::string& PrettyPrintCache::render(const Function& function) {
-    return intern(binary_key('f', serialize_function(function)), ::prisma::ir::pretty_print(function));
-}
-
-const std::string& PrettyPrintCache::pretty_print(const Op& op) {
-    return render(op);
-}
-
-const std::string& PrettyPrintCache::pretty_print(const Stmt& stmt) {
-    return render(stmt);
-}
-
-const std::string& PrettyPrintCache::pretty_print(const BasicBlock& block) {
-    return render(block);
-}
-
-const std::string& PrettyPrintCache::pretty_print(const Function& function) {
-    return render(function);
-}
-
-std::size_t PrettyPrintCache::size() const noexcept {
-    return cache_.size();
-}
-
-void PrettyPrintCache::clear() {
-    cache_.clear();
-}
-
-const std::string& PrettyPrintCache::intern(std::string key, std::string text) {
-    auto [it, inserted] = cache_.try_emplace(std::move(key), std::move(text));
-    (void)inserted;
-    return it->second;
+std::size_t pretty_print_memoised_size() noexcept {
+    return memo_storage().size();
 }
 
 }  // namespace prisma::ir

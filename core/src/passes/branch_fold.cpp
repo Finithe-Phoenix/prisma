@@ -115,14 +115,13 @@ branch_fold(const std::vector<ir::Stmt>& stmts) {
                 const auto taken = eval_cond(
                     cj.cc, it_l->second.value, it_r->second.value,
                     last_cmp->size);
-                if (taken) {
-                    ir::Stmt folded{std::nullopt,
-                        ir::Op{ir::JumpRel{
-                            *taken ? cj.target_guest_pc : cj.fallthrough_guest_pc}}};
-                    out.push_back(std::move(folded));
-                    last_cmp.reset();
-                    continue;
-                }
+                const bool choose_taken = taken.value_or(false);
+                ir::Stmt folded{std::nullopt,
+                    ir::Op{ir::JumpRel{
+                        choose_taken ? cj.target_guest_pc : cj.fallthrough_guest_pc}}};
+                out.push_back(std::move(folded));
+                last_cmp.reset();
+                continue;
             }
             last_cmp.reset();
         }

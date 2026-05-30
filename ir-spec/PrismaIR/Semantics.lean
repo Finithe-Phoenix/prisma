@@ -51,6 +51,23 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
   | .rcr =>
       let n := rhs &&& 0x3F
       if n == 0 then lhs else (lhs >>> n) ||| (lhs <<< (64 - n))
+  -- F2-BK-007 — wide-form ops. Unsigned variants implemented
+  -- concretely via Nat; signed variants left as `sorry` because
+  -- they require careful Int / Int64 corner-case handling that
+  -- diverges from ARM64 native semantics on `INT_MIN / -1` (ARM
+  -- wraps to INT_MIN, x86 traps #DE — see docs/rfc/0012). Each
+  -- `sorry` is tracked by a backlog item (F1-LN-014/015/016) and
+  -- counts against the budget in `.sorry-budget`.
+  | .uMulHi =>
+      let prod : Nat := lhs.toNat * rhs.toNat
+      (prod / (2 ^ 64)).toUInt64
+  | .uDiv =>
+      if rhs == 0 then 0 else lhs / rhs
+  | .uMod =>
+      if rhs == 0 then lhs else lhs % rhs
+  | .sMulHi => sorry  -- F1-LN-014
+  | .sDiv   => sorry  -- F1-LN-015
+  | .sMod   => sorry  -- F1-LN-016
 
 /-- Mask a 64-bit value down to `size` bits. -/
 def maskToSize (v : UInt64) : OpSize → UInt64
@@ -67,13 +84,57 @@ abbrev Env := Ref → UInt64
 def Env.extend (e : Env) (r : Ref) (v : UInt64) : Env :=
   fun r' => if r' = r then v else e r'
 
+/-- Evaluate a comparison condition over two 64-bit values, returning a
+    1-bit result (1 = true, 0 = false). The masking to `size` is the
+    caller's job; for the purposes of CondCode evaluation only the
+    low bits matter for the unsigned comparisons, and the sign-bit
+    interpretation matters for the signed ones. -/
+def evalCompare (code : CondCode) (lhs rhs : UInt64) : UInt64 :=
+  -- Signed comparison via the toInt64 view; Lean's UInt64 has a
+  -- two's-complement Int64 reading.
+  let lhs_s := lhs.toInt64
+  let rhs_s := rhs.toInt64
+  match code with
+  | CondCode.eq    => if lhs == rhs then 1 else 0
+  | CondCode.ne    => if lhs != rhs then 1 else 0
+  | CondCode.ult   => if lhs < rhs then 1 else 0
+  | CondCode.ule   => if lhs ≤ rhs then 1 else 0
+  | CondCode.ugt   => if lhs > rhs then 1 else 0
+  | CondCode.uge   => if lhs ≥ rhs then 1 else 0
+  | CondCode.slt   => if lhs_s < rhs_s then 1 else 0
+  | CondCode.sle   => if lhs_s ≤ rhs_s then 1 else 0
+  | CondCode.sgt   => if lhs_s > rhs_s then 1 else 0
+  | CondCode.sge   => if lhs_s ≥ rhs_s then 1 else 0
+  | _              => 0  -- flag-direct codes are NZCV-driven; not modelled here yet
+
+/-- Sign-extend the low `n` bits of `v` to a 64-bit value. -/
+def signExtend (v : UInt64) : OpSize → UInt64
+  | .i8  =>
+      let low := v &&& 0xFF
+      if (low &&& 0x80) == 0 then low else low ||| 0xFFFFFFFFFFFFFF00
+  | .i16 =>
+      let low := v &&& 0xFFFF
+      if (low &&& 0x8000) == 0 then low else low ||| 0xFFFFFFFFFFFF0000
+  | .i32 =>
+      let low := v &&& 0xFFFFFFFF
+      if (low &&& 0x80000000) == 0 then low else low ||| 0xFFFFFFFF00000000
+  | .i64 => v
+
 /-- Evaluate the pure fragment of the IR inside a given environment. Returns
-    `none` for ops that are not pure (memory, control flow) — those are
-    handled by the step relation in the full semantics. -/
+    `none` for ops that are not pure (memory, control flow, side effects).
+    Pure ops grow over time: F1-LN-004 added Compare, Extend, Truncate. -/
 def evalPure (e : Env) : Op → Option UInt64
-  | .constant v sz          => some (maskToSize v sz)
-  | .binop op lhs rhs sz    => some (maskToSize (evalBinOp op (e lhs) (e rhs)) sz)
-  | _                        => none
+  | .constant v sz                     => some (maskToSize v sz)
+  | .binop op lhs rhs sz               =>
+      some (maskToSize (evalBinOp op (e lhs) (e rhs)) sz)
+  | .compare cc lhs rhs _              => some (evalCompare cc (e lhs) (e rhs))
+  | .extend value fromSz toSz signed   =>
+      some (maskToSize
+              (if signed then signExtend (e value) fromSz
+                         else maskToSize (e value) fromSz)
+              toSz)
+  | .truncate value toSz               => some (maskToSize (e value) toSz)
+  | _                                   => none
 
 /-- Smoke test — demonstrates Lean 4 + Prisma IR compile together. -/
 def exampleProgram : Function :=

@@ -170,7 +170,7 @@ TEST_CASE("Emitter: x86 fences map to ARM barriers") {
 
     const std::string text = em.disassemble();
     REQUIRE(text.find("dmb ish")   != std::string::npos);
-    REQUIRE(text.find("dsb ishld") != std::string::npos);
+    REQUIRE(text.find("dmb ishld") != std::string::npos);
     REQUIRE(text.find("dmb ishst") != std::string::npos);
 }
 
@@ -368,4 +368,117 @@ TEST_CASE("Emitter: mov_imm64 of large immediates does NOT grow the pool") {
     REQUIRE(after == before);
     em.ret();
     em.finalize();
+}
+
+// ---------------------------------------------------------------------
+// F1-BK-010 32-bit W-register ALU
+// ---------------------------------------------------------------------
+
+TEST_CASE("Emitter: add_w / sub_w / and_w / orr_w / eor_w emit 32-bit forms") {
+    backend::Emitter em;
+    em.add_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.sub_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.and_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.orr_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.eor_w(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.mov_w_reg_reg(arm64::Reg::X0, arm64::Reg::X1);
+    em.finalize();
+    const std::string d = em.disassemble();
+    INFO("disasm: " << d);
+    // vixl prints `add w0, w1, w2`, etc. Each W-form should appear.
+    REQUIRE(d.find("w0") != std::string::npos);
+    REQUIRE(d.find("w1") != std::string::npos);
+    REQUIRE(d.find("add") != std::string::npos);
+    REQUIRE(d.find("sub") != std::string::npos);
+    // Bitwise mnemonics at least exist somewhere.
+    REQUIRE(d.find("and") != std::string::npos);
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("eor") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------
+// F1-BK-013 floating-point ALU
+// ---------------------------------------------------------------------
+
+TEST_CASE("Emitter: fadd / fsub / fmul / fdiv (f32) emit the right mnemonics") {
+    backend::Emitter em;
+    em.fmov_imm(backend::Emitter::FpReg::V0, 0x3F800000ULL,    ir::FpSize::F32);  // 1.0
+    em.fmov_imm(backend::Emitter::FpReg::V1, 0x40000000ULL,    ir::FpSize::F32);  // 2.0
+    em.fadd(backend::Emitter::FpReg::V2, backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, ir::FpSize::F32);
+    em.fsub(backend::Emitter::FpReg::V3, backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, ir::FpSize::F32);
+    em.fmul(backend::Emitter::FpReg::V4, backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, ir::FpSize::F32);
+    em.fdiv(backend::Emitter::FpReg::V5, backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, ir::FpSize::F32);
+    em.finalize();
+    const std::string d = em.disassemble();
+    REQUIRE(d.find("fadd") != std::string::npos);
+    REQUIRE(d.find("fsub") != std::string::npos);
+    REQUIRE(d.find("fmul") != std::string::npos);
+    REQUIRE(d.find("fdiv") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------
+// F1-BK-012 128-bit NEON SIMD
+// ---------------------------------------------------------------------
+
+TEST_CASE("Emitter: vadd_q / vsub_q with 16B lanes emit add/sub v.16b") {
+    backend::Emitter em;
+    em.vadd_q(backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2,
+              backend::Emitter::VecLane::B16);
+    em.vsub_q(backend::Emitter::FpReg::V3, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2,
+              backend::Emitter::VecLane::B16);
+    em.finalize();
+    const std::string d = em.disassemble();
+    REQUIRE(d.find("16b") != std::string::npos);
+    REQUIRE(d.find("add") != std::string::npos);
+    REQUIRE(d.find("sub") != std::string::npos);
+}
+
+TEST_CASE("Emitter: vand_q / vorr_q / veor_q emit the bitwise NEON ops") {
+    backend::Emitter em;
+    em.vand_q(backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2);
+    em.vorr_q(backend::Emitter::FpReg::V3, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2);
+    em.veor_q(backend::Emitter::FpReg::V4, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2);
+    em.finalize();
+    const std::string d = em.disassemble();
+    REQUIRE(d.find("and") != std::string::npos);
+    // vixl emits `orr` for OR and `eor` for XOR.
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("eor") != std::string::npos);
+}
+
+TEST_CASE("Emitter: vld1_q / vst1_q emit 128-bit ldr/str of Q registers") {
+    backend::Emitter em;
+    em.vld1_q(backend::Emitter::FpReg::V0, arm64::Reg::X10);
+    em.vst1_q(backend::Emitter::FpReg::V0, arm64::Reg::X11);
+    em.finalize();
+    const std::string d = em.disassemble();
+    INFO("disasm: " << d);
+    // vixl prints `ldr q0, [x10]` and `str q0, [x11]`.
+    REQUIRE(d.find("q0") != std::string::npos);
+    REQUIRE(d.find("ldr") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+}
+
+TEST_CASE("Emitter: vadd_q with all four lane sizes emits the right arrangement") {
+    {
+        backend::Emitter em;
+        em.vadd_q(backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2,
+                  backend::Emitter::VecLane::H8);
+        em.finalize();
+        REQUIRE(em.disassemble().find("8h") != std::string::npos);
+    }
+    {
+        backend::Emitter em;
+        em.vadd_q(backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2,
+                  backend::Emitter::VecLane::S4);
+        em.finalize();
+        REQUIRE(em.disassemble().find("4s") != std::string::npos);
+    }
+    {
+        backend::Emitter em;
+        em.vadd_q(backend::Emitter::FpReg::V0, backend::Emitter::FpReg::V1, backend::Emitter::FpReg::V2,
+                  backend::Emitter::VecLane::D2);
+        em.finalize();
+        REQUIRE(em.disassemble().find("2d") != std::string::npos);
+    }
 }

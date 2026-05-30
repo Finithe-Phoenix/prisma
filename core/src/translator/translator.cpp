@@ -3,14 +3,18 @@
 #include "prisma/translator.hpp"
 
 #include <cstring>
+#include <memory>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
+#include "prisma/abi.hpp"
+#include "prisma/cfg.hpp"
 #include "prisma/cpu_state.hpp"
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
-#include "prisma/jit_memory.hpp"
+#include "prisma/jit_buffer_pool.hpp"
 #include "prisma/lowering.hpp"
 
 namespace prisma::translator {
@@ -30,7 +34,53 @@ bool is_block_terminator(const ir::Op& op) noexcept {
     return std::holds_alternative<ir::Return>(op)
         || std::holds_alternative<ir::JumpRel>(op)
         || std::holds_alternative<ir::JumpReg>(op)
-        || std::holds_alternative<ir::CondJumpRel>(op);
+        || std::holds_alternative<ir::CondJumpRel>(op)
+        || std::holds_alternative<ir::CallRel>(op)
+        || std::holds_alternative<ir::CallReg>(op)
+        || std::holds_alternative<ir::RetAdjusted>(op)
+        || std::holds_alternative<ir::RepStos>(op)
+        || std::holds_alternative<ir::RepMovs>(op);
+}
+
+struct ExitMetadata {
+    BlockExitKind kind{BlockExitKind::None};
+    std::uint64_t target_guest_pc{0};
+    std::uint64_t fallthrough_guest_pc{0};
+    std::uint64_t return_guest_pc{0};
+};
+
+ExitMetadata exit_metadata(const std::vector<ir::Stmt>& body) noexcept {
+    if (body.empty()) return {};
+    return std::visit([](const auto& op) -> ExitMetadata {
+        using T = std::decay_t<decltype(op)>;
+        if constexpr (std::is_same_v<T, ir::Return>) {
+            return {BlockExitKind::Return, 0, 0, 0};
+        } else if constexpr (std::is_same_v<T, ir::JumpRel>) {
+            return {BlockExitKind::JumpRel, op.target_guest_pc, 0, 0};
+        } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
+            return {BlockExitKind::JumpReg, 0, 0, 0};
+        } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
+            return {BlockExitKind::CondJumpRel,
+                    op.target_guest_pc,
+                    op.fallthrough_guest_pc,
+                    0};
+        } else if constexpr (std::is_same_v<T, ir::CallRel>) {
+            return {BlockExitKind::CallRel,
+                    op.target_guest_pc,
+                    0,
+                    op.return_guest_pc};
+        } else if constexpr (std::is_same_v<T, ir::CallReg>) {
+            return {BlockExitKind::CallReg, 0, 0, op.return_guest_pc};
+        } else if constexpr (std::is_same_v<T, ir::RetAdjusted>) {
+            return {BlockExitKind::RetAdjusted, 0, 0, 0};
+        } else if constexpr (std::is_same_v<T, ir::RepStos>) {
+            return {BlockExitKind::RepStos, op.pc_of_rep, op.pc_after_rep, 0};
+        } else if constexpr (std::is_same_v<T, ir::RepMovs>) {
+            return {BlockExitKind::RepMovs, op.pc_of_rep, op.pc_after_rep, 0};
+        } else {
+            return {};
+        }
+    }, body.back().op);
 }
 
 // ---------------------------------------------------------------------
@@ -64,57 +114,22 @@ bool is_block_terminator(const ir::Op& op) noexcept {
 // the stack before `ret`.
 // ---------------------------------------------------------------------
 
-constexpr arm64::Reg kStatePtrReg = arm64::Reg::X27;
+// Block prologue / epilogue live in `prisma::backend::abi` (F1-BK-009)
+// so future inline guest-CALL sites can reuse the same callee-saved
+// discipline. These thin forwarders keep the call sites readable.
 
-void emit_prologue(backend::Emitter& em) {
-    // Save callee-saved regs we will clobber (pushed as pairs so SP
-    // stays 16-byte aligned). The `push_pair` helper is stp+pre-index.
-    em.push_pair(arm64::Reg::X29, arm64::Reg::X30);  // FP + LR
-    em.push_pair(arm64::Reg::X27, arm64::Reg::X28);  // state ptr holder + spare
-    em.push_pair(arm64::Reg::X25, arm64::Reg::X26);  // guest r14, r15
-    em.push_pair(arm64::Reg::X23, arm64::Reg::X24);  // guest r12, r13
-    em.push_pair(arm64::Reg::X21, arm64::Reg::X22);  // guest r10, r11
-    em.push_pair(arm64::Reg::X19, arm64::Reg::X20);  // guest r8,  r9
-
-    // x27 = x0  (preserve the state pointer across the body)
-    em.mov_reg_reg(kStatePtrReg, arm64::Reg::X0);
-
-    // Load 16 guest GPRs from state->gpr[] into their pinned host regs.
-    // (No host reg overlaps with x27 here because host_reg_for skips x18
-    // and lands in x10..x17, x19..x26.)
-    for (std::size_t i = 0; i < ir::kGprCount; ++i) {
-        const ir::Gpr g = static_cast<ir::Gpr>(i);
-        const arm64::Reg host = arm64::host_reg_for(g);
-        const std::int32_t off = runtime::CpuStateFrame::gpr_offset_bytes(g);
-        em.load_offset(host, kStatePtrReg, off);
-    }
+inline void emit_prologue(backend::Emitter& em) {
+    backend::abi::emit_block_prologue(em);
 }
 
-void emit_epilogue_and_ret(backend::Emitter& em) {
-    // Store pinned host regs back to the state frame. None of these
-    // writes touch x0 (our next-PC return value) or x27 (state ptr,
-    // still valid until we finish using it).
-    for (std::size_t i = 0; i < ir::kGprCount; ++i) {
-        const ir::Gpr g = static_cast<ir::Gpr>(i);
-        const arm64::Reg host = arm64::host_reg_for(g);
-        const std::int32_t off = runtime::CpuStateFrame::gpr_offset_bytes(g);
-        em.store_offset(host, kStatePtrReg, off);
-    }
-
-    // Restore callee-saved regs in reverse push order, then ret.
-    em.pop_pair(arm64::Reg::X19, arm64::Reg::X20);
-    em.pop_pair(arm64::Reg::X21, arm64::Reg::X22);
-    em.pop_pair(arm64::Reg::X23, arm64::Reg::X24);
-    em.pop_pair(arm64::Reg::X25, arm64::Reg::X26);
-    em.pop_pair(arm64::Reg::X27, arm64::Reg::X28);
-    em.pop_pair(arm64::Reg::X29, arm64::Reg::X30);
-
-    em.ret();
+inline void emit_epilogue_and_ret(backend::Emitter& em) {
+    backend::abi::emit_block_epilogue_and_ret(em);
 }
 
 std::variant<Decoded, decoder::DecodeError>
 decode_until_terminator(std::span<const std::uint8_t> bytes,
-                        std::uint64_t guest_addr) {
+                        std::uint64_t guest_addr,
+                        bool real_call_ret) {
     Decoded out;
     ir::Ref next = 0;
     std::size_t cursor = 0;
@@ -122,7 +137,8 @@ decode_until_terminator(std::span<const std::uint8_t> bytes,
 
     while (cursor < bytes.size()) {
         const std::uint64_t instr_pc = guest_addr + cursor;
-        auto res = decoder::decode_one(bytes.subspan(cursor), next, instr_pc);
+        auto res = decoder::decode_one(bytes.subspan(cursor), next, instr_pc,
+                                       real_call_ret);
         if (std::holds_alternative<decoder::DecodeError>(res)) {
             return std::get<decoder::DecodeError>(res);
         }
@@ -143,12 +159,43 @@ decode_until_terminator(std::span<const std::uint8_t> bytes,
 
 }  // namespace
 
-Translator::Translator() : pipeline_(passes::default_pipeline()) {}
+Translator::Translator()
+    : pipeline_(passes::default_pipeline()),
+      function_pipeline_(passes::default_function_pipeline()),
+      pool_(std::make_unique<runtime::JitSlabPool>()) {}
 
 Translator::~Translator() = default;
 
 void Translator::set_pipeline(passes::PassManager pm) {
     pipeline_ = std::move(pm);
+}
+
+void Translator::set_function_pipeline(passes::FunctionPassManager pm) {
+    function_pipeline_ = std::move(pm);
+}
+
+void Translator::set_real_call_ret(bool enabled) noexcept {
+    real_call_ret_ = enabled;
+}
+
+std::optional<TranslatedBlock> Translator::lookup_cached(
+    std::uint64_t guest_addr,
+    std::span<const std::uint8_t> guest_bytes) const {
+    if (guest_bytes.empty()) return std::nullopt;
+    const std::uint64_t hash_of_input = cache::fnv1a_64(guest_bytes);
+    auto it = by_addr_.find(guest_addr);
+    if (it == by_addr_.end()) return std::nullopt;
+    const Record& rec = it->second;
+    if (rec.content_hash != hash_of_input) return std::nullopt;
+    return TranslatedBlock{
+        rec.entry,
+        rec.code_size,
+        rec.guest_size,
+        /*from_cache=*/true,
+        rec.exit_kind,
+        rec.target_guest_pc,
+        rec.fallthrough_guest_pc,
+        rec.return_guest_pc};
 }
 
 TranslateResult Translator::translate(
@@ -172,15 +219,19 @@ TranslateResult Translator::translate(
     if (auto it = by_addr_.find(guest_addr); it != by_addr_.end()) {
         const Record& rec = it->second;
         if (rec.content_hash == hash_of_input) {
-            const runtime::JitBuffer* buf = buffers_.get(rec.buffer_idx);
-            if (buf != nullptr) {
-                ++stats_.cache_hits;
-                return TranslatedBlock{
-                    buf->entry(), rec.code_size, rec.guest_size, /*from_cache=*/true};
-            }
+            ++stats_.cache_hits;
+            return TranslatedBlock{
+                rec.entry,
+                rec.code_size,
+                rec.guest_size,
+                /*from_cache=*/true,
+                rec.exit_kind,
+                rec.target_guest_pc,
+                rec.fallthrough_guest_pc,
+                rec.return_guest_pc};
         }
-        // SMC (or a stale internal record): the guest bytes at this address
-        // changed. Drop the in-process record and fall through to retranslate.
+        // SMC: the guest bytes at this address changed. Drop the record,
+        // drop the persistent cache entry, fall through to retranslate.
         by_addr_.erase(it);
     }
 
@@ -189,15 +240,38 @@ TranslateResult Translator::translate(
     // that {hits, misses, decode_failures, lower_failures} partitions
     // attempts cleanly.
 
-    auto decoded = decode_until_terminator(guest_bytes, guest_addr);
+    auto decoded = decode_until_terminator(guest_bytes, guest_addr,
+                                           real_call_ret_);
     if (std::holds_alternative<decoder::DecodeError>(decoded)) {
         ++stats_.decode_failures;
         return TranslateError::DecodeFailed;
     }
     const auto& dec = std::get<Decoded>(decoded);
 
-    // Optimise.
-    auto [optimised, _stats] = pipeline_.run(dec.stmts);
+    // CFG-aware passes (F2-PS-004 + F2-PS-003). The decoder produces a
+    // flat stmt list; build_cfg splits at every internal terminator
+    // (Trap / Cpuid / Syscall / InlineAsm / RepStos / RepMovs / ...)
+    // so multi-x86-instruction regions can naturally yield multi-block
+    // ir::Function. For single-block functions (the common case today)
+    // we skip the function pipeline — it would be a no-op.
+    std::vector<ir::Stmt> pre_stmt_pipeline_input;
+    {
+        ir::Function fn = ir::build_cfg(dec.stmts);
+        if (fn.blocks.size() > 1) {
+            auto [opt_fn, _fstats] = function_pipeline_.run(fn);
+            pre_stmt_pipeline_input.reserve(dec.stmts.size());
+            for (auto& blk : opt_fn.blocks) {
+                for (auto& st : blk.stmts) {
+                    pre_stmt_pipeline_input.push_back(std::move(st));
+                }
+            }
+        } else {
+            pre_stmt_pipeline_input = dec.stmts;
+        }
+    }
+
+    // Optimise (stmt-level pipeline).
+    auto [optimised, _stats] = pipeline_.run(pre_stmt_pipeline_input);
 
     // Determine the block terminator (if any). The Lowerer emits its
     // own ret for Return / JumpRel / JumpReg / CondJumpRel, so we only
@@ -205,22 +279,14 @@ TranslateResult Translator::translate(
     // terminator
     // (ran off the end of guest_bytes — unusual but possible).
     std::vector<ir::Stmt> body = std::move(optimised);
-    bool body_has_terminator = false;
-    if (!body.empty()) {
-        if (std::holds_alternative<ir::Return>(body.back().op)) {
-            // Pure Return: let Lowerer handle it; it already emits ret.
-            body_has_terminator = true;
-        } else if (std::holds_alternative<ir::JumpRel>(body.back().op)
-                || std::holds_alternative<ir::JumpReg>(body.back().op)
-                || std::holds_alternative<ir::CondJumpRel>(body.back().op)) {
-            body_has_terminator = true;
-        }
-    }
+    const ExitMetadata exit = exit_metadata(body);
+    const bool body_has_terminator =
+        !body.empty() && is_block_terminator(body.back().op);
 
     backend::Emitter em;
 
     // Prologue: load guest state from the CpuStateFrame* passed in x0
-    // into pinned host regs x10..x25 and save the state ptr in x27.
+    // into pinned host regs x10..x25 and save the state ptr in x19.
     emit_prologue(em);
 
     // Body: lower with `emit_ret_on_terminator = false` so terminators
@@ -248,14 +314,15 @@ TranslateResult Translator::translate(
         return TranslateError::LowerFailed;
     }
 
-    const auto allocation = buffers_.add(emitted);
-    if (!allocation) {
+    runtime::JitBlock blk;
+    try {
+        blk = pool_->acquire(emitted);
+    } catch (const std::bad_alloc&) {
         return TranslateError::JitAllocFailed;
     }
 
-    const std::uint8_t* entry = allocation->entry;
-    const std::size_t code_size = allocation->code_size;
-    const std::size_t buffer_idx = allocation->index;
+    const std::uint8_t* entry = blk.entry;
+    const std::size_t code_size = emitted.size();
 
     // Persistent cache: store bytes for SMC verification + future
     // distribution. The actual executable memory lives in our buffer.
@@ -267,10 +334,25 @@ TranslateResult Translator::translate(
 
     // In-process record for the next call.
     by_addr_[guest_addr] = Record{
-        buffer_idx, code_size, dec.consumed, hash_of_input};
+        entry,
+        code_size,
+        dec.consumed,
+        hash_of_input,
+        exit.kind,
+        exit.target_guest_pc,
+        exit.fallthrough_guest_pc,
+        exit.return_guest_pc};
 
     ++stats_.cache_misses;  // accounted only on success; see comment above.
-    return TranslatedBlock{entry, code_size, dec.consumed, /*from_cache=*/false};
+    return TranslatedBlock{
+        entry,
+        code_size,
+        dec.consumed,
+        /*from_cache=*/false,
+        exit.kind,
+        exit.target_guest_pc,
+        exit.fallthrough_guest_pc,
+        exit.return_guest_pc};
 }
 
 }  // namespace prisma::translator

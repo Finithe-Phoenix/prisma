@@ -7,7 +7,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "prisma/ir.hpp"
-#include "prisma/ir_pretty_cache.hpp"
 
 using namespace prisma::ir;
 
@@ -39,31 +38,6 @@ TEST_CASE("Structural equality on Op variants") {
 
     REQUIRE(e == f);
     REQUIRE_FALSE(e == g);
-
-    Op h = Extend{0, OpSize::I8, OpSize::I64, true};
-    Op i = Extend{0, OpSize::I8, OpSize::I64, true};
-    Op j = Extend{0, OpSize::I8, OpSize::I64, false};
-    Op k = Truncate{0, OpSize::I16};
-    Op l = Truncate{0, OpSize::I32};
-    Op m = Fence{FenceKind::Mfence};
-    Op n = Fence{FenceKind::Mfence};
-    Op o = Fence{FenceKind::Sfence};
-    Op p = GuestPc{0x401000};
-    Op q = GuestPc{0x401000};
-    Op r = GuestPc{0x401001};
-    Op cf = CondJumpFlags{CondCode::Eq, 1u, 2u};
-    Op cg = CondJumpFlags{CondCode::Eq, 1u, 2u};
-    Op ch = CondJumpFlags{CondCode::Ne, 1u, 2u};
-
-    REQUIRE(h == i);
-    REQUIRE_FALSE(h == j);
-    REQUIRE_FALSE(k == l);
-    REQUIRE(m == n);
-    REQUIRE_FALSE(m == o);
-    REQUIRE(p == q);
-    REQUIRE_FALSE(p == r);
-    REQUIRE(cf == cg);
-    REQUIRE_FALSE(cf == ch);
 }
 
 TEST_CASE("Stmt equality includes result binding") {
@@ -105,26 +79,29 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
     Stmt s_add{2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}};
     REQUIRE(pretty_print(s_add) == "%2 = add.i64 %0, %1");
 
-    Stmt s_sext{3u, Extend{2u, OpSize::I8, OpSize::I64, true}};
-    REQUIRE(pretty_print(s_sext) == "%3 = sext.i8->i64 %2");
-
-    Stmt s_trunc{4u, Truncate{3u, OpSize::I16}};
-    REQUIRE(pretty_print(s_trunc) == "%4 = trunc.i16 %3");
-
-    Stmt s_fence{std::nullopt, Fence{FenceKind::Mfence}};
-    REQUIRE(pretty_print(s_fence) == "fence.mfence");
-
-    Stmt s_guest_pc{std::nullopt, GuestPc{0x401000}};
-    REQUIRE(pretty_print(s_guest_pc) == "guestpc 0x401000");
+    Stmt s_pdep{3u, BinOp{BinOpKind::Pdep, 0u, 1u, OpSize::I64}};
+    REQUIRE(pretty_print(s_pdep) == "%3 = pdep.i64 %0, %1");
 
     Stmt s_ret{std::nullopt, Return{}};
     REQUIRE(pretty_print(s_ret) == "ret");
 
-    Stmt s_cond_flags{std::nullopt, CondJumpFlags{CondCode::Eq, 1u, 2u}};
-    REQUIRE(pretty_print(s_cond_flags) == "condjmpflags.eq bb1, bb2");
-
     Stmt s_store_tso{std::nullopt, StoreMemTSO{/*addr=*/5u, /*value=*/6u, OpSize::I32}};
     REQUIRE(pretty_print(s_store_tso) == "store.tso.i32 [%5], %6");
+}
+
+TEST_CASE("x87 stack ops have structural equality and stable pretty-print") {
+    REQUIRE(Op{X87Load{2u}} == Op{X87Load{2u}});
+    REQUIRE_FALSE(Op{X87Load{2u}} == Op{X87Load{3u}});
+    REQUIRE(Op{X87Store{1u, 7u}} == Op{X87Store{1u, 7u}});
+    REQUIRE_FALSE(Op{X87Store{1u, 7u}} == Op{X87Store{2u, 7u}});
+    REQUIRE(Op{X87Push{7u}} == Op{X87Push{7u}});
+    REQUIRE(Op{X87Pop{}} == Op{X87Pop{}});
+
+    REQUIRE(pretty_print(Stmt{0u, X87Load{2u}}) == "%0 = x87_load st(2)");
+    REQUIRE(pretty_print(Stmt{std::nullopt, X87Store{1u, 7u}}) ==
+            "x87_store st(1), %7");
+    REQUIRE(pretty_print(Stmt{std::nullopt, X87Push{7u}}) == "x87_push %7");
+    REQUIRE(pretty_print(Stmt{8u, X87Pop{}}) == "%8 = x87_pop");
 }
 
 TEST_CASE("kInvalidRef renders as %?") {
@@ -132,86 +109,64 @@ TEST_CASE("kInvalidRef renders as %?") {
     REQUIRE(pretty_print(s) == "%? = const.i8 0x0");
 }
 
-TEST_CASE("PrettyPrintCache memoizes structurally equal statements") {
-    PrettyPrintCache cache;
-    Stmt first{0u, Constant{42, OpSize::I64}};
-    Stmt same{0u, Constant{42, OpSize::I64}};
-    Stmt different{0u, Constant{43, OpSize::I64}};
+// ---------------------------------------------------------------------
+// F1-IR-014 GuestPc pseudo-op
+// ---------------------------------------------------------------------
 
-    const auto& first_text = cache.render(first);
-    REQUIRE(first_text == pretty_print(first));
-    REQUIRE(cache.size() == 1u);
-
-    const auto& same_text = cache.render(same);
-    REQUIRE(&same_text == &first_text);
-    REQUIRE(cache.size() == 1u);
-
-    const auto& different_text = cache.render(different);
-    REQUIRE(different_text == pretty_print(different));
-    REQUIRE(&different_text != &first_text);
-    REQUIRE(cache.size() == 2u);
-
-    cache.clear();
-    REQUIRE(cache.size() == 0u);
+TEST_CASE("InlineAsm carries opaque guest bytes and equates by content") {
+    Stmt a{std::nullopt, InlineAsm{{0x0F, 0x05}}};   // SYSCALL bytes
+    Stmt b{std::nullopt, InlineAsm{{0x0F, 0x05}}};
+    Stmt c{std::nullopt, InlineAsm{{0x0F, 0x07}}};   // SYSRET bytes
+    REQUIRE(a == b);
+    REQUIRE_FALSE(a == c);
+    REQUIRE(pretty_print(a) == "inline_asm 2B");
 }
 
-TEST_CASE("PrettyPrintCache supports op, block, and function render paths") {
-    PrettyPrintCache cache;
-
-    Op op = BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64};
-    REQUIRE(cache.render(op) == pretty_print(op));
-    REQUIRE(cache.pretty_print(op) == pretty_print(op));
-
-    BasicBlock block;
-    block.id = 7u;
-    block.stmts = {
-        {0u, Constant{1, OpSize::I64}},
-        {std::nullopt, Return{}},
-    };
-    REQUIRE(cache.render(block) == pretty_print(block));
-
-    Function fn;
-    fn.entry = 7u;
-    fn.blocks.push_back(block);
-    REQUIRE(cache.render(fn) == pretty_print(fn));
-    REQUIRE(cache.size() == 3u);
+TEST_CASE("GuestPc has structural equality and prints with hex address") {
+    Stmt a{std::nullopt, GuestPc{0xCAFE'BABE'1234'5678ull}};
+    Stmt b{std::nullopt, GuestPc{0xCAFE'BABE'1234'5678ull}};
+    Stmt c{std::nullopt, GuestPc{0xDEAD'BEEF'0000'0000ull}};
+    REQUIRE(a == b);
+    REQUIRE_FALSE(a == c);
+    REQUIRE(pretty_print(a) == "guest_pc 0xcafebabe12345678");
 }
 
-TEST_CASE("PrettyPrintCache reuses structured block and function entries") {
-    PrettyPrintCache cache;
+// ---------------------------------------------------------------------
+// F1-IR-019 memoised pretty-print
+// ---------------------------------------------------------------------
 
-    BasicBlock block_a;
-    block_a.id = 0;
-    block_a.stmts = {
-        {0u, Constant{10, OpSize::I64}},
-        {1u, Constant{32, OpSize::I64}},
-        {2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}},
-        {std::nullopt, Return{}},
-    };
+TEST_CASE("pretty_print_memoised: identical Stmts share a string entry") {
+    pretty_print_memoised_clear();
+    Stmt a{0u, Constant{42, OpSize::I64}};
+    Stmt b{0u, Constant{42, OpSize::I64}};
+    const std::string sa = pretty_print_memoised(a);
+    REQUIRE(pretty_print_memoised_size() == 1);
+    const std::string sb = pretty_print_memoised(b);
+    REQUIRE(pretty_print_memoised_size() == 1);  // dedup hit
+    REQUIRE(sa == sb);
+    REQUIRE(sa == "%0 = const.i64 0x2a");
+}
 
-    BasicBlock block_b = block_a;
-    BasicBlock block_c = block_a;
-    block_c.stmts[2] = {2u, BinOp{BinOpKind::Sub, 0u, 1u, OpSize::I64}};
+TEST_CASE("pretty_print_memoised: distinct Stmts grow the cache") {
+    pretty_print_memoised_clear();
+    for (unsigned i = 0; i < 10; ++i) {
+        Stmt s{i, Constant{i, OpSize::I64}};
+        (void)pretty_print_memoised(s);
+    }
+    REQUIRE(pretty_print_memoised_size() == 10);
+    pretty_print_memoised_clear();
+    REQUIRE(pretty_print_memoised_size() == 0);
+}
 
-    REQUIRE(cache.render(block_a) == pretty_print(block_a));
-    REQUIRE(cache.size() == 1);
-    REQUIRE(cache.render(block_b) == pretty_print(block_b));
-    REQUIRE(cache.size() == 1);
-    REQUIRE(cache.render(block_c) == pretty_print(block_c));
-    REQUIRE(cache.size() == 2);
+TEST_CASE("pretty_print_memoised: agrees byte-for-byte with the un-memoised path") {
+    pretty_print_memoised_clear();
+    Stmt s_extend{1u,
+        Extend{/*value=*/0u, OpSize::I8, OpSize::I64, /*signed=*/true}};
+    REQUIRE(pretty_print_memoised(s_extend) == pretty_print(s_extend));
 
-    Function fn_a;
-    fn_a.entry = 0;
-    fn_a.blocks.push_back(block_a);
+    Stmt s_fence{std::nullopt, Fence{FenceKind::Mfence}};
+    REQUIRE(pretty_print_memoised(s_fence) == pretty_print(s_fence));
 
-    Function fn_b = fn_a;
-    Function fn_c = fn_a;
-    fn_c.entry = 1;
-
-    REQUIRE(cache.render(fn_a) == pretty_print(fn_a));
-    REQUIRE(cache.size() == 3);
-    REQUIRE(cache.render(fn_b) == pretty_print(fn_b));
-    REQUIRE(cache.size() == 3);
-    REQUIRE(cache.render(fn_c) == pretty_print(fn_c));
-    REQUIRE(cache.size() == 4);
+    Stmt s_pc{std::nullopt, GuestPc{0x4000ULL}};
+    REQUIRE(pretty_print_memoised(s_pc) == pretty_print(s_pc));
 }

@@ -230,3 +230,101 @@ drafts.
 If you have a month, start implementing the items in BACKLOG marked
 `[ ]` — or pick one of the open questions at the end of the RFCs and
 write a follow-up RFC.
+
+## Late-F2 update (2026-05-13)
+
+A few moving parts have landed beyond what the original architecture
+overview above describes. This subsection is the catch-up patch; the
+single source of truth for "what does the agent do next" is
+[`WORK_QUEUE.md`](WORK_QUEUE.md), and the operational how-to is
+[`AGENT_PLAYBOOK.md`](AGENT_PLAYBOOK.md).
+
+### Function-level pass infrastructure (F2-PS-003 / F2-PS-004)
+
+The stmt-level `PassManager` has been joined by a parallel
+`FunctionPassManager` (`core/src/passes/pass_manager.cpp` +
+`global_cse.cpp` + `licm.cpp`). The Translator now runs CFG
+construction (`ir::build_cfg`) between the decoder and the stmt-level
+pipeline:
+
+```
+decode_until_terminator → flat stmts
+build_cfg(stmts)         → ir::Function (multi-block when the stream
+                            contains Cpuid / Syscall / Trap / RepStos /
+                            InlineAsm / CondJumpFlags split points)
+function_pipeline.run    → global_cse → loop_invariant_motion
+flatten back             → stmts
+stmt pipeline (the 12)   → optimised stmts
+lower + JIT
+```
+
+The default function pipeline carries the dominator-tree-forwarded
+GCSE (single-predecessor / unique-idom gate; conservative for
+join blocks) and LICM (unique non-loop predecessor of the header;
+multi-entry loops skipped). Both are no-ops when the translator
+produces a single-block function (the common case today), which
+makes the wiring safe for back-compat.
+
+### Real CALL/RET semantics (F2-IR-054 + F2-BK-010)
+
+The translator exposes `set_real_call_ret(bool)` and defaults it on.
+When enabled, the decoder emits first-class `CallRel`, `CallReg`, and
+`RetAdjusted` terminators for CALL rel32, CALL r/m64, RET, and RET
+imm16. Lowering performs the guest-stack push/pop directly and returns
+the callee or popped return target in `x0`.
+
+The Dispatcher has `install_halt_return_stack()` which allocates an
+internal zero-initialised stack and points `state.gpr[Rsp]` at it; the
+outermost RET pops a 0 (= `kHaltSentinel`) and the dispatcher exits
+cleanly. Translator block metadata also exposes call/ret terminator
+shape, and the dispatcher keeps RAS-style push/pop/hit/miss counters
+for return prediction work.
+
+The first direct-threading stages are live in the dispatcher. For
+direct `JumpRel` and `CondJumpRel` exits, block metadata records target
+and fallthrough guest PCs. If the selected successor is already
+translated and the current guest bytes still match the cached content
+hash, the dispatcher executes that cached block immediately. If the
+successor is not cached yet, the dispatcher translates it in-place and
+continues the direct chain without bouncing through the outer dispatch
+loop. This preserves SMC safety, halt-PC checks, and step limits while
+leaving deeper in-JIT patching for the next runtime optimization stage.
+
+### Blocker A — REP STOS / MOVSB DoS clamp
+
+`RepStos` and `RepMovs` (commit 5756084) are now **block terminators**
+that clamp per-call iteration count at
+`kRepMaxBytesPerCall` (= 16 MiB worth of stores). When the count
+hasn't drained, the emitted block exits with `x0 = pc_of_rep` so the
+dispatcher re-enters the same REP for another bounded slice. This
+matches x86's REP-is-interruptible semantics exactly and removes the
+unbounded-loop DoS risk.
+
+### Lane-crossing AVX-256 (VecTbl2)
+
+A new general-purpose IR op `VecTbl2 { src_lo, src_hi, idx }` lowers
+to NEON `tbl` over a two-vector source (with V30/V31 fixed scratch
+for the adjacency requirement). VPERMQ ymm synthesises a compile-
+time byte-index `VecConstant`; VPERMD ymm builds the byte-index at
+runtime via `VecBinOp{And, …} → VecShiftImm{Shl, …} →
+VecPshufb{…} → VecBinOp{Add, …}` before invoking VecTbl2. Same
+primitive is the natural lowering target for future VPGATHER work.
+
+### Two-eyes ledger
+
+CONTRIBUTING.md's two-eyes rule applies to IR / decoder / lowering /
+emitter changes. When Codex is unavailable and Claude proceeds
+single-author under Danny's blanket authority, the running tally of
+solo SHAs lives in [`REVIEW_F2_SESSION.md`](REVIEW_F2_SESSION.md)
+under "Two-eyes tally". Each waiver pass either lands as a Codex
+audit or a single `docs/REVIEWS/F2-CLAUDE-WAIVER.md` co-signed by
+Danny.
+
+### Container-based development for non-ARM64 hosts
+
+The development workflow now supports `linux/amd64` Docker
+containers as a mirror of the GH Actions `ubuntu-latest` runner.
+Setup recipe in [`AGENT_PLAYBOOK.md`](AGENT_PLAYBOOK.md) §1. E2E
+JIT tests still need real ARM64 (Apple silicon or a future
+`linux/arm64` runner); decoder / IR / lowering shape tests + the
+full sanitizer suite run fine on x86_64.

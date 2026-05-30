@@ -91,6 +91,21 @@ std::optional<ir::Op> try_simplify(
         if (b.op == K::Or && rhs.value == all_ones(b.size)) {
             return ir::Op{ir::Constant{all_ones(b.size), b.size}};
         }
+        // F2-BK-007 — high half of x*0 = 0 (unsigned and signed).
+        if ((b.op == K::UMulHi || b.op == K::SMulHi) && rhs.value == 0) {
+            return ir::Op{ir::Constant{0, b.size}};
+        }
+        // F2-BK-007 — high half of x*1 = 0 (unsigned). Signed only when
+        // x is non-negative; we can't prove it without range info, so
+        // skip the SMulHi case.
+        if (b.op == K::UMulHi && rhs.value == 1) {
+            return ir::Op{ir::Constant{0, b.size}};
+        }
+        // F2-BK-007 — x % 1 = 0 (both signed and unsigned).
+        if ((b.op == K::UMod || b.op == K::SMod) && rhs.value == 1) {
+            return ir::Op{ir::Constant{0, b.size}};
+        }
+        // x / 1 = x — would need a copy op; skip.
     }
 
     if (l_const) {
@@ -106,6 +121,12 @@ std::optional<ir::Op> try_simplify(
         // -1 | x → -1
         if (b.op == K::Or && lhs.value == all_ones(b.size)) {
             return ir::Op{ir::Constant{all_ones(b.size), b.size}};
+        }
+        // F2-BK-007 — high half of 0*x = 0; 0/x = 0; 0%x = 0.
+        if ((b.op == K::UMulHi || b.op == K::SMulHi ||
+             b.op == K::UDiv  || b.op == K::SDiv  ||
+             b.op == K::UMod  || b.op == K::SMod) && lhs.value == 0) {
+            return ir::Op{ir::Constant{0, b.size}};
         }
     }
 

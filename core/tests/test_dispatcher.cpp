@@ -84,6 +84,36 @@ TEST_CASE("Dispatcher: JMP chain reaches a RET and halts",
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.final_pc == 0u);  // kHaltSentinel
     REQUIRE(r.stats.blocks_executed == 3);  // JMP, JMP, RET
+    REQUIRE(r.stats.direct_thread_misses == 2);
+    REQUIRE(r.stats.direct_thread_installs == 2);
+}
+
+TEST_CASE("Dispatcher: return-stack predictor hits on direct CALL/RET",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) { SUCCEED("skipped"); return; }
+
+    // 0x4100: E8 01 00 00 00  call 0x4106
+    // 0x4105: C3              outer RET pops the halt sentinel
+    // 0x4106: C3              callee RET returns to 0x4105
+    GuestMemory mem;
+    mem.segments[0x4100] = {
+        0xE8, 0x01, 0x00, 0x00, 0x00,
+        0xC3,
+        0xC3,
+    };
+
+    translator::Translator t;
+    runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+    d.install_halt_return_stack();
+
+    auto r = d.run(0x4100, /*max_steps=*/10);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(r.stats.blocks_executed == 3);
+    REQUIRE(r.stats.ras_pushes == 1);
+    REQUIRE(r.stats.ras_pops == 2);
+    REQUIRE(r.stats.ras_hits == 1);
+    REQUIRE(r.stats.ras_misses == 0);
+    REQUIRE(r.stats.ras_underflows == 1);
 }
 
 TEST_CASE("Dispatcher: CMP + JE branches to the taken leg on equal operands",
@@ -117,6 +147,7 @@ TEST_CASE("Dispatcher: CMP + JE branches to the taken leg on equal operands",
     auto r = d.run(0x2000, /*max_steps=*/20);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.stats.blocks_executed >= 2);  // at minimum the CMP+JE block and the RET.
+    REQUIRE(r.stats.direct_thread_installs >= 1);
 }
 
 TEST_CASE("Dispatcher: step limit trips when the program loops forever",
@@ -135,10 +166,11 @@ TEST_CASE("Dispatcher: step limit trips when the program loops forever",
     REQUIRE(r.stats.blocks_executed == 5);
     REQUIRE(r.final_pc == 0x3000u);
 
-    // Second call with the same PC should hit the cache and not
-    // retranslate — but the Dispatcher only knows blocks_executed, not
-    // cache_hits directly. Check the Translator's stats instead.
-    REQUIRE(t.stats().cache_hits >= 4);  // 5 iters, first is miss, 4 hits.
+    // The direct-thread cache keeps hot direct loops inside the dispatcher
+    // once the first translation is installed.
+    REQUIRE(r.stats.direct_thread_hits >= 4);  // initial translate, then 4 cache hits.
+    REQUIRE(r.stats.direct_thread_misses == 0);
+    REQUIRE(r.stats.direct_thread_installs == 0);
 }
 
 TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",
@@ -161,6 +193,7 @@ TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(r.final_pc == 0x4020u);
     REQUIRE(r.stats.blocks_executed == 2);  // 0x4000 and 0x4010; halt before 0x4020 runs.
+    REQUIRE(r.stats.direct_thread_installs == 1);
 }
 
 TEST_CASE("Dispatcher: fetch failure when PC leaves known memory",

@@ -216,6 +216,22 @@ public:
     [[nodiscard]] std::optional<IoError>
     save_to_file(const std::filesystem::path& path) const;
 
+    // ------------------------------------------------------------------
+    // F1-CA-008 — compaction.
+    //
+    // The cache is keyed by `(guest_addr, content_hash)`. SMC at
+    // `guest_addr` produces a fresh entry with a new content_hash;
+    // the old entry stays around until evicted by LRU. `compact()`
+    // walks the entries and drops every (guest_addr, content_hash)
+    // pair whose content_hash isn't the most recent for that
+    // guest_addr (i.e. every superseded SMC entry). Plus, when two
+    // entries cover identical guest ranges with the same content,
+    // only the freshest survives.
+    //
+    // Returns the number of entries evicted. Cheap: O(N) over the
+    // entry table.
+    std::size_t compact();
+
     // F1-CA-009: offload serialisation to a worker thread.
     //
     // Snapshots the current entries synchronously (deep copy), then

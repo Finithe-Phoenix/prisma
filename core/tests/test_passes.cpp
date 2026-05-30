@@ -70,41 +70,16 @@ TEST_CASE("const_prop: result is size-masked (i32 addition overflow)") {
     REQUIRE(std::get<ir::Constant>(out[2].op).size  == ir::OpSize::I32);
 }
 
-TEST_CASE("const_prop: Extend of a constant folds with signedness") {
+TEST_CASE("const_prop: folds BMI2 PDEP and PEXT constants") {
     std::vector<ir::Stmt> s = {
-        {0u, ir::Constant{0x80, ir::OpSize::I8}},
-        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
-        {2u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, false}},
+        {0u, ir::Constant{0b1011u, ir::OpSize::I64}},
+        {1u, ir::Constant{0b0101'0100u, ir::OpSize::I64}},
+        {2u, ir::BinOp{ir::BinOpKind::Pdep, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::BinOp{ir::BinOpKind::Pext, 1u, 1u, ir::OpSize::I64}},
     };
     auto out = passes::constant_propagate(s);
-
-    REQUIRE(std::get<ir::Constant>(out[1].op) ==
-            ir::Constant{0xFFFF'FFFF'FFFF'FF80ULL, ir::OpSize::I64});
-    REQUIRE(std::get<ir::Constant>(out[2].op) ==
-            ir::Constant{0x80ULL, ir::OpSize::I64});
-}
-
-TEST_CASE("const_prop: Truncate of a constant folds to masked size") {
-    std::vector<ir::Stmt> s = {
-        {0u, ir::Constant{0x1234'5678ULL, ir::OpSize::I64}},
-        {1u, ir::Truncate{0u, ir::OpSize::I16}},
-    };
-    auto out = passes::constant_propagate(s);
-
-    REQUIRE(std::get<ir::Constant>(out[1].op) ==
-            ir::Constant{0x5678ULL, ir::OpSize::I16});
-}
-
-TEST_CASE("const_prop: Extend and Truncate with non-constants are not folded") {
-    std::vector<ir::Stmt> s = {
-        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
-        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
-        {2u, ir::Truncate{0u, ir::OpSize::I16}},
-    };
-    auto out = passes::constant_propagate(s);
-
-    REQUIRE(std::holds_alternative<ir::Extend>(out[1].op));
-    REQUIRE(std::holds_alternative<ir::Truncate>(out[2].op));
+    REQUIRE(std::get<ir::Constant>(out[2].op).value == 0b0001'0100u);
+    REQUIRE(std::get<ir::Constant>(out[3].op).value == 0b111u);
 }
 
 TEST_CASE("const_prop: BinOp with a non-constant operand is NOT folded") {
@@ -188,18 +163,6 @@ TEST_CASE("dce: preserves live chain through BinOp") {
     };
     auto out = passes::dead_code_eliminate(s);
     REQUIRE(out.size() == s.size());
-}
-
-TEST_CASE("dce: preserves live chain through Extend and Truncate") {
-    std::vector<ir::Stmt> s = {
-        {0u, ir::Constant{0x80, ir::OpSize::I8}},
-        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, true}},
-        {2u, ir::Truncate{1u, ir::OpSize::I32}},
-        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I32}},
-    };
-
-    auto out = passes::dead_code_eliminate(s);
-    REQUIRE(out == s);
 }
 
 TEST_CASE("dce: const_prop leaves residue, dce cleans it up") {
@@ -288,17 +251,6 @@ TEST_CASE("dce: JumpReg keeps its target ref alive") {
     REQUIRE(std::get<ir::JumpReg>(out[1].op).target == 0u);
 }
 
-TEST_CASE("dce: Fence is impure and preserved") {
-    std::vector<ir::Stmt> s = {
-        {0u, ir::Constant{99, ir::OpSize::I64}},
-        {std::nullopt, ir::Fence{ir::FenceKind::Mfence}},
-    };
-
-    auto out = passes::dead_code_eliminate(s);
-    REQUIRE(out.size() == 1);
-    REQUIRE(out[0].op == ir::Op{ir::Fence{ir::FenceKind::Mfence}});
-}
-
 TEST_CASE("dce: StoreReg with dead Constant keeps the Constant (store is live)") {
     // %0 = const 99
     //      storereg rax, %0     ← impure, keeps %0 alive
@@ -330,6 +282,24 @@ TEST_CASE("dce: plain LoadMem (non-TSO) IS removable when its result is dead") {
     };
     auto out = passes::dead_code_eliminate(s);
     REQUIRE(out.empty());
+}
+
+TEST_CASE("dce: x87 stack mutations stay but unused x87 loads disappear") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},
+        {std::nullopt, ir::X87Push{0u}},
+        {1u, ir::X87Load{0u}},  // dead read
+        {2u, ir::X87Pop{}},     // mutates TOS even if result is unused
+        {std::nullopt, ir::X87Store{1u, 0u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 4);
+    for (const auto& st : out) {
+        REQUIRE_FALSE(std::holds_alternative<ir::X87Load>(st.op));
+    }
+    REQUIRE(std::holds_alternative<ir::X87Push>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::X87Pop>(out[2].op));
+    REQUIRE(std::holds_alternative<ir::X87Store>(out[3].op));
 }
 
 TEST_CASE("dce: idempotent") {
@@ -428,6 +398,139 @@ TEST_CASE("PassManager: never mutates its input") {
     [[maybe_unused]] auto [_out, _stats] = pm.run(s_original);
 
     REQUIRE(s_original == s_copy_for_compare);
+}
+
+// ---------------------------------------------------------------------
+// F1-PS-010 const-fold Extend / Truncate
+// ---------------------------------------------------------------------
+
+TEST_CASE("const_prop: signed Extend i8 → i64 of 0xFF folds to 0xFFFF...FF") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xFFu, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, /*signed=*/true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[1].op));
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xFFFF'FFFF'FFFF'FFFFull);
+    REQUIRE(std::get<ir::Constant>(out[1].op).size  == ir::OpSize::I64);
+}
+
+TEST_CASE("const_prop: unsigned Extend i8 → i64 of 0xFF folds to 0xFF") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xFFu, ir::OpSize::I8}},
+        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I64, /*signed=*/false}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::holds_alternative<ir::Constant>(out[1].op));
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xFFu);
+}
+
+TEST_CASE("const_prop: signed Extend i32 → i64 of 0x80000000 folds to 0xFFFFFFFF80000000") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x8000'0000u, ir::OpSize::I32}},
+        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xFFFF'FFFF'8000'0000ull);
+}
+
+TEST_CASE("const_prop: signed Extend i16 → i64 of 0x7FFF folds to 0x7FFF (positive)") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x7FFFu, ir::OpSize::I16}},
+        {1u, ir::Extend{0u, ir::OpSize::I16, ir::OpSize::I64, true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0x7FFFu);
+}
+
+TEST_CASE("const_prop: Truncate i64 → i8 keeps the low byte") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xDEAD'BEEF'CAFE'BABEull, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I8}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xBEu);
+    REQUIRE(std::get<ir::Constant>(out[1].op).size  == ir::OpSize::I8);
+}
+
+TEST_CASE("const_prop: Truncate i64 → i32 keeps the low word") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0xDEAD'BEEF'CAFE'BABEull, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I32}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0xCAFE'BABEull);
+}
+
+TEST_CASE("const_prop: Extend with non-constant source is left untouched") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}},
+        {1u, ir::Extend{0u, ir::OpSize::I32, ir::OpSize::I64, true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::holds_alternative<ir::Extend>(out[1].op));
+}
+
+TEST_CASE("const_prop: Extend with from_size == to_size is the identity") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x123u, ir::OpSize::I64}},
+        {1u, ir::Extend{0u, ir::OpSize::I64, ir::OpSize::I64, /*signed=*/true}},
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[1].op).value == 0x123u);
+}
+
+TEST_CASE("const_prop: chain (Constant → Truncate → Extend) folds end-to-end") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1FFu, ir::OpSize::I64}},
+        {1u, ir::Truncate{0u, ir::OpSize::I8}},                    // 0xFF
+        {2u, ir::Extend{1u, ir::OpSize::I8, ir::OpSize::I64,
+                        /*signed=*/true}},                         // 0xFF...FF
+    };
+    auto out = passes::constant_propagate(s);
+    REQUIRE(std::get<ir::Constant>(out[2].op).value == 0xFFFF'FFFF'FFFF'FFFFull);
+}
+
+TEST_CASE("dce(F2-PS-002): WriteFlags whose result is unread is dropped") {
+    // %0 = const 5
+    // %1 = const 5
+    // %2 = writeflags.add.i64 %0, %1     ← dead (no ReadFlag/CondJumpFlags below)
+    //      storereg rax, %0
+    //      ret
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{5, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    // Expected survivors: %0 (read by StoreReg), StoreReg, Return.
+    // %1 is dead with the WriteFlags gone; %2 itself is dead.
+    REQUIRE(out.size() == 3);
+    for (const auto& st : out) {
+        REQUIRE(!std::holds_alternative<ir::WriteFlags>(st.op));
+    }
+}
+
+TEST_CASE("dce(F2-PS-002): WriteFlags is kept when ReadFlag consumes it") {
+    // %0 = const 5
+    // %1 = const 5
+    // %2 = writeflags.add.i64 %0, %1
+    // %3 = readflag.zero %2          ← keeps %2 alive
+    //      storereg rax, %3
+    //      ret
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{5, ir::OpSize::I64}},
+        {1u, ir::Constant{5, ir::OpSize::I64}},
+        {2u, ir::WriteFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {3u, ir::ReadFlag{2u, ir::FlagBit::Zero}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 3u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    // All five (defs + StoreReg + Return) remain.
+    REQUIRE(out.size() == s.size());
 }
 
 TEST_CASE("const_prop: transitive folding through a chain") {

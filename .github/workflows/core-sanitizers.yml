@@ -7,14 +7,8 @@ name: core sanitizers
 
 on:
   pull_request:
-    paths:
-      - 'core/**'
-      - '.github/workflows/core-sanitizers.yml'
   push:
     branches: [main]
-    paths:
-      - 'core/**'
-      - '.github/workflows/core-sanitizers.yml'
 
 concurrency:
   group: core-sanitizers-${{ github.ref }}

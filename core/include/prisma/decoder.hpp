@@ -163,10 +163,21 @@ struct Decoded {
 // which need to translate rel8 / rel32 displacements into absolute
 // target PCs. Callers that don't care about branch targets (the many
 // tests decoding non-jump instructions) can leave it at the default 0.
+//
+// `real_call_ret` (default false): when true, CALL (E8) is decoded as
+//   (push next_pc onto guest stack) + JumpRel(target), and RET
+//   (C3/C2) as (pop [RSP] into target) + JumpReg(target). When false
+//   (the default, for back-compat with the existing 86 e2e tests that
+//   expect RET to halt the dispatcher), RET emits `Return{}` (which
+//   lowers to the halt sentinel) and CALL emits a plain `JumpRel`
+//   without stack manipulation. Flip this on for new tests that want
+//   real function-call semantics; the eventual goal is to make `true`
+//   the default once the e2e corpus is migrated.
 [[nodiscard]] std::variant<Decoded, DecodeError> decode_one(
     std::span<const std::uint8_t> bytes,
     ir::Ref& next_ref,
-    std::uint64_t instruction_guest_pc = 0
+    std::uint64_t instruction_guest_pc = 0,
+    bool real_call_ret = false
 );
 
 }  // namespace prisma::decoder

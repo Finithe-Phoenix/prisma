@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- F0-DX-021..023: target devices are POCO X6 Pro (Dimensity
+         8300-Ultra), Pixel 7a (Tensor G3, AVF capable), Redmi
+         Note 13 Pro (Snapdragon 7s Gen 2). All ship Android 14+. -->
+
+    <!-- Storage Access Framework — for one-click .exe import without
+         the dangerous READ_EXTERNAL_STORAGE permission. -->
+
+    <!-- Internet — only for the future P2P translation cache CDN
+         (Pillar 4) and crash reporting. Off by default; the
+         settings screen toggles it. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Performance Hint API — boost CPU frequencies during
+         translation hot paths. -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Prisma"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Prisma">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
