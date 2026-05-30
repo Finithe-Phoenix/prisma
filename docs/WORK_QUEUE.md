@@ -34,7 +34,7 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | — | ⏸ queued | VSIB encoding + per-element conditional load. |
 | 14 | AES hardware crypto opcodes (AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) | 1 commit | `5811568` | ✅ done | New `VecAes` IR op + `vaes` emitter primitive (5-way switch). AESKEYGENASSIST queued separately. |
 | 14b | SHA-NI crypto opcodes | 3-4 commits | — | ⏸ queued | x86 SHA1RNDS4 / SHA1MSGx / SHA256RNDS2 / SHA256MSGx → ARM NEON SHA family. SHA256RNDS2's implicit xmm0 dependency needs careful IR plumbing. |
-| 14c | AESKEYGENASSIST | 2 commits | — | ⏸ queued | Key-schedule helper. No direct ARM equivalent; software emulation needed. |
+| 14c | AESKEYGENASSIST | 2 commits | — | 🟡 in_progress | Key-schedule helper. No direct ARM equivalent; software emulation needed. |
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
 | 15 | Direct branch threading | 4-6 commits | `5a4fb7e` | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
