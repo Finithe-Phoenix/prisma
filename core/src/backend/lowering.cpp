@@ -16,18 +16,28 @@
 #include "prisma/lowering.hpp"
 
 #include <algorithm>
-#include <unordered_map>
 #include <variant>
+
+#include "prisma/cpu_state.hpp"
 
 namespace prisma::backend {
 
 namespace {
 
-constexpr unsigned kScratchPoolSize = 10;  // x0..x9
+constexpr unsigned kScratchPoolSize   = 10;  // x0..x9
+// F2-BK-006 — wider FP pool. V0..V23 (24 regs) for SSA scratch;
+// V24..V31 reserved for emitter helpers (kInternalFpScratchV = V31,
+// kAuxV = V30; V24..V29 left as future-proofing for multi-temp
+// helpers and potential AVX-256 pair-allocator bookkeeping).
+constexpr unsigned kFpScratchPoolSize = 24;
 
 constexpr arm64::Reg scratch_reg(unsigned idx) noexcept {
     // x0 = 0, x1 = 1, ... x9 = 9.
     return static_cast<arm64::Reg>(idx);
+}
+
+constexpr Emitter::FpReg fp_scratch_reg(unsigned idx) noexcept {
+    return static_cast<Emitter::FpReg>(idx);  // V0..V7
 }
 
 // Map an IR BinOpKind to the Emitter method. Expressed as a small switch
@@ -49,13 +59,73 @@ LowerResult emit_binop(Emitter& em,
         case ir::BinOpKind::Sar: em.asr(rd, rn, rm);  return {};
         case ir::BinOpKind::Ror: em.ror(rd, rn, rm);  return {};
         case ir::BinOpKind::Rcr: em.ror(rd, rn, rm);  return {};
+        case ir::BinOpKind::UMulHi: em.umulh(rd, rn, rm); return {};
+        case ir::BinOpKind::SMulHi: em.smulh(rd, rn, rm); return {};
+        case ir::BinOpKind::UDiv:   em.udiv (rd, rn, rm); return {};
+        case ir::BinOpKind::SDiv:   em.sdiv (rd, rn, rm); return {};
         case ir::BinOpKind::Rol:
         case ir::BinOpKind::Rcl:
             // Rol/Rcl are lowered via a neg+ror helper register in lower_stmt.
             return {false, LowerError::UnsupportedOp,
                     "rotate-left emulation requires a temporary scratch register"};
+        case ir::BinOpKind::UMod:
+        case ir::BinOpKind::SMod:
+            // Mod is q = n / m; r = n - q * m — needs a scratch held in
+            // lower_stmt to materialise q before the msub.
+            return {false, LowerError::UnsupportedOp,
+                    "UMod/SMod requires a temporary scratch register"};
+        case ir::BinOpKind::Pdep:
+        case ir::BinOpKind::Pext:
+            return {false, LowerError::UnsupportedOp,
+                    "PDEP/PEXT requires a software loop"};
     }
     return {false, LowerError::UnsupportedOp, "unknown BinOpKind"};
+}
+
+void emit_bit_permute(Emitter& em,
+                      bool deposit,
+                      arm64::Reg rd,
+                      arm64::Reg rn,
+                      arm64::Reg rm,
+                      arm64::Reg rsrc,
+                      arm64::Reg rmask,
+                      arm64::Reg rbit,
+                      arm64::Reg rone,
+                      arm64::Reg rlowbit,
+                      arm64::Reg rtmp,
+                      ir::OpSize size) {
+    em.mov_reg_reg(rsrc, rn);
+    em.mov_reg_reg(rmask, rm);
+    if (size == ir::OpSize::I32) {
+        em.uxtw(rsrc, rsrc);
+        em.uxtw(rmask, rmask);
+    }
+
+    em.mov_imm64(rd, 0);
+    em.mov_imm64(rbit, 1);
+    em.mov_imm64(rone, 1);
+
+    const auto loop = em.create_label();
+    const auto skip = em.create_label();
+    const auto done = em.create_label();
+
+    em.bind(loop);
+    em.cbz(rmask, done);
+    em.neg(rlowbit, rmask);
+    em.and_(rlowbit, rlowbit, rmask);
+    em.and_(rtmp, rsrc, deposit ? rbit : rlowbit);
+    em.cbz(rtmp, skip);
+    em.orr(rd, rd, deposit ? rlowbit : rbit);
+    em.bind(skip);
+    em.sub(rtmp, rmask, rone);
+    em.and_(rmask, rmask, rtmp);
+    em.add(rbit, rbit, rbit);
+    em.branch(loop);
+    em.bind(done);
+
+    if (size == ir::OpSize::I32) {
+        em.uxtw(rd, rd);
+    }
 }
 
 }  // namespace
@@ -71,6 +141,21 @@ bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
     const unsigned live = static_cast<unsigned>(
         ref_to_scratch_.size() + stmt_temporaries_.size());
     peak_live_ = std::max(peak_live_, live);
+    return true;
+}
+
+bool Lowerer::allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out) {
+    if (fp_free_.empty()) return false;
+    out = fp_free_.back();
+    fp_free_.pop_back();
+    ref_to_fp_[ref] = out;
+    return true;
+}
+
+bool Lowerer::fp_reg_of(ir::Ref ref, Emitter::FpReg& out) {
+    auto it = ref_to_fp_.find(ref);
+    if (it == ref_to_fp_.end()) return false;
+    out = it->second;
     return true;
 }
 
@@ -172,8 +257,6 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
         std::visit([&](const auto& op) {
             using T = std::decay_t<decltype(op)>;
             if      constexpr (std::is_same_v<T, ir::BinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
-            else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
-            else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Compare>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::Select>)      { bump(op.true_value, i); bump(op.false_value, i); }
             else if constexpr (std::is_same_v<T, ir::LoadMem>)     { bump(op.addr, i); }
@@ -185,9 +268,82 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
-            // Constant, LoadReg, LoadSegBase, GuestPc, Jump, CondJumpFlags, JumpRel,
-            // CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
-            // CondJumpRel, Return have no operand refs — nothing to bump.
+            else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::FpBinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::ReadFlag>)      { bump(op.flags, i); }
+            else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
+            else if constexpr (std::is_same_v<T, ir::VecBinOp>)      { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreVecReg>)   { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpFma>)      { bump(op.a, i); bump(op.b, i); bump(op.c, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) { bump(op.a, i); bump(op.b, i); bump(op.c, i); bump(op.scalar_upper, i); }
+            else if constexpr (std::is_same_v<T, ir::RepStos>)       { (void)op; }   // pinned-reg side effects only
+            else if constexpr (std::is_same_v<T, ir::RepMovs>)       { (void)op; }
+            else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::LoadVec>)       { bump(op.addr, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::XmmFromGpr>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::GprFromXmm>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecCmp>)        { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecUnpack>)     { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShiftImm>)   { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::FpCvtScalar>)   { bump(op.lhs, i); bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShuffle2Src>) { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecInsertLane>)  { bump(op.lhs_xmm, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecExtractLaneU>){ bump(op.src_xmm, i); }
+            else if constexpr (std::is_same_v<T, ir::VecMaskMsb>)    { bump(op.src_xmm, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>)  { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecShuffleH4>)  { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecMaskFp>)     { bump(op.src_xmm, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpCompare>)  { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecPshufb>)     { bump(op.src, i); bump(op.mask, i); }
+            else if constexpr (std::is_same_v<T, ir::VecAbs>)        { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecAlignr>)     { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecExtend>)     { bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::VecFpRound>)    { bump(op.lhs, i); bump(op.src, i); }
+            else if constexpr (std::is_same_v<T, ir::Popcnt>)        { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Lzcnt>)         { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::Tzcnt>)         { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::VecBlend>)      { bump(op.dst, i); bump(op.src, i); bump(op.mask, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) {
+                bump(op.lo_lhs, i); bump(op.lo_rhs, i);
+                bump(op.hi_lhs, i); bump(op.hi_rhs, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::VecTbl2>) {
+                bump(op.src_lo, i); bump(op.src_hi, i); bump(op.idx, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::VecAes>) {
+                bump(op.src, i); bump(op.key, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::Bswap>) {
+                bump(op.value, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::Crc32c>) {
+                bump(op.crc, i); bump(op.data, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Load>) {
+                (void)op;
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Store>) {
+                bump(op.value, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Push>) {
+                bump(op.value, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::X87Pop>) {
+                (void)op;
+            }
+            // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
+            // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence
+            // have no operand refs — nothing to bump.
         }, s.op);
     }
 }
@@ -211,6 +367,21 @@ void Lowerer::expire_intervals() {
             ++it;
         }
     }
+
+    // F2-BK-006 — same liveness-based expiry for the FP pool. Without
+    // this, every Vec*/Fp* SSA ref sticks to its V-reg until end-of-
+    // block, and AVX-256 chains exhaust the pool deterministically.
+    for (auto it = ref_to_fp_.begin(); it != ref_to_fp_.end();) {
+        auto lu_it = last_use_.find(it->first);
+        const bool expired = lu_it != last_use_.end()
+                             && lu_it->second <= stmt_index_;
+        if (expired) {
+            fp_free_.push_back(it->second);
+            it = ref_to_fp_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
@@ -221,6 +392,15 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     free_regs_.clear();
     spilled_to_slot_.clear();
     free_slots_.clear();
+    block_labels_.clear();
+    ref_to_fp_.clear();
+    fp_free_.clear();
+    fp_free_.reserve(kFpScratchPoolSize);
+    for (unsigned i = kFpScratchPoolSize; i-- > 0;) {
+        fp_free_.push_back(fp_scratch_reg(i));
+    }
+    flag_refs_.clear();
+    fp_flag_refs_.clear();
     peak_live_   = 0;
     peak_spills_ = 0;
 
@@ -251,42 +431,57 @@ LowerResult Lowerer::lower(std::span<const ir::Stmt> stmts) {
     return {};
 }
 
-LowerResult Lowerer::lower(const ir::Function& function) {
-    std::unordered_map<std::uint32_t, Emitter::Label> labels;
-    labels.reserve(function.blocks.size());
-    const auto* previous_labels = active_block_labels_;
+LowerResult Lowerer::lower(const ir::Function& fn) {
+    // Per-call reset, identical to the flat overload.
+    ref_to_scratch_.clear();
+    stmt_temporaries_.clear();
+    free_regs_.clear();
+    spilled_to_slot_.clear();
+    free_slots_.clear();
+    block_labels_.clear();
+    ref_to_fp_.clear();
+    fp_free_.clear();
+    fp_free_.reserve(kFpScratchPoolSize);
+    for (unsigned i = kFpScratchPoolSize; i-- > 0;) {
+        fp_free_.push_back(fp_scratch_reg(i));
+    }
+    flag_refs_.clear();
+    fp_flag_refs_.clear();
+    peak_live_   = 0;
+    peak_spills_ = 0;
+    if (options_.spill_slots > 0) {
+        free_slots_.reserve(options_.spill_slots);
+        for (unsigned i = options_.spill_slots; i-- > 0;) free_slots_.push_back(i);
+    }
 
-    for (const auto& block : function.blocks) {
-        auto [_, inserted] = labels.emplace(block.id, emitter_.create_label());
-        if (!inserted) {
-            return {false, LowerError::InvalidBlock, "duplicate block id"};
+    // Pre-create one Label per block so forward branches resolve.
+    block_labels_.reserve(fn.blocks.size());
+    for (const auto& b : fn.blocks) {
+        block_labels_[b.id] = emitter_.create_label();
+    }
+
+    // Per-block: rebuild liveness, refill the scratch pool, bind the
+    // label, then lower the block's stmts. SSA refs are block-local in
+    // the current MVP (no cross-block phi support yet — F1-IR-021/022
+    // will introduce that), so register state is reset between blocks.
+    for (const auto& b : fn.blocks) {
+        ref_to_scratch_.clear();
+        stmt_temporaries_.clear();
+        free_regs_.clear();
+        free_regs_.reserve(kScratchPoolSize);
+        for (unsigned i = kScratchPoolSize; i-- > 0;) {
+            free_regs_.push_back(scratch_reg(i));
+        }
+        compute_liveness(b.stmts);
+
+        emitter_.bind(block_labels_.at(b.id));
+
+        for (stmt_index_ = 0; stmt_index_ < b.stmts.size(); ++stmt_index_) {
+            LowerResult r = lower_stmt(b.stmts[stmt_index_]);
+            if (!r.success) return r;
+            expire_intervals();
         }
     }
-
-    auto entry_it = labels.find(function.entry);
-    if (entry_it == labels.end()) {
-        return {false, LowerError::InvalidBlock, "entry block id not found"};
-    }
-
-    if (!function.blocks.empty() && function.blocks.front().id != function.entry) {
-        emitter_.branch(entry_it->second);
-    }
-
-    active_block_labels_ = &labels;
-    for (const auto& block : function.blocks) {
-        auto label_it = labels.find(block.id);
-        if (label_it == labels.end()) {
-            active_block_labels_ = previous_labels;
-            return {false, LowerError::InvalidBlock, "block id not found"};
-        }
-        emitter_.bind(label_it->second);
-        auto result = lower(block.stmts);
-        if (!result.success) {
-            active_block_labels_ = previous_labels;
-            return result;
-        }
-    }
-    active_block_labels_ = previous_labels;
     return {};
 }
 
@@ -310,9 +505,8 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "LoadReg"};
             }
             // Copy the pinned host reg into a scratch so subsequent StoreReg
-            // writes cannot clobber this value. Narrow loads become
-            // canonical zero-extended SSA values.
-            emitter_.mov_reg_reg(rd, arm64::host_reg_for(op.reg), op.size);
+            // writes cannot clobber this value.
+            emitter_.mov_reg_reg(rd, arm64::host_reg_for(op.reg));
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::StoreReg>) {
@@ -320,7 +514,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!reg_of(op.value, src)) {
                 return {false, LowerError::DanglingRef, "StoreReg.value"};
             }
-            emitter_.store_reg_reg(arm64::host_reg_for(op.reg), src, op.size);
+            emitter_.mov_reg_reg(arm64::host_reg_for(op.reg), src);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::BinOp>) {
@@ -345,52 +539,39 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 emitter_.rol(rd, rn, rm, tmp);
                 return {};
             }
+            if (op.op == ir::BinOpKind::Pdep || op.op == ir::BinOpKind::Pext) {
+                arm64::Reg rsrc, rmask, rbit, rone, rlowbit, rtmp;
+                if (!allocate_temporary(rsrc) ||
+                    !allocate_temporary(rmask) ||
+                    !allocate_temporary(rbit) ||
+                    !allocate_temporary(rone) ||
+                    !allocate_temporary(rlowbit) ||
+                    !allocate_temporary(rtmp)) {
+                    return {false, LowerError::OutOfScratchRegs,
+                            "PDEP/PEXT temporaries"};
+                }
+                emit_bit_permute(emitter_,
+                                 op.op == ir::BinOpKind::Pdep,
+                                 rd, rn, rm,
+                                 rsrc, rmask, rbit, rone, rlowbit, rtmp,
+                                 op.size);
+                return {};
+            }
+            // F2-BK-007 — UMod / SMod = n - (n / m) * m.
+            if (op.op == ir::BinOpKind::UMod || op.op == ir::BinOpKind::SMod) {
+                arm64::Reg q;
+                if (!allocate_temporary(q)) {
+                    return {false, LowerError::OutOfScratchRegs, "Mod temporary"};
+                }
+                if (op.op == ir::BinOpKind::UMod) {
+                    emitter_.udiv(q, rn, rm);
+                } else {
+                    emitter_.sdiv(q, rn, rm);
+                }
+                emitter_.msub(rd, q, rm, rn);  // rd = rn - q*rm
+                return {};
+            }
             return emit_binop(emitter_, op.op, rd, rn, rm);
-        }
-        else if constexpr (std::is_same_v<T, ir::Extend>) {
-            if (!s.result) return {false, LowerError::DanglingRef, "Extend without result ref"};
-            arm64::Reg rn;
-            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Extend.value"};
-            arm64::Reg rd;
-            if (!allocate_scratch(*s.result, rd)) {
-                return {false, LowerError::OutOfScratchRegs, "Extend"};
-            }
-
-            if (!op.is_signed) {
-                emitter_.zero_extend(rd, rn, op.from_size);
-                if (ir::bit_width(op.to_size) < ir::bit_width(op.from_size)) {
-                    emitter_.truncate(rd, rd, op.to_size);
-                }
-                return {};
-            }
-
-            if (op.to_size == ir::OpSize::I64
-                || ir::bit_width(op.to_size) <= ir::bit_width(op.from_size)) {
-                emitter_.sign_extend(rd, rn, op.from_size);
-                if (op.to_size != ir::OpSize::I64) {
-                    emitter_.truncate(rd, rd, op.to_size);
-                }
-                return {};
-            }
-
-            arm64::Reg tmp;
-            if (!allocate_temporary(tmp)) {
-                return {false, LowerError::OutOfScratchRegs, "Extend temporary"};
-            }
-            emitter_.sign_extend(tmp, rn, op.from_size);
-            emitter_.truncate(rd, tmp, op.to_size);
-            return {};
-        }
-        else if constexpr (std::is_same_v<T, ir::Truncate>) {
-            if (!s.result) return {false, LowerError::DanglingRef, "Truncate without result ref"};
-            arm64::Reg rn;
-            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Truncate.value"};
-            arm64::Reg rd;
-            if (!allocate_scratch(*s.result, rd)) {
-                return {false, LowerError::OutOfScratchRegs, "Truncate"};
-            }
-            emitter_.truncate(rd, rn, op.to_size);
-            return {};
         }
         else if constexpr (std::is_same_v<T, ir::Compare>) {
             // Compare produces a 0/1 value in an SSA ref. Lower to
@@ -463,72 +644,6 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.store_release(rv, raddr, op.size);
             return {};
         }
-        else if constexpr (std::is_same_v<T, ir::GuestPc>) {
-            // Debug/cache marker only. It carries guest-PC metadata through
-            // IR and passes but intentionally emits no machine code.
-            return {};
-        }
-        else if constexpr (std::is_same_v<T, ir::Jump>) {
-            if (!active_block_labels_) {
-                return {false, LowerError::UnsupportedOp,
-                        "Jump requires Function lowering context"};
-            }
-            auto target = active_block_labels_->find(op.target_block);
-            if (target == active_block_labels_->end()) {
-                return {false, LowerError::InvalidBlock, "Jump target block id not found"};
-            }
-            emitter_.branch(target->second);
-            return {};
-        }
-        else if constexpr (std::is_same_v<T, ir::CondJump>) {
-            if (!active_block_labels_) {
-                return {false, LowerError::UnsupportedOp,
-                        "CondJump requires Function lowering context"};
-            }
-            arm64::Reg cond;
-            if (!reg_of(op.cond, cond)) {
-                return {false, LowerError::DanglingRef, "CondJump.cond"};
-            }
-            arm64::Reg zero;
-            if (!allocate_temporary(zero)) {
-                return {false, LowerError::OutOfScratchRegs, "CondJump zero temporary"};
-            }
-
-            auto true_target = active_block_labels_->find(op.if_true);
-            if (true_target == active_block_labels_->end()) {
-                return {false, LowerError::InvalidBlock, "CondJump true target block id not found"};
-            }
-            auto false_target = active_block_labels_->find(op.if_false);
-            if (false_target == active_block_labels_->end()) {
-                return {false, LowerError::InvalidBlock, "CondJump false target block id not found"};
-            }
-
-            emitter_.mov_imm64(zero, 0u);
-            emitter_.cmp(cond, zero);
-            emitter_.branch_cc(true_target->second, ir::CondCode::Ne);
-            emitter_.branch(false_target->second);
-            return {};
-        }
-        else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) {
-            if (!active_block_labels_) {
-                return {false, LowerError::UnsupportedOp,
-                        "CondJumpFlags requires Function lowering context"};
-            }
-            auto true_target = active_block_labels_->find(op.if_true);
-            if (true_target == active_block_labels_->end()) {
-                return {false, LowerError::InvalidBlock,
-                        "CondJumpFlags true target block id not found"};
-            }
-            auto false_target = active_block_labels_->find(op.if_false);
-            if (false_target == active_block_labels_->end()) {
-                return {false, LowerError::InvalidBlock,
-                        "CondJumpFlags false target block id not found"};
-            }
-
-            emitter_.branch_cc(true_target->second, op.cc);
-            emitter_.branch(false_target->second);
-            return {};
-        }
         else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             // Side-effecting: emits ARM64 `cmp`, leaves NZCV set for the
             // NEXT CondJumpRel / SetCC. No result ref; no scratch
@@ -562,10 +677,6 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // trap via block metadata; the machine code just returns.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
-            return {};
-        }
-        else if constexpr (std::is_same_v<T, ir::Fence>) {
-            emitter_.fence(op.kind);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Cpuid>) {
@@ -609,9 +720,1442 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (options_.emit_ret_on_terminator) emitter_.ret();
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::Jump>) {
+            // F1-BK-003. Only valid inside a Function lowering; the flat
+            // overload has an empty block_labels_ and falls through.
+            auto it = block_labels_.find(op.target_block);
+            if (it == block_labels_.end()) {
+                return {false, LowerError::UnsupportedOp,
+                        "Jump outside Function lowering (no block label)"};
+            }
+            emitter_.branch(it->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CondJump>) {
+            // F1-BK-004. Cond is an SSA Ref holding 0 or 1 (typically the
+            // result of a Compare). Lower as `cbnz xcond, label_true; b
+            // label_false`. cbnz / b have the same range envelope so a
+            // veneer fires for either or neither, never asymmetrically.
+            arm64::Reg rc;
+            if (!reg_of(op.cond, rc)) {
+                return {false, LowerError::DanglingRef, "CondJump.cond"};
+            }
+            auto it_t = block_labels_.find(op.if_true);
+            auto it_f = block_labels_.find(op.if_false);
+            if (it_t == block_labels_.end() || it_f == block_labels_.end()) {
+                return {false, LowerError::UnsupportedOp,
+                        "CondJump outside Function lowering (no block label)"};
+            }
+            emitter_.cbnz(rc, it_t->second);
+            emitter_.branch(it_f->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadSegBase>) {
+            // Placeholder lowering: zero the destination. The real
+            // implementation reads from a runtime-supplied segment-base
+            // table, but that table doesn't exist yet (the runtime hook
+            // is part of F1-RT-014 follow-up work). Producing zero
+            // matches the semantics of "TLS not initialised" and is
+            // safe for unit tests that exercise nothing but the IR
+            // shape. See lowerer regression test for the assertion.
+            arm64::Reg rd;
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadSegBase requires a result ref"};
+            }
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadSegBase"};
+            }
+            emitter_.mov_imm64(rd, 0);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Extend>) {
+            // F1-BK-022. Sign / zero-extend a narrower view of the
+            // source ref into a fresh 64-bit destination scratch. The
+            // ARM64 sxt*/uxt* instructions all read Wn and write Xd.
+            arm64::Reg rs;
+            if (!reg_of(op.value, rs)) {
+                return {false, LowerError::DanglingRef, "Extend.value"};
+            }
+            arm64::Reg rd;
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "Extend requires a result ref"};
+            }
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Extend"};
+            }
+            if (op.is_signed) {
+                switch (op.from_size) {
+                    case ir::OpSize::I8:  emitter_.sxtb(rd, rs); break;
+                    case ir::OpSize::I16: emitter_.sxth(rd, rs); break;
+                    case ir::OpSize::I32: emitter_.sxtw(rd, rs); break;
+                    case ir::OpSize::I64:
+                        emitter_.mov_reg_reg(rd, rs);  // identity
+                        break;
+                }
+            } else {
+                switch (op.from_size) {
+                    case ir::OpSize::I8:  emitter_.uxtb(rd, rs); break;
+                    case ir::OpSize::I16: emitter_.uxth(rd, rs); break;
+                    case ir::OpSize::I32: emitter_.uxtw(rd, rs); break;
+                    case ir::OpSize::I64:
+                        emitter_.mov_reg_reg(rd, rs);  // identity
+                        break;
+                }
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            // F1-BK-022. Narrow `value` to `to_size` in a fresh 64-bit
+            // scratch. For I32 the cheap idiom is `mov wd, wn` (which
+            // zeroes the upper bits). For I8/I16 we materialise the
+            // mask and AND.
+            arm64::Reg rs;
+            if (!reg_of(op.value, rs)) {
+                return {false, LowerError::DanglingRef, "Truncate.value"};
+            }
+            arm64::Reg rd;
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "Truncate requires a result ref"};
+            }
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Truncate"};
+            }
+            switch (op.to_size) {
+                case ir::OpSize::I8:  emitter_.uxtb(rd, rs); break;
+                case ir::OpSize::I16: emitter_.uxth(rd, rs); break;
+                case ir::OpSize::I32: emitter_.uxtw(rd, rs); break;
+                case ir::OpSize::I64:
+                    emitter_.mov_reg_reg(rd, rs);  // identity
+                    break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::GuestPc>) {
+            // Pseudo-op: no machine code. Tracked in ir::Stmt for cache
+            // keying / debugging only. The presence of this op never
+            // affects emitted bytes.
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::InlineAsm>) {
+            // Placeholder until the dispatcher learns how to call into
+            // a software interpreter for the raw guest bytes (planned
+            // alongside F1-RT-011 guest signal delivery). For now we
+            // just halt the block, returning the sentinel so the
+            // dispatcher knows we couldn't handle this region.
+            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::RepStos>) {
+            // F2-BK-008 + Blocker A. Bounded native ARM64 loop.
+            //
+            //   if RCX == 0: x0 = pc_after_rep; goto block exit.
+            //   iter = min(RCX, kRepMaxBytesPerCall / step)
+            //   RCX -= iter                       (remaining count for next hop)
+            //   loop: store rax→[rdi]; rdi += step; iter -= 1; loop while iter != 0.
+            //   x0 = (RCX == 0) ? pc_after_rep : pc_of_rep
+            //
+            // The clamp turns a guest-controlled RCX into at most
+            // `kRepMaxBytesPerCall` bytes of host work per dispatch hop.
+            // If the loop did not consume all of RCX, the block exits
+            // with `x0 = pc_of_rep` so the dispatcher re-enters the
+            // same REP STOS on the next hop with the remaining count —
+            // matching x86 REP-is-interruptible semantics exactly.
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdi = arm64::host_reg_for(ir::Gpr::Rdi);
+            const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
+            Emitter::Label done_label = emitter_.create_label();
+            Emitter::Label tail_label = emitter_.create_label();
+            emitter_.cbz(rcx, done_label);
+            arm64::Reg max_reg, iter_reg, step_reg, one_reg;
+            if (!allocate_temporary(max_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos max"};
+            }
+            if (!allocate_temporary(iter_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos iter"};
+            }
+            if (!allocate_temporary(step_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos step"};
+            }
+            if (!allocate_temporary(one_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepStos one"};
+            }
+            const std::uint64_t step =
+                static_cast<std::uint64_t>(ir::bit_width(op.size) / 8u);
+            const std::uint64_t iter_cap = ir::kRepMaxBytesPerCall / step;
+            emitter_.mov_imm64(max_reg, iter_cap);
+            emitter_.mov_imm64(step_reg, step);
+            emitter_.mov_imm64(one_reg, 1ULL);
+            // iter_reg = (RCX < iter_cap) ? RCX : iter_cap
+            emitter_.cmp(rcx, max_reg);
+            emitter_.csel(iter_reg, rcx, max_reg, ir::CondCode::Ult);
+            // RCX = RCX - iter_reg  (remaining count for next hop)
+            emitter_.sub(rcx, rcx, iter_reg);
+            Emitter::Label loop_label = emitter_.create_label();
+            emitter_.bind(loop_label);
+            emitter_.store(rax, rdi, op.size);
+            if (op.reverse) {
+                emitter_.sub(rdi, rdi, step_reg);
+            } else {
+                emitter_.add(rdi, rdi, step_reg);
+            }
+            emitter_.sub(iter_reg, iter_reg, one_reg);
+            emitter_.cbnz(iter_reg, loop_label);
+            emitter_.bind(done_label);
+            // Block exit: pick pc_after_rep when RCX hit 0; otherwise
+            // pc_of_rep so the dispatcher re-enters the same REP.
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_of_rep);
+            emitter_.cbnz(rcx, tail_label);
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_after_rep);
+            emitter_.bind(tail_label);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::RepMovs>) {
+            // F2-BK-009 + Blocker A. Bounded native ARM64 loop. Same
+            // shape as RepStos but reads from [RSI] into a scratch and
+            // writes to [RDI]; both pointers advance per iteration.
+            // See RepStos for the clamp + re-entry contract.
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdi = arm64::host_reg_for(ir::Gpr::Rdi);
+            const arm64::Reg rsi = arm64::host_reg_for(ir::Gpr::Rsi);
+            Emitter::Label done_label = emitter_.create_label();
+            Emitter::Label tail_label = emitter_.create_label();
+            emitter_.cbz(rcx, done_label);
+            arm64::Reg max_reg, iter_reg, step_reg, one_reg, byte_reg;
+            if (!allocate_temporary(max_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs max"};
+            }
+            if (!allocate_temporary(iter_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs iter"};
+            }
+            if (!allocate_temporary(step_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs step"};
+            }
+            if (!allocate_temporary(one_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs one"};
+            }
+            if (!allocate_temporary(byte_reg)) {
+                return {false, LowerError::OutOfScratchRegs, "RepMovs byte"};
+            }
+            const std::uint64_t step =
+                static_cast<std::uint64_t>(ir::bit_width(op.size) / 8u);
+            const std::uint64_t iter_cap = ir::kRepMaxBytesPerCall / step;
+            emitter_.mov_imm64(max_reg, iter_cap);
+            emitter_.mov_imm64(step_reg, step);
+            emitter_.mov_imm64(one_reg, 1ULL);
+            emitter_.cmp(rcx, max_reg);
+            emitter_.csel(iter_reg, rcx, max_reg, ir::CondCode::Ult);
+            emitter_.sub(rcx, rcx, iter_reg);
+            Emitter::Label loop_label = emitter_.create_label();
+            emitter_.bind(loop_label);
+            emitter_.load (byte_reg, rsi, op.size);
+            emitter_.store(byte_reg, rdi, op.size);
+            if (op.reverse) {
+                emitter_.sub(rsi, rsi, step_reg);
+                emitter_.sub(rdi, rdi, step_reg);
+            } else {
+                emitter_.add(rsi, rsi, step_reg);
+                emitter_.add(rdi, rdi, step_reg);
+            }
+            emitter_.sub(iter_reg, iter_reg, one_reg);
+            emitter_.cbnz(iter_reg, loop_label);
+            emitter_.bind(done_label);
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_of_rep);
+            emitter_.cbnz(rcx, tail_label);
+            emitter_.mov_imm64(arm64::Reg::X0, op.pc_after_rep);
+            emitter_.bind(tail_label);
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::RspAdjust>) {
+            // F1-RT-013. Add or subtract the literal delta from the
+            // pinned host register backing guest RSP. Materialise the
+            // (possibly negative) delta via mov_imm64 + add (vixl
+            // selects the cheap immediate-add encoding when it fits).
+            const arm64::Reg rsp_host = arm64::host_reg_for(ir::Gpr::Rsp);
+            arm64::Reg tmp;
+            if (!allocate_temporary(tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "RspAdjust"};
+            }
+            if (op.delta_bytes >= 0) {
+                emitter_.mov_imm64(tmp,
+                    static_cast<std::uint64_t>(op.delta_bytes));
+                emitter_.add(rsp_host, rsp_host, tmp);
+            } else {
+                emitter_.mov_imm64(tmp,
+                    static_cast<std::uint64_t>(-op.delta_bytes));
+                emitter_.sub(rsp_host, rsp_host, tmp);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>) {
+            // F2-IR-026. fcmp on the low FP lanes of the two xmm regs.
+            // Result Ref lives in NZCV — same model as WriteFlags but
+            // we record it in fp_flag_refs_ so ReadFlag dispatches the
+            // FP-specific cond-code mapping.
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlagsFp.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlagsFp.rhs"};
+            emitter_.fcmp_scalar(rl, rr, op.size);
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+                fp_flag_refs_.insert(*s.result);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlags>) {
+            // F1-IR-004 / F1-BK lowering. Emit the flag-setting variant
+            // of the integer op so NZCV reflects the result, then bind
+            // the result Ref to "NZCV is current" (no machine register
+            // backing; the consumer reads NZCV directly).
+            arm64::Reg rl, rr;
+            if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlags.lhs"};
+            if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlags.rhs"};
+            switch (op.op) {
+                case ir::BinOpKind::Sub:
+                    // `cmp` is `subs xzr, lhs, rhs` — sets NZCV without
+                    // writing a destination.
+                    emitter_.cmp(rl, rr);
+                    break;
+                case ir::BinOpKind::Add:
+                case ir::BinOpKind::And: {
+                    // adds / ands need a destination register. Allocate
+                    // a single-stmt temporary so the result value is
+                    // discarded but NZCV is set as a side effect.
+                    arm64::Reg rd_tmp;
+                    if (!allocate_temporary(rd_tmp)) {
+                        return {false, LowerError::OutOfScratchRegs,
+                                "WriteFlags(Add/And) needs a temp"};
+                    }
+                    if (op.op == ir::BinOpKind::Add) {
+                        emitter_.adds(rd_tmp, rl, rr);
+                    } else {
+                        emitter_.ands(rd_tmp, rl, rr);
+                    }
+                    break;
+                }
+                default:
+                    return {false, LowerError::UnsupportedOp,
+                            "WriteFlags only supports Sub/Add/And today"};
+            }
+            // Result Ref lives in NZCV; track it in flag_refs_ so
+            // consumers verify their operand was a real WriteFlags
+            // result (no host register backing).
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::ReadFlag>) {
+            // F1-IR-005. Emit `cset rd, <armcond>` for the requested
+            // FlagBit. The producer (WriteFlags) must have set NZCV
+            // and nothing in between may have clobbered it.
+            if (flag_refs_.find(op.flags) == flag_refs_.end()) {
+                return {false, LowerError::DanglingRef,
+                        "ReadFlag.flags must be a WriteFlags result"};
+            }
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "ReadFlag requires a result ref"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "ReadFlag"};
+            }
+            const bool is_fp = fp_flag_refs_.count(op.flags) > 0;
+            ir::CondCode cc = ir::CondCode::Eq;
+            if (is_fp) {
+                // FP source (UCOMISS/UCOMISD): NZCV from fcmp.
+                //   x86 ZF → ARM "eq" (Z=1)
+                //   x86 CF → ARM "lt" (N!=V) — true when lhs<rhs or unordered
+                //   x86 PF → ARM "vs" (V=1) — true on unordered
+                //   SF/OF/AF: x86 clears them after UCOMI*; we'd need
+                //   to materialise constant 0 — return error for now.
+                switch (op.which) {
+                    case ir::FlagBit::Zero:     cc = ir::CondCode::Eq; break;
+                    case ir::FlagBit::Carry:    cc = ir::CondCode::Slt; break;
+                    case ir::FlagBit::Parity:   cc = ir::CondCode::Ov; break;  // V=1 → vs
+                    case ir::FlagBit::Sign:
+                    case ir::FlagBit::Overflow:
+                    case ir::FlagBit::Aux:
+                        return {false, LowerError::UnsupportedOp,
+                                "ReadFlag(SF/OF/AF) on FP-source flags"};
+                }
+            } else {
+                switch (op.which) {
+                    case ir::FlagBit::Carry:    cc = ir::CondCode::Cc;   break;
+                    case ir::FlagBit::Zero:     cc = ir::CondCode::Eq;   break;
+                    case ir::FlagBit::Sign:     cc = ir::CondCode::Mi;   break;
+                    case ir::FlagBit::Overflow: cc = ir::CondCode::Ov;   break;
+                    case ir::FlagBit::Parity:
+                    case ir::FlagBit::Aux:
+                        return {false, LowerError::UnsupportedOp,
+                                "ReadFlag(Parity/Aux) needs SW emulation"};
+                }
+            }
+            emitter_.cset(rd, cc);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) {
+            // F1-IR-007. Branch on NZCV using the supplied CondCode.
+            if (flag_refs_.find(op.flags) == flag_refs_.end()) {
+                return {false, LowerError::DanglingRef,
+                        "CondJumpFlags.flags must be a WriteFlags result"};
+            }
+            auto it_t = block_labels_.find(op.if_true);
+            auto it_f = block_labels_.find(op.if_false);
+            if (it_t == block_labels_.end() || it_f == block_labels_.end()) {
+                return {false, LowerError::UnsupportedOp,
+                        "CondJumpFlags outside Function lowering (no block label)"};
+            }
+            // F2-IR-026. For FP-source flags, remap x86 CF-based codes
+            // onto the ARM "lt/ge/gt/le" family so the branch matches
+            // x86 UCOMISD semantics (where CF=1 means lhs<rhs ∨ unordered,
+            // i.e., ARM N!=V).
+            ir::CondCode cc = op.cc;
+            if (fp_flag_refs_.count(op.flags) > 0) {
+                switch (cc) {
+                    case ir::CondCode::Cc: case ir::CondCode::Uge: cc = ir::CondCode::Sge; break;
+                    case ir::CondCode::Nc: case ir::CondCode::Ult: cc = ir::CondCode::Slt; break;
+                    case ir::CondCode::Ugt: cc = ir::CondCode::Sgt; break;
+                    case ir::CondCode::Ule: cc = ir::CondCode::Sle; break;
+                    default: break;  // Eq/Ne/etc. unchanged.
+                }
+            }
+            emitter_.branch_cc(it_t->second, cc);
+            emitter_.branch(it_f->second);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadVecReg>) {
+            // Read CpuStateFrame::xmm[idx] into a fresh V scratch. The
+            // base register is the pinned state pointer
+            // (`backend::abi::kStatePtrReg` = x27); the offset comes
+            // from the layout-stable `xmm_offset_bytes(idx)`.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadVecReg requires a result ref"};
+            }
+            if (op.xmm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "LoadVecReg: xmm_index out of range"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadVecReg"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::xmm_offset_bytes(op.xmm_index));
+            emitter_.vld1_q_offset(rd, arm64::Reg::X27, off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreVecReg>) {
+            if (op.xmm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "StoreVecReg: xmm_index out of range"};
+            }
+            Emitter::FpReg rv;
+            if (!fp_reg_of(op.value, rv)) {
+                return {false, LowerError::DanglingRef, "StoreVecReg.value"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::xmm_offset_bytes(op.xmm_index));
+            emitter_.vst1_q_offset(rv, arm64::Reg::X27, off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadVecRegHi>) {
+            // F2-IR-005 — read CpuStateFrame::ymm_hi[idx] (high 128 bits
+            // of YMM) into a fresh V scratch.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadVecRegHi requires a result ref"};
+            }
+            if (op.ymm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "LoadVecRegHi: ymm_index out of range"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadVecRegHi"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::ymm_hi_offset_bytes(op.ymm_index));
+            emitter_.vld1_q_offset(rd, arm64::Reg::X27, off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) {
+            if (op.ymm_index >= ir::kXmmCount) {
+                return {false, LowerError::UnsupportedOp,
+                        "StoreVecRegHi: ymm_index out of range"};
+            }
+            Emitter::FpReg rv;
+            if (!fp_reg_of(op.value, rv)) {
+                return {false, LowerError::DanglingRef, "StoreVecRegHi.value"};
+            }
+            const std::int32_t off = static_cast<std::int32_t>(
+                runtime::CpuStateFrame::ymm_hi_offset_bytes(op.ymm_index));
+            emitter_.vst1_q_offset(rv, arm64::Reg::X27, off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecConstant>) {
+            // F2-IR-001 lowering. Materialise a 128-bit immediate.
+            // ARM64 has no single-instruction 128-bit immediate; we
+            // load the two halves separately via fmov_imm (which
+            // routes through vixl's literal pool) and INS the high
+            // half into lane 1 of rd.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecConstant requires a result ref"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecConstant"};
+            }
+            emitter_.vec_const_128(rd, op.lo, op.hi);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecBinOp>) {
+            // F2-IR-002/003 lowering. 128-bit SIMD integer ops.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecBinOp"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            switch (op.op) {
+                case ir::VecBinOpKind::Add: emitter_.vadd_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::Sub: emitter_.vsub_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::And: emitter_.vand_q(rd, rl, rr);       break;
+                case ir::VecBinOpKind::Or:  emitter_.vorr_q(rd, rl, rr);       break;
+                case ir::VecBinOpKind::Xor: emitter_.veor_q(rd, rl, rr);       break;
+                case ir::VecBinOpKind::Mul: emitter_.vmul_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SqAdd: emitter_.vsqadd_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::UqAdd: emitter_.vuqadd_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SqSub: emitter_.vsqsub_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::UqSub: emitter_.vuqsub_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::UMin:  emitter_.vumin_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::UMax:  emitter_.vumax_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SMin:  emitter_.vsmin_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SMax:  emitter_.vsmax_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::SMulHi: emitter_.vmulhi_h8(rd, rl, rr, /*signed=*/true); break;
+                case ir::VecBinOpKind::UMulHi: emitter_.vmulhi_h8(rd, rl, rr, /*signed=*/false); break;
+                case ir::VecBinOpKind::UMul32To64: emitter_.vmul_u32_to_64(rd, rl, rr); break;
+                case ir::VecBinOpKind::SadBw:      emitter_.vsad_bw(rd, rl, rr); break;
+                case ir::VecBinOpKind::PairAddInt: emitter_.vaddp_q(rd, rl, rr, lane); break;
+                case ir::VecBinOpKind::PairSubInt: emitter_.vsubp_q(rd, rl, rr, lane); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpBinOp>) {
+            // F2-IR-005. Packed-FP arithmetic — ADDPS/SUBPS/MULPS/DIVPS
+            // (S4) and ADDPD/SUBPD/MULPD/DIVPD (D2).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecFpBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecFpBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpBinOp"};
+            }
+            const Emitter::VecLane lane =
+                op.size == ir::VecFpSize::S4 ? Emitter::VecLane::S4
+                                              : Emitter::VecLane::D2;
+            switch (op.op) {
+                case ir::VecFpBinOpKind::Add: emitter_.vfadd_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Sub: emitter_.vfsub_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Mul: emitter_.vfmul_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Div: emitter_.vfdiv_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Min: emitter_.vfmin_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Max: emitter_.vfmax_q(rd, rl, rr, lane); break;
+                case ir::VecFpBinOpKind::Sqrt: emitter_.vfsqrt_q(rd, rr, lane); break;
+                case ir::VecFpBinOpKind::HAdd: emitter_.vfaddp_q(rd, rl, rr, lane); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecUnpack>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecUnpack without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecUnpack.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecUnpack.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecUnpack"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            if (op.is_high) emitter_.vzip2_q(rd, rl, rr, lane);
+            else            emitter_.vzip1_q(rd, rl, rr, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShiftImm>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShiftImm without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecShiftImm.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShiftImm"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            switch (op.kind) {
+                case ir::VecShiftKind::ShiftL:
+                    emitter_.vshl_imm_q(rd, rn, op.count, lane); break;
+                case ir::VecShiftKind::LogicalShr:
+                    emitter_.vushr_imm_q(rd, rn, op.count, lane); break;
+                case ir::VecShiftKind::ArithShr:
+                    emitter_.vsshr_imm_q(rd, rn, op.count, lane); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShuffle2Src>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShuffle2Src without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecShuffle2Src.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecShuffle2Src.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShuffle2Src"};
+            }
+            if (op.is_pd) emitter_.vshuffle_2src_d2(rd, rl, rr, op.control);
+            else          emitter_.vshuffle_2src_s4(rd, rl, rr, op.control);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecInsertLane>) {
+            // F2-IR-022. Lane insert from a GPR.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecInsertLane without result"};
+            }
+            Emitter::FpReg rl;
+            if (!fp_reg_of(op.lhs_xmm, rl)) return {false, LowerError::DanglingRef, "VecInsertLane.lhs"};
+            arm64::Reg rv;
+            if (!reg_of(op.value, rv)) return {false, LowerError::DanglingRef, "VecInsertLane.value"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecInsertLane"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vins_lane_from_w(rd, rl, op.lane_idx, rv, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecPshufb>) {
+            // F2-IR-036 SSSE3 PSHUFB.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecPshufb without result"};
+            }
+            Emitter::FpReg rn, rm;
+            if (!fp_reg_of(op.src, rn))  return {false, LowerError::DanglingRef, "VecPshufb.src"};
+            if (!fp_reg_of(op.mask, rm)) return {false, LowerError::DanglingRef, "VecPshufb.mask"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecPshufb"};
+            }
+            emitter_.vpshufb(rd, rn, rm);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) {
+            // F2-IR-047 PTEST.
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlagsPtest.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlagsPtest.rhs"};
+            arm64::Reg w_tmp;
+            if (!allocate_temporary(w_tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "PTEST tmp"};
+            }
+            emitter_.vptest(rl, rr, w_tmp);
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+                // Integer-source mapping: ReadFlag(Carry) → cset cc → returns 1 when ARM C=0.
+                // Our PTEST builds NZCV with ARM C = NOT is_zero_b, so cset cc → is_zero_b = x86 CF. ✓
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) {
+            // F2-IR-049 VPTEST ymm. Same flag semantics as PTEST xmm
+            // applied to the lo+hi 128-bit pair (see ir.hpp).
+            Emitter::FpReg r_ll, r_lr, r_hl, r_hr;
+            if (!fp_reg_of(op.lo_lhs, r_ll)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.lo_lhs"};
+            if (!fp_reg_of(op.lo_rhs, r_lr)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.lo_rhs"};
+            if (!fp_reg_of(op.hi_lhs, r_hl)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.hi_lhs"};
+            if (!fp_reg_of(op.hi_rhs, r_hr)) return {false, LowerError::DanglingRef, "WriteFlagsPtestYmm.hi_rhs"};
+            arm64::Reg w_tmp;
+            if (!allocate_temporary(w_tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "VPTEST_ymm tmp"};
+            }
+            emitter_.vptest_ymm(r_ll, r_lr, r_hl, r_hr, w_tmp);
+            if (s.result.has_value()) {
+                flag_refs_.insert(*s.result);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecTbl2>) {
+            // F2-IR-051 lane-crossing byte permute from a 256-bit
+            // source pair, controlled by a runtime byte-index vector.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecTbl2 without result"};
+            }
+            Emitter::FpReg r_lo, r_hi, r_idx;
+            if (!fp_reg_of(op.src_lo, r_lo)) return {false, LowerError::DanglingRef, "VecTbl2.src_lo"};
+            if (!fp_reg_of(op.src_hi, r_hi)) return {false, LowerError::DanglingRef, "VecTbl2.src_hi"};
+            if (!fp_reg_of(op.idx,    r_idx)) return {false, LowerError::DanglingRef, "VecTbl2.idx"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecTbl2"};
+            }
+            emitter_.vtbl2_q(rd, r_lo, r_hi, r_idx);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecAes>) {
+            // F2-IR-055 AES round.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecAes without result"};
+            }
+            Emitter::FpReg r_src, r_key;
+            if (!fp_reg_of(op.src, r_src)) return {false, LowerError::DanglingRef, "VecAes.src"};
+            if (!fp_reg_of(op.key, r_key)) return {false, LowerError::DanglingRef, "VecAes.key"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecAes"};
+            }
+            emitter_.vaes(rd, r_src, r_key, op.kind);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Bswap>) {
+            // F2-IR-056 byte reverse — maps to ARM64 REV / REV16
+            // depending on size. I8 is a no-op (single byte has no
+            // byte order to reverse).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Bswap without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Bswap.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Bswap"};
+            }
+            emitter_.bswap(rd, rn, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Crc32c>) {
+            // F2-IR-057 CRC32C — direct ARM64 mapping.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Crc32c without result"};
+            }
+            arm64::Reg rcrc, rdata;
+            if (!reg_of(op.crc,  rcrc))  return {false, LowerError::DanglingRef, "Crc32c.crc"};
+            if (!reg_of(op.data, rdata)) return {false, LowerError::DanglingRef, "Crc32c.data"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Crc32c"};
+            }
+            emitter_.crc32c(rd, rcrc, rdata, op.data_size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Load>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "X87Load without result"};
+            }
+            if (op.st_index >= 8u) {
+                return {false, LowerError::UnsupportedOp, "X87Load st_index"};
+            }
+            arm64::Reg rd, tos, slot;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Load"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Load tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Load slot"};
+            }
+            emitter_.x87_load(arm64::Reg::X27, rd, tos, slot,
+                              runtime::CpuStateFrame::x87_offset_bytes(0),
+                              runtime::CpuStateFrame::kX87TosByteOffset,
+                              op.st_index);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Store>) {
+            if (op.st_index >= 8u) {
+                return {false, LowerError::UnsupportedOp, "X87Store st_index"};
+            }
+            arm64::Reg value, tos, slot;
+            if (!reg_of(op.value, value)) {
+                return {false, LowerError::DanglingRef, "X87Store.value"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Store tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Store slot"};
+            }
+            emitter_.x87_store(arm64::Reg::X27, value, tos, slot,
+                               runtime::CpuStateFrame::x87_offset_bytes(0),
+                               runtime::CpuStateFrame::kX87TosByteOffset,
+                               op.st_index);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Push>) {
+            arm64::Reg value, tos, slot;
+            if (!reg_of(op.value, value)) {
+                return {false, LowerError::DanglingRef, "X87Push.value"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Push tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Push slot"};
+            }
+            emitter_.x87_push(arm64::Reg::X27, value, tos, slot,
+                              runtime::CpuStateFrame::x87_offset_bytes(0),
+                              runtime::CpuStateFrame::kX87TosByteOffset);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::X87Pop>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "X87Pop without result"};
+            }
+            arm64::Reg rd, tos, slot;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Pop"};
+            }
+            if (!allocate_temporary(tos)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Pop tos"};
+            }
+            if (!allocate_temporary(slot)) {
+                return {false, LowerError::OutOfScratchRegs, "X87Pop slot"};
+            }
+            emitter_.x87_pop(arm64::Reg::X27, rd, tos, slot,
+                             runtime::CpuStateFrame::x87_offset_bytes(0),
+                             runtime::CpuStateFrame::kX87TosByteOffset);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecBlend>) {
+            // F2-IR-046 PBLENDVB / BLENDVPS / BLENDVPD.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecBlend without result"};
+            }
+            Emitter::FpReg rdst, rsrc, rmask;
+            if (!fp_reg_of(op.dst,  rdst))  return {false, LowerError::DanglingRef, "VecBlend.dst"};
+            if (!fp_reg_of(op.src,  rsrc))  return {false, LowerError::DanglingRef, "VecBlend.src"};
+            if (!fp_reg_of(op.mask, rmask)) return {false, LowerError::DanglingRef, "VecBlend.mask"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecBlend"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vblend(rd, rdst, rsrc, rmask, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Lzcnt>) {
+            // F2-IR-045 LZCNT — direct ARM64 clz.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Lzcnt without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Lzcnt.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Lzcnt"};
+            }
+            emitter_.clz_gpr(rd, rn, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Tzcnt>) {
+            // F2-IR-045 TZCNT — rbit + clz.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Tzcnt without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Tzcnt.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Tzcnt"};
+            }
+            emitter_.rbit_clz_gpr(rd, rn, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Popcnt>) {
+            // F2-IR-044 POPCNT.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Popcnt without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) return {false, LowerError::DanglingRef, "Popcnt.value"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Popcnt"};
+            }
+            emitter_.popcnt_gpr(rd, rn, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpRound>) {
+            // F2-IR-042 SSE4.1 ROUNDPS/PD/SS/SD.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecFpRound without result"};
+            }
+            Emitter::FpReg rs;
+            if (!fp_reg_of(op.src, rs)) return {false, LowerError::DanglingRef, "VecFpRound.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpRound"};
+            }
+            if (op.is_packed) {
+                emitter_.vfrint_q(rd, rs, op.size, op.mode);
+            } else {
+                Emitter::FpReg rl;
+                if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecFpRound.lhs"};
+                emitter_.vfrint_scalar_with_upper(rd, rl, rs, op.size, op.mode);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecExtend>) {
+            // F2-IR-041 SSE4.1 PMOVZX/PMOVSX.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecExtend without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecExtend.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecExtend"};
+            }
+            const auto map_lane = [](ir::VecLane l) {
+                return l == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                       l == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                       l == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                                Emitter::VecLane::D2;
+            };
+            emitter_.vextend(rd, rn, map_lane(op.narrow_lane),
+                             map_lane(op.wide_lane), op.is_signed);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecAlignr>) {
+            // F2-IR-038 SSSE3 PALIGNR.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecAlignr without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecAlignr.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecAlignr.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecAlignr"};
+            }
+            emitter_.valignr(rd, rl, rr, op.count);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecAbs>) {
+            // F2-IR-036 SSSE3 PABSB/W/D.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecAbs without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecAbs.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecAbs"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vabs_q(rd, rn, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpCompare>) {
+            // F2-IR-034. CMPxxPS/PD/SS/SD predicate compare.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecFpCompare without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "VecFpCompare.lhs"};
+            if (!fp_reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "VecFpCompare.rhs"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpCompare"};
+            }
+            const std::uint8_t pred = static_cast<std::uint8_t>(op.pred);
+            if (op.is_packed) {
+                emitter_.vfcmp_packed(rd, rl, rr, op.size, pred);
+            } else {
+                emitter_.vfcmp_scalar_with_upper(rd, rl, rr, op.size, pred);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecMaskFp>) {
+            // F2-IR-029. MOVMSKPS / MOVMSKPD.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecMaskFp without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src_xmm, rn)) return {false, LowerError::DanglingRef, "VecMaskFp.src"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecMaskFp"};
+            }
+            arm64::Reg rt;
+            if (!allocate_temporary(rt)) {
+                return {false, LowerError::OutOfScratchRegs, "VecMaskFp temp"};
+            }
+            emitter_.vmask_fp(rd, rn, op.is_pd, rt);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShuffleH4>) {
+            // F2-IR-028. PSHUFLW / PSHUFHW.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShuffleH4 without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) return {false, LowerError::DanglingRef, "VecShuffleH4.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShuffleH4"};
+            }
+            emitter_.vshuffle_h4(rd, rn, op.control, op.is_high);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecMaskMsb>) {
+            // F2-IR-027. PMOVMSKB.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecMaskMsb without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src_xmm, rn)) return {false, LowerError::DanglingRef, "VecMaskMsb.src"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecMaskMsb"};
+            }
+            emitter_.vmask_msb_b16(rd, rn);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecExtractLaneU>) {
+            // F2-IR-022. Lane extract to a GPR (zero-extended).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecExtractLaneU without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src_xmm, rn)) return {false, LowerError::DanglingRef, "VecExtractLaneU.src"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecExtractLaneU"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            emitter_.vumov_w_from_lane(rd, rn, op.lane_idx, lane);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpCvtScalar>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "FpCvtScalar without result"};
+            }
+            Emitter::FpReg rl, rs;
+            if (!fp_reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "FpCvtScalar.lhs"};
+            if (!fp_reg_of(op.src, rs)) return {false, LowerError::DanglingRef, "FpCvtScalar.src"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpCvtScalar"};
+            }
+            emitter_.fcvt_scalar_with_upper(rd, rl, rs, op.src_size, op.dst_size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::IntToFpScalar>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "IntToFpScalar without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "IntToFpScalar.value"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "IntToFpScalar"};
+            }
+            emitter_.scvtf(rd, rn, op.int_size, op.fp_size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpToIntScalar>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "FpToIntScalar without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "FpToIntScalar.value"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpToIntScalar"};
+            }
+            emitter_.fcvtzs(rd, rn, op.fp_size, op.int_size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShiftBytes>) {
+            // F2-IR-014. PSLLDQ / PSRLDQ — whole-register byte shift.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShiftBytes without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) {
+                return {false, LowerError::DanglingRef, "VecShiftBytes.src"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShiftBytes"};
+            }
+            if (op.is_left) emitter_.vshlb_imm_q(rd, rn, op.count);
+            else            emitter_.vshrb_imm_q(rd, rn, op.count);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) {
+            // F2-IR-010. PSHUFD: 4-way 32-bit lane permutation.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecShuffle32x4 without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.src, rn)) {
+                return {false, LowerError::DanglingRef, "VecShuffle32x4.src"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecShuffle32x4"};
+            }
+            emitter_.vshuffle_s4(rd, rn, op.control);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecCmp>) {
+            // F2-IR-009. cmeq / cmgt on V regs (lane-wise integer compare).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecCmp without result"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecCmp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecCmp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecCmp"};
+            }
+            const Emitter::VecLane lane =
+                op.lane == ir::VecLane::B16 ? Emitter::VecLane::B16 :
+                op.lane == ir::VecLane::H8  ? Emitter::VecLane::H8  :
+                op.lane == ir::VecLane::S4  ? Emitter::VecLane::S4  :
+                                              Emitter::VecLane::D2;
+            switch (op.kind) {
+                case ir::VecCmpKind::Eq: emitter_.vcmeq_q(rd, rl, rr, lane); break;
+                case ir::VecCmpKind::Gt: emitter_.vcmgt_q(rd, rl, rr, lane); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::XmmFromGpr>) {
+            // F2-IR-008. fmov d/s_rd, x/w_rn — moves GPR low into V_rd
+            // and zero-extends the upper 96/64 bits (fmov on
+            // S/D register encodings).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "XmmFromGpr without result"};
+            }
+            arm64::Reg rn;
+            if (!reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "XmmFromGpr.value"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "XmmFromGpr"};
+            }
+            const ir::FpSize fp_sz =
+                op.size == ir::OpSize::I32 ? ir::FpSize::F32 : ir::FpSize::F64;
+            emitter_.fmov_v_from_x(rd, rn, fp_sz);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
+            // F2-IR-008. fmov w/x_rd, s/d_rn — copies V_rn low lane to
+            // GPR with zero-extension when size is I32.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "GprFromXmm without result"};
+            }
+            Emitter::FpReg rn;
+            if (!fp_reg_of(op.value, rn)) {
+                return {false, LowerError::DanglingRef, "GprFromXmm.value"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "GprFromXmm"};
+            }
+            const ir::FpSize fp_sz =
+                op.size == ir::OpSize::I32 ? ir::FpSize::F32 : ir::FpSize::F64;
+            emitter_.fmov_x_from_v(rd, rn, fp_sz);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadVec>) {
+            // F2-IR-007. 128-bit aligned/unaligned load from guest mem.
+            // ARM64 `ldr Q, [Xn]` accepts both — alignment fault only on
+            // strict-alignment systems we don't target.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "LoadVec without result"};
+            }
+            arm64::Reg raddr;
+            if (!reg_of(op.addr, raddr)) {
+                return {false, LowerError::DanglingRef, "LoadVec.addr"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadVec"};
+            }
+            emitter_.vld1_q(rd, raddr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreVec>) {
+            arm64::Reg raddr;
+            if (!reg_of(op.addr, raddr)) {
+                return {false, LowerError::DanglingRef, "StoreVec.addr"};
+            }
+            Emitter::FpReg rv;
+            if (!fp_reg_of(op.value, rv)) {
+                return {false, LowerError::DanglingRef, "StoreVec.value"};
+            }
+            emitter_.vst1_q(rv, raddr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) {
+            // F2-IR-006 — scalar FMA. ARM64 has 4-operand scalar FMA
+            // primitives; the emitter wraps them with upper-lane
+            // preservation (copies bits from `scalar_upper` into rd
+            // before INS-ing the FMA result into rd's low lane).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpScalarFma requires a result ref"};
+            }
+            Emitter::FpReg ra, rb, rc, rupper;
+            if (!fp_reg_of(op.a, ra))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.a"};
+            if (!fp_reg_of(op.b, rb))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.b"};
+            if (!fp_reg_of(op.c, rc))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.c"};
+            if (!fp_reg_of(op.scalar_upper, rupper))
+                return {false, LowerError::DanglingRef, "VecFpScalarFma.scalar_upper"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpScalarFma"};
+            }
+            emitter_.vfma_scalar(rd, rupper, ra, rb, rc, op.size,
+                                 op.neg_addend, op.neg_mul);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpFma>) {
+            // F2-IR-006 — fused multiply-add. ARM64 FMLA is destructive
+            // (Vd += Vn*Vm); we materialise the addend into Vd first.
+            //   (neg_addend=F, neg_mul=F): Vd = Va; FMLA Vd, Vb, Vc
+            //   (neg_addend=F, neg_mul=T): Vd = Va; FMLS Vd, Vb, Vc
+            //   (neg_addend=T, neg_mul=F): FNEG Vd, Va; FMLA Vd, Vb, Vc
+            //   (neg_addend=T, neg_mul=T): FNEG Vd, Va; FMLS Vd, Vb, Vc
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpFma requires a result ref"};
+            }
+            Emitter::FpReg ra, rb, rc;
+            if (!fp_reg_of(op.a, ra)) {
+                return {false, LowerError::DanglingRef, "VecFpFma.a"};
+            }
+            if (!fp_reg_of(op.b, rb)) {
+                return {false, LowerError::DanglingRef, "VecFpFma.b"};
+            }
+            if (!fp_reg_of(op.c, rc)) {
+                return {false, LowerError::DanglingRef, "VecFpFma.c"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpFma"};
+            }
+            const Emitter::VecLane lane =
+                op.size == ir::VecFpSize::S4 ? Emitter::VecLane::S4
+                                             : Emitter::VecLane::D2;
+            if (op.neg_addend) {
+                emitter_.vfneg_q(rd, ra, lane);
+            } else {
+                emitter_.vmov_q(rd, ra);
+            }
+            if (op.neg_mul) {
+                emitter_.vfmls_q(rd, rb, rc, lane);
+            } else {
+                emitter_.vfmla_q(rd, rb, rc, lane);
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) {
+            // F2-IR-006. ADDSS/ADDSD style: low lane = scalar op,
+            // upper lanes preserved from lhs.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecFpScalarBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecFpScalarBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecFpScalarBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecFpScalarBinOp"};
+            }
+            switch (op.op) {
+                case ir::VecFpBinOpKind::Add: emitter_.vfadd_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Sub: emitter_.vfsub_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Mul: emitter_.vfmul_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Div: emitter_.vfdiv_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Min:  emitter_.vfmin_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Max:  emitter_.vfmax_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::Sqrt: emitter_.vfsqrt_scalar(rd, rl, rr, op.size); break;
+                case ir::VecFpBinOpKind::HAdd:
+                    return {false, LowerError::UnsupportedOp,
+                            "HAdd is packed-only; no scalar form"};
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpConstant>) {
+            // F1-BK-013. Materialise an FP constant in a scratch V reg.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "FpConstant requires a result ref"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpConstant"};
+            }
+            emitter_.fmov_imm(rd, op.bits, op.size);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::FpBinOp>) {
+            // F1-BK-013. fadd / fsub / fmul / fdiv on a freshly-allocated
+            // V scratch.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "FpBinOp requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "FpBinOp.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "FpBinOp.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "FpBinOp"};
+            }
+            switch (op.op) {
+                case ir::FpBinOpKind::Add: emitter_.fadd(rd, rl, rr, op.size); break;
+                case ir::FpBinOpKind::Sub: emitter_.fsub(rd, rl, rr, op.size); break;
+                case ir::FpBinOpKind::Mul: emitter_.fmul(rd, rl, rr, op.size); break;
+                case ir::FpBinOpKind::Div: emitter_.fdiv(rd, rl, rr, op.size); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Fence>) {
+            // F1-BK-023. Map x86 fences to ARM64 DMB ISH variants.
+            switch (op.kind) {
+                case ir::FenceKind::Mfence:
+                    emitter_.dmb(Emitter::BarrierKind::Ish);   break;
+                case ir::FenceKind::Lfence:
+                    emitter_.dmb(Emitter::BarrierKind::IshLd); break;
+                case ir::FenceKind::Sfence:
+                    emitter_.dmb(Emitter::BarrierKind::IshSt); break;
+            }
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::CallRel>
+                        || std::is_same_v<T, ir::CallReg>
+                        || std::is_same_v<T, ir::RetAdjusted>) {
+            const arm64::Reg rsp_host = arm64::host_reg_for(ir::Gpr::Rsp);
+            arm64::Reg tmp;
+            arm64::Reg tmp2;
+            if (!allocate_temporary(tmp) || !allocate_temporary(tmp2)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "Call/Ret temporaries"};
+            }
+
+            if constexpr (std::is_same_v<T, ir::RetAdjusted>) {
+                // target = [RSP]; RSP += 8 + pop_bytes; x0 = target.
+                emitter_.load(tmp, rsp_host, ir::OpSize::I64);
+                emitter_.mov_imm64(tmp2, 8ULL + op.pop_bytes);
+                emitter_.add(rsp_host, rsp_host, tmp2);
+                emitter_.mov_reg_reg(arm64::Reg::X0, tmp);
+            } else {
+                // CALL pushes return_guest_pc, then transfers to the
+                // callee target through x0 for the dispatcher.
+                emitter_.mov_imm64(tmp, 8ULL);
+                emitter_.sub(rsp_host, rsp_host, tmp);
+                emitter_.mov_imm64(tmp2, op.return_guest_pc);
+                emitter_.store(tmp2, rsp_host, ir::OpSize::I64);
+
+                if constexpr (std::is_same_v<T, ir::CallRel>) {
+                    emitter_.mov_imm64(arm64::Reg::X0, op.target_guest_pc);
+                } else {
+                    arm64::Reg rt;
+                    if (!reg_of(op.target, rt)) {
+                        return {false, LowerError::DanglingRef,
+                                "CallReg.target"};
+                    }
+                    emitter_.mov_reg_reg(arm64::Reg::X0, rt);
+                }
+            }
+            if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
         else {
-            // Basic-block indexed CondJump is deferred to CFG conditional
-            // lowering; most other current ops are handled above.
+            // Compare, LoadMem, StoreMem, LoadMemTSO, StoreMemTSO are
+            // already lowered above. Anything reaching here is genuinely
+            // unsupported.
             return {false, LowerError::UnsupportedOp, "op not yet lowered"};
         }
     }, s.op);

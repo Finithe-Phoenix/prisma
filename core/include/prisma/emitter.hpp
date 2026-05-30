@@ -157,6 +157,28 @@ public:
     void casal   (arm64::Reg rs, arm64::Reg rt, arm64::Reg raddr, ir::OpSize size);
     void ldaddal (arm64::Reg rs, arm64::Reg rt, arm64::Reg raddr, ir::OpSize size);
 
+    // Flag-setting ALU forms (F1-IR-004 lowering).
+    //   adds rd, rn, rm   — like add but also sets NZCV.
+    //   ands rd, rn, rm   — like and but also sets N + Z (clears C/V).
+    // The destination is mandatory because vixl's macro path doesn't
+    // expose a "discard-result" form; the lowerer passes XZR-equivalent
+    // (any scratch the lowerer is willing to clobber) when only the
+    // flags are wanted. Currently we expose a 3-reg form.
+    void adds(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void ands(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+
+    // 32-bit W-register ALU forms (F1-BK-010). AArch64 implicitly
+    // zero-extends the upper 32 bits when writing through a W-view,
+    // so these are the canonical lowering for x86 32-bit ops without
+    // an explicit Truncate. Each is a thin wrapper over vixl
+    // operating on `WRegister(reg_id)`.
+    void add_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void sub_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void and_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void orr_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void eor_w(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);
+    void mov_w_reg_reg(arm64::Reg rd, arm64::Reg rs);
+
     // Compare (SUBS with discard) + materialise 0/1 from flags.
     //   cmp(xn, xm)                — sets NZCV.
     //   cset(rd, CondCode)         — rd = 1 if condition holds, else 0.
@@ -231,6 +253,353 @@ public:
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
 
+    // --- Width adjustment (F1-BK-022) -------------------------------------
+    //
+    // sign- and zero-extension from a narrower view of `rn` into the
+    // 64-bit `rd`. ARM64 has dedicated single-cycle instructions for
+    // each width: SXTB / SXTH / SXTW for sign, UXTB / UXTH for zero;
+    // 32→64 zero-extension is implicit on any `mov w*` write so the
+    // emitter codegens that as `mov wd, wn`. The lowerer drives these.
+    void sxtb (arm64::Reg rd, arm64::Reg rn);   //  8 → 64 signed
+    void sxth (arm64::Reg rd, arm64::Reg rn);   // 16 → 64 signed
+    void sxtw (arm64::Reg rd, arm64::Reg rn);   // 32 → 64 signed
+    void uxtb (arm64::Reg rd, arm64::Reg rn);   //  8 → 64 unsigned
+    void uxth (arm64::Reg rd, arm64::Reg rn);   // 16 → 64 unsigned
+
+    // 32 → 64 zero-extension via `mov wd, wn`. AArch64 zeroes the upper
+    // 32 bits of any 64-bit register written through its W-view.
+    void uxtw (arm64::Reg rd, arm64::Reg rn);
+
+    // Truncate Xn to a narrower view in Xd by ANDing with a 64-bit
+    // mask. For 32-bit truncation we use `uxtw` (cheaper). For I8/I16
+    // the lowerer materialises the mask into a scratch first, and then
+    // calls and_().
+    // Truncations are not needed when the consumer already reads only
+    // the W-view; the lowerer only emits one when the SSA result has
+    // to live as a clean narrow value.
+
+    // --- Floating-point ALU (F1-BK-013) -----------------------------------
+    //
+    // ARM64 has 32 vector/FP registers V0..V31. Each register has
+    // sub-views: B (8b), H (16b), S (32b), D (64b), Q (128b). Scalar
+    // FP ops use the S- or D-view per `ir::FpSize`.
+    //
+    // We expose a small `FpReg` enum (V0..V31) and the four hot
+    // scalar binops. NEON 128-bit forms come later (F1-BK-012).
+    enum class FpReg : std::uint8_t {
+        V0 = 0,  V1,  V2,  V3,  V4,  V5,  V6,  V7,
+        V8,  V9, V10, V11, V12, V13, V14, V15,
+        V16, V17, V18, V19, V20, V21, V22, V23,
+        V24, V25, V26, V27, V28, V29, V30, V31,
+    };
+
+    void fadd(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void fsub(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void fmul(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void fdiv(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+
+    // Materialise an FP constant. The bits are the IEEE-754 encoding
+    // of the value (single → low 32 bits, double → all 64). vixl
+    // picks fmov-immediate / ldr-literal as appropriate.
+    void fmov_imm(FpReg rd, std::uint64_t bits, ir::FpSize sz);
+
+    // F2-IR-008. GPR ↔ FP register transfers (fmov x_d, d_s and inverse).
+    //   fmov_v_from_x(rd, rn, sz): writes low lane of V_rd from X_rn,
+    //     zero-extending the upper bits of the V register. sz is F32 or F64.
+    //   fmov_x_from_v(rd, rn, sz): writes X_rd from low lane of V_rn.
+    //     For F32, the upper 32 bits of X_rd are zero-extended.
+    void fmov_v_from_x(FpReg rd, arm64::Reg rn, ir::FpSize sz);
+    void fmov_x_from_v(arm64::Reg rd, FpReg rn, ir::FpSize sz);
+
+    // F2-IR-016. scvtf / fcvtzs scalar conversions.
+    void scvtf(FpReg rd, arm64::Reg rn, ir::OpSize int_sz, ir::FpSize fp_sz);
+    void fcvtzs(arm64::Reg rd, FpReg rn, ir::FpSize fp_sz, ir::OpSize int_sz);
+    // F2-IR-017. Scalar FP precision convert with upper-preserve.
+    // Steps: fcvt scratch.dst, src.src; mov rd, lhs; ins rd.dst[0],
+    // scratch.dst[0]. Uses V31 internal scratch.
+    void fcvt_scalar_with_upper(FpReg rd, FpReg lhs, FpReg src,
+                                ir::FpSize src_sz, ir::FpSize dst_sz);
+
+    // --- 128-bit NEON SIMD (F1-BK-012) ------------------------------------
+    //
+    // Same V0..V31 register file as scalar FP, viewed as 16 bytes (B16),
+    // 8 halfwords (H8), 4 words (S4), or 2 doublewords (D2). The lane
+    // size is fixed by the call (`VecLane`); SSE/AVX-style integer
+    // SIMD lowers through these.
+    //
+    // Initial coverage: ALU integer (add/sub/and/or/xor) and a 16-byte
+    // load/store. Multiplies, shuffles and reductions land in
+    // F1-BK-028+ as we unblock real SSE2 binaries.
+    enum class VecLane : std::uint8_t {
+        B16 = 0,  // 16 × i8
+        H8,       //  8 × i16
+        S4,       //  4 × i32
+        D2,       //  2 × i64
+    };
+    void vadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vand_q(FpReg rd, FpReg rn, FpReg rm);  // bitwise: lane-agnostic
+    void vorr_q(FpReg rd, FpReg rn, FpReg rm);
+    void veor_q(FpReg rd, FpReg rn, FpReg rm);
+    void vmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);  // F2-IR-013
+    // F2-IR-023. Saturating integer arithmetic (B16, H8).
+    void vsqadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vuqadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsqsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vuqsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    // F2-IR-024. Lane-wise min/max (PMINUB / PMAXUB / PMINSW / PMAXSW).
+    void vumin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vumax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    // F2-IR-025. High half of 16x16 multiply, lane-wise (8 H8 results).
+    // is_signed selects PMULHW vs PMULHUW. Uses V31 internal scratch.
+    void vmulhi_h8(FpReg rd, FpReg rn, FpReg rm, bool is_signed);
+    // F2-IR-030. PMULUDQ — packs lanes 0,2 of each S4 source into D2
+    // results via uzp1 + umull.
+    void vmul_u32_to_64(FpReg rd, FpReg rn, FpReg rm);
+    // F2-IR-031. PSADBW.
+    void vsad_bw(FpReg rd, FpReg rn, FpReg rm);
+    // F2-IR-037. Pairwise add/sub on H8/S4 lanes (PHADD/PHSUB).
+    void vaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vsubp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+
+    // Packed-FP arithmetic (F2-IR-005). `lane` must be S4 (4×f32) or
+    // D2 (2×f64); other values are rejected by an assert.
+    void vfadd_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfsub_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmul_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfdiv_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmin_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmax_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfsqrt_q(FpReg rd, FpReg rn, VecLane lane);
+    void vfaddp_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);  // F2-IR-032 HADDPS/PD
+
+    // F2-IR-006 — fused multiply-add primitives. The destination is
+    // accumulating; emit `vmov_q(rd, ra)` then call `vfmla_q(rd, rb, rc)`
+    // to compute rd = ra + rb*rc. `vfmls_q` computes rd -= rb*rc.
+    // `vfneg_q` computes rd = -rn.
+    void vfmla_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfmls_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vfneg_q(FpReg rd, FpReg rn, VecLane lane);
+    void vmov_q (FpReg rd, FpReg rn);  // 128-bit register copy.
+
+    // F2-IR-001 — full 128-bit constant load. lo = bytes[0..7],
+    // hi = bytes[8..15] in the little-endian layout shared with
+    // VecConstant's IR field convention.
+    void vec_const_128(FpReg rd, std::uint64_t lo, std::uint64_t hi);
+
+    // F2-IR-006 — scalar SSE FP semantics: result.low = op(rn.low, rm.low),
+    // result.upper = rn.upper (untouched). `sz` selects S (32-bit) or D
+    // (64-bit) lane. Internally uses V31 as a fixed scratch — it must
+    // not appear in the SSA scratch pool (V0..V7).
+    void vfadd_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfsub_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfmul_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfdiv_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfmin_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfmax_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);
+    void vfsqrt_scalar(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz);  // unary; rm is the source.
+
+    // F2-IR-006 — scalar FMA: result = (neg_addend ? -ra : ra)
+    //                                 + (neg_mul ? -(rb*rc) : rb*rc)
+    // in the low lane, with upper lanes copied from `rupper`. Maps to
+    // ARM64 4-operand FMADD/FMSUB/FNMADD/FNMSUB scalars.
+    void vfma_scalar(FpReg rd, FpReg rupper, FpReg ra, FpReg rb, FpReg rc,
+                     ir::FpSize sz, bool neg_addend, bool neg_mul);
+
+    // F2-IR-009. Lane-wise integer compare (cmeq / cmgt).
+    void vcmeq_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vcmgt_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+
+    // F2-IR-010. 4-way 32-bit lane shuffle (PSHUFD). Result lane i =
+    // src lane ((control >> (2*i)) & 3). Implemented as four INS
+    // (mov v.s[i], src.s[lane]) into V31 scratch, then mov to dst.
+    void vshuffle_s4(FpReg rd, FpReg rn, std::uint8_t control);
+
+    // F2-IR-020. SHUFPS / SHUFPD lowering — picks lanes from rn for
+    // the first half of the result and from rm for the second half.
+    void vshuffle_2src_s4(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control);
+    void vshuffle_2src_d2(FpReg rd, FpReg rn, FpReg rm, std::uint8_t control);
+
+    // F2-IR-022. Per-lane insert/extract to/from a GPR.
+    void vins_lane_from_w(FpReg rd, FpReg rn, std::uint8_t lane_idx,
+                          arm64::Reg w_value, VecLane lane);
+    void vumov_w_from_lane(arm64::Reg w_dst, FpReg rn,
+                           std::uint8_t lane_idx, VecLane lane);
+
+    // F2-IR-027. PMOVMSKB: byte MSB extraction → 16-bit mask in w_dst.
+    void vmask_msb_b16(arm64::Reg w_dst, FpReg rn);
+
+    // F2-IR-026. fcmp s/d_lhs.low, s/d_rhs.low — sets NZCV.
+    void fcmp_scalar(FpReg rn, FpReg rm, ir::FpSize sz);
+
+    // F2-IR-028. PSHUFLW / PSHUFHW — 4-way H8 shuffle of one half.
+    void vshuffle_h4(FpReg rd, FpReg rn, std::uint8_t control, bool is_high);
+
+    // F2-IR-029. MOVMSKPS / MOVMSKPD — extract sign bits.
+    // `w_tmp` is a caller-provided scratch GPR.
+    void vmask_fp(arm64::Reg w_dst, FpReg rn, bool is_pd, arm64::Reg w_tmp);
+
+    // F2-IR-034. Packed-FP predicate compare → all-1s/all-0s mask.
+    // pred: 0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
+    void vfcmp_packed(FpReg rd, FpReg rn, FpReg rm, ir::FpSize sz, std::uint8_t pred);
+    // Scalar variant — low lane = compare result, upper bits from rn.
+    void vfcmp_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
+                                 ir::FpSize sz, std::uint8_t pred);
+
+    // F2-IR-036. SSSE3.
+    void vpshufb(FpReg rd, FpReg rn, FpReg rm);
+    void vabs_q(FpReg rd, FpReg rn, VecLane lane);
+
+    // F2-IR-038. PALIGNR — concat (lhs || rhs) and shift right by `count`
+    // bytes, return low 16 bytes. count >= 32 yields zero.
+    void valignr(FpReg rd, FpReg lhs, FpReg rhs, std::uint8_t count);
+
+    // F2-IR-041. Widening: take low N narrow lanes, sign/zero extend
+    // each to a wider lane. Chains sxtl/uxtl up to 3 times for
+    // B→Q (1×3), H→Q (1×2), B→Q (1×3) etc.
+    void vextend(FpReg rd, FpReg rn,
+                 VecLane narrow_lane, VecLane wide_lane, bool is_signed);
+
+    // F2-IR-042. Packed FP rounding (FRINTN/M/P/Z per mode 0..3).
+    void vfrint_q(FpReg rd, FpReg rn, ir::FpSize sz, std::uint8_t mode);
+    // Scalar form preserves upper bits of `lhs`.
+    void vfrint_scalar_with_upper(FpReg rd, FpReg lhs, FpReg rhs,
+                                  ir::FpSize sz, std::uint8_t mode);
+
+    // F2-IR-044. Population count of a GPR's value into another GPR.
+    void popcnt_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
+    // F2-IR-045. ARM64 clz (LZCNT) and rbit+clz (TZCNT) directly.
+    void clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
+    void rbit_clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
+
+    // F2-IR-046. Variable blend by mask MSB per lane. For each lane:
+    // result[i] = (mask[i].MSB == 1) ? src[i] : dst[i].
+    void vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane);
+
+    // F2-IR-047. PTEST. Sets NZCV so that:
+    //   ARM Z = (lhs AND rhs == 0)
+    //   ARM C = NOT (lhs AND NOT rhs == 0)
+    //   ARM N = ARM V = 0
+    // Maps to x86 ZF/CF via the existing integer-source ReadFlag path.
+    void vptest(FpReg lhs, FpReg rhs, arm64::Reg w_tmp);
+
+    // F2-IR-049 PTEST over the 256-bit register pair (VPTEST ymm).
+    // ARM Z = ((lo_lhs & lo_rhs) | (hi_lhs & hi_rhs)) == 0
+    // ARM C = NOT (((~lo_lhs & lo_rhs) | (~hi_lhs & hi_rhs)) == 0)
+    // ARM N = ARM V = 0
+    // Same x86 ZF / CF mapping as `vptest`; the only difference is the
+    // pair-of-Vec128 input shape.
+    void vptest_ymm(FpReg lo_lhs, FpReg lo_rhs,
+                    FpReg hi_lhs, FpReg hi_rhs,
+                    arm64::Reg w_tmp);
+
+    // F2-IR-051 lane-crossing byte permute. Logically:
+    //   for i in 0..15: dst[i] = (idx[i] < 16) ? src_lo[idx[i]] : src_hi[idx[i] - 16]
+    // Implemented via NEON `tbl` with two source vectors. Because the
+    // ARM64 encoding of multi-source TBL requires the two source
+    // registers be *adjacent* in the V file, the emitter copies
+    // `src_lo` and `src_hi` into the fixed V30/V31 scratch pair
+    // (3 extra NEON ops total: two `mov` + the `tbl`) rather than
+    // forcing the regalloc to allocate adjacent pairs.
+    void vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx);
+
+    // F2-IR-055 — x86 AES-NI round primitives mapped onto ARM NEON
+    // AES. The semantic gap from x86 to ARM is that x86 applies
+    // ShiftRows → SubBytes BEFORE the AddRoundKey, while ARM's AESE
+    // applies AddRoundKey → SubBytes → ShiftRows. To match x86:
+    //
+    //   AESENC:      AESE(temp, 0) ; AESMC(dst, temp)    ; veor dst, dst, key
+    //   AESENCLAST:  AESE(temp, 0) ; veor dst, temp, key
+    //   AESDEC:      AESD(temp, 0) ; AESIMC(dst, temp)   ; veor dst, dst, key
+    //   AESDECLAST:  AESD(temp, 0) ; veor dst, temp, key
+    //   AESIMC:      AESIMC(dst, src)                    ; `key` ignored
+    //
+    // `temp` is the V31 internal scratch (consistent with vtbl2_q /
+    // vptest_ymm). The "AESE(temp, 0)" idiom — XOR with zero — gives
+    // us ShiftRows + SubBytes without an AddRoundKey, then AESMC
+    // adds MixColumns separately; finally we XOR with the round key.
+    void vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind);
+
+    // F2-IR-056 — byte-reverse the contents of `rn` interpreted at
+    // `size` and write to `rd`. Maps to ARM64 REV (I64), REV W
+    // (I32), REV16 (I16). I8 emits a plain MOV.
+    void bswap(arm64::Reg rd, arm64::Reg rn, ir::OpSize size);
+
+    // F2-IR-057 — x86 CRC32 / ARM64 CRC32C{B/H/W/X}. Both ISAs
+    // accumulate Castagnoli's 0x11EDC6F41 polynomial. The IR /
+    // emitter chose `Crc32c` as the spelling because the C-suffix
+    // is the explicit ARM mnemonic. `data_size` selects the
+    // CRC32C variant; the running CRC is always a 32-bit value.
+    void crc32c(arm64::Reg rd, arm64::Reg rcrc, arm64::Reg rdata,
+                ir::OpSize data_size);
+
+    // F2-IR-007 / F2-IR-008 — reduced-precision x87 stack access.
+    //
+    // The x87 stack lives in `CpuStateFrame::x87[]` (16 bytes per slot,
+    // base offset = `array_offset`); the 3-bit TOS counter is the u8
+    // at `tos_byte_offset` within `CpuStateFrame::x87_status_control`.
+    // The two scratch registers are owned by the caller — `scratch_tos`
+    // holds the TOS counter across the sequence, `scratch_slot` holds
+    // the slot's effective address.
+    //
+    //   x87_push: TOS = (TOS - 1) mod 8; slot[TOS] = value
+    //   x87_pop:  dst = slot[TOS]; TOS = (TOS + 1) mod 8
+    //   x87_load/store address logical ST(i) as slot[(TOS + i) mod 8]
+    void x87_load(arm64::Reg state_ptr, arm64::Reg dst,
+                  arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                  std::int32_t array_offset, std::int32_t tos_byte_offset,
+                  std::uint8_t st_index);
+    void x87_store(arm64::Reg state_ptr, arm64::Reg value,
+                   arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                   std::int32_t array_offset, std::int32_t tos_byte_offset,
+                   std::uint8_t st_index);
+    void x87_push(arm64::Reg state_ptr, arm64::Reg value,
+                  arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                  std::int32_t array_offset, std::int32_t tos_byte_offset);
+    void x87_pop (arm64::Reg state_ptr, arm64::Reg dst,
+                  arm64::Reg scratch_tos, arm64::Reg scratch_slot,
+                  std::int32_t array_offset, std::int32_t tos_byte_offset);
+
+    // F2-IR-011. NEON zip1/zip2 (interleave low/high lanes).
+    void vzip1_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+    void vzip2_q(FpReg rd, FpReg rn, FpReg rm, VecLane lane);
+
+    // F2-IR-012. Per-lane shift by immediate (PSLLW/D/Q-style).
+    // For ShiftL `count` may be >= lane bits; the lowerer clamps to
+    // lane width via the SSE rule (count >= bits → lane = 0).
+    void vshl_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
+    void vushr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
+    void vsshr_imm_q(FpReg rd, FpReg rn, std::uint8_t count, VecLane lane);
+
+    // F2-IR-014. Whole-register byte shift (PSLLDQ / PSRLDQ).
+    // count >= 16 → result is zero.
+    void vshlb_imm_q(FpReg rd, FpReg rn, std::uint8_t count);
+    void vshrb_imm_q(FpReg rd, FpReg rn, std::uint8_t count);
+
+    // 128-bit aligned load/store from [base]. `base` is a 64-bit X-reg
+    // already holding the effective address.
+    void vld1_q(FpReg rd, arm64::Reg base);
+    void vst1_q(FpReg rs, arm64::Reg base);
+
+    // [base, #imm] forms — used by SSE2 lowering to read/write the
+    // CpuStateFrame's xmm[] table. The immediate is signed 32-bit;
+    // vixl picks the cheapest encoding or falls back to a scratch.
+    void vld1_q_offset(FpReg rd, arm64::Reg base, std::int32_t imm);
+    void vst1_q_offset(FpReg rs, arm64::Reg base, std::int32_t imm);
+
+    // --- Memory fences (F1-BK-023) ----------------------------------------
+    //
+    // ARM64 DMB / DSB barrier emission. In our IR:
+    //   FenceKind::Mfence → dmb ish        (full barrier)
+    //   FenceKind::Lfence → dmb ishld      (load-only)
+    //   FenceKind::Sfence → dmb ishst      (store-only)
+    // The TSO-adaptive pass (Pillar 3) can drop a fence proven
+    // redundant under a region's restricted memory model.
+    enum class BarrierKind : std::uint8_t { Ish, IshLd, IshSt };
+    void dmb(BarrierKind k);
+
     // --- Label management (F1-BK-005) --------------------------------------
     //
     // Opaque handle to a vixl label. A Label is:
@@ -265,6 +634,14 @@ public:
     // Conditional branch: `b.<cc> label`. Reads the NZCV set by the
     // most-recent flag-producing instruction (CmpFlags in our IR).
     void branch_cc(Label label, ir::CondCode cc);
+
+    // Compare-and-branch on a 64-bit register without touching NZCV.
+    // `cbnz(r, label)` branches when r != 0; `cbz` when r == 0. These
+    // are how we lower `CondJump{cond_ref, true, false}` where the
+    // condition is an SSA Ref (a 0/1 value materialised by Compare),
+    // not a flag. Range is ±1 MiB; vixl picks the encoding.
+    void cbnz(arm64::Reg r, Label label);
+    void cbz (arm64::Reg r, Label label);
 
     // --- Literal pool management (F1-BK-018) -------------------------------
     //

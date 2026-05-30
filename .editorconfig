@@ -1,0 +1,53 @@
+# F0-DX-018 — Prisma editor settings.
+# https://editorconfig.org/
+#
+# Per CLAUDE.md: C++ tab width 2 spaces; the rest of the stack picks
+# up its own conventions automatically (rustfmt → 4 spaces; ktlint →
+# 4 spaces; black → 4 spaces).
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# C++ — 2-space indent matches the existing core/ codebase.
+[*.{cpp,hpp,h,c}]
+indent_size = 2
+
+# CMake — 4-space indent.
+[CMakeLists.txt]
+indent_size = 4
+[*.cmake]
+indent_size = 4
+
+# Rust — 4-space indent (rustfmt default).
+[*.rs]
+indent_size = 4
+
+# Kotlin — 4-space indent (ktlint default).
+[*.{kt,kts}]
+indent_size = 4
+
+# Python — 4-space indent (black default).
+[*.py]
+indent_size = 4
+
+# Lean 4 — 2-space indent (community standard).
+[*.lean]
+indent_size = 2
+
+# YAML, TOML, Markdown — 2-space indent.
+[*.{yml,yaml,toml,md}]
+indent_size = 2
+
+# Makefiles need real tabs, not spaces.
+[{Makefile,*.mk}]
+indent_style = tab
+
+# Shell scripts — 4-space indent (Google shell style).
+[*.{sh,bash}]
+indent_size = 4

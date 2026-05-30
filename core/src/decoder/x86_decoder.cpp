@@ -36,6 +36,20 @@ struct RexPrefix {
     bool b{false};
 };
 
+// F2-IR-048 — VEX-encoded ops (AVX-128). When `present` is true, the
+// instruction was encoded with C4 / C5 and the existing prefix bits
+// (`has_66/has_f2/has_f3` and `rex`) were synthesised from the VEX
+// fields. `vvvv` is the third (non-destructive) source operand
+// extracted from the VEX byte (always inverted on the wire). `L` ≠ 0
+// means 256-bit (YMM) which we currently reject.
+struct VexPrefix {
+    bool         present{false};
+    bool         L{false};       // 0 = 128-bit, 1 = 256-bit
+    std::uint8_t vvvv{0};        // 4-bit second source register
+    std::uint8_t mmmmm{1};       // implied escape (1=0F, 2=0F38, 3=0F3A)
+    std::uint8_t pp{0};          // implied prefix (00=none, 01=66, 10=F3, 11=F2)
+};
+
 // Parsed ModR/M operand. If `mod == 11` it's a register direct reference
 // (`base` is the register, displacement unused). Otherwise it describes a
 // memory access with optional base + optional scaled index + signed
@@ -1199,53 +1213,69 @@ std::variant<Decoded, DecodeError> decode_neg_not_from_rm(
     return d;
 }
 
-// DIV/IDIV r/m64 family (48 F7 /6 and /7) — MVP placeholder.
-// Encodes:
-//   placeholder quotient = 0 in RAX, placeholder remainder = 0 in RDX.
-// Real signed/unsigned divide lowering (including divide-by-zero behavior and
-// full RDX:RAX dividend handling) is deferred to lowering work (F1-BK-011).
+// F2-BK-007 — DIV/IDIV r/m64. Treats the dividend as 64-bit (RAX
+// only; RDX is assumed zero / sign-extended). The full 128-bit
+// RDX:RAX dividend support is deferred — most compiler-generated code
+// zero-extends or sign-extends RDX before DIV, so this covers the
+// common case correctly. Divide-by-zero produces ARM64 UDIV/SDIV's
+// well-defined behaviour (zero quotient) rather than the x86 #DE
+// trap; the trap path is a follow-up.
 std::variant<Decoded, DecodeError> decode_div_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
     ir::Ref& next_ref,
-    ir::OpSize size) {
+    ir::OpSize size,
+    bool is_signed) {
     if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     Decoded d;
-    const ir::Ref ref_dividend = next_ref++;
-    const ir::Ref ref_divisor = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
+    const ir::Ref ref_dividend  = next_ref++;
+    const ir::Ref ref_divisor   = next_ref++;
+    const ir::Ref ref_quotient  = next_ref++;
+    const ir::Ref ref_remainder = next_ref++;
 
     d.stmts.push_back({ref_dividend, ir::LoadReg{ir::Gpr::Rax, size}});
-    d.stmts.push_back({ref_divisor, ir::LoadReg{m.base, size}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_zero, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_zero, size}});
+    d.stmts.push_back({ref_divisor,  ir::LoadReg{m.base,       size}});
+    d.stmts.push_back({ref_quotient,
+        ir::BinOp{is_signed ? ir::BinOpKind::SDiv : ir::BinOpKind::UDiv,
+                  ref_dividend, ref_divisor, size}});
+    d.stmts.push_back({ref_remainder,
+        ir::BinOp{is_signed ? ir::BinOpKind::SMod : ir::BinOpKind::UMod,
+                  ref_dividend, ref_divisor, size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_quotient,  size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_remainder, size}});
 
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
+// F2-BK-007 — MUL/IMUL r/m64. Computes the full 128-bit product as
+// two 64-bit halves: low → RAX (BinOp::Mul), high → RDX (UMulHi for
+// MUL or SMulHi for IMUL). ARM64 MUL is sign-agnostic on the low
+// half, so both forms share the BinOp::Mul kind.
 std::variant<Decoded, DecodeError> decode_mul_imul_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
     ir::Ref& next_ref,
     ir::BinOpKind op,
-    ir::OpSize size) {
+    ir::OpSize size,
+    bool is_signed = false) {
     if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     Decoded d;
     const ir::Ref ref_rax = next_ref++;
     const ir::Ref ref_rhs = next_ref++;
-    const ir::Ref ref_product = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
+    const ir::Ref ref_lo  = next_ref++;
+    const ir::Ref ref_hi  = next_ref++;
+    const ir::BinOpKind hi_kind =
+        is_signed ? ir::BinOpKind::SMulHi : ir::BinOpKind::UMulHi;
 
     d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, size}});
-    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
-    d.stmts.push_back({ref_product, ir::BinOp{op, ref_rax, ref_rhs, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_product, size}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_zero, size}});
+    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base,       size}});
+    d.stmts.push_back({ref_lo,  ir::BinOp{op,      ref_rax, ref_rhs, size}});
+    d.stmts.push_back({ref_hi,  ir::BinOp{hi_kind, ref_rax, ref_rhs, size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_lo, size}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_hi, size}});
 
     d.bytes_consumed = bytes_consumed;
     return d;
@@ -1919,7 +1949,8 @@ DispatchDecodeResult decode_group5_dispatch(
     bool has_operand_size_override,
     bool has_address_size_override,
     std::uint64_t instruction_guest_pc,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    bool real_call_ret) {
     const auto size = checked_operand_size(rex, has_operand_size_override);
     if (!size) return DecodeError::UnsupportedEncoding;
 
@@ -1938,6 +1969,8 @@ DispatchDecodeResult decode_group5_dispatch(
     if (*size != ir::OpSize::I64) return DecodeError::UnsupportedEncoding;
 
     if (m.reg == 4u || m.reg == 2u) {
+        // m.reg == 4u: JMP r/m  (no stack effect).
+        // m.reg == 2u: CALL r/m (real-mode: push return PC, then jump).
         Decoded d;
         const ir::Ref ref_target = next_ref++;
         if (m.mod == 0b11u) {
@@ -1947,7 +1980,12 @@ DispatchDecodeResult decode_group5_dispatch(
                 emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
             d.stmts.push_back({ref_target, ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
         }
-        d.stmts.push_back({std::nullopt, ir::JumpReg{ref_target}});
+        if (m.reg == 2u && real_call_ret) {
+            const std::uint64_t return_pc = instruction_guest_pc + cursor;
+            d.stmts.push_back({std::nullopt, ir::CallReg{ref_target, return_pc}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::JumpReg{ref_target}});
+        }
         d.bytes_consumed = cursor;
         return d;
     }
@@ -1978,10 +2016,14 @@ DispatchDecodeResult decode_group3_dispatch(
         return decode_neg_not_from_rm(m, cursor, next_ref, ir::BinOpKind::Sub, *size);
     }
     if (m.reg == 4u || m.reg == 5u) {
-        return decode_mul_imul_from_rm(m, cursor, next_ref, ir::BinOpKind::Mul, *size);
+        // /4 = MUL (unsigned), /5 = IMUL (signed).
+        return decode_mul_imul_from_rm(m, cursor, next_ref,
+                                       ir::BinOpKind::Mul, *size,
+                                       /*is_signed=*/m.reg == 5u);
     }
     if (m.reg == 6u || m.reg == 7u) {
-        return decode_div_from_rm(m, cursor, next_ref, *size);
+        // /6 = DIV (unsigned), /7 = IDIV (signed).
+        return decode_div_from_rm(m, cursor, next_ref, *size, /*is_signed=*/m.reg == 7u);
     }
     return DecodeError::UnsupportedEncoding;
 }
@@ -2185,7 +2227,8 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
     bool has_address_size_override,
     bool has_f3,
     std::uint64_t instruction_guest_pc,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    bool real_call_ret) {
     const auto entry = kOneByteDispatchTable[opcode];
     switch (entry.kind) {
         case OneByteDispatchKind::None:
@@ -2257,7 +2300,7 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
         }
         case OneByteDispatchKind::Group5:
             return DispatchDecodeResult{decode_group5_dispatch(
-                bytes, cursor, rex, has_operand_size_override, has_address_size_override, instruction_guest_pc, next_ref)};
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override, instruction_guest_pc, next_ref, real_call_ret)};
         case OneByteDispatchKind::Group3:
             return DispatchDecodeResult{decode_group3_dispatch(
                 bytes, cursor, rex, has_operand_size_override, has_address_size_override, next_ref)};
@@ -2266,12 +2309,195 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
     return std::nullopt;
 }
 
+ir::Ref emit_bits_to_fp64(Decoded& d, ir::Ref bits, ir::OpSize bit_size,
+                          ir::Ref& next_ref) {
+    const ir::Ref fp = next_ref++;
+    d.stmts.push_back({fp, ir::XmmFromGpr{bits, bit_size}});
+    if (bit_size == ir::OpSize::I64) return fp;
+
+    const ir::Ref widened = next_ref++;
+    d.stmts.push_back({widened,
+        ir::FpCvtScalar{fp, fp, ir::FpSize::F32, ir::FpSize::F64}});
+    return widened;
+}
+
+ir::Ref emit_fp64_to_bits(Decoded& d, ir::Ref fp, ir::OpSize bit_size,
+                          ir::Ref& next_ref) {
+    if (bit_size == ir::OpSize::I64) {
+        const ir::Ref bits = next_ref++;
+        d.stmts.push_back({bits, ir::GprFromXmm{fp, ir::OpSize::I64}});
+        return bits;
+    }
+
+    const ir::Ref narrowed = next_ref++;
+    d.stmts.push_back({narrowed,
+        ir::FpCvtScalar{fp, fp, ir::FpSize::F64, ir::FpSize::F32}});
+    const ir::Ref bits = next_ref++;
+    d.stmts.push_back({bits, ir::GprFromXmm{narrowed, ir::OpSize::I32}});
+    return bits;
+}
+
+ir::Ref emit_x87_load_fp64(Decoded& d, std::uint8_t st_index,
+                           ir::Ref& next_ref) {
+    const ir::Ref bits = next_ref++;
+    d.stmts.push_back({bits, ir::X87Load{st_index}});
+    return emit_bits_to_fp64(d, bits, ir::OpSize::I64, next_ref);
+}
+
+void emit_x87_store_fp64(Decoded& d, std::uint8_t st_index, ir::Ref fp,
+                         ir::Ref& next_ref) {
+    const ir::Ref bits = emit_fp64_to_bits(d, fp, ir::OpSize::I64, next_ref);
+    d.stmts.push_back({std::nullopt, ir::X87Store{st_index, bits}});
+}
+
+void emit_x87_binary_to_st0(Decoded& d, ir::FpBinOpKind op,
+                            ir::Ref lhs_fp, ir::Ref rhs_fp,
+                            ir::Ref& next_ref, bool reverse = false) {
+    const ir::Ref op_lhs = reverse ? rhs_fp : lhs_fp;
+    const ir::Ref op_rhs = reverse ? lhs_fp : rhs_fp;
+    const ir::Ref result_fp = next_ref++;
+    d.stmts.push_back({result_fp,
+        ir::FpBinOp{op, op_lhs, op_rhs, ir::FpSize::F64}});
+    emit_x87_store_fp64(d, 0u, result_fp, next_ref);
+}
+
+std::optional<ir::FpBinOpKind> x87_arith_kind(unsigned subop) noexcept {
+    switch (subop) {
+        case 0u: return ir::FpBinOpKind::Add;
+        case 1u: return ir::FpBinOpKind::Mul;
+        case 4u:
+        case 5u: return ir::FpBinOpKind::Sub;
+        case 6u:
+        case 7u: return ir::FpBinOpKind::Div;
+        default: return std::nullopt;
+    }
+}
+
+std::variant<Decoded, DecodeError> decode_x87(
+    Byte opcode,
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    const RexPrefix& rex,
+    bool has_operand_size_override,
+    bool has_address_size_override,
+    bool has_f2,
+    bool has_f3,
+    bool has_lock,
+    std::uint64_t instruction_guest_pc,
+    ir::Ref& next_ref) {
+    if (rex.present || has_operand_size_override || has_f2 || has_f3 || has_lock) {
+        return DecodeError::UnsupportedEncoding;
+    }
+
+    auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+
+    Decoded d;
+    const bool mem = m.mod != 0b11u;
+    if (mem) {
+        const bool is_f32 = opcode == 0xD8u || opcode == 0xD9u;
+        const bool is_f64 = opcode == 0xDCu || opcode == 0xDDu;
+        if (!is_f32 && !is_f64) return DecodeError::UnsupportedEncoding;
+        const ir::OpSize mem_size = is_f32 ? ir::OpSize::I32 : ir::OpSize::I64;
+        const ir::Ref addr = emit_address(d.stmts, m, next_ref,
+                                          instruction_guest_pc + cursor);
+
+        if ((opcode == 0xD9u || opcode == 0xDDu) && m.reg == 0u) {
+            // FLD m32fp/m64fp: convert to the reduced 64-bit stack form.
+            const ir::Ref bits = next_ref++;
+            d.stmts.push_back({bits, ir::LoadMemTSO{addr, mem_size}});
+            const ir::Ref fp64 = emit_bits_to_fp64(d, bits, mem_size, next_ref);
+            const ir::Ref stack_bits =
+                emit_fp64_to_bits(d, fp64, ir::OpSize::I64, next_ref);
+            d.stmts.push_back({std::nullopt, ir::X87Push{stack_bits}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        if ((opcode == 0xD9u || opcode == 0xDDu) &&
+            (m.reg == 2u || m.reg == 3u)) {
+            // FST/FSTP m32fp/m64fp.
+            const ir::Ref stack_bits = next_ref++;
+            if (m.reg == 2u) {
+                d.stmts.push_back({stack_bits, ir::X87Load{0u}});
+            } else {
+                d.stmts.push_back({stack_bits, ir::X87Pop{}});
+            }
+            const ir::Ref fp64 = emit_bits_to_fp64(d, stack_bits,
+                                                   ir::OpSize::I64, next_ref);
+            const ir::Ref out_bits = emit_fp64_to_bits(d, fp64, mem_size, next_ref);
+            d.stmts.push_back({std::nullopt, ir::StoreMemTSO{addr, out_bits, mem_size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        if (auto kind = x87_arith_kind(m.reg);
+            (opcode == 0xD8u || opcode == 0xDCu) && kind.has_value()) {
+            // FADD/FMUL/FSUB/FSUBR/FDIV/FDIVR m32fp/m64fp update ST(0).
+            const ir::Ref st0_fp = emit_x87_load_fp64(d, 0u, next_ref);
+            const ir::Ref bits = next_ref++;
+            d.stmts.push_back({bits, ir::LoadMemTSO{addr, mem_size}});
+            const ir::Ref rhs_fp = emit_bits_to_fp64(d, bits, mem_size, next_ref);
+            const bool reverse = m.reg == 5u || m.reg == 7u;
+            emit_x87_binary_to_st0(d, *kind, st0_fp, rhs_fp, next_ref, reverse);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        return DecodeError::UnsupportedEncoding;
+    }
+
+    const std::uint8_t st = static_cast<std::uint8_t>(
+        static_cast<unsigned>(m.base) & 0x7u);
+
+    if (opcode == 0xD9u && m.reg == 0u) {
+        // FLD ST(i).
+        const ir::Ref bits = next_ref++;
+        d.stmts.push_back({bits, ir::X87Load{st}});
+        d.stmts.push_back({std::nullopt, ir::X87Push{bits}});
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    if (opcode == 0xD9u && m.reg == 1u) {
+        // FXCH ST(i). FXCH ST(0) is a real no-op.
+        if (st != 0u) {
+            const ir::Ref st0 = next_ref++;
+            const ir::Ref sti = next_ref++;
+            d.stmts.push_back({st0, ir::X87Load{0u}});
+            d.stmts.push_back({sti, ir::X87Load{st}});
+            d.stmts.push_back({std::nullopt, ir::X87Store{0u, sti}});
+            d.stmts.push_back({std::nullopt, ir::X87Store{st, st0}});
+        }
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
+    if (opcode == 0xD8u) {
+        if (auto kind = x87_arith_kind(m.reg); kind.has_value()) {
+            // FADD/FMUL/FSUB/FSUBR/FDIV/FDIVR ST(0), ST(i).
+            const ir::Ref st0_fp = emit_x87_load_fp64(d, 0u, next_ref);
+            const ir::Ref sti_fp = emit_x87_load_fp64(d, st, next_ref);
+            const bool reverse = m.reg == 5u || m.reg == 7u;
+            emit_x87_binary_to_st0(d, *kind, st0_fp, sti_fp, next_ref, reverse);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+    }
+
+    return DecodeError::UnsupportedEncoding;
+}
+
 }  // namespace
 
 std::variant<Decoded, DecodeError> decode_one(
     std::span<const Byte> bytes,
     ir::Ref& next_ref,
-    std::uint64_t instruction_guest_pc) {
+    std::uint64_t instruction_guest_pc,
+    bool real_call_ret) {
 
     std::size_t cursor = 0;
     if (bytes.empty()) return DecodeError::TruncatedInput;
@@ -2302,6 +2528,7 @@ std::variant<Decoded, DecodeError> decode_one(
     bool seen_f3 = false;
     bool seen_lock = false;
     bool seen_segment_override = false;
+    VexPrefix vex;
     while (cursor < bytes.size()) {
         if (cursor >= kMaxInstructionBytes) {
             return DecodeError::UnsupportedEncoding;
@@ -2346,6 +2573,267 @@ std::variant<Decoded, DecodeError> decode_one(
             continue;
         }
 
+        // F2-IR-048 — VEX prefix (C4 / C5). Must follow legacy prefixes;
+        // appearing before a VEX prefix means the legacy ones are
+        // illegal. Per Intel: VEX is incompatible with REX, LOCK, F0,
+        // F2, F3, 66 prefixes appearing in the same instruction.
+        if (b == 0xC5u || b == 0xC4u) {
+            if (seen_rex || seen_66 || seen_f2 || seen_f3 || seen_lock) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            // Need at least one more byte for the VEX payload.
+            if (b == 0xC5u) {
+                if (cursor + 1 >= bytes.size()) return DecodeError::TruncatedInput;
+                const Byte v1 = bytes[cursor + 1];
+                vex.present = true;
+                rex.present = true;
+                rex.r = (v1 & 0x80u) == 0;            // R̅ (inverted)
+                vex.vvvv = static_cast<std::uint8_t>(
+                    ((v1 ^ 0xFFu) >> 3) & 0x0Fu);
+                vex.L    = (v1 & 0x04u) != 0;
+                vex.pp   = static_cast<std::uint8_t>(v1 & 0x03u);
+                vex.mmmmm = 1;                         // implied 0F
+                cursor += 2;
+            } else {
+                if (cursor + 2 >= bytes.size()) return DecodeError::TruncatedInput;
+                const Byte v1 = bytes[cursor + 1];
+                const Byte v2 = bytes[cursor + 2];
+                vex.present = true;
+                rex.present = true;
+                rex.r = (v1 & 0x80u) == 0;
+                rex.x = (v1 & 0x40u) == 0;
+                rex.b = (v1 & 0x20u) == 0;
+                vex.mmmmm = static_cast<std::uint8_t>(v1 & 0x1Fu);
+                rex.w = (v2 & 0x80u) != 0;
+                vex.vvvv = static_cast<std::uint8_t>(
+                    ((v2 ^ 0xFFu) >> 3) & 0x0Fu);
+                vex.L    = (v2 & 0x04u) != 0;
+                vex.pp   = static_cast<std::uint8_t>(v2 & 0x03u);
+                cursor += 3;
+            }
+            if (vex.mmmmm == 0 || vex.mmmmm > 3) return DecodeError::UnsupportedEncoding;
+            // F2-IR-005 — AVX-256 allowlist. VEX.L=1 (256-bit YMM) is
+            // accepted only for opcodes whose handlers know how to emit
+            // the low+high-lane IR pair. Each subsequent commit grows
+            // this list as a new opcode batch is wired up. Scalar FP
+            // ops with L=1 are #UD per Intel SDM regardless.
+            if (vex.L) {
+                if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
+                const Byte avx256_op = bytes[cursor];
+                const bool packed_fp_ps_pd =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    (avx256_op == 0x58u || avx256_op == 0x59u ||
+                     avx256_op == 0x5Cu || avx256_op == 0x5Eu ||
+                     avx256_op == 0x5Du || avx256_op == 0x5Fu ||
+                     avx256_op == 0x51u);
+                // Bitwise float-domain logical ops (VANDPS/PD, VORPS/PD,
+                // VXORPS/PD). 0F 54/56/57 with pp=00/01.
+                const bool fp_bitwise =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    (avx256_op == 0x54u || avx256_op == 0x56u ||
+                     avx256_op == 0x57u);
+                // Integer SIMD ymm — all opcodes routed through the
+                // big 66 0F handler that emits VecBinOp. Mirrors the
+                // SSE2..SSE4.1 set: add/sub/bitwise (FC/FD/FE/D4 +
+                // F8/F9/FA/FB + DB/EB/EF), saturating arith (EC/ED +
+                // DC/DD + E8/E9 + D8/D9), unsigned/signed min/max
+                // (DA/DE + EA/EE), and the multiply family (D5
+                // PMULLW, E4 PMULHUW, E5 PMULHW, F4 PMULUDQ, F6
+                // PSADBW). All share the same handler so admitting
+                // them here at L=1 is essentially free.
+                const bool int_simd_addsub_bitwise =
+                    vex.mmmmm == 1 && vex.pp == 1 &&
+                    (avx256_op == 0xFCu || avx256_op == 0xFDu ||
+                     avx256_op == 0xFEu || avx256_op == 0xD4u ||
+                     avx256_op == 0xF8u || avx256_op == 0xF9u ||
+                     avx256_op == 0xFAu || avx256_op == 0xFBu ||
+                     avx256_op == 0xDBu || avx256_op == 0xEBu ||
+                     avx256_op == 0xEFu ||
+                     // saturating
+                     avx256_op == 0xECu || avx256_op == 0xEDu ||
+                     avx256_op == 0xDCu || avx256_op == 0xDDu ||
+                     avx256_op == 0xE8u || avx256_op == 0xE9u ||
+                     avx256_op == 0xD8u || avx256_op == 0xD9u ||
+                     // min/max
+                     avx256_op == 0xDAu || avx256_op == 0xDEu ||
+                     avx256_op == 0xEAu || avx256_op == 0xEEu ||
+                     // multiply
+                     avx256_op == 0xD5u || avx256_op == 0xE4u ||
+                     avx256_op == 0xE5u || avx256_op == 0xF4u ||
+                     avx256_op == 0xF6u);
+                // PCMPEQ B/W/D (74/75/76) + PCMPGT B/W/D (64/65/66),
+                // mmmmm=1 pp=01.
+                const bool int_cmp =
+                    vex.mmmmm == 1 && vex.pp == 1 &&
+                    (avx256_op == 0x74u || avx256_op == 0x75u ||
+                     avx256_op == 0x76u || avx256_op == 0x64u ||
+                     avx256_op == 0x65u || avx256_op == 0x66u);
+                // UNPCKL/H FP: 0F 14/15, pp=00 (PS) or pp=01 (PD).
+                const bool fp_unpck =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    (avx256_op == 0x14u || avx256_op == 0x15u);
+                // PUNPCKL/H BW/WD/DQ/QDQ: 66 0F 60/61/62/6C / 68/69/6A/6D.
+                const bool int_unpck =
+                    vex.mmmmm == 1 && vex.pp == 1 &&
+                    (avx256_op == 0x60u || avx256_op == 0x61u ||
+                     avx256_op == 0x62u || avx256_op == 0x6Cu ||
+                     avx256_op == 0x68u || avx256_op == 0x69u ||
+                     avx256_op == 0x6Au || avx256_op == 0x6Du);
+                // VPSHUFD ymm: 66 0F 70 /r ib (per-128-bit-lane).
+                const bool int_pshufd =
+                    vex.mmmmm == 1 && vex.pp == 1 && avx256_op == 0x70u;
+                // VPSHUFLW (F2 0F 70 /r ib, pp=03) and VPSHUFHW
+                // (F3 0F 70 /r ib, pp=02).
+                const bool int_pshuf_hw_lw =
+                    vex.mmmmm == 1 && (vex.pp == 2 || vex.pp == 3) &&
+                    avx256_op == 0x70u;
+                // VMOVDQA (66 0F 6F/7F), VMOVDQU (F3 0F 6F/7F), VMOVAPS
+                // (0F 28/29), VMOVUPS (0F 10/11), VMOVAPD (66 0F 28/29),
+                // VMOVUPD (66 0F 10/11). All ymm forms via vex.L=1.
+                const bool avx_mov_family =
+                    vex.mmmmm == 1 &&
+                    ((vex.pp == 0 && (avx256_op == 0x10u || avx256_op == 0x11u ||
+                                      avx256_op == 0x28u || avx256_op == 0x29u)) ||
+                     (vex.pp == 1 && (avx256_op == 0x10u || avx256_op == 0x11u ||
+                                      avx256_op == 0x28u || avx256_op == 0x29u ||
+                                      avx256_op == 0x6Fu || avx256_op == 0x7Fu)) ||
+                     (vex.pp == 2 && (avx256_op == 0x6Fu || avx256_op == 0x7Fu)));
+                // VMOVDDUP (F2 0F 12, pp=03), VMOVSLDUP (F3 0F 12, pp=02),
+                // VMOVSHDUP (F3 0F 16, pp=02).
+                const bool avx_mov_dup =
+                    vex.mmmmm == 1 &&
+                    ((vex.pp == 3 && avx256_op == 0x12u) ||
+                     (vex.pp == 2 && (avx256_op == 0x12u || avx256_op == 0x16u)));
+                // VLDDQU (F2 0F F0), VMOVNTDQ (66 0F E7), VMOVNTPS
+                // (0F 2B), VMOVNTPD (66 0F 2B).
+                const bool avx_lddqu_movnt =
+                    vex.mmmmm == 1 &&
+                    ((vex.pp == 3 && avx256_op == 0xF0u) ||
+                     (vex.pp == 1 && avx256_op == 0xE7u) ||
+                     (vex.pp == 0 && avx256_op == 0x2Bu) ||
+                     (vex.pp == 1 && avx256_op == 0x2Bu));
+                // VPMOVMSKB ymm (66 0F D7).
+                const bool avx_pmovmskb =
+                    vex.mmmmm == 1 && vex.pp == 1 && avx256_op == 0xD7u;
+                // VMOVMSKPS / VMOVMSKPD ymm (0F 50, pp=00 or pp=01).
+                const bool avx_movmsk_fp =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    avx256_op == 0x50u;
+                // CMPxxPS/PD (packed): 0F C2 with pp=00 (PS) or pp=01
+                // (PD). Scalar variants (pp=02/03) are #UD with L=1.
+                const bool fp_cmp_packed =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    avx256_op == 0xC2u;
+                // SHUFPS/PD (0F C6, pp=00 or pp=01).
+                const bool fp_shuf =
+                    vex.mmmmm == 1 && (vex.pp == 0 || vex.pp == 1) &&
+                    avx256_op == 0xC6u;
+                // HADDPS/PD (0F 7C, pp=01 → PD or pp=03 → PS).
+                const bool fp_hadd =
+                    vex.mmmmm == 1 && (vex.pp == 1 || vex.pp == 3) &&
+                    avx256_op == 0x7Cu;
+                // VBROADCASTSS/SD/F128 (mmmmm=2, pp=01).
+                const bool avx_broadcast =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op == 0x18u || avx256_op == 0x19u ||
+                     avx256_op == 0x1Au);
+                // SSSE3 / SSE4.1 ymm via the big int-SIMD-on-0F38 handler:
+                // PHADDW/D (01/02), PHSUBW/D (05/06), PCMPEQQ (29),
+                // PCMPGTQ (37), PMIN/MAX SSE4.1 (38..3F), PMULLD (40).
+                const bool avx_int_simd_38 =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op == 0x01u || avx256_op == 0x02u ||
+                     avx256_op == 0x05u || avx256_op == 0x06u ||
+                     avx256_op == 0x29u || avx256_op == 0x37u ||
+                     avx256_op == 0x40u ||
+                     (avx256_op >= 0x38u && avx256_op <= 0x3Fu));
+                // VPTEST ymm (66 0F 38 17). F2-IR-049.
+                const bool avx_ptest =
+                    vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x17u;
+                // VPERMD ymm (66 0F 38 36). F2-IR-052.
+                const bool avx_permd =
+                    vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x36u;
+                // VPSHUFB ymm (66 0F 38 00) and VPABS B/W/D ymm
+                // (66 0F 38 1C/1D/1E).
+                const bool avx_pshufb_pabs =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op == 0x00u || avx256_op == 0x1Cu ||
+                     avx256_op == 0x1Du || avx256_op == 0x1Eu);
+                // VPMOVZX/SX BW/BD/BQ/WD/WQ/DQ ymm (66 0F 38 20..25 +
+                // 30..35).
+                const bool avx_pmov_zx_sx =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    ((avx256_op >= 0x20u && avx256_op <= 0x25u) ||
+                     (avx256_op >= 0x30u && avx256_op <= 0x35u));
+                // VINSERTF128 / VEXTRACTF128 / VPERM2F128 (mmmmm=3, pp=01).
+                const bool avx_lane_xfer =
+                    vex.mmmmm == 3 && vex.pp == 1 &&
+                    (avx256_op == 0x06u || avx256_op == 0x18u ||
+                     avx256_op == 0x19u);
+                // VPALIGNR ymm: 66 0F 3A 0F /r ib (mmmmm=3, pp=01, op=0x0F).
+                const bool avx_palignr =
+                    vex.mmmmm == 3 && vex.pp == 1 && avx256_op == 0x0Fu;
+                // VBLENDVPS/PD + VPBLENDVB ymm: 66 0F 3A 4A/4B/4C /r ib.
+                // F2-IR-050.
+                const bool avx_blend_vex =
+                    vex.mmmmm == 3 && vex.pp == 1 &&
+                    (avx256_op == 0x4Au || avx256_op == 0x4Bu ||
+                     avx256_op == 0x4Cu);
+                // VPERMQ ymm: VEX.256.66.0F3A.W1 00 /r ib. F2-IR-051.
+                const bool avx_permq =
+                    vex.mmmmm == 3 && vex.pp == 1 && avx256_op == 0x00u;
+                // VROUNDPS/PD ymm: 66 0F 3A 08/09 /r ib.
+                // Scalar SS/SD (0A/0B) reject in handler with L=1.
+                const bool avx_round =
+                    vex.mmmmm == 3 && vex.pp == 1 &&
+                    (avx256_op == 0x08u || avx256_op == 0x09u);
+                // FMA3 packed (mmmmm=2 → 0F 38, pp=01 → 66 prefix).
+                // High nibble in {9,A,B} = ordering 132/213/231;
+                // even low nibble = packed (PS if W=0, PD if W=1).
+                // Odd low nibble = scalar SS/SD (only L=0 valid).
+                const std::uint8_t op_lo = avx256_op & 0x0Fu;
+                const bool fma3_ymm =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op >= 0x98u && avx256_op <= 0xBFu) &&
+                    ((avx256_op & 0xF0u) == 0x90u ||
+                     (avx256_op & 0xF0u) == 0xA0u ||
+                     (avx256_op & 0xF0u) == 0xB0u) &&
+                    (op_lo == 0x8u || op_lo == 0xAu ||
+                     op_lo == 0xCu || op_lo == 0xEu);
+                // VFMADDSUB / VFMSUBADD ymm: opcodes X6/X7 with X
+                // in {9,A,B}. Always packed (no scalar form).
+                const bool fma3_addsub_ymm =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op == 0x96u || avx256_op == 0x97u ||
+                     avx256_op == 0xA6u || avx256_op == 0xA7u ||
+                     avx256_op == 0xB6u || avx256_op == 0xB7u);
+                if (!(packed_fp_ps_pd || fp_bitwise ||
+                      int_simd_addsub_bitwise ||
+                      int_cmp || fp_unpck || int_unpck ||
+                      int_pshufd || int_pshuf_hw_lw ||
+                      avx_mov_family || avx_mov_dup ||
+                      avx_lddqu_movnt || avx_pmovmskb ||
+                      avx_movmsk_fp ||
+                      fp_cmp_packed || fp_shuf || fp_hadd ||
+                      avx_broadcast || avx_lane_xfer ||
+                      avx_palignr || avx_round || avx_int_simd_38 ||
+                      avx_pshufb_pabs || avx_pmov_zx_sx ||
+                      avx_ptest || avx_blend_vex || avx_permq ||
+                      avx_permd ||
+                      fma3_ymm || fma3_addsub_ymm)) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+            }
+            // Synthesise the legacy mandatory prefixes the SSE branches
+            // gate on, so the existing dispatch can be reused.
+            switch (vex.pp) {
+                case 1: has_operand_size_override = true; break;
+                case 2: has_f3 = true; break;
+                case 3: has_f2 = true; break;
+            }
+            break;  // VEX consumes the prefix slot; opcode follows.
+        }
+
         if (b == 0xF0u) {
             if (seen_lock) return DecodeError::UnsupportedEncoding;
             has_lock = true;
@@ -2375,9 +2863,18 @@ std::variant<Decoded, DecodeError> decode_one(
     if (cursor >= bytes.size()) return DecodeError::TruncatedInput;
     if (cursor >= kMaxInstructionBytes) return DecodeError::UnsupportedEncoding;
 
-    // 2. Opcode byte.
-    const Byte opcode = bytes[cursor];
-    ++cursor;
+    // 2. Opcode byte. With VEX-encoded instructions, the escape level is
+    // encoded in vex.mmmmm rather than 0F / 0F 38 / 0F 3A bytes in the
+    // stream — synthesise opcode = 0x0F to enter the existing two-byte
+    // dispatch and (for mmmmm=2/3) the inner sub-dispatch will inject
+    // the right `subop` byte.
+    Byte opcode;
+    if (vex.present) {
+        opcode = 0x0Fu;
+    } else {
+        opcode = bytes[cursor];
+        ++cursor;
+    }
 
     // LOCK currently only makes sense for the selected two-byte atomic
     // exchange-family opcodes handled below.
@@ -2398,6 +2895,16 @@ std::variant<Decoded, DecodeError> decode_one(
         opcode != 0xAAu &&
         opcode != 0xABu) {
         return DecodeError::UnsupportedEncoding;
+    }
+
+    // --- x87 reduced-precision subset (D8..DF) ----------------------------
+    if (opcode >= 0xD8u && opcode <= 0xDFu) {
+        return decode_x87(opcode, bytes, cursor, rex,
+                          has_operand_size_override,
+                          has_address_size_override,
+                          has_f2, has_f3, has_lock,
+                          instruction_guest_pc,
+                          next_ref);
     }
 
     // --- INT3 (0xCC) -------------------------------------------------------
@@ -2452,7 +2959,11 @@ std::variant<Decoded, DecodeError> decode_one(
         if (has_operand_size_override || has_address_size_override) return DecodeError::UnsupportedEncoding;
         if (rex.present) return DecodeError::UnsupportedEncoding;
         Decoded d;
-        d.stmts.push_back({std::nullopt, ir::Return{}});
+        if (real_call_ret) {
+            d.stmts.push_back({std::nullopt, ir::RetAdjusted{0u}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::Return{}});
+        }
         d.bytes_consumed = cursor;
         return d;
     }
@@ -2479,9 +2990,9 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- RET imm16 (0xC2) ---------------------------------------------------
     //
-    // MVP placeholder: performs `RSP += imm16 + 8`, then emits Return.
-    // Correct pop-into-return is not modelled yet; lowering still treats Return
-    // as the block terminator with x0 = halt sentinel.
+    // Legacy mode performs `RSP += imm16 + 8`, then emits Return.
+    // Real-call mode uses the RetAdjusted terminator; lowering pops the
+    // return address and then adds the extra imm16 bytes.
     if (opcode == 0xC2u) {
         if (has_operand_size_override || has_address_size_override) return DecodeError::UnsupportedEncoding;
         if (rex.present) return DecodeError::UnsupportedEncoding;
@@ -2489,17 +3000,25 @@ std::variant<Decoded, DecodeError> decode_one(
         if (std::holds_alternative<DecodeError>(imm)) {
             return std::get<DecodeError>(imm);
         }
-        const std::uint64_t pop_bytes = std::get<std::uint64_t>(imm) + 8u;
+        const std::uint64_t imm16 = std::get<std::uint64_t>(imm);
+        const std::uint64_t pop_bytes = imm16 + 8u;
         Decoded d;
-        const ir::Ref ref_rsp = next_ref++;
-        const ir::Ref ref_pop = next_ref++;
-        const ir::Ref ref_new_rsp = next_ref++;
-        d.stmts.push_back({ref_rsp, ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
-        d.stmts.push_back({ref_pop, ir::Constant{pop_bytes, ir::OpSize::I64}});
-        d.stmts.push_back({ref_new_rsp,
-                           ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_pop, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::Return{}});
+        if (real_call_ret) {
+            d.stmts.push_back({std::nullopt, ir::RetAdjusted{imm16}});
+        } else {
+            const ir::Ref ref_rsp = next_ref++;
+            d.stmts.push_back({ref_rsp,
+                ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
+            const ir::Ref ref_pop     = next_ref++;
+            const ir::Ref ref_new_rsp = next_ref++;
+            d.stmts.push_back({ref_pop,
+                ir::Constant{pop_bytes, ir::OpSize::I64}});
+            d.stmts.push_back({ref_new_rsp,
+                ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_pop, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
+            d.stmts.push_back({std::nullopt, ir::Return{}});
+        }
         d.bytes_consumed = cursor;
         return d;
     }
@@ -2540,8 +3059,9 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- CALL rel32 (E8 cd) -------------------------------------------------
     //
-    // MVP placeholder: treat CALL as an absolute direct jump. Proper return-address
-    // handling is deferred to `F1-IR-008` and runtime stack-call support.
+    // Legacy mode treats CALL as an absolute direct jump. With
+    // `real_call_ret`, emit the first-class CallRel terminator; lowering
+    // performs the guest-stack push and returns the callee target PC.
     if (opcode == 0xE8u) {
         if (rex.present) return DecodeError::UnsupportedEncoding;
         if (has_operand_size_override) return DecodeError::UnsupportedEncoding;
@@ -2552,8 +3072,13 @@ std::variant<Decoded, DecodeError> decode_one(
         const std::int32_t rel = sign_extend_i32<4>(std::get<std::uint64_t>(imm));
         const std::uint64_t target =
             instruction_guest_pc + cursor + static_cast<std::uint64_t>(static_cast<std::int64_t>(rel));
+        const std::uint64_t return_pc = instruction_guest_pc + cursor;
         Decoded d;
-        d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
+        if (real_call_ret) {
+            d.stmts.push_back({std::nullopt, ir::CallRel{target, return_pc}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::JumpRel{target}});
+        }
         d.bytes_consumed = cursor;
         return d;
     }
@@ -2605,14 +3130,52 @@ std::variant<Decoded, DecodeError> decode_one(
         return d;
     }
 
+    // F1-DC-066: REP / REPE / REPNE on string ops decode to an
+    // InlineAsm{full original bytes} placeholder. The runtime
+    // interprets via a software stub until the proper IR-level
+    // loop expansion lands. Any (F2 || F3) prefix on a string-op
+    // opcode lands in the helper below.
+    auto rep_string_inline_asm = [&](std::size_t consumed)
+        -> std::variant<Decoded, DecodeError> {
+        Decoded d;
+        std::vector<std::uint8_t> raw(bytes.begin(),
+                                      bytes.begin() + static_cast<std::ptrdiff_t>(consumed));
+        d.stmts.push_back({std::nullopt, ir::InlineAsm{std::move(raw)}});
+        d.bytes_consumed = consumed;
+        return d;
+    };
+
     // --- STOSB/STOSW/STOSD/STOSQ (AA / AB) ----------------------------------
     if (opcode == 0xAAu || opcode == 0xABu) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
         const ir::OpSize size =
             opcode == 0xAAu ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
                                      : (has_operand_size_override ? ir::OpSize::I16
                                                                   : ir::OpSize::I32));
+        if (has_f3) {
+            // F2-BK-008 — REP STOS lowered as native ARM64 loop.
+            // REPNE (F2) on STOS is invalid per Intel SDM (no compare);
+            // fall through to the InlineAsm placeholder below if seen.
+            if (opcode == 0xAAu && (rex.present || has_operand_size_override)) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            if (opcode == 0xABu && rex.w && has_operand_size_override) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            Decoded d;
+            d.stmts.push_back({std::nullopt, ir::RepStos{
+                size,
+                /*reverse=*/false,
+                /*pc_of_rep=*/instruction_guest_pc,
+                /*pc_after_rep=*/instruction_guest_pc + cursor}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+        if (has_f2) {
+            // REPNE STOS — InlineAsm placeholder (rare/invalid).
+            return rep_string_inline_asm(cursor);
+        }
         if (opcode == 0xAAu && (rex.present || has_operand_size_override)) {
             return DecodeError::UnsupportedEncoding;
         }
@@ -2624,12 +3187,30 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- MOVSB/MOVSW/MOVSD/MOVSQ (A4 / A5) ----------------------------------
     if (opcode == 0xA4u || opcode == 0xA5u) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
         const ir::OpSize size =
             opcode == 0xA4u ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
                                      : (has_operand_size_override ? ir::OpSize::I16
                                                                   : ir::OpSize::I32));
+        if (has_f3) {
+            // F2-BK-009 — REP MOVS native loop.
+            if (opcode == 0xA4u && (rex.present || has_operand_size_override)) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            if (opcode == 0xA5u && rex.w && has_operand_size_override) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            Decoded d;
+            d.stmts.push_back({std::nullopt, ir::RepMovs{
+                size,
+                /*reverse=*/false,
+                /*pc_of_rep=*/instruction_guest_pc,
+                /*pc_after_rep=*/instruction_guest_pc + cursor}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+        if (has_f2) return rep_string_inline_asm(cursor);
         if (opcode == 0xA4u && (rex.present || has_operand_size_override)) {
             return DecodeError::UnsupportedEncoding;
         }
@@ -2641,7 +3222,8 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- CMPSB/CMPSW/CMPSD/CMPSQ (A6 / A7) ----------------------------------
     if (opcode == 0xA6u || opcode == 0xA7u) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
+        if (has_f2 || has_f3) return rep_string_inline_asm(cursor);
         const ir::OpSize size =
             opcode == 0xA6u ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
@@ -2658,7 +3240,8 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- SCASB/SCASW/SCASD/SCASQ (AE / AF) ----------------------------------
     if (opcode == 0xAEu || opcode == 0xAFu) {
-        if (has_lock || has_f2 || has_f3) return DecodeError::UnsupportedEncoding;
+        if (has_lock) return DecodeError::UnsupportedEncoding;
+        if (has_f2 || has_f3) return rep_string_inline_asm(cursor);
         const ir::OpSize size =
             opcode == 0xAEu ? ir::OpSize::I8
                             : (rex.w ? ir::OpSize::I64
@@ -2784,11 +3367,3541 @@ std::variant<Decoded, DecodeError> decode_one(
 
     // --- Two-byte opcodes (0x0F xx) --------------------------------------
     if (opcode == 0x0Fu) {
-        auto sub = consume_le<1>(bytes, cursor);
-        if (std::holds_alternative<DecodeError>(sub)) {
-            return std::get<DecodeError>(sub);
+        Byte subop;
+        if (vex.present && vex.mmmmm == 2) {
+            subop = 0x38u;  // route into the 0F 38 escape sub-dispatch
+        } else if (vex.present && vex.mmmmm == 3) {
+            subop = 0x3Au;  // route into the 0F 3A escape sub-dispatch
+        } else {
+            auto sub = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(sub)) {
+                return std::get<DecodeError>(sub);
+            }
+            subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
         }
-        const Byte subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
+
+        // F2-IR-053 — BMI2 RORX (0F 3A F0): rotate-right with imm8
+        // count, no flags. Encoded as VEX.LZ.F2.0F3A.W0/1 F0 /r ib.
+        // Distinct from the legacy `ROR r/m, imm8` (which writes
+        // flags) in that the count comes from an immediate byte and
+        // there's NO destination register reuse (dest = ModRM.reg,
+        // src = ModRM.rm; the legacy form has them coincident).
+        if (subop == 0x3Au && vex.present && !vex.L && has_f2 &&
+            !has_lock && cursor < bytes.size() && bytes[cursor] == 0xF0u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t imm8 =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            const ir::Ref r_src   = next_ref++;
+            const ir::Ref r_count = next_ref++;
+            const ir::Ref r_res   = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_count,
+                ir::Constant{static_cast<std::uint64_t>(imm8), size}});
+            d.stmts.push_back({r_res,
+                ir::BinOp{ir::BinOpKind::Ror, r_src, r_count, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-038: 0F 3A escape — SSSE3 / SSE4.1 imm-bearing ops.
+        if (subop == 0x3Au && has_operand_size_override && !has_lock &&
+            !has_f2 && !has_f3) {
+            auto third = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(third)) {
+                return std::get<DecodeError>(third);
+            }
+            const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+
+            // F2-IR-005 follow-up — AVX lane-crossing 128-bit moves
+            // (66 0F 3A, VEX.L=1 only):
+            //   sub3 = 0x18 — VINSERTF128 ymm1, ymm2, xmm3/m128, imm8
+            //   sub3 = 0x19 — VEXTRACTF128 xmm1/m128, ymm2, imm8
+            //   sub3 = 0x06 — VPERM2F128   ymm1, ymm2, ymm3/m128, imm8
+            // imm8 bit 0 (insert/extract) selects which 128-bit half:
+            // 0 = low, 1 = high. VEX.vvvv supplies the other half for
+            // VINSERTF128 (the unmodified source). VEXTRACTF128 has no
+            // vvvv (must be 0b1111).
+            if (vex.present && vex.L &&
+                (sub3 == 0x18u || sub3 == 0x19u)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t ctrl =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm)) & 0x01u;
+                Decoded d;
+                if (sub3 == 0x18u) {
+                    // VINSERTF128 ymm1 (m.reg), ymm2 (vvvv), xmm3/m128 (m.r/m)
+                    const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                    const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                    // Source 128-bit value (xmm3 or memory).
+                    ir::Ref r_src;
+                    if (m.mod == 0b11) {
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                    }
+                    if (ctrl == 0u) {
+                        // Insert into low half. Low ← src, High ← vvvv.hi.
+                        const ir::Ref r_v_hi = next_ref++;
+                        d.stmts.push_back({r_v_hi, ir::LoadVecRegHi{r_v}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecReg{r_dst, r_src}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{r_dst, r_v_hi}});
+                    } else {
+                        // Insert into high half. Low ← vvvv.lo, High ← src.
+                        const ir::Ref r_v_lo = next_ref++;
+                        d.stmts.push_back({r_v_lo, ir::LoadVecReg{r_v}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecReg{r_dst, r_v_lo}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{r_dst, r_src}});
+                    }
+                } else {
+                    // VEXTRACTF128 xmm1/m128 (m.r/m), ymm2 (m.reg), imm8.
+                    // In the VEX-encoded extract, ModRM.reg is the *source*
+                    // ymm and ModRM.r/m is the destination xmm/m128. vvvv
+                    // is reserved (encoded 0b1111 → stored 0); we don't
+                    // enforce since other VEX handlers don't either.
+                    const std::uint8_t r_src = static_cast<std::uint8_t>(m.reg);
+                    const ir::Ref r_half = next_ref++;
+                    if (ctrl == 0u) {
+                        d.stmts.push_back({r_half, ir::LoadVecReg{r_src}});
+                    } else {
+                        d.stmts.push_back({r_half, ir::LoadVecRegHi{r_src}});
+                    }
+                    if (m.mod == 0b11) {
+                        // Destination is xmm — write low half, zero upper.
+                        const std::uint8_t r_dst =
+                            static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                        const ir::Ref r_zero = next_ref++;
+                        d.stmts.push_back({r_zero,
+                            ir::VecConstant{0ULL, 0ULL}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecReg{r_dst, r_half}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{r_dst, r_zero}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVec{r_addr, r_half}});
+                    }
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // VPERM2F128 ymm1, ymm2, ymm3/m128, imm8 (66 0F 3A 06 /r ib).
+            // imm8 bits [1:0] select source for low half:
+            //   0b00 = ymm2.lo, 0b01 = ymm2.hi, 0b10 = src.lo, 0b11 = src.hi
+            // imm8 bits [5:4] same encoding for high half.
+            // imm8 bit 3 → zero the low half; bit 7 → zero the high half.
+            if (vex.present && vex.L && sub3 == 0x06u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                Decoded d;
+                // Materialise the four candidate 128-bit halves: vvvv.lo,
+                // vvvv.hi, src.lo, src.hi. Some may end up dead and DCE
+                // will clean them up later.
+                const ir::Ref r_v_lo  = next_ref++;
+                const ir::Ref r_v_hi  = next_ref++;
+                const ir::Ref r_s_lo  = next_ref++;
+                const ir::Ref r_s_hi  = next_ref++;
+                d.stmts.push_back({r_v_lo, ir::LoadVecReg{r_v}});
+                d.stmts.push_back({r_v_hi, ir::LoadVecRegHi{r_v}});
+                if (m.mod == 0b11) {
+                    const std::uint8_t r_rm =
+                        static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                    d.stmts.push_back({r_s_lo, ir::LoadVecReg{r_rm}});
+                    d.stmts.push_back({r_s_hi, ir::LoadVecRegHi{r_rm}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_s_lo, ir::LoadVec{r_addr}});
+                    d.stmts.push_back({r_s_hi, ir::LoadVec{r_addr_hi}});
+                }
+                const ir::Ref r_zero = next_ref++;
+                d.stmts.push_back({r_zero, ir::VecConstant{0ULL, 0ULL}});
+                auto pick = [&](unsigned sel, bool zero_bit) -> ir::Ref {
+                    if (zero_bit) return r_zero;
+                    switch (sel & 0x3u) {
+                        case 0: return r_v_lo;
+                        case 1: return r_v_hi;
+                        case 2: return r_s_lo;
+                        case 3: return r_s_hi;
+                    }
+                    return r_zero;
+                };
+                const ir::Ref out_lo = pick(imm8 & 0x03u,
+                                            (imm8 & 0x08u) != 0);
+                const ir::Ref out_hi = pick((imm8 >> 4) & 0x03u,
+                                            (imm8 & 0x80u) != 0);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, out_lo}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{r_dst, out_hi}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-051 — VPERMQ ymm, ymm/m256, imm8
+            // (VEX.256.66.0F3A.W1 00 /r ib). For each of the four dst
+            // qwords, imm8 picks one of the four src qwords. Lowered
+            // via two `VecTbl2` invocations over the 256-bit source
+            // pair, with the byte-index VecConstants synthesised at
+            // decode time.
+            if (vex.present && vex.L && sub3 == 0x00u) {
+                // VPERMQ requires W=1 (the VEX W bit, which the
+                // 3-byte VEX parser folds into rex.w at line 2414).
+                if (!rex.w) return DecodeError::UnsupportedEncoding;
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                // For each dst qword (8 bytes), the source qword index
+                // is `imm8[2*dst_qw+1 : 2*dst_qw]`. Encode the 8 byte
+                // indices for that source qword into a uint64.
+                auto qword_byte_indices = [](std::uint8_t src_qw) -> std::uint64_t {
+                    std::uint64_t r = 0;
+                    for (unsigned b = 0; b < 8u; ++b) {
+                        const std::uint64_t byte_idx =
+                            static_cast<std::uint64_t>(src_qw) * 8u + b;
+                        r |= byte_idx << (8u * b);
+                    }
+                    return r;
+                };
+                const std::uint8_t qw_lo_0 = (imm8 >> 0) & 0x3u;
+                const std::uint8_t qw_lo_1 = (imm8 >> 2) & 0x3u;
+                const std::uint8_t qw_hi_0 = (imm8 >> 4) & 0x3u;
+                const std::uint8_t qw_hi_1 = (imm8 >> 6) & 0x3u;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_src_lo = next_ref++;
+                const ir::Ref r_src_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    const std::uint8_t r_rm =
+                        static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                    d.stmts.push_back({r_src_lo, ir::LoadVecReg{r_rm}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVecRegHi{r_rm}});
+                } else {
+                    const ir::Ref r_off16   = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_lo, ir::LoadVec{*r_addr_lo}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                const ir::Ref r_idx_lo = next_ref++;
+                const ir::Ref r_idx_hi = next_ref++;
+                const ir::Ref r_dst_lo = next_ref++;
+                const ir::Ref r_dst_hi = next_ref++;
+                d.stmts.push_back({r_idx_lo,
+                    ir::VecConstant{qword_byte_indices(qw_lo_0),
+                                    qword_byte_indices(qw_lo_1)}});
+                d.stmts.push_back({r_idx_hi,
+                    ir::VecConstant{qword_byte_indices(qw_hi_0),
+                                    qword_byte_indices(qw_hi_1)}});
+                d.stmts.push_back({r_dst_lo,
+                    ir::VecTbl2{r_src_lo, r_src_hi, r_idx_lo}});
+                d.stmts.push_back({r_dst_hi,
+                    ir::VecTbl2{r_src_lo, r_src_hi, r_idx_hi}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_dst_lo}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_dst_hi}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-050 — VEX-encoded VPBLENDVB / VBLENDVPS / VBLENDVPD:
+            //   VEX.NDS.128.66.0F3A.W0 4A /r ib — VBLENDVPS xmm
+            //   VEX.NDS.128.66.0F3A.W0 4B /r ib — VBLENDVPD xmm
+            //   VEX.NDS.128.66.0F3A.W0 4C /r ib — VPBLENDVB xmm
+            // and VEX.256 forms for the ymm variants. Operand layout
+            // differs from the legacy SSE4.1 BLEND* family (66 0F 38
+            // 10/14/15 above): the mask register is encoded as the
+            // upper nibble of imm8 (not implicit XMM0), and the source
+            // for "src1" is `vex.vvvv` rather than ModRM.reg. The
+            // destination is ModRM.reg.
+            if (vex.present &&
+                (sub3 == 0x4Au || sub3 == 0x4Bu || sub3 == 0x4Cu)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                const std::uint8_t mask_xmm =
+                    static_cast<std::uint8_t>((imm8 >> 4) & 0x0Fu);
+                const std::uint8_t src1_xmm =
+                    static_cast<std::uint8_t>(vex.vvvv);
+                const std::uint8_t dst_xmm =
+                    static_cast<std::uint8_t>(m.reg);
+                const ir::VecLane lane =
+                    sub3 == 0x4Cu ? ir::VecLane::B16 :
+                    sub3 == 0x4Au ? ir::VecLane::S4  :
+                                    ir::VecLane::D2;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_dst  = next_ref++;
+                const ir::Ref r_src  = next_ref++;
+                const ir::Ref r_mask = next_ref++;
+                const ir::Ref r_res  = next_ref++;
+                d.stmts.push_back({r_dst, ir::LoadVecReg{src1_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+                }
+                d.stmts.push_back({r_mask, ir::LoadVecReg{mask_xmm}});
+                d.stmts.push_back({r_res,
+                    ir::VecBlend{r_dst, r_src, r_mask, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{dst_xmm, r_res}});
+                if (vex.L) {
+                    const ir::Ref r_dst_hi  = next_ref++;
+                    const ir::Ref r_src_hi  = next_ref++;
+                    const ir::Ref r_mask_hi = next_ref++;
+                    const ir::Ref r_res_hi  = next_ref++;
+                    d.stmts.push_back({r_dst_hi,
+                        ir::LoadVecRegHi{src1_xmm}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_src_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16   = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_src_hi,
+                            ir::LoadVec{r_addr_hi}});
+                    }
+                    d.stmts.push_back({r_mask_hi,
+                        ir::LoadVecRegHi{mask_xmm}});
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecBlend{r_dst_hi, r_src_hi, r_mask_hi, lane}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_res_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // SSE4.1 ROUNDPS/PD/SS/SD (66 0F 3A 08/09/0A/0B /r ib).
+            if (sub3 == 0x08u || sub3 == 0x09u ||
+                sub3 == 0x0Au || sub3 == 0x0Bu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t mode = static_cast<std::uint8_t>(
+                    std::get<std::uint64_t>(imm)) & 0x07u;
+                const bool is_packed = (sub3 == 0x08u || sub3 == 0x09u);
+                const ir::FpSize fp_sz =
+                    (sub3 == 0x08u || sub3 == 0x0Au) ? ir::FpSize::F32
+                                                      : ir::FpSize::F64;
+                // Scalar VROUNDSS/SD with VEX.L=1 is #UD per Intel SDM.
+                if (vex.present && vex.L && !is_packed) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+                }
+                d.stmts.push_back({r_res,
+                    ir::VecFpRound{r_lhs, r_src, fp_sz, mode, is_packed}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                // F2-IR-005 — VROUNDPS/PD ymm. Per-128-bit-lane.
+                if (vex.present && vex.L) {
+                    const ir::Ref r_lhs_hi = next_ref++;
+                    const ir::Ref r_src_hi = next_ref++;
+                    const ir::Ref r_res_hi = next_ref++;
+                    d.stmts.push_back({r_lhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_src_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16 = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecFpRound{r_lhs_hi, r_src_hi, fp_sz, mode, is_packed}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // SSE4.1 PEXTRB/D/Q + PINSRB/D/Q (S4/D2 selected by REX.W on dword/qword forms).
+            //   66 0F 3A 14 /r ib — PEXTRB B16 lane → r/m32
+            //   66 0F 3A 16 /r ib — PEXTRD/Q (REX.W=0 → PEXTRD S4 lane → r/m32;
+            //                                  REX.W=1 → PEXTRQ D2 lane → r/m64)
+            //   66 0F 3A 20 /r ib — PINSRB
+            //   66 0F 3A 22 /r ib — PINSRD/Q
+            if (sub3 == 0x14u || sub3 == 0x16u ||
+                sub3 == 0x20u || sub3 == 0x22u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm_byte = static_cast<std::uint8_t>(
+                    std::get<std::uint64_t>(imm));
+                ir::VecLane lane;
+                std::uint8_t lane_idx;
+                ir::OpSize gpr_sz;
+                switch (sub3) {
+                    case 0x14u: lane = ir::VecLane::B16; lane_idx = imm_byte & 0x0Fu;
+                                gpr_sz = ir::OpSize::I32; break;
+                    case 0x20u: lane = ir::VecLane::B16; lane_idx = imm_byte & 0x0Fu;
+                                gpr_sz = ir::OpSize::I32; break;
+                    case 0x16u:  // PEXTRD/Q
+                    case 0x22u:  // PINSRD/Q
+                        if (rex.w) {
+                            lane = ir::VecLane::D2; lane_idx = imm_byte & 0x01u;
+                            gpr_sz = ir::OpSize::I64;
+                        } else {
+                            lane = ir::VecLane::S4; lane_idx = imm_byte & 0x03u;
+                            gpr_sz = ir::OpSize::I32;
+                        }
+                        break;
+                    default: lane = ir::VecLane::B16; lane_idx = 0; gpr_sz = ir::OpSize::I32;
+                }
+                const bool is_extract = (sub3 == 0x14u || sub3 == 0x16u);
+                Decoded d;
+                if (is_extract) {
+                    // GPR dest = m.reg, XMM source = m.base.
+                    const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+                    const unsigned src_xmm = static_cast<unsigned>(m.base);
+                    const ir::Ref r_xmm = next_ref++;
+                    const ir::Ref r_val = next_ref++;
+                    d.stmts.push_back({r_xmm,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                    d.stmts.push_back({r_val,
+                        ir::VecExtractLaneU{r_xmm, lane_idx, lane}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreReg{dst_gpr, r_val, gpr_sz}});
+                } else {
+                    // PINSR*: xmm dest = m.reg, GPR source = m.base.
+                    const ir::Ref r_lhs = next_ref++;
+                    const ir::Ref r_val = next_ref++;
+                    const ir::Ref r_res = next_ref++;
+                    d.stmts.push_back({r_lhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                    d.stmts.push_back({r_val,
+                        ir::LoadReg{m.base, gpr_sz}});
+                    d.stmts.push_back({r_res,
+                        ir::VecInsertLane{r_lhs, r_val, lane_idx, lane}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            if (sub3 == 0x0Fu) {  // PALIGNR
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t count =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                Decoded d;
+                const std::uint8_t lhs_xmm_palignr = vex.present
+                    ? static_cast<std::uint8_t>(vex.vvvv)
+                    : static_cast<std::uint8_t>(m.reg);
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_rhs = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_palignr}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+                }
+                d.stmts.push_back({r_res, ir::VecAlignr{r_lhs, r_rhs, count}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                // F2-IR-005 — VPALIGNR ymm: per-128-bit-lane semantics
+                // (the byte alignment happens within each half), so the
+                // pair-of-Vec128 representation lowers cleanly.
+                if (vex.present && vex.L) {
+                    const ir::Ref r_lhs_hi = next_ref++;
+                    const ir::Ref r_rhs_hi = next_ref++;
+                    const ir::Ref r_res_hi = next_ref++;
+                    d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_palignr}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_rhs_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16 = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecAlignr{r_lhs_hi, r_rhs_hi, count}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            return DecodeError::UnsupportedEncoding;
+        }
+
+        // F2-IR-057 — CRC32 (F2 0F 38 F0 / F1). SSE4.2's CRC32C
+        // accumulator. Both x86 and ARM64 compute the Castagnoli
+        // polynomial; the mapping is direct.
+        //
+        //   F0: src is 8-bit
+        //   F1: src is 16-bit (with 66 prefix) / 32-bit / 64-bit
+        //       (with REX.W); dst is always 32-bit GPR (zero-extended
+        //       in the 64-bit-dest form).
+        if (subop == 0x38u && has_f2 && !has_f3 && !has_lock &&
+            cursor < bytes.size() &&
+            (bytes[cursor] == 0xF0u || bytes[cursor] == 0xF1u)) {
+            const Byte sub3 = bytes[cursor];
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            ir::OpSize src_size;
+            ir::OpSize dst_size = ir::OpSize::I32;
+            if (sub3 == 0xF0u) {
+                src_size = ir::OpSize::I8;
+            } else if (has_operand_size_override) {
+                src_size = ir::OpSize::I16;
+            } else if (rex.w) {
+                src_size = ir::OpSize::I64;
+                dst_size = ir::OpSize::I64;  // ARM CRC32CX writes Xd
+            } else {
+                src_size = ir::OpSize::I32;
+            }
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            const ir::Ref r_crc  = next_ref++;
+            const ir::Ref r_data = next_ref++;
+            const ir::Ref r_res  = next_ref++;
+            d.stmts.push_back({r_crc,
+                ir::LoadReg{reg_at(m.reg), dst_size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_data,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), src_size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_data,
+                    ir::LoadMem{r_addr, src_size}});
+            }
+            d.stmts.push_back({r_res,
+                ir::Crc32c{r_crc, r_data, src_size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_res, dst_size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-056 — MOVBE (0F 38 F0 / F1). Move-with-byte-swap.
+        // Memory ↔ register move that reverses byte order in flight.
+        // Size: REX.W → I64; 66 prefix → I16; default → I32.
+        //   F0 /r: MOVBE Gv, Mv  (load + bswap → reg)
+        //   F1 /r: MOVBE Mv, Gv  (reg → bswap → store)
+        // Requires a memory operand (mod != 11); reg-reg encoding is
+        // CRC32 territory (different prefix) or undefined.
+        if (subop == 0x38u && !has_lock && !has_f2 && !has_f3 &&
+            cursor < bytes.size() &&
+            (bytes[cursor] == 0xF0u || bytes[cursor] == 0xF1u)) {
+            const Byte sub3 = bytes[cursor];
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod == 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::OpSize size = rex.w ? ir::OpSize::I64
+                                          : (has_operand_size_override
+                                                 ? ir::OpSize::I16
+                                                 : ir::OpSize::I32);
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            if (sub3 == 0xF0u) {
+                // MOVBE reg, mem.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_rev = next_ref++;
+                d.stmts.push_back({r_val, ir::LoadMem{r_addr, size}});
+                d.stmts.push_back({r_rev, ir::Bswap{r_val, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{reg_at(m.reg), r_rev, size}});
+            } else {
+                // MOVBE mem, reg.
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_rev = next_ref++;
+                d.stmts.push_back({r_val,
+                    ir::LoadReg{reg_at(m.reg), size}});
+                d.stmts.push_back({r_rev, ir::Bswap{r_val, size}});
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreMem{r_addr, r_rev, size}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-053 followup — BMI2 BZHI (0F 38 F5, no prefix):
+        // dst = src & mask_of_count, where the mask keeps the low
+        // `count` bits and zeroes the rest. Edge case from Intel SDM:
+        // "If the value of N [the count] exceeds OperandSize, no bits
+        // are cleared." — i.e. the result is `src` unchanged.
+        //
+        // Lowered as:
+        //   count8 = count AND 0xFF       (BZHI only inspects [7:0])
+        //   cmp_flags  count8 vs bit_width
+        //   mask  = (1 << count8) - 1
+        //   masked_src = src AND mask
+        //   result = (count8 < bit_width) ? masked_src : src     (Select)
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && !has_f2 && !has_f3 &&
+            cursor < bytes.size() && bytes[cursor] == 0xF5u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const std::uint64_t bit_width = rex.w ? 64u : 32u;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            Decoded d;
+            const ir::Ref r_src        = next_ref++;
+            const ir::Ref r_count_raw  = next_ref++;
+            const ir::Ref r_ff         = next_ref++;
+            const ir::Ref r_count      = next_ref++;
+            const ir::Ref r_width      = next_ref++;
+            const ir::Ref r_one        = next_ref++;
+            const ir::Ref r_shifted    = next_ref++;
+            const ir::Ref r_mask       = next_ref++;
+            const ir::Ref r_masked_src = next_ref++;
+            const ir::Ref r_result     = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_count_raw,
+                ir::LoadReg{reg_at(vex.vvvv), size}});
+            d.stmts.push_back({r_ff,
+                ir::Constant{0xFFULL, size}});
+            d.stmts.push_back({r_count,
+                ir::BinOp{ir::BinOpKind::And, r_count_raw, r_ff, size}});
+            d.stmts.push_back({r_width,
+                ir::Constant{bit_width, size}});
+            d.stmts.push_back({r_one,
+                ir::Constant{1ULL, size}});
+            d.stmts.push_back({r_shifted,
+                ir::BinOp{ir::BinOpKind::Shl, r_one, r_count, size}});
+            d.stmts.push_back({r_mask,
+                ir::BinOp{ir::BinOpKind::Sub, r_shifted, r_one, size}});
+            d.stmts.push_back({r_masked_src,
+                ir::BinOp{ir::BinOpKind::And, r_src, r_mask, size}});
+            // CmpFlags must come *immediately* before the Select so
+            // the implicit NZCV from this compare drives the cmov.
+            // BinOps don't touch flags, so the earlier And/Sub/Shl
+            // here are flag-preserving.
+            d.stmts.push_back({std::nullopt,
+                ir::CmpFlags{r_count, r_width, size}});
+            d.stmts.push_back({r_result,
+                ir::Select{ir::CondCode::Ult,
+                           r_masked_src, r_src, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_result, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // BMI2 PDEP/PEXT (0F 38 F5, pp=F2/F3):
+        //   PDEP: dst = deposit(src=vex.vvvv, mask=ModRM.rm)
+        //   PEXT: dst = extract(src=vex.vvvv, mask=ModRM.rm)
+        // Operand size is VEX.W-selected I32/I64. Both preserve flags.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && (has_f2 || has_f3) &&
+            cursor < bytes.size() && bytes[cursor] == 0xF5u) {
+            if (has_f2 == has_f3) return DecodeError::UnsupportedEncoding;
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+
+            Decoded d;
+            const ir::Ref r_src  = next_ref++;
+            const ir::Ref r_mask = next_ref++;
+            const ir::Ref r_res  = next_ref++;
+            d.stmts.push_back({r_src,
+                ir::LoadReg{reg_at(vex.vvvv), size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_mask,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_mask, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_res,
+                ir::BinOp{has_f2 ? ir::BinOpKind::Pdep : ir::BinOpKind::Pext,
+                          r_src, r_mask, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-053 followup — BMI2 MULX (0F 38 F6, pp=03 = F2 prefix):
+        // unsigned multiply with two destination GPRs and no flags.
+        //   src1   = rdx implicit
+        //   src2   = ModRM.rm (reg or mem)
+        //   dst_lo = vex.vvvv
+        //   dst_hi = ModRM.reg
+        // Reuses `BinOp{Mul}` (low half) + `BinOp{UMulHi}` (high half),
+        // the same pair that backs the legacy MUL/IMUL writeback in
+        // F2-BK-007 / sha 8317648.
+        if (subop == 0x38u && vex.present && !vex.L && has_f2 &&
+            !has_lock && cursor < bytes.size() && bytes[cursor] == 0xF6u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            const ir::Gpr dst_hi = reg_at(m.reg);
+            const ir::Gpr dst_lo = reg_at(vex.vvvv);
+            Decoded d;
+            const ir::Ref r_a   = next_ref++;
+            const ir::Ref r_b   = next_ref++;
+            const ir::Ref r_lo  = next_ref++;
+            const ir::Ref r_hi  = next_ref++;
+            d.stmts.push_back({r_a, ir::LoadReg{ir::Gpr::Rdx, size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_b,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_b, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_lo,
+                ir::BinOp{ir::BinOpKind::Mul,    r_a, r_b, size}});
+            d.stmts.push_back({r_hi,
+                ir::BinOp{ir::BinOpKind::UMulHi, r_a, r_b, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_lo, r_lo, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_hi, r_hi, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-053 — BMI2 GPR ops over the 0F 38 escape (VEX-encoded,
+        // L=0, sub3 == 0xF7): SHLX (pp=01), SARX (pp=02), SHRX (pp=03).
+        // Operand layout (all three): dest = ModRM.reg, src = ModRM.rm,
+        // count = vex.vvvv. W=0 → I32; W=1 → I64. None of them touch
+        // flags (that's the whole point versus the legacy SAR/SHR/SHL
+        // r/m, CL forms).
+        //
+        // Peek at the third byte rather than consuming so the legacy
+        // SSSE3 / SSE4.1 dispatch below can still read it for non-BMI2
+        // opcodes. BMI2 with pp=01 (SHLX) goes through THIS branch,
+        // not the legacy gate, because the legacy gate handles a
+        // disjoint set of `sub3` values.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            cursor < bytes.size() && bytes[cursor] == 0xF7u) {
+            ir::BinOpKind shift_kind = ir::BinOpKind::Shl;
+            int prefix_count = 0;
+            if (has_operand_size_override) {
+                shift_kind = ir::BinOpKind::Shl;   // SHLX
+                ++prefix_count;
+            }
+            if (has_f3) {
+                shift_kind = ir::BinOpKind::Sar;   // SARX
+                ++prefix_count;
+            }
+            if (has_f2) {
+                shift_kind = ir::BinOpKind::Shr;   // SHRX
+                ++prefix_count;
+            }
+            if (prefix_count != 1) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            // Consume the 0xF7 byte we peeked.
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+            const ir::Gpr dst   = reg_at(m.reg);
+            const ir::Gpr count = reg_at(vex.vvvv);
+            Decoded d;
+            const ir::Ref r_src   = next_ref++;
+            const ir::Ref r_count = next_ref++;
+            const ir::Ref r_res   = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_count, ir::LoadReg{count, size}});
+            d.stmts.push_back({r_res,
+                ir::BinOp{shift_kind, r_src, r_count, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst, r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-036: 0F 38 escape — SSSE3 / SSE4.1.
+        if (subop == 0x38u && has_operand_size_override && !has_lock &&
+            !has_f2 && !has_f3) {
+            auto third = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(third)) {
+                return std::get<DecodeError>(third);
+            }
+            const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+            // F2-IR-055 — AES-NI round primitives.
+            //   sub3 = 0xDB → AESIMC
+            //   sub3 = 0xDC → AESENC
+            //   sub3 = 0xDD → AESENCLAST
+            //   sub3 = 0xDE → AESDEC
+            //   sub3 = 0xDF → AESDECLAST
+            // All have layout `xmm1, xmm2/m128` where xmm1 is read-
+            // modify-write (= state) and xmm2/m128 supplies the
+            // round key (for Imc the key is ignored).
+            if (sub3 == 0xDBu || sub3 == 0xDCu || sub3 == 0xDDu ||
+                sub3 == 0xDEu || sub3 == 0xDFu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                ir::VecAesKind kind = ir::VecAesKind::Enc;
+                switch (sub3) {
+                    case 0xDBu: kind = ir::VecAesKind::Imc;     break;
+                    case 0xDCu: kind = ir::VecAesKind::Enc;     break;
+                    case 0xDDu: kind = ir::VecAesKind::EncLast; break;
+                    case 0xDEu: kind = ir::VecAesKind::Dec;     break;
+                    case 0xDFu: kind = ir::VecAesKind::DecLast; break;
+                }
+                Decoded d;
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                ir::Ref r_key = r_src;   // default for AESIMC (ignored)
+                if (kind != ir::VecAesKind::Imc) {
+                    r_key = next_ref++;
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_key,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(
+                            d.stmts, m, next_ref,
+                            instruction_guest_pc + cursor);
+                        d.stmts.push_back({r_key,
+                            ir::LoadVec{r_addr}});
+                    }
+                } else if (m.mod != 0b11) {
+                    // AESIMC reads xmm2/m128 too (it's the source).
+                    // The IR shape ignores `key` for Imc, so we route
+                    // the memory operand through r_src instead.
+                    const ir::Ref r_addr = emit_address(
+                        d.stmts, m, next_ref,
+                        instruction_guest_pc + cursor);
+                    // Override r_src to be the memory value.
+                    d.stmts.pop_back();
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                } else {
+                    // AESIMC reg-direct: r_src already loaded; the
+                    // /r-encoded ModRM.reg is the destination, but
+                    // for Imc we read from ModRM.rm. Re-load:
+                    d.stmts.pop_back();
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                }
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res, ir::VecAes{r_src, r_key, kind}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // SSE4.1 PTEST (66 0F 38 17 /r). Sets NZCV via WriteFlagsPtest.
+            // F2-IR-049: VEX.256.66.0F38 17 /r → VPTEST ymm; lower half
+            // via the same WriteFlagsPtest shape, high half via the
+            // new WriteFlagsPtestYmm.
+            if (sub3 == 0x17u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                Decoded d;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_rhs = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+                }
+                if (vex.present && vex.L) {
+                    const ir::Ref r_lhs_hi = next_ref++;
+                    const ir::Ref r_rhs_hi = next_ref++;
+                    d.stmts.push_back({r_lhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_rhs_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16   = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    const ir::Ref r_flags = next_ref++;
+                    d.stmts.push_back({r_flags,
+                        ir::WriteFlagsPtestYmm{r_lhs, r_rhs, r_lhs_hi, r_rhs_hi}});
+                } else {
+                    const ir::Ref r_flags = next_ref++;
+                    d.stmts.push_back({r_flags,
+                        ir::WriteFlagsPtest{r_lhs, r_rhs}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-052 — VPERMD ymm1, ymm2, ymm3/m256
+            // (VEX.256.66.0F38.W0 36 /r). For each of the eight 32-bit
+            // dst elements, the corresponding ymm2 (vex.vvvv) dword
+            // selects (low 3 bits) one of the eight ymm3 dwords as
+            // the source. Lane-crossing — implemented via the same
+            // VecTbl2 primitive as VPERMQ (F2-IR-051), with the
+            // byte-index vector synthesised at *runtime* from the
+            // vvvv indices instead of from imm8:
+            //
+            //   idx_masked = vvvv_half AND  0x07070707...
+            //   idx_scaled = idx_masked SHL 2 (per-S4 lane)
+            //   idx_broadcast = pshufb(idx_scaled, [0,0,0,0, 4,4,4,4,
+            //                                        8,8,8,8, 12,12,12,12])
+            //                  -- spreads each dword's low byte to all
+            //                     four byte positions of that dword.
+            //   idx_final = idx_broadcast +bytes [0,1,2,3, 0,1,2,3, ...]
+            //   dst_half  = VecTbl2(src_lo, src_hi, idx_final)
+            if (vex.present && vex.L && sub3 == 0x36u) {
+                if (rex.w) return DecodeError::UnsupportedEncoding;
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t indices_xmm =
+                    static_cast<std::uint8_t>(vex.vvvv);
+                const std::uint8_t dst_xmm =
+                    static_cast<std::uint8_t>(m.reg);
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                // Source operand (256-bit pair).
+                const ir::Ref r_src_lo = next_ref++;
+                const ir::Ref r_src_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    const std::uint8_t r_rm =
+                        static_cast<std::uint8_t>(static_cast<unsigned>(m.base));
+                    d.stmts.push_back({r_src_lo, ir::LoadVecReg{r_rm}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVecRegHi{r_rm}});
+                } else {
+                    const ir::Ref r_off16   = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_lo, ir::LoadVec{*r_addr_lo}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                // Indices (the per-half 4-dword vector from vvvv).
+                const ir::Ref r_idx_lo = next_ref++;
+                const ir::Ref r_idx_hi = next_ref++;
+                d.stmts.push_back({r_idx_lo, ir::LoadVecReg{indices_xmm}});
+                d.stmts.push_back({r_idx_hi, ir::LoadVecRegHi{indices_xmm}});
+                // Three shared constants for the per-half pipeline:
+                //   mask_3:   each byte 0x07 → AND keeps low 3 bits per S4 dword.
+                //   bcast:    [0,0,0,0, 4,4,4,4, 8,8,8,8, 12,12,12,12].
+                //   bytepos:  [0,1,2,3, 0,1,2,3, 0,1,2,3, 0,1,2,3].
+                const ir::Ref r_mask3   = next_ref++;
+                const ir::Ref r_bcast   = next_ref++;
+                const ir::Ref r_bytepos = next_ref++;
+                d.stmts.push_back({r_mask3,
+                    ir::VecConstant{0x0707070707070707ULL,
+                                    0x0707070707070707ULL}});
+                d.stmts.push_back({r_bcast,
+                    ir::VecConstant{0x0404040400000000ULL,
+                                    0x0C0C0C0C08080808ULL}});
+                d.stmts.push_back({r_bytepos,
+                    ir::VecConstant{0x0302010003020100ULL,
+                                    0x0302010003020100ULL}});
+                // Build idx_final and dst for each half. Same shape;
+                // the only difference is which half of the indices we
+                // start from.
+                auto emit_half = [&](ir::Ref idx_src) -> ir::Ref {
+                    const ir::Ref r_masked = next_ref++;
+                    const ir::Ref r_scaled = next_ref++;
+                    const ir::Ref r_bcasted = next_ref++;
+                    const ir::Ref r_final  = next_ref++;
+                    const ir::Ref r_out    = next_ref++;
+                    d.stmts.push_back({r_masked,
+                        ir::VecBinOp{ir::VecBinOpKind::And, idx_src, r_mask3,
+                                     ir::VecLane::B16}});
+                    d.stmts.push_back({r_scaled,
+                        ir::VecShiftImm{ir::VecShiftKind::ShiftL, r_masked,
+                                        2u, ir::VecLane::S4}});
+                    d.stmts.push_back({r_bcasted,
+                        ir::VecPshufb{r_scaled, r_bcast}});
+                    d.stmts.push_back({r_final,
+                        ir::VecBinOp{ir::VecBinOpKind::Add, r_bcasted, r_bytepos,
+                                     ir::VecLane::B16}});
+                    d.stmts.push_back({r_out,
+                        ir::VecTbl2{r_src_lo, r_src_hi, r_final}});
+                    return r_out;
+                };
+                const ir::Ref r_dst_lo = emit_half(r_idx_lo);
+                const ir::Ref r_dst_hi = emit_half(r_idx_hi);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{dst_xmm, r_dst_lo}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{dst_xmm, r_dst_hi}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-005 follow-up — AVX broadcasts (66 0F 38 18/19/1A).
+            //   VBROADCASTSS xmm/ymm, xmm/m32  (sub3 = 0x18)
+            //   VBROADCASTSD ymm,    xmm/m64   (sub3 = 0x19, ymm-only)
+            //   VBROADCASTF128 ymm,  m128       (sub3 = 0x1A, mem-only)
+            // VEX-encoded only. Lower-half result is built as a 128-bit
+            // broadcast Ref; for VEX.L=1 we replicate it to ymm_hi as
+            // well (per-lane semantics by repetition; no cross-lane data
+            // movement needed even though the x86 encoding is "lane-
+            // crossing" relative to AVX-128).
+            if (vex.present &&
+                (sub3 == 0x18u || sub3 == 0x19u || sub3 == 0x1Au)) {
+                // VBROADCASTSD (0x19) requires VEX.L=1.
+                if (sub3 == 0x19u && !vex.L) return DecodeError::UnsupportedEncoding;
+                // VBROADCASTF128 (0x1A) requires VEX.L=1 and mem operand.
+                if (sub3 == 0x1Au && !vex.L) return DecodeError::UnsupportedEncoding;
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (sub3 == 0x1Au && m.mod == 0b11) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                Decoded d;
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const ir::Ref r_lo = next_ref++;
+                if (sub3 == 0x18u) {
+                    // VBROADCASTSS — broadcast 32-bit lane 0 → all 4 lanes.
+                    if (m.mod == 0b11) {
+                        const ir::Ref r_src = next_ref++;
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                        d.stmts.push_back({r_lo,
+                            ir::VecShuffle32x4{r_src, 0x00u}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        const ir::Ref r_val32 = next_ref++;
+                        const ir::Ref r_lane = next_ref++;
+                        d.stmts.push_back({r_val32,
+                            ir::LoadMem{r_addr, ir::OpSize::I32}});
+                        d.stmts.push_back({r_lane,
+                            ir::XmmFromGpr{r_val32, ir::OpSize::I32}});
+                        d.stmts.push_back({r_lo,
+                            ir::VecShuffle32x4{r_lane, 0x00u}});
+                    }
+                } else if (sub3 == 0x19u) {
+                    // VBROADCASTSD ymm — broadcast 64-bit lane 0 → both
+                    // 64-bit lanes (UNPCKLPD self-pair semantics).
+                    ir::Ref r_src;
+                    if (m.mod == 0b11) {
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                            instruction_guest_pc + cursor);
+                        const ir::Ref r_val64 = next_ref++;
+                        r_src = next_ref++;
+                        d.stmts.push_back({r_val64,
+                            ir::LoadMem{r_addr, ir::OpSize::I64}});
+                        d.stmts.push_back({r_src,
+                            ir::XmmFromGpr{r_val64, ir::OpSize::I64}});
+                    }
+                    d.stmts.push_back({r_lo,
+                        ir::VecUnpack{/*is_high=*/false, r_src, r_src,
+                                      ir::VecLane::D2}});
+                } else {
+                    // VBROADCASTF128 — load full 128 bits, replicate to
+                    // both ymm halves.
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_lo, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_lo}});
+                if (vex.L) {
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{r_dst, r_lo}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // F2-IR-006 — FMA3 (66 0F 38, VEX-only).
+            // High-nibble selects ordering: 9x=132, Ax=213, Bx=231.
+            // Low-nibble parity selects packed-vs-scalar:
+            //   even (8/A/C/E) → packed (PS if W=0, PD if W=1)
+            //   odd  (9/B/D/F) → scalar (SS if W=0, SD if W=1)  — DEFERRED
+            // Family is the *pair* of low-nibbles (ignoring scalar/packed):
+            //   8/9 → VFMADD   (neg_addend=F, neg_mul=F)
+            //   A/B → VFMSUB   (neg_addend=T, neg_mul=F)
+            //   C/D → VFNMADD  (neg_addend=F, neg_mul=T)
+            //   E/F → VFNMSUB  (neg_addend=T, neg_mul=T)
+            // Scalar (odd low-nibble) needs upper-lane preservation and a
+            // dedicated IR op; deferred. MADDSUB/MSUBADD (96/97/A6/A7/B6/B7)
+            // also deferred — they need a per-lane sign-blend lowering.
+            // F2-IR-006 — VFMADDSUB / VFMSUBADD packed (66 0F 38 X6/X7,
+            // X in {9,A,B}). Per-lane alternation between ADD and SUB:
+            //   VFMADDSUB: even lanes = SUB (b*c - a), odd lanes = ADD (a + b*c)
+            //   VFMSUBADD: even lanes = ADD,           odd lanes = SUB
+            // Lowered as two packed VecFpFma + a VecBlend with an
+            // alternating mask. PS uses S4 lane granularity; PD uses D2.
+            // No scalar form per Intel SDM.
+            if (vex.present &&
+                (sub3 == 0x96u || sub3 == 0x97u ||
+                 sub3 == 0xA6u || sub3 == 0xA7u ||
+                 sub3 == 0xB6u || sub3 == 0xB7u)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                const ir::VecFpSize size = rex.w ? ir::VecFpSize::D2
+                                                 : ir::VecFpSize::S4;
+                const bool is_msubadd = (sub3 & 0x01u) != 0u;  // 0x97/A7/B7
+                const std::uint8_t hi = sub3 & 0xF0u;
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                auto emit_pair = [&](bool hi_half) -> ir::Ref {
+                    const ir::Ref r_dst_load = next_ref++;
+                    const ir::Ref r_v_load   = next_ref++;
+                    const ir::Ref r_rm_load  = next_ref++;
+                    if (hi_half) {
+                        d.stmts.push_back({r_dst_load, ir::LoadVecRegHi{r_dst}});
+                        d.stmts.push_back({r_v_load,   ir::LoadVecRegHi{r_v}});
+                        if (m.mod == 0b11) {
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                    static_cast<unsigned>(m.base))}});
+                        } else {
+                            const ir::Ref r_off16 = next_ref++;
+                            const ir::Ref r_addr_hi = next_ref++;
+                            d.stmts.push_back({r_off16,
+                                ir::Constant{16ULL, ir::OpSize::I64}});
+                            d.stmts.push_back({r_addr_hi,
+                                ir::BinOp{ir::BinOpKind::Add,
+                                          *r_addr_lo, r_off16, ir::OpSize::I64}});
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVec{r_addr_hi}});
+                        }
+                    } else {
+                        d.stmts.push_back({r_dst_load, ir::LoadVecReg{r_dst}});
+                        d.stmts.push_back({r_v_load,   ir::LoadVecReg{r_v}});
+                        if (m.mod == 0b11) {
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVecReg{static_cast<std::uint8_t>(
+                                    static_cast<unsigned>(m.base))}});
+                        } else {
+                            d.stmts.push_back({r_rm_load,
+                                ir::LoadVec{*r_addr_lo}});
+                        }
+                    }
+                    ir::Ref ra, rb, rc;
+                    switch (hi) {
+                        case 0x90u:  // 132
+                            ra = r_v_load; rb = r_dst_load; rc = r_rm_load; break;
+                        case 0xA0u:  // 213
+                            ra = r_rm_load; rb = r_v_load; rc = r_dst_load; break;
+                        case 0xB0u:  // 231
+                            ra = r_dst_load; rb = r_v_load; rc = r_rm_load; break;
+                        default: ra = rb = rc = 0u; break;
+                    }
+                    const ir::Ref r_add = next_ref++;
+                    const ir::Ref r_sub = next_ref++;
+                    d.stmts.push_back({r_add,
+                        ir::VecFpFma{ra, rb, rc, /*neg_addend=*/false,
+                                     /*neg_mul=*/false, size}});
+                    d.stmts.push_back({r_sub,
+                        ir::VecFpFma{ra, rb, rc, /*neg_addend=*/true,
+                                     /*neg_mul=*/false, size}});
+                    // Mask: alternating lanes. For VFMADDSUB (is_msubadd=F),
+                    // mask MSB is set on ODD lanes (so VecBlend picks
+                    // src=V_add at odd, dst=V_sub at even).
+                    // For VFMSUBADD: mask MSB set on EVEN lanes.
+                    std::uint64_t mask_lo = 0, mask_hi = 0;
+                    if (size == ir::VecFpSize::S4) {
+                        // 32-bit lanes: 4 lanes per half.
+                        if (is_msubadd) {
+                            // even-set: lanes 0, 2 → MSB=1; lanes 1, 3 → MSB=0
+                            mask_lo = 0x00000000FFFFFFFFULL;
+                            mask_hi = 0x00000000FFFFFFFFULL;
+                        } else {
+                            // odd-set: lanes 1, 3 → MSB=1; lanes 0, 2 → MSB=0
+                            mask_lo = 0xFFFFFFFF00000000ULL;
+                            mask_hi = 0xFFFFFFFF00000000ULL;
+                        }
+                    } else {
+                        // 64-bit lanes: 2 lanes per half.
+                        if (is_msubadd) {
+                            // lane 0 → MSB=1, lane 1 → MSB=0
+                            mask_lo = 0xFFFFFFFFFFFFFFFFULL;
+                            mask_hi = 0x0000000000000000ULL;
+                        } else {
+                            // lane 0 → MSB=0, lane 1 → MSB=1
+                            mask_lo = 0x0000000000000000ULL;
+                            mask_hi = 0xFFFFFFFFFFFFFFFFULL;
+                        }
+                    }
+                    const ir::Ref r_mask = next_ref++;
+                    d.stmts.push_back({r_mask,
+                        ir::VecConstant{mask_lo, mask_hi}});
+                    const ir::Ref r_res = next_ref++;
+                    // VecBlend: dst (mask MSB == 0) + src (mask MSB == 1).
+                    // Lane granularity = the FP size (S4 for PS, D2 for PD).
+                    const ir::VecLane blend_lane =
+                        size == ir::VecFpSize::S4 ? ir::VecLane::S4
+                                                  : ir::VecLane::D2;
+                    d.stmts.push_back({r_res,
+                        ir::VecBlend{r_sub, r_add, r_mask, blend_lane}});
+                    return r_res;
+                };
+                const ir::Ref r_lo = emit_pair(false);
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_lo}});
+                if (vex.L) {
+                    const ir::Ref r_hi = emit_pair(true);
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{r_dst, r_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            const std::uint8_t fma_hi = sub3 & 0xF0u;
+            const std::uint8_t fma_lo = sub3 & 0x0Fu;
+            const bool fma_packed_even =
+                (fma_lo == 0x8u || fma_lo == 0xAu ||
+                 fma_lo == 0xCu || fma_lo == 0xEu);
+            const bool fma_scalar_odd =
+                (fma_lo == 0x9u || fma_lo == 0xBu ||
+                 fma_lo == 0xDu || fma_lo == 0xFu);
+            const bool fma_high_ok =
+                (fma_hi == 0x90u || fma_hi == 0xA0u || fma_hi == 0xB0u);
+            // Scalar FMA: VEX.L=1 is illegal per Intel SDM (#UD).
+            if (vex.present && fma_scalar_odd && fma_high_ok && !vex.L) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                const ir::FpSize size = rex.w ? ir::FpSize::F64 : ir::FpSize::F32;
+                const std::uint8_t family_lo = (fma_lo & 0xEu);
+                bool neg_addend = false, neg_mul = false;
+                switch (family_lo) {
+                    case 0x8u: neg_addend = false; neg_mul = false; break;
+                    case 0xAu: neg_addend = true;  neg_mul = false; break;
+                    case 0xCu: neg_addend = false; neg_mul = true;  break;
+                    case 0xEu: neg_addend = true;  neg_mul = true;  break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_dst_load = next_ref++;
+                const ir::Ref r_v_load   = next_ref++;
+                const ir::Ref r_rm_load  = next_ref++;
+                d.stmts.push_back({r_dst_load, ir::LoadVecReg{r_dst}});
+                d.stmts.push_back({r_v_load,   ir::LoadVecReg{r_v}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rm_load,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_rm_load, ir::LoadVec{*r_addr_lo}});
+                }
+                ir::Ref ra, rb, rc;
+                switch (fma_hi) {
+                    case 0x90u:  // 132: b=r_dst, c=r_rm, a=r_v
+                        ra = r_v_load; rb = r_dst_load; rc = r_rm_load; break;
+                    case 0xA0u:  // 213: b=r_v, c=r_dst, a=r_rm
+                        ra = r_rm_load; rb = r_v_load; rc = r_dst_load; break;
+                    case 0xB0u:  // 231: b=r_v, c=r_rm, a=r_dst
+                        ra = r_dst_load; rb = r_v_load; rc = r_rm_load; break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecFpScalarFma{ra, rb, rc, /*scalar_upper=*/r_dst_load,
+                                       neg_addend, neg_mul, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            if (vex.present && fma_packed_even && fma_high_ok) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const std::uint8_t r_dst = static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t r_v   = static_cast<std::uint8_t>(vex.vvvv);
+                // VEX.W picks PS (W=0) vs PD (W=1) for the packed forms.
+                const ir::VecFpSize size = rex.w ? ir::VecFpSize::D2
+                                                 : ir::VecFpSize::S4;
+                const std::uint8_t high_nibble = fma_hi;
+                // family — keyed by the low-nibble pair (ignoring scalar
+                // bit, which we already constrained to even above).
+                const std::uint8_t family_lo = (fma_lo & 0xEu);
+                bool neg_addend = false;
+                bool neg_mul    = false;
+                switch (family_lo) {
+                    case 0x8u: /* MADD  */ neg_addend = false; neg_mul = false; break;
+                    case 0xAu: /* MSUB  */ neg_addend = true;  neg_mul = false; break;
+                    case 0xCu: /* NMADD */ neg_addend = false; neg_mul = true;  break;
+                    case 0xEu: /* NMSUB */ neg_addend = true;  neg_mul = true;  break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                // Materialise the three operands into IR refs. The r/m
+                // operand may be reg or memory; vvvv and reg are always
+                // xmm registers.
+                const ir::Ref r_a = next_ref++;
+                const ir::Ref r_b = next_ref++;
+                const ir::Ref r_c = next_ref++;
+                // Loads: we need r_dst (always xmm), r_v (always xmm),
+                // and r_rm (xmm or memory). Map them onto a/b/c per the
+                // 132/213/231 permutation.
+                ir::Ref r_dst_load = next_ref++;
+                ir::Ref r_v_load   = next_ref++;
+                ir::Ref r_rm_load  = next_ref++;
+                d.stmts.push_back({r_dst_load, ir::LoadVecReg{r_dst}});
+                d.stmts.push_back({r_v_load,   ir::LoadVecReg{r_v}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rm_load,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_rm_load, ir::LoadVec{*r_addr_lo}});
+                }
+                ir::Ref ra, rb, rc;
+                switch (high_nibble) {
+                    case 0x90u:  // 132: b=r_dst, c=r_rm, a=r_v
+                        ra = r_v_load; rb = r_dst_load; rc = r_rm_load; break;
+                    case 0xA0u:  // 213: b=r_v, c=r_dst, a=r_rm
+                        ra = r_rm_load; rb = r_v_load; rc = r_dst_load; break;
+                    case 0xB0u:  // 231: b=r_v, c=r_rm, a=r_dst
+                        ra = r_dst_load; rb = r_v_load; rc = r_rm_load; break;
+                    default: return DecodeError::UnsupportedEncoding;
+                }
+                (void)r_a; (void)r_b; (void)r_c;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecFpFma{ra, rb, rc, neg_addend, neg_mul, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{r_dst, r_res}});
+                // F2-IR-006 ymm extension — emit the high-lane pair.
+                if (vex.L) {
+                    const ir::Ref r_dst_hi = next_ref++;
+                    const ir::Ref r_v_hi   = next_ref++;
+                    const ir::Ref r_rm_hi  = next_ref++;
+                    d.stmts.push_back({r_dst_hi, ir::LoadVecRegHi{r_dst}});
+                    d.stmts.push_back({r_v_hi,   ir::LoadVecRegHi{r_v}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_rm_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16 = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_rm_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    ir::Ref ra_h, rb_h, rc_h;
+                    switch (high_nibble) {
+                        case 0x90u:
+                            ra_h = r_v_hi; rb_h = r_dst_hi; rc_h = r_rm_hi; break;
+                        case 0xA0u:
+                            ra_h = r_rm_hi; rb_h = r_v_hi; rc_h = r_dst_hi; break;
+                        case 0xB0u:
+                            ra_h = r_dst_hi; rb_h = r_v_hi; rc_h = r_rm_hi; break;
+                        default: return DecodeError::UnsupportedEncoding;
+                    }
+                    const ir::Ref r_res_hi = next_ref++;
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecFpFma{ra_h, rb_h, rc_h, neg_addend, neg_mul, size}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{r_dst, r_res_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // SSE4.1 BLEND* with implicit XMM0 mask:
+            //   66 0F 38 10 — PBLENDVB  (B16 lane)
+            //   66 0F 38 14 — BLENDVPS (S4 lane)
+            //   66 0F 38 15 — BLENDVPD (D2 lane)
+            if (sub3 == 0x10u || sub3 == 0x14u || sub3 == 0x15u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const ir::VecLane lane =
+                    sub3 == 0x10u ? ir::VecLane::B16 :
+                    sub3 == 0x14u ? ir::VecLane::S4  :
+                                    ir::VecLane::D2;
+                Decoded d;
+                const ir::Ref r_dst  = next_ref++;
+                const ir::Ref r_src  = next_ref++;
+                const ir::Ref r_mask = next_ref++;
+                const ir::Ref r_res  = next_ref++;
+                d.stmts.push_back({r_dst,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({r_mask, ir::LoadVecReg{0u}});  // implicit XMM0
+                d.stmts.push_back({r_res,
+                    ir::VecBlend{r_dst, r_src, r_mask, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // SSE4.1 PMOVZX/SX widening converts (66 0F 38 20..25, 30..35).
+            // VEX.L=1 → ymm output: each 128-bit half built independently.
+            // The lo half uses the low source bytes (existing VecExtend
+            // semantics); the hi half uses bytes [N..2N-1] of the source,
+            // synthesised via VecShiftBytes (PSRLDQ-style byte right shift)
+            // before VecExtend. N = 16/extension_factor, where
+            // extension_factor = wide_bytes / narrow_bytes.
+            if ((sub3 >= 0x20u && sub3 <= 0x25u) ||
+                (sub3 >= 0x30u && sub3 <= 0x35u)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                const bool is_signed = sub3 < 0x30u;
+                const std::uint8_t low_nibble = sub3 & 0x0Fu;
+                ir::VecLane narrow, wide;
+                std::uint8_t hi_shift_bytes = 0;
+                switch (low_nibble) {
+                    case 0x0u: narrow = ir::VecLane::B16; wide = ir::VecLane::H8; hi_shift_bytes = 8; break;
+                    case 0x1u: narrow = ir::VecLane::B16; wide = ir::VecLane::S4; hi_shift_bytes = 4; break;
+                    case 0x2u: narrow = ir::VecLane::B16; wide = ir::VecLane::D2; hi_shift_bytes = 2; break;
+                    case 0x3u: narrow = ir::VecLane::H8;  wide = ir::VecLane::S4; hi_shift_bytes = 8; break;
+                    case 0x4u: narrow = ir::VecLane::H8;  wide = ir::VecLane::D2; hi_shift_bytes = 4; break;
+                    case 0x5u: narrow = ir::VecLane::S4;  wide = ir::VecLane::D2; hi_shift_bytes = 8; break;
+                    default:   narrow = ir::VecLane::B16; wide = ir::VecLane::H8; hi_shift_bytes = 8;
+                }
+                Decoded d;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                }
+                d.stmts.push_back({r_res,
+                    ir::VecExtend{r_src, narrow, wide, is_signed}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                // F2-IR-005 — VPMOVZX/SX ymm. Hi half = extend(src >> N bytes).
+                if (vex.present && vex.L) {
+                    const ir::Ref r_src_hi_bytes = next_ref++;
+                    const ir::Ref r_res_hi      = next_ref++;
+                    d.stmts.push_back({r_src_hi_bytes,
+                        ir::VecShiftBytes{/*is_left=*/false, r_src, hi_shift_bytes}});
+                    d.stmts.push_back({r_res_hi,
+                        ir::VecExtend{r_src_hi_bytes, narrow, wide, is_signed}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // PSHUFB: 66 0F 38 00 /r
+            // PABSB:  66 0F 38 1C /r   (B16)
+            // PABSW:  66 0F 38 1D /r   (H8)
+            // PABSD:  66 0F 38 1E /r   (S4)
+            //
+            // Also a quick SIMD-binop family routed through the existing
+            // VecBinOp branch:
+            //   PHADDW  66 0F 38 01  → PairAddInt H8
+            //   PHADDD  66 0F 38 02  → PairAddInt S4
+            //   PHSUBW  66 0F 38 05  → PairSubInt H8
+            //   PHSUBD  66 0F 38 06  → PairSubInt S4
+            //   PMULLD  66 0F 38 40  → Mul          S4   (SSE4.1)
+            //   PCMPEQQ 66 0F 38 29  → VecCmp Eq    D2   (SSE4.1)
+            if (sub3 == 0x01u || sub3 == 0x02u ||
+                sub3 == 0x05u || sub3 == 0x06u ||
+                sub3 == 0x40u || sub3 == 0x29u || sub3 == 0x37u ||
+                (sub3 >= 0x38u && sub3 <= 0x3Fu)) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                Decoded d;
+                // For VEX-encoded ops the third operand (vvvv) is the
+                // first source; ModRM.reg is the destination only.
+                const std::uint8_t lhs_xmm = vex.present
+                    ? static_cast<std::uint8_t>(vex.vvvv)
+                    : static_cast<std::uint8_t>(m.reg);
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_rhs = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+                }
+                if (sub3 == 0x29u) {
+                    d.stmts.push_back({r_res,
+                        ir::VecCmp{ir::VecCmpKind::Eq, r_lhs, r_rhs, ir::VecLane::D2}});
+                } else if (sub3 == 0x37u) {
+                    d.stmts.push_back({r_res,
+                        ir::VecCmp{ir::VecCmpKind::Gt, r_lhs, r_rhs, ir::VecLane::D2}});
+                } else if (sub3 >= 0x38u && sub3 <= 0x3Fu) {
+                    ir::VecBinOpKind k;
+                    ir::VecLane l;
+                    switch (sub3) {
+                        case 0x38u: k = ir::VecBinOpKind::SMin; l = ir::VecLane::B16; break;
+                        case 0x39u: k = ir::VecBinOpKind::SMin; l = ir::VecLane::S4;  break;
+                        case 0x3Au: k = ir::VecBinOpKind::UMin; l = ir::VecLane::H8;  break;
+                        case 0x3Bu: k = ir::VecBinOpKind::UMin; l = ir::VecLane::S4;  break;
+                        case 0x3Cu: k = ir::VecBinOpKind::SMax; l = ir::VecLane::B16; break;
+                        case 0x3Du: k = ir::VecBinOpKind::SMax; l = ir::VecLane::S4;  break;
+                        case 0x3Eu: k = ir::VecBinOpKind::UMax; l = ir::VecLane::H8;  break;
+                        case 0x3Fu: k = ir::VecBinOpKind::UMax; l = ir::VecLane::S4;  break;
+                        default:    k = ir::VecBinOpKind::SMin; l = ir::VecLane::B16;
+                    }
+                    d.stmts.push_back({r_res, ir::VecBinOp{k, r_lhs, r_rhs, l}});
+                } else {
+                    ir::VecBinOpKind k;
+                    ir::VecLane l;
+                    switch (sub3) {
+                        case 0x01u: k = ir::VecBinOpKind::PairAddInt; l = ir::VecLane::H8; break;
+                        case 0x02u: k = ir::VecBinOpKind::PairAddInt; l = ir::VecLane::S4; break;
+                        case 0x05u: k = ir::VecBinOpKind::PairSubInt; l = ir::VecLane::H8; break;
+                        case 0x06u: k = ir::VecBinOpKind::PairSubInt; l = ir::VecLane::S4; break;
+                        default:    k = ir::VecBinOpKind::Mul;        l = ir::VecLane::S4; break;
+                    }
+                    d.stmts.push_back({r_res, ir::VecBinOp{k, r_lhs, r_rhs, l}});
+                }
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                // F2-IR-005 — ymm extension. All ops in this handler
+                // (PHADDx/PHSUBx, PMULLD, PCMPEQQ/GTQ, PMIN/PMAXS/U) have
+                // per-128-bit-lane semantics, so the high lane lowers
+                // cleanly with the same op kind.
+                if (vex.present && vex.L) {
+                    const ir::Ref r_lhs_hi = next_ref++;
+                    const ir::Ref r_rhs_hi = next_ref++;
+                    const ir::Ref r_res_hi = next_ref++;
+                    d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_rhs_hi,
+                            ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        const ir::Ref r_off16 = next_ref++;
+                        const ir::Ref r_addr_hi = next_ref++;
+                        d.stmts.push_back({r_off16,
+                            ir::Constant{16ULL, ir::OpSize::I64}});
+                        d.stmts.push_back({r_addr_hi,
+                            ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                      ir::OpSize::I64}});
+                        d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                    }
+                    if (sub3 == 0x29u) {
+                        d.stmts.push_back({r_res_hi,
+                            ir::VecCmp{ir::VecCmpKind::Eq, r_lhs_hi, r_rhs_hi, ir::VecLane::D2}});
+                    } else if (sub3 == 0x37u) {
+                        d.stmts.push_back({r_res_hi,
+                            ir::VecCmp{ir::VecCmpKind::Gt, r_lhs_hi, r_rhs_hi, ir::VecLane::D2}});
+                    } else if (sub3 >= 0x38u && sub3 <= 0x3Fu) {
+                        ir::VecBinOpKind k;
+                        ir::VecLane l;
+                        switch (sub3) {
+                            case 0x38u: k = ir::VecBinOpKind::SMin; l = ir::VecLane::B16; break;
+                            case 0x39u: k = ir::VecBinOpKind::SMin; l = ir::VecLane::S4;  break;
+                            case 0x3Au: k = ir::VecBinOpKind::UMin; l = ir::VecLane::H8;  break;
+                            case 0x3Bu: k = ir::VecBinOpKind::UMin; l = ir::VecLane::S4;  break;
+                            case 0x3Cu: k = ir::VecBinOpKind::SMax; l = ir::VecLane::B16; break;
+                            case 0x3Du: k = ir::VecBinOpKind::SMax; l = ir::VecLane::S4;  break;
+                            case 0x3Eu: k = ir::VecBinOpKind::UMax; l = ir::VecLane::H8;  break;
+                            case 0x3Fu: k = ir::VecBinOpKind::UMax; l = ir::VecLane::S4;  break;
+                            default:    k = ir::VecBinOpKind::SMin; l = ir::VecLane::B16;
+                        }
+                        d.stmts.push_back({r_res_hi, ir::VecBinOp{k, r_lhs_hi, r_rhs_hi, l}});
+                    } else {
+                        ir::VecBinOpKind k;
+                        ir::VecLane l;
+                        switch (sub3) {
+                            case 0x01u: k = ir::VecBinOpKind::PairAddInt; l = ir::VecLane::H8; break;
+                            case 0x02u: k = ir::VecBinOpKind::PairAddInt; l = ir::VecLane::S4; break;
+                            case 0x05u: k = ir::VecBinOpKind::PairSubInt; l = ir::VecLane::H8; break;
+                            case 0x06u: k = ir::VecBinOpKind::PairSubInt; l = ir::VecLane::S4; break;
+                            default:    k = ir::VecBinOpKind::Mul;        l = ir::VecLane::S4; break;
+                        }
+                        d.stmts.push_back({r_res_hi, ir::VecBinOp{k, r_lhs_hi, r_rhs_hi, l}});
+                    }
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            if (sub3 == 0x00u || sub3 == 0x1Cu || sub3 == 0x1Du || sub3 == 0x1Eu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                Decoded d;
+                std::optional<ir::Ref> r_addr_lo;
+                if (m.mod != 0b11) {
+                    r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                             instruction_guest_pc + cursor);
+                }
+                if (sub3 == 0x00u) {
+                    const ir::Ref r_dst_old = next_ref++;
+                    const ir::Ref r_mask    = next_ref++;
+                    const ir::Ref r_res     = next_ref++;
+                    const std::uint8_t lhs_xmm_pshufb = vex.present
+                        ? static_cast<std::uint8_t>(vex.vvvv)
+                        : static_cast<std::uint8_t>(m.reg);
+                    d.stmts.push_back({r_dst_old,
+                        ir::LoadVecReg{lhs_xmm_pshufb}});
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_mask,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        d.stmts.push_back({r_mask, ir::LoadVec{*r_addr_lo}});
+                    }
+                    d.stmts.push_back({r_res,
+                        ir::VecPshufb{r_dst_old, r_mask}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                    if (vex.present && vex.L) {
+                        const ir::Ref r_dst_old_hi = next_ref++;
+                        const ir::Ref r_mask_hi    = next_ref++;
+                        const ir::Ref r_res_hi     = next_ref++;
+                        d.stmts.push_back({r_dst_old_hi,
+                            ir::LoadVecRegHi{lhs_xmm_pshufb}});
+                        if (m.mod == 0b11) {
+                            d.stmts.push_back({r_mask_hi,
+                                ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                    static_cast<unsigned>(m.base))}});
+                        } else {
+                            const ir::Ref r_off16 = next_ref++;
+                            const ir::Ref r_addr_hi = next_ref++;
+                            d.stmts.push_back({r_off16,
+                                ir::Constant{16ULL, ir::OpSize::I64}});
+                            d.stmts.push_back({r_addr_hi,
+                                ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                          ir::OpSize::I64}});
+                            d.stmts.push_back({r_mask_hi, ir::LoadVec{r_addr_hi}});
+                        }
+                        d.stmts.push_back({r_res_hi,
+                            ir::VecPshufb{r_dst_old_hi, r_mask_hi}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                    }
+                } else {
+                    const ir::VecLane lane =
+                        sub3 == 0x1Cu ? ir::VecLane::B16 :
+                        sub3 == 0x1Du ? ir::VecLane::H8  :
+                                        ir::VecLane::S4;
+                    const ir::Ref r_src = next_ref++;
+                    const ir::Ref r_res = next_ref++;
+                    if (m.mod == 0b11) {
+                        d.stmts.push_back({r_src,
+                            ir::LoadVecReg{static_cast<std::uint8_t>(
+                                static_cast<unsigned>(m.base))}});
+                    } else {
+                        d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+                    }
+                    d.stmts.push_back({r_res, ir::VecAbs{r_src, lane}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                    if (vex.present && vex.L) {
+                        const ir::Ref r_src_hi = next_ref++;
+                        const ir::Ref r_res_hi = next_ref++;
+                        if (m.mod == 0b11) {
+                            d.stmts.push_back({r_src_hi,
+                                ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                                    static_cast<unsigned>(m.base))}});
+                        } else {
+                            const ir::Ref r_off16 = next_ref++;
+                            const ir::Ref r_addr_hi = next_ref++;
+                            d.stmts.push_back({r_off16,
+                                ir::Constant{16ULL, ir::OpSize::I64}});
+                            d.stmts.push_back({r_addr_hi,
+                                ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                          ir::OpSize::I64}});
+                            d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                        }
+                        d.stmts.push_back({r_res_hi, ir::VecAbs{r_src_hi, lane}});
+                        d.stmts.push_back({std::nullopt,
+                            ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+                    }
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+            return DecodeError::UnsupportedEncoding;
+        }
+
+        // F2-IR-003: SSE2 integer SIMD register-direct.
+        //   66 0F FC /r — PADDB xmm1, xmm2   (16 × i8)
+        //   66 0F FD /r — PADDW xmm1, xmm2   ( 8 × i16)
+        //   66 0F FE /r — PADDD xmm1, xmm2   ( 4 × i32)
+        //   66 0F D4 /r — PADDQ xmm1, xmm2   ( 2 × i64)
+        //   66 0F F8 /r — PSUBB xmm1, xmm2
+        //   66 0F F9 /r — PSUBW xmm1, xmm2
+        //   66 0F FA /r — PSUBD xmm1, xmm2
+        //   66 0F FB /r — PSUBQ xmm1, xmm2
+        //   66 0F EB /r — POR   xmm1, xmm2   (bitwise; lane-agnostic)
+        //   66 0F DB /r — PAND  xmm1, xmm2
+        //   66 0F EF /r — PXOR  xmm1, xmm2
+        // Memory operands (mod != 11) are deferred — emit
+        // UnsupportedEncoding for now so callers know to fall back.
+        // Also: 0F 54 (ANDPS), 0F 56 (ORPS), 0F 57 (XORPS), no prefix.
+        //       66 0F 54 (ANDPD), 66 0F 56 (ORPD), 66 0F 57 (XORPD).
+        // These are bitwise — lane-agnostic — so we map them to the
+        // same VecBinOp kinds as PAND/POR/PXOR with B16 lane.
+        const bool is_andps_family =
+            !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x54u || subop == 0x56u || subop == 0x57u);
+        const bool is_sat_arith =
+            has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xECu || subop == 0xEDu ||  // PADDSB/W
+             subop == 0xDCu || subop == 0xDDu ||  // PADDUSB/W
+             subop == 0xE8u || subop == 0xE9u ||  // PSUBSB/W
+             subop == 0xD8u || subop == 0xD9u);   // PSUBUSB/W
+        const bool is_minmax =
+            has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xDAu || subop == 0xDEu ||  // PMINUB / PMAXUB
+             subop == 0xEAu || subop == 0xEEu);   // PMINSW / PMAXSW
+        if ((has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xFCu || subop == 0xFDu || subop == 0xFEu ||
+             subop == 0xD4u || subop == 0xF8u || subop == 0xF9u ||
+             subop == 0xFAu || subop == 0xFBu || subop == 0xEBu ||
+             subop == 0xDBu || subop == 0xEFu ||
+             subop == 0xD5u || subop == 0xE4u || subop == 0xE5u ||
+             subop == 0xF4u || subop == 0xF6u))
+            || is_andps_family || is_sat_arith || is_minmax) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            ir::VecBinOpKind vop = ir::VecBinOpKind::Add;
+            ir::VecLane      lane = ir::VecLane::B16;
+            switch (subop) {
+                case 0xFCu: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::B16; break;
+                case 0xFDu: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::H8;  break;
+                case 0xFEu: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::S4;  break;
+                case 0xD4u: vop = ir::VecBinOpKind::Add; lane = ir::VecLane::D2;  break;
+                case 0xF8u: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::B16; break;
+                case 0xF9u: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::H8;  break;
+                case 0xFAu: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::S4;  break;
+                case 0xFBu: vop = ir::VecBinOpKind::Sub; lane = ir::VecLane::D2;  break;
+                case 0xDBu: vop = ir::VecBinOpKind::And; break;
+                case 0xEBu: vop = ir::VecBinOpKind::Or;  break;
+                case 0xEFu: vop = ir::VecBinOpKind::Xor; break;
+                case 0xD5u: vop = ir::VecBinOpKind::Mul; lane = ir::VecLane::H8; break;
+                case 0x54u: vop = ir::VecBinOpKind::And; break;  // ANDPS/ANDPD
+                case 0x56u: vop = ir::VecBinOpKind::Or;  break;  // ORPS/ORPD
+                case 0x57u: vop = ir::VecBinOpKind::Xor; break;  // XORPS/XORPD
+                case 0xECu: vop = ir::VecBinOpKind::SqAdd; lane = ir::VecLane::B16; break;
+                case 0xEDu: vop = ir::VecBinOpKind::SqAdd; lane = ir::VecLane::H8;  break;
+                case 0xDCu: vop = ir::VecBinOpKind::UqAdd; lane = ir::VecLane::B16; break;
+                case 0xDDu: vop = ir::VecBinOpKind::UqAdd; lane = ir::VecLane::H8;  break;
+                case 0xE8u: vop = ir::VecBinOpKind::SqSub; lane = ir::VecLane::B16; break;
+                case 0xE9u: vop = ir::VecBinOpKind::SqSub; lane = ir::VecLane::H8;  break;
+                case 0xD8u: vop = ir::VecBinOpKind::UqSub; lane = ir::VecLane::B16; break;
+                case 0xD9u: vop = ir::VecBinOpKind::UqSub; lane = ir::VecLane::H8;  break;
+                case 0xDAu: vop = ir::VecBinOpKind::UMin;  lane = ir::VecLane::B16; break;
+                case 0xDEu: vop = ir::VecBinOpKind::UMax;  lane = ir::VecLane::B16; break;
+                case 0xEAu: vop = ir::VecBinOpKind::SMin;  lane = ir::VecLane::H8;  break;
+                case 0xEEu: vop = ir::VecBinOpKind::SMax;  lane = ir::VecLane::H8;  break;
+                case 0xE5u: vop = ir::VecBinOpKind::SMulHi; lane = ir::VecLane::H8; break;
+                case 0xE4u: vop = ir::VecBinOpKind::UMulHi; lane = ir::VecLane::H8; break;
+                case 0xF4u: vop = ir::VecBinOpKind::UMul32To64; lane = ir::VecLane::S4; break;
+                case 0xF6u: vop = ir::VecBinOpKind::SadBw; lane = ir::VecLane::B16; break;
+                default: break;
+            }
+            Decoded d;
+            // For VEX-encoded ops the first source is the third operand
+            // (vvvv); otherwise it's the SSE-classic dest aliasing src1.
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_dst_old = next_ref++;
+            const ir::Ref r_src     = next_ref++;
+            const ir::Ref r_res     = next_ref++;
+            d.stmts.push_back({r_dst_old, ir::LoadVecReg{lhs_xmm}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecBinOp{vop, r_dst_old, r_src, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — AVX-256 high-lane pair when VEX.L=1.
+            if (vex.present && vex.L) {
+                const ir::Ref r_dst_hi_old = next_ref++;
+                const ir::Ref r_src_hi     = next_ref++;
+                const ir::Ref r_res_hi     = next_ref++;
+                d.stmts.push_back({r_dst_hi_old, ir::LoadVecRegHi{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecBinOp{vop, r_dst_hi_old, r_src_hi, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-015: FP UNPCKLPS/HPS/LPD/HPD share VecUnpack with the
+        // integer lane forms.
+        //   0F 14 /r — UNPCKLPS  (S4 low)
+        //   0F 15 /r — UNPCKHPS  (S4 high)
+        //   66 0F 14 /r — UNPCKLPD (D2 low)
+        //   66 0F 15 /r — UNPCKHPD (D2 high)
+        if (!has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x14u || subop == 0x15u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::VecLane lane = has_operand_size_override
+                                         ? ir::VecLane::D2
+                                         : ir::VecLane::S4;
+            const bool is_high = subop == 0x15u;
+            Decoded d;
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res, ir::VecUnpack{is_high, r_lhs, r_rhs, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecUnpack{is_high, r_lhs_hi, r_rhs_hi, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-011: UNPCKL/UNPCKH — interleave lanes.
+        //   66 0F 60/61/62/6C — PUNPCKL{BW,WD,DQ,QDQ}
+        //   66 0F 68/69/6A/6D — PUNPCKH{BW,WD,DQ,QDQ}
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x60u || subop == 0x61u || subop == 0x62u || subop == 0x6Cu ||
+             subop == 0x68u || subop == 0x69u || subop == 0x6Au || subop == 0x6Du)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const bool is_high = (subop & 0x08u) != 0;
+            ir::VecLane lane = ir::VecLane::B16;
+            switch (subop & 0x07u) {
+                case 0x0u: lane = ir::VecLane::B16; break;  // BW
+                case 0x1u: lane = ir::VecLane::H8;  break;  // WD
+                case 0x2u: lane = ir::VecLane::S4;  break;  // DQ
+                case 0x4u: case 0x5u: lane = ir::VecLane::D2; break;  // QDQ
+                default:   lane = ir::VecLane::B16;
+            }
+            // 6C/6D: QDQ. Override the switch above for those exact codes.
+            if (subop == 0x6Cu || subop == 0x6Du) lane = ir::VecLane::D2;
+            Decoded d;
+            const std::uint8_t lhs_xmm_unpck = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_unpck}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res, ir::VecUnpack{is_high, r_lhs, r_rhs, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_unpck}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecUnpack{is_high, r_lhs_hi, r_rhs_hi, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-012: per-lane shift by immediate.
+        //   66 0F 71 /6 ib — PSLLW (H8)
+        //   66 0F 71 /2 ib — PSRLW
+        //   66 0F 71 /4 ib — PSRAW
+        //   66 0F 72 /6 ib — PSLLD (S4)
+        //   66 0F 72 /2 ib — PSRLD
+        //   66 0F 72 /4 ib — PSRAD
+        //   66 0F 73 /6 ib — PSLLQ (D2)
+        //   66 0F 73 /2 ib — PSRLQ
+        // (PSLLDQ /7, PSRLDQ /3 — byte shifts of whole reg, deferred.)
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x71u || subop == 0x72u || subop == 0x73u)) {
+            auto mr = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(mr)) {
+                return std::get<DecodeError>(mr);
+            }
+            const Byte modrm_b = static_cast<Byte>(std::get<std::uint64_t>(mr));
+            const unsigned mod    = (modrm_b >> 6) & 0x3u;
+            const unsigned reg_op = (modrm_b >> 3) & 0x7u;  // /digit
+            const unsigned rm     = (modrm_b & 0x7u) | (rex.b ? 0x8u : 0x0u);
+            if (mod != 0b11) return DecodeError::UnsupportedEncoding;
+            // PSLLDQ /7 ib + PSRLDQ /3 ib only valid for subop == 0x73 —
+            // they shift the entire register by `count` BYTES.
+            if (subop == 0x73u && (reg_op == 7 || reg_op == 3)) {
+                auto imm_b = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm_b)) {
+                    return std::get<DecodeError>(imm_b);
+                }
+                const std::uint8_t cb =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm_b));
+                Decoded d2;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d2.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+                d2.stmts.push_back({r_res,
+                    ir::VecShiftBytes{reg_op == 7, r_src, cb}});
+                d2.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(rm), r_res}});
+                d2.bytes_consumed = cursor;
+                return d2;
+            }
+            ir::VecShiftKind kind;
+            switch (reg_op) {
+                case 6: kind = ir::VecShiftKind::ShiftL;     break;
+                case 2: kind = ir::VecShiftKind::LogicalShr; break;
+                case 4: kind = ir::VecShiftKind::ArithShr;   break;
+                default: return DecodeError::UnsupportedEncoding;
+            }
+            // PSRAQ doesn't exist in SSE2.
+            if (subop == 0x73u && kind == ir::VecShiftKind::ArithShr) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            const ir::VecLane lane =
+                subop == 0x71u ? ir::VecLane::H8 :
+                subop == 0x72u ? ir::VecLane::S4 :
+                                 ir::VecLane::D2;
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t count =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(rm)}});
+            d.stmts.push_back({r_res,
+                ir::VecShiftImm{kind, r_src, count, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(rm), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-034: CMPxxPS / CMPxxPD / CMPxxSS / CMPxxSD (0F C2 /r ib).
+        //   no prefix → CMPxxPS  (packed S4)
+        //   66 prefix → CMPxxPD  (packed D2)
+        //   F3 prefix → CMPxxSS  (scalar F32, upper preserved)
+        //   F2 prefix → CMPxxSD  (scalar F64, upper preserved)
+        // imm8 selects predicate (0..7).
+        if (!has_lock && subop == 0xC2u &&
+            !(has_f2 && has_f3) &&
+            !(has_operand_size_override && (has_f2 || has_f3))) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t pred =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm)) & 0x7u;
+            const bool is_packed = !has_f2 && !has_f3;
+            const ir::FpSize size =
+                (has_operand_size_override || has_f2) ? ir::FpSize::F64
+                                                      : ir::FpSize::F32;
+            Decoded d;
+            const std::uint8_t lhs_xmm_cmp = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_cmp}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecFpCompare{r_lhs, r_rhs, size,
+                                 static_cast<ir::VecFpCmpPred>(pred), is_packed}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — AVX-256 high-lane emission. CMPxxSS/SD with
+            // VEX.L=1 is #UD (scalar+L=1 illegal); the allowlist already
+            // excludes those, so this branch only fires for packed.
+            if (vex.present && vex.L && is_packed) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_cmp}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecFpCompare{r_lhs_hi, r_rhs_hi, size,
+                                     static_cast<ir::VecFpCmpPred>(pred), is_packed}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-026: UCOMISS / UCOMISD / COMISS / COMISD — FP compare → flags.
+        //   0F 2E /r — UCOMISS xmm1, xmm2/m32
+        //   0F 2F /r — COMISS  (signaling on QNaN; we treat the same)
+        //   66 0F 2E /r — UCOMISD xmm1, xmm2/m64
+        //   66 0F 2F /r — COMISD
+        // Models: WriteFlagsFp setting NZCV with fcmp. Result Ref is
+        // unused in this lowering (the consumer would be a ReadFlag /
+        // CondJumpFlags op decoded separately for the SETcc / Jcc that
+        // follows). We still produce a Ref so SETcc/Jcc can refer to
+        // it as `flags`.
+        if (!has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x2Eu || subop == 0x2Fu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::FpSize fp_sz =
+                has_operand_size_override ? ir::FpSize::F64 : ir::FpSize::F32;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_flags = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_rhs, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_flags,
+                ir::WriteFlagsFp{r_lhs, r_rhs, fp_sz}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-029: MOVMSKPS / MOVMSKPD (0F 50 / 66 0F 50). Reg-only.
+        // VEX.L=1 → VMOVMSKPS produces an 8-bit mask (4+4 lanes) and
+        // VMOVMSKPD a 4-bit mask (2+2 lanes). Concatenate the two
+        // halves: r32 = (mask(hi) << shift) | mask(lo), where shift =
+        // 4 (PS) or 2 (PD).
+        if (!has_lock && !has_f2 && !has_f3 && subop == 0x50u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+            const unsigned src_xmm = static_cast<unsigned>(m.base);
+            Decoded d;
+            const ir::Ref r_xmm = next_ref++;
+            const ir::Ref r_mask_lo = next_ref++;
+            d.stmts.push_back({r_xmm,
+                ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+            d.stmts.push_back({r_mask_lo,
+                ir::VecMaskFp{r_xmm, has_operand_size_override}});
+            ir::Ref r_final = r_mask_lo;
+            if (vex.present && vex.L) {
+                const ir::Ref r_xmm_hi   = next_ref++;
+                const ir::Ref r_mask_hi  = next_ref++;
+                const ir::Ref r_shamt    = next_ref++;
+                const ir::Ref r_mask_hi_shifted = next_ref++;
+                const ir::Ref r_combined = next_ref++;
+                d.stmts.push_back({r_xmm_hi,
+                    ir::LoadVecRegHi{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_mask_hi,
+                    ir::VecMaskFp{r_xmm_hi, has_operand_size_override}});
+                const std::uint64_t shift_amt = has_operand_size_override ? 2u : 4u;
+                d.stmts.push_back({r_shamt,
+                    ir::Constant{shift_amt, ir::OpSize::I32}});
+                d.stmts.push_back({r_mask_hi_shifted,
+                    ir::BinOp{ir::BinOpKind::Shl, r_mask_hi, r_shamt,
+                              ir::OpSize::I32}});
+                d.stmts.push_back({r_combined,
+                    ir::BinOp{ir::BinOpKind::Or, r_mask_lo, r_mask_hi_shifted,
+                              ir::OpSize::I32}});
+                r_final = r_combined;
+            }
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_gpr, r_final, ir::OpSize::I32}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-027: PMOVMSKB r32, xmm (66 0F D7 /r). Reg-direct only.
+        // VEX.L=1 covers VPMOVMSKB r32, ymm — produces a 32-bit mask
+        // by concatenating the 16-bit masks of each 128-bit half:
+        //   r32 = (mask(hi) << 16) | mask(lo)
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            subop == 0xD7u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            // /r reg = GPR dest, rm = XMM source.
+            const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+            const unsigned src_xmm = static_cast<unsigned>(m.base);
+            Decoded d;
+            const ir::Ref r_xmm = next_ref++;
+            const ir::Ref r_mask_lo = next_ref++;
+            d.stmts.push_back({r_xmm,
+                ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+            d.stmts.push_back({r_mask_lo, ir::VecMaskMsb{r_xmm}});
+            ir::Ref r_final = r_mask_lo;
+            if (vex.present && vex.L) {
+                const ir::Ref r_xmm_hi   = next_ref++;
+                const ir::Ref r_mask_hi  = next_ref++;
+                const ir::Ref r_shamt    = next_ref++;
+                const ir::Ref r_mask_hi_shifted = next_ref++;
+                const ir::Ref r_combined = next_ref++;
+                d.stmts.push_back({r_xmm_hi,
+                    ir::LoadVecRegHi{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_mask_hi, ir::VecMaskMsb{r_xmm_hi}});
+                d.stmts.push_back({r_shamt,
+                    ir::Constant{16ULL, ir::OpSize::I32}});
+                d.stmts.push_back({r_mask_hi_shifted,
+                    ir::BinOp{ir::BinOpKind::Shl, r_mask_hi, r_shamt,
+                              ir::OpSize::I32}});
+                d.stmts.push_back({r_combined,
+                    ir::BinOp{ir::BinOpKind::Or, r_mask_lo, r_mask_hi_shifted,
+                              ir::OpSize::I32}});
+                r_final = r_combined;
+            }
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_gpr, r_final, ir::OpSize::I32}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-022: PINSRW / PEXTRW.
+        //   66 0F C4 /r ib — PINSRW xmm1, r/m32, imm8 (insert low 16 of r/m at lane imm8 & 7)
+        //   66 0F C5 /r ib — PEXTRW r32, xmm, imm8 (extract H8 lane, zero-extend; reg-only)
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0xC4u || subop == 0xC5u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            // PEXTRW only supports register-direct (the GPR dst form).
+            if (subop == 0xC5u && m.mod != 0b11) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t lane_idx = static_cast<std::uint8_t>(
+                std::get<std::uint64_t>(imm)) & 0x7u;
+            Decoded d;
+            if (subop == 0xC4u) {
+                // PINSRW: xmm dest = m.reg, source = m.base (GPR) at reg-direct
+                // or memory r/m. We'll only handle register form for now.
+                if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({r_val,
+                    ir::LoadReg{m.base, ir::OpSize::I32}});
+                d.stmts.push_back({r_res,
+                    ir::VecInsertLane{r_lhs, r_val, lane_idx, ir::VecLane::H8}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            } else {
+                // PEXTRW r32, xmm, imm8: GPR dest = m.reg (raw idx),
+                // xmm source = m.base.
+                const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+                const unsigned src_xmm = static_cast<unsigned>(m.base);
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_val,
+                    ir::VecExtractLaneU{r_xmm, lane_idx, ir::VecLane::H8}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{dst_gpr, r_val, ir::OpSize::I32}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-020: SHUFPS / SHUFPD (two-source FP shuffle).
+        //   0F C6 /r ib — SHUFPS xmm1, xmm2/m128, imm8 (S4 lanes)
+        //   66 0F C6 /r ib — SHUFPD                    (D2 lanes)
+        if (!has_lock && !has_f2 && !has_f3 && subop == 0xC6u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t control =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            const bool is_pd = has_operand_size_override;
+            Decoded d;
+            const std::uint8_t lhs_xmm_shuf = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_shuf}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecShuffle2Src{is_pd, r_lhs, r_rhs, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — VSHUFPS/PD ymm: per-128-bit-lane semantics, so
+            // the same control byte applies to both halves.
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_shuf}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecShuffle2Src{is_pd, r_lhs_hi, r_rhs_hi, control}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-028: PSHUFLW (F2 0F 70 /r ib) / PSHUFHW (F3 0F 70 /r ib)
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) && subop == 0x70u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t control =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            const bool is_high = has_f3;
+            Decoded d;
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res, ir::VecShuffleH4{is_high, r_src, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — VPSHUFLW / VPSHUFHW ymm. Per-128-bit-lane.
+            if (vex.present && vex.L) {
+                const ir::Ref r_src_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecShuffleH4{is_high, r_src_hi, control}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-010: PSHUFD xmm1, xmm2/m128, imm8 (66 0F 70 /r ib).
+        // Permutes 4 32-bit lanes of source per immediate control byte.
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            subop == 0x70u) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t control =
+                static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+            Decoded d;
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res, ir::VecShuffle32x4{r_src, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — VPSHUFD ymm. Per-128-bit-lane semantics:
+            // the same imm8 control shuffles both halves independently.
+            if (vex.present && vex.L) {
+                const ir::Ref r_src_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecShuffle32x4{r_src_hi, control}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-009: PCMPEQB/W/D and PCMPGTB/W/D — lane-wise integer compare.
+        //   66 0F 64 /r — PCMPGTB (B16)
+        //   66 0F 65 /r — PCMPGTW (H8)
+        //   66 0F 66 /r — PCMPGTD (S4)
+        //   66 0F 74 /r — PCMPEQB (B16)
+        //   66 0F 75 /r — PCMPEQW (H8)
+        //   66 0F 76 /r — PCMPEQD (S4)
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x64u || subop == 0x65u || subop == 0x66u ||
+             subop == 0x74u || subop == 0x75u || subop == 0x76u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            ir::VecCmpKind kind = (subop & 0xF0u) == 0x70u
+                ? ir::VecCmpKind::Eq : ir::VecCmpKind::Gt;
+            ir::VecLane lane;
+            switch (subop & 0x0Fu) {
+                case 0x4u: lane = ir::VecLane::B16; break;
+                case 0x5u: lane = ir::VecLane::H8;  break;
+                case 0x6u: lane = ir::VecLane::S4;  break;
+                default:   lane = ir::VecLane::B16;
+            }
+            Decoded d;
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res, ir::VecCmp{kind, r_lhs, r_rhs, lane}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecCmp{kind, r_lhs_hi, r_rhs_hi, lane}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-017: CVTSS2SD / CVTSD2SS — scalar precision conversion.
+        //   F3 0F 5A /r — CVTSS2SD xmm1, xmm2/m32 (single → double)
+        //   F2 0F 5A /r — CVTSD2SS xmm1, xmm2/m64 (double → single)
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) && subop == 0x5Au) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::FpSize src_sz =
+                has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            const ir::FpSize dst_sz =
+                has_f3 ? ir::FpSize::F64 : ir::FpSize::F32;
+            Decoded d;
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs,
+                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            d.stmts.push_back({r_src,
+                ir::LoadVecReg{static_cast<std::uint8_t>(
+                    static_cast<unsigned>(m.base))}});
+            d.stmts.push_back({r_res,
+                ir::FpCvtScalar{r_lhs, r_src, src_sz, dst_sz}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-033: MOVDDUP / MOVSLDUP / MOVSHDUP (SSE3 broadcasts).
+        //   F2 0F 12 /r — MOVDDUP  xmm, xmm/m64  (dup low qword across D2)
+        //   F3 0F 12 /r — MOVSLDUP xmm, xmm/m128 (replicate even S4 lanes)
+        //   F3 0F 16 /r — MOVSHDUP xmm, xmm/m128 (replicate odd S4 lanes)
+        // All map to a VecShuffle32x4 with a fixed control byte.
+        if (!has_lock && !has_operand_size_override &&
+            ((has_f2 && subop == 0x12u) ||
+             (has_f3 && (subop == 0x12u || subop == 0x16u)))) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            std::uint8_t control;
+            if (has_f2)                   control = 0x44u;  // MOVDDUP : 0,1,0,1
+            else if (subop == 0x12u)      control = 0xA0u;  // MOVSLDUP: 0,0,2,2
+            else                          control = 0xF5u;  // MOVSHDUP: 1,1,3,3
+            Decoded d;
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res, ir::VecShuffle32x4{r_src, control}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — VMOVDDUP / VMOVSLDUP / VMOVSHDUP ymm.
+            // Per-128-bit-lane semantics: the same shuffle-control
+            // pattern applies to each half independently.
+            if (vex.present && vex.L) {
+                const ir::Ref r_src_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecShuffle32x4{r_src_hi, control}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-021: MOVSS / MOVSD — scalar move (FP).
+        //   F3 0F 10 /r — MOVSS load:  reg-reg keeps upper of dst,
+        //                              mem→reg zeroes upper of dst.
+        //   F3 0F 11 /r — MOVSS store: reg-reg same as load,
+        //                              reg→mem writes low 32 bits.
+        //   F2 0F 10/11 — MOVSD with qword granularity.
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) &&
+            (subop == 0x10u || subop == 0x11u)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::FpSize fp_sz =
+                has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            const ir::OpSize int_sz =
+                has_f3 ? ir::OpSize::I32 : ir::OpSize::I64;
+            const bool is_load = subop == 0x10u;
+            Decoded d;
+            if (m.mod == 0b11) {
+                // reg-reg: keep upper bits of dst. Same encoding either
+                // way (load and store collapse at reg-reg).
+                const ir::Ref r_lhs = next_ref++;
+                const ir::Ref r_src = next_ref++;
+                const ir::Ref r_res = next_ref++;
+                const unsigned dst_xmm = is_load ? m.reg
+                                                  : static_cast<unsigned>(m.base);
+                const unsigned src_xmm = is_load ? static_cast<unsigned>(m.base)
+                                                  : m.reg;
+                d.stmts.push_back({r_lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(dst_xmm)}});
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_res,
+                    ir::FpCvtScalar{r_lhs, r_src, fp_sz, fp_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_res}});
+            } else if (is_load) {
+                // mem→reg: low N bits of dst = mem, upper bits = 0.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                const ir::Ref r_xmm = next_ref++;
+                d.stmts.push_back({r_val, ir::LoadMemTSO{r_addr, int_sz}});
+                d.stmts.push_back({r_xmm, ir::XmmFromGpr{r_val, int_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+            } else {
+                // reg→mem: write low N bits of src xmm to memory.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({r_val,
+                    ir::GprFromXmm{r_xmm, int_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreMemTSO{r_addr, r_val, int_sz}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-032: HADDPS / HADDPD (SSE3 horizontal add).
+        //   F2 0F 7C /r — HADDPS (S4)
+        //   66 0F 7C /r — HADDPD (D2)
+        if (!has_lock && !has_f3 && subop == 0x7Cu &&
+            ((has_f2 && !has_operand_size_override) ||
+             (!has_f2 && has_operand_size_override))) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::VecFpSize size = has_operand_size_override
+                                           ? ir::VecFpSize::D2
+                                           : ir::VecFpSize::S4;
+            Decoded d;
+            const std::uint8_t lhs_xmm_hadd = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm_hadd}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecFpBinOp{ir::VecFpBinOpKind::HAdd, r_lhs, r_rhs, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            if (vex.present && vex.L) {
+                const ir::Ref r_lhs_hi = next_ref++;
+                const ir::Ref r_rhs_hi = next_ref++;
+                const ir::Ref r_res_hi = next_ref++;
+                d.stmts.push_back({r_lhs_hi, ir::LoadVecRegHi{lhs_xmm_hadd}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_rhs_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_rhs_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecFpBinOp{ir::VecFpBinOpKind::HAdd, r_lhs_hi, r_rhs_hi, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-044/045: POPCNT / LZCNT / TZCNT (F3 0F B8/BC/BD).
+        //   F3 0F B8 /r — POPCNT
+        //   F3 0F BC /r — TZCNT (BMI1)
+        //   F3 0F BD /r — LZCNT (BMI1)
+        if (has_f3 && !has_lock && !has_f2 && !has_operand_size_override &&
+            (subop == 0xB8u || subop == 0xBCu || subop == 0xBDu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+            Decoded d;
+            const ir::Ref r_src = next_ref++;
+            const ir::Ref r_res = next_ref++;
+            d.stmts.push_back({r_src, ir::LoadReg{m.base, size}});
+            if (subop == 0xB8u) {
+                d.stmts.push_back({r_res, ir::Popcnt{r_src, size}});
+            } else if (subop == 0xBDu) {
+                d.stmts.push_back({r_res, ir::Lzcnt{r_src, size}});
+            } else {
+                d.stmts.push_back({r_res, ir::Tzcnt{r_src, size}});
+            }
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{dst_gpr, r_res, size}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-016: scalar int ↔ FP conversions, register-direct only.
+        //   F3 0F 2A /r — CVTSI2SS xmm, r/m32   (REX.W → r/m64)
+        //   F2 0F 2A /r — CVTSI2SD
+        //   F3 0F 2C /r — CVTTSS2SI r32, xmm    (truncating; REX.W → r64)
+        //   F2 0F 2C /r — CVTTSD2SI
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) &&
+            (subop == 0x2Au || subop == 0x2Cu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
+            const ir::OpSize int_sz =
+                rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const ir::FpSize fp_sz =
+                has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            Decoded d;
+            if (subop == 0x2Au) {
+                // int → FP: read GPR (m.base), produce 128-bit, store xmm[m.reg].
+                const ir::Ref r_int = next_ref++;
+                const ir::Ref r_xmm = next_ref++;
+                d.stmts.push_back({r_int, ir::LoadReg{m.base, int_sz}});
+                d.stmts.push_back({r_xmm,
+                    ir::IntToFpScalar{r_int, int_sz, fp_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+            } else {
+                // FP → int (truncate). Encoding: /r reg is GPR DEST,
+                // rm is XMM SOURCE. m.reg gives the reg field index;
+                // we need to convert it to a GPR enum. m.base names
+                // the rm-as-GPR but here rm is actually an XMM index —
+                // ir::Gpr happens to be 0..15 in the same order as
+                // raw rm so we extract the underlying index.
+                const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
+                const unsigned src_xmm = static_cast<unsigned>(m.base);
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_int = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({r_int,
+                    ir::FpToIntScalar{r_xmm, fp_sz, int_sz}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{dst_gpr, r_int, int_sz}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-008: MOVD / MOVQ between xmm and r/m32-or-r/m64.
+        //   66 0F 6E /r — MOVD xmm, r/m32   (REX.W → MOVQ xmm, r/m64)
+        //   66 0F 7E /r — MOVD r/m32, xmm   (REX.W → MOVQ r/m64, xmm)
+        // Register-direct only (mod==11) for now; memory form deferred.
+        if (has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x6Eu || subop == 0x7Eu)) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.mod != 0b11) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            Decoded d;
+            if (subop == 0x6Eu) {
+                // GPR -> XMM (load form).
+                const ir::Ref r_gpr = next_ref++;
+                const ir::Ref r_xmm = next_ref++;
+                d.stmts.push_back({r_gpr, ir::LoadReg{m.base, size}});
+                d.stmts.push_back({r_xmm, ir::XmmFromGpr{r_gpr, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+            } else {
+                // XMM -> GPR (store form): 7E moves xmm[reg] low lane
+                // into r/m operand. With mod==11 the destination is a
+                // register; m.base names the GPR.
+                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_gpr = next_ref++;
+                d.stmts.push_back({r_xmm,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({r_gpr, ir::GprFromXmm{r_xmm, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreReg{m.base, r_gpr, size}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-035: LDDQU (F2 0F F0 mem→reg, SSE3) + non-temporal stores
+        // MOVNTDQ (66 0F E7), MOVNTPS (0F 2B), MOVNTPD (66 0F 2B). On ARM64
+        // we have no non-temporal hint — treat them as plain 128-bit
+        // mov to memory or load.
+        const bool is_lddqu      = has_f2 && !has_lock && !has_f3 &&
+                                   !has_operand_size_override && subop == 0xF0u;
+        const bool is_movntdq    = has_operand_size_override && !has_lock &&
+                                   !has_f2 && !has_f3 && subop == 0xE7u;
+        const bool is_movntps    = !has_operand_size_override && !has_lock &&
+                                   !has_f2 && !has_f3 && subop == 0x2Bu;
+        const bool is_movntpd    = has_operand_size_override && !has_lock &&
+                                   !has_f2 && !has_f3 && subop == 0x2Bu;
+        if (is_lddqu || is_movntdq || is_movntps || is_movntpd) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            // LDDQU: only mem→reg form. MOVNT*: only reg→mem form.
+            if (m.mod == 0b11) return DecodeError::UnsupportedEncoding;
+            const bool is_load = is_lddqu;
+            Decoded d;
+            const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                instruction_guest_pc + cursor);
+            if (is_load) {
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_src}});
+            } else {
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_val,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({std::nullopt, ir::StoreVec{r_addr, r_val}});
+            }
+            // F2-IR-005 — VLDDQU / VMOVNTDQ / VMOVNTPS / VMOVNTPD ymm.
+            // Per-128-bit-lane: address+16 + Load/StoreVecRegHi pair.
+            if (vex.present && vex.L) {
+                const ir::Ref r_off16   = next_ref++;
+                const ir::Ref r_addr_hi = next_ref++;
+                d.stmts.push_back({r_off16,
+                    ir::Constant{16ULL, ir::OpSize::I64}});
+                d.stmts.push_back({r_addr_hi,
+                    ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                              ir::OpSize::I64}});
+                if (is_load) {
+                    const ir::Ref r_src_hi = next_ref++;
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_src_hi}});
+                } else {
+                    const ir::Ref r_val_hi = next_ref++;
+                    d.stmts.push_back({r_val_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVec{r_addr_hi, r_val_hi}});
+                }
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-004 / F2-IR-013: 128-bit register-or-memory MOV family.
+        //   MOVDQA  66 0F 6F/7F   (integer, aligned)
+        //   MOVDQU  F3 0F 6F/7F   (integer, unaligned)
+        //   MOVAPS     0F 28/29   (FP packed single, aligned)
+        //   MOVUPS     0F 10/11   (FP packed single, unaligned)
+        //   MOVAPD  66 0F 28/29   (FP packed double, aligned)
+        //   MOVUPD  66 0F 10/11   (FP packed double, unaligned)
+        // All decode to the same LoadVecReg / LoadVec / StoreVecReg /
+        // StoreVec primitives; the alignment distinction is irrelevant
+        // on ARM64 hosts we target.
+        const bool is_mov_28_29 =
+            (subop == 0x28u || subop == 0x29u) &&
+            !has_lock && !has_f2 && !has_f3;
+        const bool is_mov_10_11 =
+            (subop == 0x10u || subop == 0x11u) &&
+            !has_lock && !has_f2 && !has_f3;
+        if (((has_operand_size_override || has_f3) && !has_lock && !has_f2 &&
+            !(has_operand_size_override && has_f3) &&
+            (subop == 0x6Fu || subop == 0x7Fu))
+            || is_mov_28_29 || is_mov_10_11) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            Decoded d;
+            const bool is_load = (subop == 0x6Fu) || (subop == 0x28u) || (subop == 0x10u);
+            if (m.mod == 0b11) {
+                const unsigned src_xmm =
+                    is_load ? static_cast<unsigned>(m.base) : m.reg;
+                const unsigned dst_xmm =
+                    is_load ? m.reg : static_cast<unsigned>(m.base);
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(dst_xmm), r_src}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_src_hi = next_ref++;
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(src_xmm)}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(dst_xmm), r_src_hi}});
+                }
+            } else if (is_load) {
+                // 6F: load 128 bits from memory into xmm[reg].
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_src = next_ref++;
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_src}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    const ir::Ref r_src_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_src_hi}});
+                }
+            } else {
+                // 7F: store xmm[reg] to memory.
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_val,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                d.stmts.push_back({std::nullopt, ir::StoreVec{r_addr, r_val}});
+                if (vex.present && vex.L) {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    const ir::Ref r_val_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, r_addr, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_val_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(m.reg)}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVec{r_addr_hi, r_val_hi}});
+                }
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-005: SSE/SSE2 packed-FP arithmetic, register-direct.
+        //   0F 58 /r — ADDPS xmm1, xmm2   (S4 = 4×f32)
+        //   0F 59 /r — MULPS
+        //   0F 5C /r — SUBPS
+        //   0F 5E /r — DIVPS
+        //   66 0F 58 /r — ADDPD xmm1, xmm2  (D2 = 2×f64)
+        //   66 0F 59 /r — MULPD
+        //   66 0F 5C /r — SUBPD
+        //   66 0F 5E /r — DIVPD
+        // Memory forms (mod != 11) deferred. F2/F3 prefixes select scalar
+        // (ADDSS/ADDSD) and are left for a follow-up.
+        if (!has_lock && !has_f2 && !has_f3 &&
+            (subop == 0x58u || subop == 0x59u ||
+             subop == 0x5Cu || subop == 0x5Eu ||
+             subop == 0x51u ||                    // SQRTPS/PD
+             subop == 0x5Du || subop == 0x5Fu     // MINPS/PD, MAXPS/PD
+            )) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            ir::VecFpBinOpKind vop = ir::VecFpBinOpKind::Add;
+            switch (subop) {
+                case 0x58u: vop = ir::VecFpBinOpKind::Add;  break;
+                case 0x59u: vop = ir::VecFpBinOpKind::Mul;  break;
+                case 0x5Cu: vop = ir::VecFpBinOpKind::Sub;  break;
+                case 0x5Eu: vop = ir::VecFpBinOpKind::Div;  break;
+                case 0x5Du: vop = ir::VecFpBinOpKind::Min;  break;
+                case 0x5Fu: vop = ir::VecFpBinOpKind::Max;  break;
+                case 0x51u: vop = ir::VecFpBinOpKind::Sqrt; break;
+                default: break;
+            }
+            const ir::VecFpSize size = has_operand_size_override
+                                           ? ir::VecFpSize::D2
+                                           : ir::VecFpSize::S4;
+            Decoded d;
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            // Compute the (optional) memory address once, ahead of the
+            // load, so both lo and hi halves can reference it when
+            // VEX.L=1.
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_dst_old = next_ref++;
+            const ir::Ref r_src     = next_ref++;
+            const ir::Ref r_res     = next_ref++;
+            d.stmts.push_back({r_dst_old, ir::LoadVecReg{lhs_xmm}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_src, ir::LoadVec{*r_addr_lo}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecFpBinOp{vop, r_dst_old, r_src, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            // F2-IR-005 — AVX-256: emit the high-lane pair for VEX.L=1.
+            // Memory high-lane is at addr+16; reg high-lane comes from
+            // ymm_hi[m.base]. The vvvv register is the same xmm/ymm
+            // index for both halves.
+            if (vex.present && vex.L) {
+                const ir::Ref r_dst_hi_old = next_ref++;
+                const ir::Ref r_src_hi     = next_ref++;
+                const ir::Ref r_res_hi     = next_ref++;
+                d.stmts.push_back({r_dst_hi_old, ir::LoadVecRegHi{lhs_xmm}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src_hi,
+                        ir::LoadVecRegHi{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_off16 = next_ref++;
+                    const ir::Ref r_addr_hi = next_ref++;
+                    d.stmts.push_back({r_off16,
+                        ir::Constant{16ULL, ir::OpSize::I64}});
+                    d.stmts.push_back({r_addr_hi,
+                        ir::BinOp{ir::BinOpKind::Add, *r_addr_lo, r_off16,
+                                  ir::OpSize::I64}});
+                    d.stmts.push_back({r_src_hi, ir::LoadVec{r_addr_hi}});
+                }
+                d.stmts.push_back({r_res_hi,
+                    ir::VecFpBinOp{vop, r_dst_hi_old, r_src_hi, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{static_cast<std::uint8_t>(m.reg), r_res_hi}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-006: SSE/SSE2 scalar-FP arithmetic, register-direct.
+        //   F3 0F 58 /r — ADDSS xmm1, xmm2   (scalar f32; upper preserved)
+        //   F3 0F 59 /r — MULSS
+        //   F3 0F 5C /r — SUBSS
+        //   F3 0F 5E /r — DIVSS
+        //   F2 0F 58 /r — ADDSD xmm1, xmm2   (scalar f64)
+        //   F2 0F 59 /r — MULSD
+        //   F2 0F 5C /r — SUBSD
+        //   F2 0F 5E /r — DIVSD
+        if ((has_f2 || has_f3) && !has_lock && !has_operand_size_override &&
+            !(has_f2 && has_f3) &&
+            (subop == 0x58u || subop == 0x59u ||
+             subop == 0x5Cu || subop == 0x5Eu ||
+             subop == 0x5Du || subop == 0x5Fu ||  // MINSS/MINSD, MAXSS/MAXSD
+             subop == 0x51u                       // SQRTSS / SQRTSD
+            )) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            ir::VecFpBinOpKind vop = ir::VecFpBinOpKind::Add;
+            switch (subop) {
+                case 0x58u: vop = ir::VecFpBinOpKind::Add; break;
+                case 0x59u: vop = ir::VecFpBinOpKind::Mul; break;
+                case 0x5Cu: vop = ir::VecFpBinOpKind::Sub; break;
+                case 0x5Eu: vop = ir::VecFpBinOpKind::Div; break;
+                case 0x5Du: vop = ir::VecFpBinOpKind::Min; break;
+                case 0x5Fu: vop = ir::VecFpBinOpKind::Max; break;
+                case 0x51u: vop = ir::VecFpBinOpKind::Sqrt; break;
+                default: break;
+            }
+            const ir::FpSize size = has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
+            Decoded d;
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            const ir::Ref r_dst_old = next_ref++;
+            const ir::Ref r_src     = next_ref++;
+            const ir::Ref r_res     = next_ref++;
+            d.stmts.push_back({r_dst_old, ir::LoadVecReg{lhs_xmm}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+            }
+            d.stmts.push_back({r_res,
+                ir::VecFpScalarBinOp{vop, r_dst_old, r_src, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
 
         // We currently consume LOCK/HLE only for the exchange-family atomics
         // added in this slice. Everywhere else they remain unsupported.
@@ -2835,7 +6948,8 @@ std::variant<Decoded, DecodeError> decode_one(
             has_address_size_override,
             has_f3,
             instruction_guest_pc,
-            next_ref)) {
+            next_ref,
+            real_call_ret)) {
         return *decoded;
     }
 

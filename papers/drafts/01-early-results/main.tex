@@ -1,0 +1,167 @@
+% Prisma — Early Results Paper (F1-AC-001 / F1-AC-002).
+%
+% Status: DRAFT skeleton, weeks-1-of-Fase-1. Outline + section
+% scaffolding only. Numbers, figures, and the related-work section
+% land as the implementation matures.
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+\title{Prisma: A Provably-Sound, NPU-Assisted DBT for x86_64 on ARM64}
+\author{Danny Gonz\'{a}lez Ram\'{i}rez \\ \texttt{danny@prisma-emu.dev}}
+\date{Draft --- \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present \emph{Prisma}, a dynamic binary translator for the
+x86\_64 \(\rightarrow\) ARM64 path that targets three goals
+simultaneously: \textbf{(1)} mechanically-verified pass soundness
+via Lean 4, \textbf{(2)} adaptive memory-model
+\(\textsc{tso}\)\(\rightarrow\)relaxed rewriting backed by the
+proof, and \textbf{(3)} an on-device NPU-assisted optimisation
+classifier that decides per-region between fast interpretation and
+deeper compilation. Early results from a clean-slate IR + lowering
+pipeline targeting Apple silicon and Adreno-class Android show
+\emph{[NUMBERS]} on Dhrystone and \emph{[NUMBERS]} on coreutils
+relative to QEMU user-mode. We outline the proof obligations
+already discharged in Lean and the path to closing the remaining
+sorries.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Dynamic binary translation has carried thirty years of value
+movement across ISAs: Transmeta Crusoe, Intel IA-32 EL, Apple
+Rosetta 2, FEX-Emu and Box64. Each chose a sweet spot on the
+correctness-vs-performance frontier and lived with the tail of
+guest binaries that exposed the cracks. Prisma takes a deliberately
+maximalist position: \emph{provable} pass soundness, \emph{adaptive}
+memory-model rewriting, and \emph{ML-assisted} per-region
+compilation strategy. The cost is up-front engineering (a Lean 4
+spec of the IR before any pass ships); the payoff is a system that
+can be cited and rebuilt.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A clean-slate SSA IR with 32 opcodes, formally specified
+        in Lean 4 (\texttt{ir-spec/}).
+  \item A complete pass pipeline (constant prop, algebraic
+        simplification, CSE, copy prop, redundant-load /
+        dead-store elimination, branch fold, peephole, tail-call,
+        DCE) with one published soundness proof and three open
+        proof obligations (\S\ref{sec:proofs}).
+  \item An ARM64 lowering that integrates W\^{}X-safe MAP\_JIT
+        slabs, page-protection-based SMC detection (RFC 0010),
+        and a separated FP / SIMD register pool with an explicit
+        Flags pillar (RFC 0004).
+  \item An end-to-end measurement of Dhrystone, CoreMark, and
+        a coreutils subset against QEMU user-mode and Box64.
+\end{itemize}
+
+\section{IR Design}
+\label{sec:ir}
+
+\subsection{SSA, sized, and typed}
+Refs are \texttt{uint32\_t}. Every \texttt{Ref} carries an
+\texttt{OpSize} (I8/I16/I32/I64) tracked by the validator
+(F1-IR-015). The validator catches BinOp / Compare / StoreReg size
+mismatches before they reach the lowerer.
+
+\subsection{Opcodes}
+The 32-opcode surface (RFC 0001, RFC 0009) covers ALU, memory
+(plain + TSO), control flow (block-id and guest-PC variants),
+explicit Flags ops (RFC 0004), scalar floating-point, 128-bit SIMD
+support in the emitter, and an \texttt{InlineAsm} escape hatch
+for the long tail of x86 instructions not yet decoded.
+
+\subsection{Serialisation}
+The IR has a stable on-wire format (RFC 0009) so the persistent
+translation cache can stash post-passes IR for re-lowering when a
+host CPU feature flag changes.
+
+\section{Lowering and Backend}
+\label{sec:backend}
+
+The lowerer maps SSA Refs to host registers via two pools: \\
+\(\bullet\) integer pool (x0..x9 scratch + x10..x26 pinned guest
+GPRs); \\
+\(\bullet\) FP pool (V0..V7 scratch). \\
+The Flags pillar uses a separate ``flag\_refs\_'' set instead of a
+register, since flags live in NZCV. Dominator-based natural-loop
+analysis (F1-IR-024 / F1-IR-025) feeds the planned register
+allocator (RFC 0006).
+
+\section{Memory Model}
+\label{sec:memory}
+
+x86 enforces TSO; ARM relaxes. Prisma emits \texttt{ldar} /
+\texttt{stlr} for every guest load / store by default
+(\texttt{LoadMemTSO} / \texttt{StoreMemTSO}). The TSO-adaptive
+pass (Pillar 3, Fase 2.5) rewrites these to plain \texttt{ldr} /
+\texttt{str} when proven safe; the proof obligation is the
+RFC's \emph{TSO-rewrite soundness} statement.
+
+\section{Proofs}
+\label{sec:proofs}
+
+The Lean 4 spec defines \texttt{Op}, \texttt{Stmt}, \texttt{BasicBlock},
+\texttt{Function}, \texttt{evalBinOp}, and a small
+\texttt{MachineState} with the GPR file. Three lemmas are
+discharged today: \texttt{evalBinOp\_determinism},
+\texttt{constant\_reduction}, \texttt{binop\_reduction}. One
+\texttt{sorry} remains in \texttt{Lemmas.lean}, gated by CI.
+
+\section{Implementation}
+\label{sec:impl}
+
+\subsection{Languages and tools}
+C++20 (core engine, \texttt{vixl} ARM64 assembler), Rust 2024 (PE
+loader and shell, planned), Kotlin 2.0 + Jetpack Compose (Android
+app, planned), Lean 4 (spec + proofs), Python 3.12 (build / bench
+tooling).
+
+\subsection{Test surface}
+537 Catch2 test cases / 3783 assertions at the time of writing,
+covering decoder, IR, passes, lowering, runtime, and cache.
+Property-based tests (rapidcheck) and a differential harness
+against QEMU user-mode are planned (F1-TC-003 / F1-TC-010).
+
+\section{Early Measurements}
+\label{sec:eval}
+
+\emph{[Placeholder until F1-AC-003 / F1-AC-004 land. Target table:
+Dhrystone MIPS / CoreMark / coreutils geometric-mean speedup vs
+QEMU user-mode and Box64 on Apple M3 Max, Snapdragon 8 Gen 3,
+Dimensity 8300-Ultra.]}
+
+\section{Related Work}
+\label{sec:related}
+
+\emph{[Placeholder. Tier 1: FEX-Emu, Box64. Tier 2: Apple Rosetta 2,
+Intel IA-32 EL, Transmeta Crusoe. Tier 3: QEMU TCG, ELITE,
+DynamoRIO. CompCert / CakeML for the proof tradition. TOSTING for
+TSO-rewrite quantitative work.]}
+
+\section{Conclusion and Future Work}
+\label{sec:conc}
+
+Prisma is a long-term bet on three pillars rarely combined:
+provable correctness, adaptive memory-model relaxation, and
+per-region NPU-assisted strategy choice. This early-results draft
+documents the IR, lowering, and proof scaffolding that exist
+today; the deep evaluation (\S\ref{sec:eval}) and TSO-adaptive
+proof are the next milestones.
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

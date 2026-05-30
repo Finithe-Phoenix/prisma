@@ -13,7 +13,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -127,6 +131,21 @@ peephole_match(const std::vector<ir::Stmt>& stmts);
 //   * Intra-block only. No CFG reasoning.
 [[nodiscard]] std::vector<ir::Stmt>
 copy_propagate(const std::vector<ir::Stmt>& stmts);
+
+// x87 stack elimination / forwarding (F2-PS-001).
+//
+// The reduced-precision x87 bridge models ST(i) through explicit
+// X87Load/X87Store/X87Push/X87Pop operations against CpuStateFrame.
+// This pass tracks the logical x87 stack within one flat statement list
+// and rewrites redundant X87Load operations to the existing SSA ref when
+// the slot value is known. It deliberately keeps X87Store/X87Push/X87Pop
+// in place so block-boundary CPU state remains materialised.
+//
+// Rewrite shape: `%dst = X87Load{n}` becomes `%dst = Or %known,%known`.
+// The existing copy_propagate + DCE pair then forwards consumers to
+// `%known` and removes the copy when possible.
+[[nodiscard]] std::vector<ir::Stmt>
+x87_stack_eliminate(const std::vector<ir::Stmt>& stmts);
 
 // Strength reduction — cheaper primitive for the same value.
 //
@@ -312,9 +331,140 @@ private:
     std::vector<DumpHook> hooks_;
 };
 
+// ---------------------------------------------------------------------------
+// F1-PS-009 peephole pattern matcher.
+// ---------------------------------------------------------------------------
+//
+// A `PeepholeRule` looks at a statement list at a given index and either
+// declines (returns `nullopt`) or returns the rewrite — a sequence of 0
+// or more replacement statements that should occupy `match_len` slots
+// starting at `idx`.
+//
+// The orchestrator `peephole_optimise(stmts, rules)` walks the list,
+// tries each rule at each position, applies the first match, and starts
+// over. Termination is bounded by `kPeepholeMaxIterations` to guard
+// against rules that loop. Rules that *grow* the program count toward
+// the iteration cap too.
+//
+// Pre-baked rule sets:
+//   * `peephole_default_rules()` — the small canonical set used by the
+//     default pipeline (BinOp xor-self → 0; redundant Truncate I64→I64;
+//     Extend identity).
+
+struct PeepholeMatch {
+    std::size_t            consumed;     // how many input stmts to remove
+    std::vector<ir::Stmt>  replacement;  // 0..N replacements
+};
+
+class PeepholeRule {
+public:
+    virtual ~PeepholeRule() = default;
+    [[nodiscard]] virtual std::optional<PeepholeMatch>
+    match(const std::vector<ir::Stmt>& stmts, std::size_t idx) const = 0;
+
+    // Human-readable rule name, surfaced in stats and dumps.
+    [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+};
+
+inline constexpr std::size_t kPeepholeMaxIterations = 8u;
+
+[[nodiscard]] std::vector<ir::Stmt>
+peephole_optimise(const std::vector<ir::Stmt>& stmts,
+                  std::span<const PeepholeRule* const> rules);
+
+[[nodiscard]] std::vector<std::unique_ptr<PeepholeRule>>
+peephole_default_rules();
+
+// Convenience wrapper for the most common case: load the default rule
+// set, run a pass over `stmts`. Allocates per call; for hot paths
+// build the rule list once.
+[[nodiscard]] std::vector<ir::Stmt>
+peephole_optimise_default(const std::vector<ir::Stmt>& stmts);
+
 // Returns the default pipeline used by the rest of the codebase:
 //   constant_propagate → dead_code_eliminate
 // Fase 1+ will grow this; for now these two passes are the whole story.
 [[nodiscard]] PassManager default_pipeline();
+
+// ---------------------------------------------------------------------------
+// F2-PS-004 — Function-level pipeline + Global CSE via dominators.
+// ---------------------------------------------------------------------------
+//
+// The stmt-level `PassManager` runs over a flat `std::vector<Stmt>` and is
+// the workhorse for intra-block transformations (the existing 12 passes).
+// Once the translator starts emitting multi-block `ir::Function`s, we
+// also want passes that see the whole CFG — at minimum to forward
+// available-expression information along dominator-tree edges.
+//
+// Pipeline shape: each pass is `Function → Function`. The manager is
+// otherwise structurally identical to `PassManager`.
+//
+// **Today's translator emits single-block functions** (one x86 instr →
+// one Decoded → one BB), so global CSE on what the translator produces
+// is equivalent to the existing intra-block CSE. The plumbing here
+// is the deliverable; the algorithm unlocks real wins when the
+// translator gains multi-instruction fusion.
+
+struct FunctionPassRunStats {
+    struct PassEntry {
+        std::string   name;
+        std::size_t   blocks_after;
+        std::size_t   stmts_after;
+        std::uint64_t duration_ns{0};
+    };
+    std::size_t initial_block_count{0};
+    std::size_t initial_stmt_count{0};
+    std::vector<PassEntry> passes;
+};
+
+class FunctionPassManager {
+public:
+    using PassFn = std::function<ir::Function(const ir::Function&)>;
+    using DumpHook = std::function<void(
+        const std::string& pass_name,
+        const ir::Function& after)>;
+
+    FunctionPassManager& add(std::string name, PassFn fn);
+    FunctionPassManager& on_pass_run(DumpHook hook);
+    [[nodiscard]] std::size_t size() const noexcept { return passes_.size(); }
+
+    [[nodiscard]] std::pair<ir::Function, FunctionPassRunStats>
+    run(const ir::Function& input) const;
+
+private:
+    struct Entry {
+        std::string name;
+        PassFn fn;
+    };
+    std::vector<Entry>    passes_;
+    std::vector<DumpHook> hooks_;
+};
+
+// Global Common Subexpression Elimination — same canonical-form
+// hashing as intra-block CSE, but forwarded across blocks along
+// dominator-tree edges where the child's only predecessor in the
+// CFG is its immediate dominator. Diamond / join blocks (more than
+// one predecessor) start with an empty available-expression table,
+// which is correct but conservative: a value computed on all
+// incoming paths is not commoned. Tightening this requires a
+// classical available-expressions dataflow analysis, deferred.
+//
+// Within each block the algorithm matches `common_subexpression_eliminate`
+// — flushing on StoreReg / StoreMem / StoreMemTSO / CmpFlags, rewriting
+// a duplicate BinOp to `BinOp Or prev,prev` (the IR's "copy" idiom).
+[[nodiscard]] ir::Function global_cse(const ir::Function& fn);
+
+// F2-PS-003 Loop-Invariant Code Motion. Hoists pure statements whose
+// operands are all defined outside a natural loop's body to that
+// loop's preheader. Preheader detection requires a single non-loop
+// predecessor of the header; multi-entry loops are skipped (correct
+// but conservative). Pure-op set matches the DCE classifier: Constant,
+// LoadReg, LoadSegBase, BinOp, Compare, Extend, Truncate. Iterates to
+// fixed point per loop so chains of dependent invariants all hoist.
+[[nodiscard]] ir::Function loop_invariant_motion(const ir::Function& fn);
+
+// Default function-level pipeline. Currently just `global_cse`.
+// **Not yet wired into the translator** — see the caveat above.
+[[nodiscard]] FunctionPassManager default_function_pipeline();
 
 }  // namespace prisma::passes

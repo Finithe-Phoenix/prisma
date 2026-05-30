@@ -6,20 +6,16 @@ name: core (C++20) — stub
 
 on:
   push:
-    paths:
-      - 'core/**'
-      - '.github/workflows/core-stub.yml'
+    branches: [main]
   pull_request:
-    paths:
-      - 'core/**'
-      - '.github/workflows/core-stub.yml'
 
 concurrency:
   group: core-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  scaffolding-check:
+  core-build:
+    name: core-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

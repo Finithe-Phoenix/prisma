@@ -737,3 +737,51 @@ TEST_CASE("zstd_compress on empty input returns empty") {
     REQUIRE(back.has_value());
     REQUIRE(back->empty());
 }
+
+// ---------------------------------------------------------------------
+// F1-CA-008 compaction
+// ---------------------------------------------------------------------
+
+TEST_CASE("TranslationCache: compact() drops stale SMC entries") {
+    TranslationCache c;
+    const std::uint64_t addr = 0x4000;
+    const std::vector<std::uint8_t> v0{0x90, 0x90};
+    const std::vector<std::uint8_t> v1{0x91, 0x91};
+    const std::vector<std::uint8_t> v2{0x92, 0x92};
+    const auto h0 = fnv1a_64(v0);
+    const auto h1 = fnv1a_64(v1);
+    const auto h2 = fnv1a_64(v2);
+
+    // Insert three SMC versions at the same guest_addr. We use
+    // `insert` (not `upsert`) because upsert already cleans up the
+    // prior hash for the same address; insert leaves stale entries
+    // behind, which is exactly what compact() is supposed to mop up.
+    // addr_to_hash_ tracks only the latest content_hash per addr.
+    c.insert(Key{addr, h0}, make_entry({0xA0}, v0.size(), h0));
+    c.insert(Key{addr, h1}, make_entry({0xA1}, v1.size(), h1));
+    c.insert(Key{addr, h2}, make_entry({0xA2}, v2.size(), h2));
+
+    REQUIRE(c.entry_count() == 3);
+    const auto evicted = c.compact();
+    REQUIRE(evicted == 2);
+    REQUIRE(c.entry_count() == 1);
+
+    // The surviving entry is the most recent one (h2).
+    REQUIRE(c.stats_for(Key{addr, h2}).has_value());
+    REQUIRE_FALSE(c.stats_for(Key{addr, h0}).has_value());
+    REQUIRE_FALSE(c.stats_for(Key{addr, h1}).has_value());
+}
+
+TEST_CASE("TranslationCache: compact() is a no-op when nothing is stale") {
+    TranslationCache c;
+    c.insert(Key{0x1000, 0x1234}, make_entry({0x01}, 1, 0x1234));
+    c.insert(Key{0x2000, 0x5678}, make_entry({0x02}, 1, 0x5678));
+    c.insert(Key{0x3000, 0x9ABC}, make_entry({0x03}, 1, 0x9ABC));
+    REQUIRE(c.compact() == 0);
+    REQUIRE(c.entry_count() == 3);
+}
+
+TEST_CASE("TranslationCache: compact() on an empty cache returns 0") {
+    TranslationCache c;
+    REQUIRE(c.compact() == 0);
+}

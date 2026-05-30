@@ -151,12 +151,14 @@ target_link_libraries(prisma_warnings INTERFACE prisma_coverage)
 # backend, cache, and runtime are future subtargets (Fase 1+).
 
 add_library(prisma_ir STATIC
-    src/ir/analysis.cpp
-    src/ir/cfg.cpp
     src/ir/operation.cpp
     src/ir/pretty_print.cpp
-    src/ir/serialization.cpp
     src/ir/validate.cpp
+    src/ir/serialize.cpp
+    src/ir/serialize_crc.cpp
+    src/ir/cfg.cpp
+    src/ir/dominators.cpp
+    src/ir/profiler.cpp
 )
 
 target_include_directories(prisma_ir
@@ -190,9 +192,12 @@ target_link_libraries(prisma_decoder
 
 add_library(prisma_runtime STATIC
     src/runtime/jit_memory.cpp
+    src/runtime/jit_buffer_pool.cpp
     src/runtime/signal_handler.cpp
     src/runtime/dispatcher.cpp
     src/runtime/host_features.cpp
+    src/runtime/smc_guard.cpp
+    src/runtime/guest_signal.cpp
 )
 
 target_include_directories(prisma_runtime
@@ -217,14 +222,17 @@ add_library(prisma_passes STATIC
     src/passes/dce.cpp
     src/passes/algebraic.cpp
     src/passes/cse.cpp
-    src/passes/peephole.cpp
+    src/passes/global_cse.cpp
+    src/passes/licm.cpp
     src/passes/copy_prop.cpp
+    src/passes/x87_stack.cpp
     src/passes/strength_reduce.cpp
     src/passes/branch_fold.cpp
     src/passes/flag_write_elim.cpp
     src/passes/redundant_load.cpp
     src/passes/dead_store.cpp
     src/passes/tail_call.cpp
+    src/passes/peephole.cpp
     src/passes/pass_manager.cpp
 )
 
@@ -330,6 +338,7 @@ prisma_add_vixl(prisma_vixl SOURCE_DIR ${vixl_src_SOURCE_DIR})
 add_library(prisma_emitter STATIC
     src/backend/emitter.cpp
     src/backend/lowering.cpp
+    src/backend/abi.cpp
 )
 
 target_include_directories(prisma_emitter
@@ -341,6 +350,32 @@ target_link_libraries(prisma_emitter
     PUBLIC  prisma_ir prisma_vixl
     PRIVATE prisma_warnings
 )
+
+# ---------------------------------------------------------------------------
+# prisma_run — CLI that executes a guest x86_64 byte blob end-to-end.
+# ---------------------------------------------------------------------------
+#
+# This is the user-facing demo of the whole pipeline: bytes →
+# decoder → IR → passes → lowerer → JIT execute → final state.
+# Built only on ARM64 hosts because the JIT can only run on the
+# host arch we lower to.
+
+if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
+    add_executable(prisma_run
+        src/runner/main.cpp
+    )
+    target_link_libraries(prisma_run
+        PRIVATE
+            prisma_translator
+            prisma_runtime
+            prisma_decoder
+            prisma_passes
+            prisma_emitter
+            prisma_cache
+            prisma_ir
+            prisma_warnings
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -376,9 +411,6 @@ if(PRISMA_BUILD_TESTS)
 
     add_executable(prisma_core_tests
         tests/test_ir.cpp
-        tests/test_ir_analysis.cpp
-        tests/test_ir_cfg.cpp
-        tests/test_ir_serialization.cpp
         tests/test_arm64_encoding.cpp
         tests/test_emitter.cpp
         tests/test_decoder.cpp
@@ -387,13 +419,28 @@ if(PRISMA_BUILD_TESTS)
         tests/test_passes.cpp
         tests/test_translation_cache.cpp
         tests/test_lowering.cpp
+        tests/test_abi.cpp
+        tests/test_cfg.cpp
+        tests/test_dominators.cpp
+        tests/test_profiler.cpp
+        tests/test_jit_buffer_pool.cpp
+        tests/test_peephole.cpp
+        tests/test_guest_signal.cpp
+        tests/test_cpu_state.cpp
+        tests/test_property.cpp
+        tests/test_zydis_differential.cpp
+        tests/test_e2e_dispatcher.cpp
         tests/test_signal_handler.cpp
+        tests/test_smc_guard.cpp
         tests/test_translator.cpp
         tests/test_dispatcher.cpp
         tests/test_passes_advanced.cpp
         tests/test_passes_more.cpp
         tests/test_passes_mem.cpp
+        tests/test_global_cse.cpp
+        tests/test_licm.cpp
         tests/test_ir_validate.cpp
+        tests/test_ir_serialize.cpp
         tests/test_host_features.cpp
         tests/test_cache_stress.cpp
         tests/test_sha256.cpp
@@ -411,5 +458,26 @@ if(PRISMA_BUILD_TESTS)
             prisma_warnings
             Catch2::Catch2WithMain
     )
+
+    # F1-DC-081: optional Zydis dependency for the differential
+    # decoder test. Off by default; enable with
+    # `-DPRISMA_ENABLE_ZYDIS=ON` when Zydis is available on the
+    # system (`brew install zydis` on macOS).
+    option(PRISMA_ENABLE_ZYDIS "Enable Zydis differential decoder test" OFF)
+    if(PRISMA_ENABLE_ZYDIS)
+        find_package(Zycore CONFIG REQUIRED)
+        find_package(Zydis  CONFIG REQUIRED)
+        target_compile_definitions(prisma_core_tests PRIVATE PRISMA_HAVE_ZYDIS=1)
+        target_link_libraries(prisma_core_tests
+            PRIVATE Zydis::Zydis Zycore::Zycore)
+        # Zydis's exported config emits an unqualified `-lZycore` that
+        # the macOS linker can't find without an explicit -L. Forward
+        # the install prefix from `find_package(Zycore)`.
+        get_target_property(_zycore_loc Zycore::Zycore IMPORTED_LOCATION_RELEASE)
+        get_filename_component(_zycore_dir "${_zycore_loc}" DIRECTORY)
+        target_link_directories(prisma_core_tests PRIVATE "${_zycore_dir}")
+        message(STATUS "Prisma: Zydis differential decoder test enabled")
+    endif()
+
     catch_discover_tests(prisma_core_tests)
 endif()
