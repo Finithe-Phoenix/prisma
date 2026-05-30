@@ -52,6 +52,7 @@ enum class LowerError {
     UnsupportedOp,       // IR op we do not lower yet (e.g. Compare, Jump).
     OutOfScratchRegs,    // More than 10 simultaneously-live SSA values.
     DanglingRef,         // A statement references a Ref that was never defined.
+    InvalidBlock,        // Function CFG references a missing/duplicate block.
 };
 
 struct LowerResult {

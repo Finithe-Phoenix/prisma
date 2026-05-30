@@ -186,6 +186,7 @@ private:
                 u32(x.if_false);
             } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
                 enum8(OpTag::CondJumpFlags);
+                u32(x.flags);
                 enum8(x.cc);
                 u32(x.if_true);
                 u32(x.if_false);
@@ -537,6 +538,8 @@ template <typename E, typename Decode>
             return Op{CondJump{cond, if_true, if_false}};
         }
         case OpTag::CondJumpFlags: {
+            std::uint32_t flags = 0;
+            if (!reader.u32(flags)) return reader.error();
             auto cc = read_enum<CondCode>(reader, decode_cond);
             if (std::holds_alternative<IrDeserializeError>(cc)) {
                 return std::get<IrDeserializeError>(cc);
@@ -544,7 +547,7 @@ template <typename E, typename Decode>
             std::uint32_t if_true = 0;
             std::uint32_t if_false = 0;
             if (!reader.u32(if_true) || !reader.u32(if_false)) return reader.error();
-            return Op{CondJumpFlags{std::get<CondCode>(cc), if_true, if_false}};
+            return Op{CondJumpFlags{flags, std::get<CondCode>(cc), if_true, if_false}};
         }
         case OpTag::Return:
             return Op{Return{}};

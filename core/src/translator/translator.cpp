@@ -161,7 +161,8 @@ decode_until_terminator(std::span<const std::uint8_t> bytes,
 
 Translator::Translator()
     : pipeline_(passes::default_pipeline()),
-      function_pipeline_(passes::default_function_pipeline()) {}
+      function_pipeline_(passes::default_function_pipeline()),
+      pool_(std::make_unique<runtime::JitBufferPool>()) {}
 
 Translator::~Translator() = default;
 
@@ -315,7 +316,7 @@ TranslateResult Translator::translate(
 
     runtime::JitBlock blk;
     try {
-        blk = pool_.acquire(emitted);
+        blk = pool_->acquire(emitted);
     } catch (const std::bad_alloc&) {
         return TranslateError::JitAllocFailed;
     }

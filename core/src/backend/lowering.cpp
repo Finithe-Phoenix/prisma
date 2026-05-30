@@ -16,6 +16,7 @@
 #include "prisma/lowering.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 #include <variant>
 
 #include "prisma/cpu_state.hpp"
@@ -456,8 +457,17 @@ LowerResult Lowerer::lower(const ir::Function& fn) {
 
     // Pre-create one Label per block so forward branches resolve.
     block_labels_.reserve(fn.blocks.size());
+    std::unordered_set<std::uint32_t> seen_blocks;
+    bool has_entry = false;
     for (const auto& b : fn.blocks) {
+        if (!seen_blocks.insert(b.id).second) {
+            return {false, LowerError::InvalidBlock, "duplicate block id"};
+        }
+        has_entry = has_entry || (b.id == fn.entry);
         block_labels_[b.id] = emitter_.create_label();
+    }
+    if (!has_entry) {
+        return {false, LowerError::InvalidBlock, "entry block missing"};
     }
 
     // Per-block: rebuild liveness, refill the scratch pool, bind the
@@ -725,8 +735,11 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // overload has an empty block_labels_ and falls through.
             auto it = block_labels_.find(op.target_block);
             if (it == block_labels_.end()) {
-                return {false, LowerError::UnsupportedOp,
-                        "Jump outside Function lowering (no block label)"};
+                const bool in_function = !block_labels_.empty();
+                return {false,
+                        in_function ? LowerError::InvalidBlock : LowerError::UnsupportedOp,
+                        in_function ? "Jump target block missing"
+                                    : "Jump outside Function lowering (no block label)"};
             }
             emitter_.branch(it->second);
             return {};
@@ -743,8 +756,11 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             auto it_t = block_labels_.find(op.if_true);
             auto it_f = block_labels_.find(op.if_false);
             if (it_t == block_labels_.end() || it_f == block_labels_.end()) {
-                return {false, LowerError::UnsupportedOp,
-                        "CondJump outside Function lowering (no block label)"};
+                const bool in_function = !block_labels_.empty();
+                return {false,
+                        in_function ? LowerError::InvalidBlock : LowerError::UnsupportedOp,
+                        in_function ? "CondJump target block missing"
+                                    : "CondJump outside Function lowering (no block label)"};
             }
             emitter_.cbnz(rc, it_t->second);
             emitter_.branch(it_f->second);
@@ -1102,15 +1118,18 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
         }
         else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) {
             // F1-IR-007. Branch on NZCV using the supplied CondCode.
-            if (flag_refs_.find(op.flags) == flag_refs_.end()) {
-                return {false, LowerError::DanglingRef,
-                        "CondJumpFlags.flags must be a WriteFlags result"};
-            }
             auto it_t = block_labels_.find(op.if_true);
             auto it_f = block_labels_.find(op.if_false);
             if (it_t == block_labels_.end() || it_f == block_labels_.end()) {
-                return {false, LowerError::UnsupportedOp,
-                        "CondJumpFlags outside Function lowering (no block label)"};
+                const bool in_function = !block_labels_.empty();
+                return {false,
+                        in_function ? LowerError::InvalidBlock : LowerError::UnsupportedOp,
+                        in_function ? "CondJumpFlags target block missing"
+                                    : "CondJumpFlags outside Function lowering (no block label)"};
+            }
+            if (flag_refs_.find(op.flags) == flag_refs_.end()) {
+                return {false, LowerError::DanglingRef,
+                        "CondJumpFlags.flags must be a WriteFlags result"};
             }
             // F2-IR-026. For FP-source flags, remap x86 CF-based codes
             // onto the ARM "lt/ge/gt/le" family so the branch matches

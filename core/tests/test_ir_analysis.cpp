@@ -172,7 +172,7 @@ TEST_CASE("IR analysis: CondJumpFlags derives direct successors") {
     Function function;
     function.entry = 0u;
     function.blocks = {
-        BasicBlock{0u, {{std::nullopt, CondJumpFlags{CondCode::Eq, 2u, 1u}}}},
+        BasicBlock{0u, {{std::nullopt, CondJumpFlags{0u, CondCode::Eq, 2u, 1u}}}},
         BasicBlock{1u, {{std::nullopt, Return{}}}},
         BasicBlock{2u, {{std::nullopt, Return{}}}},
     };

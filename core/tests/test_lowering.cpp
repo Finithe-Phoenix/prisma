@@ -589,8 +589,8 @@ TEST_CASE("Lowerer: Function CondJumpFlags lowers to b.cc and fallback branch") 
             {
                 {0u, ir::Constant{1u, ir::OpSize::I64}},
                 {1u, ir::Constant{1u, ir::OpSize::I64}},
-                {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
-                {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 2u, 1u}},
+                {2u, ir::WriteFlags{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}},
+                {std::nullopt, ir::CondJumpFlags{2u, ir::CondCode::Eq, 2u, 1u}},
             },
         },
         ir::BasicBlock{
@@ -637,8 +637,8 @@ TEST_CASE("Lowerer: CFG function lowering resolves mixed label fixups") {
             {
                 {0u, ir::Constant{7u, ir::OpSize::I64}},
                 {1u, ir::Constant{7u, ir::OpSize::I64}},
-                {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
-                {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 4u, 3u}},
+                {2u, ir::WriteFlags{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}},
+                {std::nullopt, ir::CondJumpFlags{2u, ir::CondCode::Eq, 4u, 3u}},
             },
         },
         ir::BasicBlock{
@@ -669,7 +669,7 @@ TEST_CASE("Lowerer: CFG function lowering resolves mixed label fixups") {
 
 TEST_CASE("Lowerer: flat CondJumpFlags is rejected without Function labels") {
     const std::vector<ir::Stmt> stmts = {
-        {std::nullopt, ir::CondJumpFlags{ir::CondCode::Eq, 1u, 2u}},
+        {std::nullopt, ir::CondJumpFlags{0u, ir::CondCode::Eq, 1u, 2u}},
     };
 
     backend::Emitter em;
