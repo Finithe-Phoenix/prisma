@@ -1,9 +1,5 @@
 """prisma-bench command-line entry point.
 
-Deliberately minimal: the subcommands exist to fix the shape of the API
-(what a user would type in Fase 2) but each one exits with a message
-that explains which Fase fills it in.
-
 Invoke as:
     prisma-bench --help
     prisma-bench run --backend prisma --corpus dhrystone
@@ -13,11 +9,16 @@ Invoke as:
 from __future__ import annotations
 
 import sys
-from typing import NoReturn
+from pathlib import Path
+from typing import NoReturn, cast
 
 import click
 
 from . import __version__
+from .aggregate import write_summary
+from .corpora import CORPORA, get_corpus
+from .runners import run_backend
+from .schema import BackendName
 
 
 def _not_yet(fase: str) -> NoReturn:
@@ -28,6 +29,10 @@ def _not_yet(fase: str) -> NoReturn:
         err=True,
     )
     sys.exit(2)
+
+
+def _artifact_name(backend: str, corpus: str) -> str:
+    return f"{corpus}-{backend}.json"
 
 
 @click.group()
@@ -55,10 +60,49 @@ def main() -> None:
     default="results/",
     help="Directory where per-run artifacts and a summary JSON are written.",
 )
-def run_cmd(backend: str, corpus: str, output: str) -> None:
+@click.option(
+    "--iterations",
+    type=int,
+    default=None,
+    help="Override corpus iteration count.",
+)
+@click.option(
+    "--timeout-s",
+    type=float,
+    default=60.0,
+    show_default=True,
+    help="Backend process timeout in seconds.",
+)
+def run_cmd(
+    backend: str,
+    corpus: str,
+    output: str,
+    iterations: int | None,
+    timeout_s: float,
+) -> None:
     """Execute the corpus under the given backend and collect metrics."""
-    del backend, corpus, output  # accepted for API fixing; not yet wired.
-    _not_yet("Fase 2 week 49+")
+    selected = get_corpus(corpus)
+    if selected is None:
+        raise click.ClickException(f"unknown corpus: {corpus}")
+    if iterations is not None and iterations <= 0:
+        raise click.ClickException("--iterations must be positive")
+    if timeout_s <= 0:
+        raise click.ClickException("--timeout-s must be positive")
+
+    output_dir = Path(output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result = run_backend(
+        backend=cast(BackendName, backend),
+        corpus=selected,
+        output_dir=output_dir,
+        iterations=iterations or selected.default_iterations,
+        timeout_s=timeout_s,
+    )
+    artifact_path = output_dir / _artifact_name(backend, corpus)
+    artifact_path.write_text(result.to_json_text())
+    click.echo(str(artifact_path))
+    if result.skipped:
+        click.echo(f"skipped: {result.skip_reason}", err=True)
 
 
 @main.command("report")
@@ -74,14 +118,17 @@ def run_cmd(backend: str, corpus: str, output: str) -> None:
 )
 def report_cmd(results_dir: str, fmt: str) -> None:
     """Aggregate per-run artifacts into a single report."""
-    del results_dir, fmt
-    _not_yet("Fase 2 week 49+")
+    if fmt != "json":
+        _not_yet("F2-BM-007 report generation")
+    out = write_summary(Path(results_dir))
+    click.echo(str(out))
 
 
 @main.command("list-corpora")
 def list_corpora_cmd() -> None:
     """List all named benchmark corpora known to the harness."""
-    click.echo("No corpora registered yet. See tools/benchmarks/README.md.")
+    for corpus in CORPORA.values():
+        click.echo(f"{corpus.name}\t{corpus.display_name}")
 
 
 if __name__ == "__main__":  # pragma: no cover

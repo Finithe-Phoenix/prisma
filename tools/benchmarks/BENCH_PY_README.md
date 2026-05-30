@@ -3,10 +3,10 @@
 A small standalone Python driver that runs an x86_64 binary through every
 emulator on this host and emits JSON. Pure stdlib (no `uv`, no `click`).
 
-For the planned long-term tool with a richer CLI / corpus / scoreboard
-publishing, see `src/prisma_bench/` and the main `README.md` here. The
-two coexist: `bench.py` is the "ssh in, run a binary, see numbers"
-fallback that works on any host with Python 3.10+.
+For the richer corpus-aware CLI, see `src/prisma_bench/` and the main
+`README.md` here. The two coexist: `bench.py` is the "ssh in, run a binary,
+see numbers" fallback that works on any host with Python 3.10+, while
+`prisma-bench` builds known corpora and emits versioned result artifacts.
 
 ## Quick start
 

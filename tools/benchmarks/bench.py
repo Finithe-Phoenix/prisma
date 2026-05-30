@@ -53,9 +53,9 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 
 # Engine probe: returns the executable path or None.
@@ -194,7 +194,7 @@ def main() -> int:
         "binary":    str(args.binary),
         "host":      host_label(),
         "git_sha":   git_sha(repo_root),
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "results":   [],
     }
 

@@ -1,8 +1,9 @@
 # tools/benchmarks — Prisma benchmark harness
 
-**Status:** scaffolding only. First real benchmark runs are Fase 2+
-(semana 49 onwards). This package exists now so the API is clarified
-early and CI can wire it in at that time.
+**Status:** first runnable slice. `prisma-bench run` can compile and run the
+self-authored Dhrystone-style corpus under local backends, emit per-run JSON,
+and aggregate `summary.json`. Backends that are unavailable are recorded as
+skipped artifacts instead of crashing.
 
 ## Purpose
 
@@ -40,18 +41,40 @@ Run a fixed corpus of x86_64 binaries through:
 - **Game-representative workloads:** small kernels extracted from open-
   source game code (Quake, Xash3D, etc.) that mimic hot inner loops.
 
-None of these exist yet. Each has its own schedule tied to the Fase
-that needs it.
+The first bundled corpus is `dhrystone`, implemented as a self-authored
+Dhrystone-style integer workload in `corpora/dhrystone/dhry_prisma.c`. It is
+not a verbatim copy of the historic Dhrystone source.
 
-## Usage (future)
+## Usage
 
 ```
 $ uv venv
 $ uv pip install -e '.[dev]'
-$ prisma-bench run --config configs/dhrystone.toml --backend prisma --output results/
-$ prisma-bench report results/ --format markdown
+$ prisma-bench list-corpora
+$ prisma-bench run --backend native --corpus dhrystone --output results/
+$ prisma-bench run --backend qemu --corpus dhrystone --output results/
+$ prisma-bench report results/ --format json
 ```
 
-The CLI is a stub (`src/prisma_bench/cli.py`) that prints a deliberate
-"not yet implemented" message so nothing ships by accident. We will fill
-it in starting Fase 2.
+`--backend prisma` is wired into the same schema, but currently soft-skips for
+the Dhrystone corpus because `core/build/prisma_run` accepts raw blobs rather
+than ELF/host binaries. That skip is intentional and visible in the JSON
+artifact; it will flip to execution when the runner grows ELF support or a raw
+benchmark corpus lands.
+
+## Artifacts
+
+Each `run` writes one JSON file:
+
+```
+results/dhrystone-native.json
+```
+
+The artifact schema is `prisma-bench-result/v1`. `report --format json` reads
+all result artifacts in the directory and writes:
+
+```
+results/summary.json
+```
+
+Markdown and LaTeX report generation are tracked separately under F2-BM-007.
