@@ -162,7 +162,7 @@ decode_until_terminator(std::span<const std::uint8_t> bytes,
 Translator::Translator()
     : pipeline_(passes::default_pipeline()),
       function_pipeline_(passes::default_function_pipeline()),
-      pool_(std::make_unique<runtime::JitBufferPool>()) {}
+      pool_(std::make_unique<runtime::JitSlabPool>()) {}
 
 Translator::~Translator() = default;
 

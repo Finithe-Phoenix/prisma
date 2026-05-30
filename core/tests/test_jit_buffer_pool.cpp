@@ -21,7 +21,7 @@ constexpr std::uint8_t kRetInstruction[] = {0xC0, 0x03, 0x5F, 0xD6};
 }  // namespace
 
 TEST_CASE("JitBufferPool: single acquire serves a small region") {
-    runtime::JitBufferPool pool;
+    runtime::JitSlabPool pool;
     auto blk = pool.acquire(std::span<const std::uint8_t>(kRetInstruction));
     REQUIRE(blk.entry != nullptr);
     REQUIRE(blk.size_bytes == 4);
@@ -32,7 +32,7 @@ TEST_CASE("JitBufferPool: single acquire serves a small region") {
 }
 
 TEST_CASE("JitBufferPool: many small acquires fit in a single slab") {
-    runtime::JitBufferPool pool;
+    runtime::JitSlabPool pool;
     std::vector<runtime::JitBlock> blocks;
     blocks.reserve(1000);
     for (int i = 0; i < 1000; ++i) {
@@ -50,7 +50,7 @@ TEST_CASE("JitBufferPool: many small acquires fit in a single slab") {
 }
 
 TEST_CASE("JitBufferPool: acquire past slab capacity allocates a new slab") {
-    runtime::JitBufferPool pool;
+    runtime::JitSlabPool pool;
     // Allocate close to a full slab worth.
     std::vector<std::uint8_t> big(runtime::kSlabBytes - 1024u, 0xFFu);
     // Fill the first slab with one big-ish allocation.
@@ -66,7 +66,7 @@ TEST_CASE("JitBufferPool: acquire past slab capacity allocates a new slab") {
 }
 
 TEST_CASE("JitBufferPool: a > kSlabBytes acquire allocates a custom slab") {
-    runtime::JitBufferPool pool;
+    runtime::JitSlabPool pool;
     std::vector<std::uint8_t> huge(runtime::kSlabBytes + 4096u, 0u);
     auto blk = pool.acquire(std::span<const std::uint8_t>(huge));
     REQUIRE(blk.entry != nullptr);
@@ -77,7 +77,7 @@ TEST_CASE("JitBufferPool: a > kSlabBytes acquire allocates a custom slab") {
 }
 
 TEST_CASE("JitBufferPool: concurrent acquires from N threads serialise") {
-    runtime::JitBufferPool pool;
+    runtime::JitSlabPool pool;
     constexpr int kThreads = 4;
     constexpr int kPerThread = 200;
 
@@ -118,7 +118,7 @@ TEST_CASE("JitBufferPool: concurrent acquires from N threads serialise") {
 }
 
 TEST_CASE("JitBufferPool: release is a no-op (MVP)") {
-    runtime::JitBufferPool pool;
+    runtime::JitSlabPool pool;
     auto a = pool.acquire(std::span<const std::uint8_t>(kRetInstruction));
     pool.release(a);
     auto b = pool.acquire(std::span<const std::uint8_t>(kRetInstruction));

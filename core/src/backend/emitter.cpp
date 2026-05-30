@@ -30,6 +30,11 @@ vixl_aa::XRegister to_vixl_x(arm64::Reg r) noexcept {
     return vixl_aa::XRegister(static_cast<int>(r));
 }
 
+// Build a vixl WRegister from our Reg enum (for 32-bit form loads/stores).
+vixl_aa::WRegister to_vixl_w(arm64::Reg r) noexcept {
+    return vixl_aa::WRegister(static_cast<int>(r));
+}
+
 }  // namespace
 
 struct Emitter::Impl {
@@ -60,6 +65,27 @@ void Emitter::mov_imm64(arm64::Reg rd, std::uint64_t imm) {
 
 void Emitter::mov_reg_reg(arm64::Reg rd, arm64::Reg rs) {
     impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rs));
+}
+
+void Emitter::mov_reg_reg(arm64::Reg rd, arm64::Reg rs, ir::OpSize size) {
+    zero_extend(rd, rs, size);
+}
+
+void Emitter::store_reg_reg(arm64::Reg rd, arm64::Reg rs, ir::OpSize size) {
+    switch (size) {
+        case ir::OpSize::I8:
+            impl_->masm.Bfxil(to_vixl_x(rd), to_vixl_x(rs), 0, 8);
+            return;
+        case ir::OpSize::I16:
+            impl_->masm.Bfxil(to_vixl_x(rd), to_vixl_x(rs), 0, 16);
+            return;
+        case ir::OpSize::I32:
+            impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rs));
+            return;
+        case ir::OpSize::I64:
+            impl_->masm.Mov(to_vixl_x(rd), to_vixl_x(rs));
+            return;
+    }
 }
 
 void Emitter::add(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
@@ -142,15 +168,6 @@ void Emitter::ands(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm) {
 // 32-bit W-register ALU forms — defined after the anonymous namespace
 // that hosts `to_vixl_w` (further down in this file).
 
-
-namespace {
-
-// Build a vixl WRegister from our Reg enum (for 32-bit form loads/stores).
-vixl_aa::WRegister to_vixl_w(arm64::Reg r) noexcept {
-    return vixl_aa::WRegister(static_cast<int>(r));
-}
-
-}  // namespace
 
 void Emitter::load(arm64::Reg rd, arm64::Reg raddr, ir::OpSize size) {
     const vixl_aa::MemOperand mo(to_vixl_x(raddr));
@@ -392,6 +409,28 @@ void Emitter::uxtw(arm64::Reg rd, arm64::Reg rn) {
     // AArch64 zero-extends 32→64 implicitly when the destination is
     // written through its W-view.  `mov wd, wn` is the canonical idiom.
     impl_->masm.Mov(to_vixl_w(rd), to_vixl_w(rn));
+}
+
+void Emitter::zero_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size) {
+    switch (from_size) {
+        case ir::OpSize::I8:  uxtb(rd, rn); return;
+        case ir::OpSize::I16: uxth(rd, rn); return;
+        case ir::OpSize::I32: uxtw(rd, rn); return;
+        case ir::OpSize::I64: mov_reg_reg(rd, rn); return;
+    }
+}
+
+void Emitter::sign_extend(arm64::Reg rd, arm64::Reg rn, ir::OpSize from_size) {
+    switch (from_size) {
+        case ir::OpSize::I8:  sxtb(rd, rn); return;
+        case ir::OpSize::I16: sxth(rd, rn); return;
+        case ir::OpSize::I32: sxtw(rd, rn); return;
+        case ir::OpSize::I64: mov_reg_reg(rd, rn); return;
+    }
+}
+
+void Emitter::truncate(arm64::Reg rd, arm64::Reg rn, ir::OpSize to_size) {
+    zero_extend(rd, rn, to_size);
 }
 
 // --- Floating-point ALU (F1-BK-013) ---------------------------------------
@@ -1896,7 +1935,6 @@ void Emitter::vst1_q_offset(FpReg rs, arm64::Reg base, std::int32_t imm) {
 
 void Emitter::dmb(BarrierKind k) {
     using vixl_aa::BarrierType;
-    using vixl_aa::BarrierDomain;
     BarrierType bt;
     switch (k) {
         case BarrierKind::Ish:   bt = vixl_aa::BarrierAll;    break;
@@ -1904,6 +1942,20 @@ void Emitter::dmb(BarrierKind k) {
         case BarrierKind::IshSt: bt = vixl_aa::BarrierWrites; break;
     }
     impl_->masm.Dmb(vixl_aa::InnerShareable, bt);
+}
+
+void Emitter::fence(ir::FenceKind kind) {
+    switch (kind) {
+        case ir::FenceKind::Mfence:
+            dmb(BarrierKind::Ish);
+            return;
+        case ir::FenceKind::Lfence:
+            impl_->masm.Dsb(vixl_aa::InnerShareable, vixl_aa::BarrierReads);
+            return;
+        case ir::FenceKind::Sfence:
+            dmb(BarrierKind::IshSt);
+            return;
+    }
 }
 
 // --- Label management ------------------------------------------------------

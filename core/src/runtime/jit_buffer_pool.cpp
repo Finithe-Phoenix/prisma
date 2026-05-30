@@ -48,14 +48,14 @@ void invalidate_icache(void* base, std::size_t size) {
 
 }  // namespace
 
-JitBufferPool::JitBufferPool() = default;
+JitSlabPool::JitSlabPool() = default;
 
-JitBufferPool::~JitBufferPool() {
+JitSlabPool::~JitSlabPool() {
     std::lock_guard<std::mutex> lk{mu_};
     for (auto& s : slabs_) free_slab(s);
 }
 
-JitBufferPool::Slab JitBufferPool::allocate_slab(std::size_t bytes) {
+JitSlabPool::Slab JitSlabPool::allocate_slab(std::size_t bytes) {
     const std::size_t ps   = page_size();
     const std::size_t size = round_up(bytes < kSlabBytes ? kSlabBytes : bytes, ps);
 
@@ -76,7 +76,7 @@ JitBufferPool::Slab JitBufferPool::allocate_slab(std::size_t bytes) {
     return s;
 }
 
-void JitBufferPool::free_slab(Slab& s) noexcept {
+void JitSlabPool::free_slab(Slab& s) noexcept {
     if (s.base != nullptr) {
         ::munmap(s.base, s.capacity);
         s.base     = nullptr;
@@ -85,7 +85,7 @@ void JitBufferPool::free_slab(Slab& s) noexcept {
     }
 }
 
-JitBlock JitBufferPool::acquire(std::span<const std::uint8_t> src) {
+JitBlock JitSlabPool::acquire(std::span<const std::uint8_t> src) {
     const std::size_t need = round_up(src.size(), kBlockAlignment);
 
     std::lock_guard<std::mutex> lk{mu_};
@@ -137,12 +137,12 @@ JitBlock JitBufferPool::acquire(std::span<const std::uint8_t> src) {
     return blk;
 }
 
-void JitBufferPool::release(JitBlock /*blk*/) noexcept {
+void JitSlabPool::release(JitBlock /*blk*/) noexcept {
     // No-op MVP. Future: maintain a per-slab free list keyed on
     // (offset, size) and merge adjacent free spans on release.
 }
 
-JitPoolStats JitBufferPool::stats() const {
+JitPoolStats JitSlabPool::stats() const {
     std::lock_guard<std::mutex> lk{mu_};
     return stats_;
 }

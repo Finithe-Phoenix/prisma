@@ -121,7 +121,7 @@ private:
                 enum8(x.size);
             } else if constexpr (std::is_same_v<T, LoadSegBase>) {
                 enum8(OpTag::LoadSegBase);
-                enum8(x.segment);
+                enum8(x.seg);
             } else if constexpr (std::is_same_v<T, StoreReg>) {
                 enum8(OpTag::StoreReg);
                 enum8(x.reg);

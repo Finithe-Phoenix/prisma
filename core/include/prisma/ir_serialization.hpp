@@ -21,7 +21,7 @@ inline constexpr std::array<std::uint8_t, 4> kIrBinaryMagic{
     static_cast<std::uint8_t>('R'),
     static_cast<std::uint8_t>('B'),
 };
-inline constexpr std::uint16_t kIrBinaryVersion = 1;
+inline constexpr std::uint16_t kIrBinaryVersion = 2;
 
 enum class IrBinaryKind : std::uint8_t {
     StmtList = 1,

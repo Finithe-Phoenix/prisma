@@ -38,7 +38,7 @@
 #include "prisma/translation_cache.hpp"
 
 namespace prisma::runtime {
-class JitBufferPool;
+class JitSlabPool;
 }
 
 namespace prisma::translator {
@@ -174,7 +174,7 @@ private:
     cache::TranslationCache       cache_;
     // Pool that owns every translated region. F1-RT-009: replaces the
     // previous one-mmap-per-translation pattern.
-    std::unique_ptr<runtime::JitBufferPool> pool_;
+    std::unique_ptr<runtime::JitSlabPool> pool_;
     // Lookup by guest_addr → Record. The persistent TranslationCache
     // is updated in parallel so future Fase 2.5 P2P distribution sees
     // entries.

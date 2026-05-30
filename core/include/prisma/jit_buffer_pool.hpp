@@ -50,15 +50,15 @@ struct JitPoolStats {
     std::size_t acquire_count{0};
 };
 
-class JitBufferPool {
+class JitSlabPool {
 public:
-    JitBufferPool();
-    ~JitBufferPool();
+    JitSlabPool();
+    ~JitSlabPool();
 
-    JitBufferPool(const JitBufferPool&)            = delete;
-    JitBufferPool& operator=(const JitBufferPool&) = delete;
-    JitBufferPool(JitBufferPool&&)                 = delete;
-    JitBufferPool& operator=(JitBufferPool&&)      = delete;
+    JitSlabPool(const JitSlabPool&)            = delete;
+    JitSlabPool& operator=(const JitSlabPool&) = delete;
+    JitSlabPool(JitSlabPool&&)                 = delete;
+    JitSlabPool& operator=(JitSlabPool&&)      = delete;
 
     // Carve out a region of at least `bytes` and copy `src` into it.
     // Returns a JitBlock pointing at the (now executable) entry.
