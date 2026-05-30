@@ -516,7 +516,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             // Copy the pinned host reg into a scratch so subsequent StoreReg
             // writes cannot clobber this value.
-            emitter_.mov_reg_reg(rd, arm64::host_reg_for(op.reg));
+            emitter_.mov_reg_reg(rd, arm64::host_reg_for(op.reg), op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::StoreReg>) {
@@ -524,7 +524,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!reg_of(op.value, src)) {
                 return {false, LowerError::DanglingRef, "StoreReg.value"};
             }
-            emitter_.mov_reg_reg(arm64::host_reg_for(op.reg), src);
+            emitter_.store_reg_reg(arm64::host_reg_for(op.reg), src, op.size);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::BinOp>) {
@@ -762,7 +762,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                         in_function ? "CondJump target block missing"
                                     : "CondJump outside Function lowering (no block label)"};
             }
-            emitter_.cbnz(rc, it_t->second);
+            const arm64::Reg zero = (rc == arm64::Reg::X9) ? arm64::Reg::X8 : arm64::Reg::X9;
+            emitter_.mov_imm64(zero, 0);
+            emitter_.cmp(rc, zero);
+            emitter_.branch_cc(it_t->second, ir::CondCode::Ne);
             emitter_.branch(it_f->second);
             return {};
         }
@@ -809,6 +812,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                     case ir::OpSize::I64:
                         emitter_.mov_reg_reg(rd, rs);  // identity
                         break;
+                }
+                if (op.to_size != ir::OpSize::I64) {
+                    emitter_.truncate(rd, rd, op.to_size);
                 }
             } else {
                 switch (op.from_size) {
@@ -2121,15 +2127,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Fence>) {
-            // F1-BK-023. Map x86 fences to ARM64 DMB ISH variants.
-            switch (op.kind) {
-                case ir::FenceKind::Mfence:
-                    emitter_.dmb(Emitter::BarrierKind::Ish);   break;
-                case ir::FenceKind::Lfence:
-                    emitter_.dmb(Emitter::BarrierKind::IshLd); break;
-                case ir::FenceKind::Sfence:
-                    emitter_.dmb(Emitter::BarrierKind::IshSt); break;
-            }
+            emitter_.fence(op.kind);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::CallRel>

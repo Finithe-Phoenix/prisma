@@ -32,7 +32,7 @@ std::optional<OpSize> result_size_static(const Op& op) {
         else if constexpr (std::is_same_v<T, LoadReg>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadSegBase>) return OpSize::I64;
         else if constexpr (std::is_same_v<T, BinOp>)       return x.size;
-        else if constexpr (std::is_same_v<T, Compare>)     return OpSize::I8;
+        else if constexpr (std::is_same_v<T, Compare>)     return OpSize::I64;
         else if constexpr (std::is_same_v<T, Select>)      return x.size;
         else if constexpr (std::is_same_v<T, LoadMem>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadMemTSO>)  return x.size;
@@ -211,6 +211,12 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
     return std::visit([&](const auto& x) -> std::optional<OpSize> {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, BinOp>) {
+            const bool rhs_is_count = r == x.rhs
+                && (x.op == BinOpKind::Shl || x.op == BinOpKind::Shr
+                    || x.op == BinOpKind::Sar || x.op == BinOpKind::Rol
+                    || x.op == BinOpKind::Ror || x.op == BinOpKind::Rcl
+                    || x.op == BinOpKind::Rcr);
+            if (rhs_is_count) return std::nullopt;
             if (r == x.lhs || r == x.rhs) return x.size;
         } else if constexpr (std::is_same_v<T, Compare>) {
             if (r == x.lhs || r == x.rhs) return x.size;
@@ -219,7 +225,7 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
         } else if constexpr (std::is_same_v<T, Select>) {
             if (r == x.true_value || r == x.false_value) return x.size;
         } else if constexpr (std::is_same_v<T, StoreReg>) {
-            if (r == x.value) return x.size;
+            (void)x; (void)r;
         } else if constexpr (std::is_same_v<T, StoreMem>) {
             if (r == x.value) return x.size;
             if (r == x.addr)  return OpSize::I64;
@@ -239,7 +245,7 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
         } else if constexpr (std::is_same_v<T, CallReg>) {
             if (r == x.target) return OpSize::I64;
         } else if constexpr (std::is_same_v<T, Extend>) {
-            if (r == x.value) return x.from_size;
+            (void)x; (void)r;
         } else if constexpr (std::is_same_v<T, Truncate>) {
             // Truncate accepts any source size strictly wider than
             // to_size; the validator can't pin it without per-op
@@ -291,7 +297,27 @@ ValidationResult validate(const std::vector<Stmt>& stmts) {
         for_each_operand_ref(s.op, [&](Ref r) {
             if (!mism.ok) return;
             const auto want = required_operand_size(s.op, r);
-            if (!want.has_value()) return;
+            if (!want.has_value()) {
+                const auto relaxed_it = ref_size.find(r);
+                if (relaxed_it == ref_size.end()) return;
+                const bool relaxed_ok = std::visit([&](const auto& op) {
+                    using T = std::decay_t<decltype(op)>;
+                    if constexpr (std::is_same_v<T, StoreReg>) {
+                        return r != op.value
+                            || bit_width(relaxed_it->second) >= bit_width(op.size);
+                    } else if constexpr (std::is_same_v<T, Extend>) {
+                        return r != op.value
+                            || bit_width(relaxed_it->second) >= bit_width(op.from_size);
+                    } else {
+                        return true;
+                    }
+                }, s.op);
+                if (!relaxed_ok) {
+                    mism = err(ValidationCode::SizeMismatch, i, r,
+                               "operand size is too narrow for consuming op");
+                }
+                return;
+            }
             const auto it = ref_size.find(r);
             if (it == ref_size.end()) return;  // size unknown — skip
             if (it->second != *want) {
