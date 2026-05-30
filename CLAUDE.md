@@ -17,7 +17,7 @@ Ultima actualizacion: 2026-05-30 America/Mexico_City.
 - Los workflows deben correr en todo PR para poder ser required checks sin
   quedarse en `Pending` por path filters. Los contexts esperados son
   `core-build`, `asan-ubsan`, `tsan`, `ir-spec-build`, `markdownlint`,
-  `check-rfc-frontmatter` y `shell-check`.
+  `check-rfc-frontmatter`, `shell-check` y `benchmarks-smoke`.
 - Antes de empujar a `main`, validar en una rama/PR de integracion y esperar
   GitHub Actions verde.
 

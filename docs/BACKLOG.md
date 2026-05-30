@@ -482,12 +482,12 @@ translator on a reference Linux ARM64 box.
 
 ### F2-BM — Benchmarks
 
-- [ ] F2-BM-001: Dhrystone harness (Python driver + C source bundled).
+- [x] (533fc70) F2-BM-001: Dhrystone harness (Python driver + C source bundled).
 - [ ] F2-BM-002: CoreMark harness.
 - [ ] F2-BM-003: nbench harness.
 - [ ] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net).
 - [ ] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native.
-- [ ] F2-BM-006: Result schema (JSON) + aggregation.
+- [x] (533fc70) F2-BM-006: Result schema (JSON) + aggregation.
 - [ ] F2-BM-007: Markdown / LaTeX report generation.
 - [ ] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired.
 - [ ] F2-BM-009: First public results table on prisma-emu.dev/benchmarks.
