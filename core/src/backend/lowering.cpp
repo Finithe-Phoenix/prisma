@@ -762,10 +762,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                         in_function ? "CondJump target block missing"
                                     : "CondJump outside Function lowering (no block label)"};
             }
-            const arm64::Reg zero = (rc == arm64::Reg::X9) ? arm64::Reg::X8 : arm64::Reg::X9;
-            emitter_.mov_imm64(zero, 0);
-            emitter_.cmp(rc, zero);
-            emitter_.branch_cc(it_t->second, ir::CondCode::Ne);
+            emitter_.cbnz(rc, it_t->second);
             emitter_.branch(it_f->second);
             return {};
         }

@@ -281,7 +281,7 @@ TEST_CASE("Lowerer: Fence emits the expected ARM barrier") {
     const std::string d = lower_to_disasm(stmts, ok);
     REQUIRE(ok);
     REQUIRE(d.find("dmb ish")   != std::string::npos);
-    REQUIRE(d.find("dsb ishld") != std::string::npos);
+    REQUIRE(d.find("dmb ishld") != std::string::npos);
     REQUIRE(d.find("dmb ishst") != std::string::npos);
 }
 
@@ -541,8 +541,7 @@ TEST_CASE("Lowerer: Function CondJump lowers to conditional and fallback branche
     const std::string d = lower_function_to_disasm(fn, ok);
     INFO("disasm: " << d);
     REQUIRE(ok);
-    REQUIRE(d.find("cmp") != std::string::npos);
-    REQUIRE(d.find("b.ne") != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
     REQUIRE(d.find("b ") != std::string::npos);
 }
 

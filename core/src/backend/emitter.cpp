@@ -1950,7 +1950,7 @@ void Emitter::fence(ir::FenceKind kind) {
             dmb(BarrierKind::Ish);
             return;
         case ir::FenceKind::Lfence:
-            impl_->masm.Dsb(vixl_aa::InnerShareable, vixl_aa::BarrierReads);
+            dmb(BarrierKind::IshLd);
             return;
         case ir::FenceKind::Sfence:
             dmb(BarrierKind::IshSt);

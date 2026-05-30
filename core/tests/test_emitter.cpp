@@ -170,7 +170,7 @@ TEST_CASE("Emitter: x86 fences map to ARM barriers") {
 
     const std::string text = em.disassemble();
     REQUIRE(text.find("dmb ish")   != std::string::npos);
-    REQUIRE(text.find("dsb ishld") != std::string::npos);
+    REQUIRE(text.find("dmb ishld") != std::string::npos);
     REQUIRE(text.find("dmb ishst") != std::string::npos);
 }
 

@@ -190,10 +190,11 @@ TEST_CASE("validate: Extend rejects from_size mismatch") {
     REQUIRE(r.error->stmt_index == 1u);
 }
 
-TEST_CASE("validate: Extend may read low bits from a wider source") {
+TEST_CASE("validate: Extend may follow an explicit Truncate from a wider source") {
     std::vector<ir::Stmt> s = {
         {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
-        {1u, ir::Extend{0u, ir::OpSize::I8, ir::OpSize::I16, true}},
+        {1u, ir::Truncate{0u, ir::OpSize::I8}},
+        {2u, ir::Extend{1u, ir::OpSize::I8, ir::OpSize::I16, true}},
     };
     REQUIRE(ir::validate(s).ok);
 }
@@ -226,12 +227,13 @@ TEST_CASE("validate: LoadMem rejects non-I64 address") {
     REQUIRE(r.error->stmt_index == 1u);
 }
 
-TEST_CASE("validate: Compare materializes an I64 boolean value for current IR") {
+TEST_CASE("validate: Compare boolean can be explicitly extended for i64 consumers") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{1, ir::OpSize::I64}},
         {1u, ir::Constant{2, ir::OpSize::I64}},
         {2u, ir::Compare{ir::CondCode::Eq, 0u, 1u, ir::OpSize::I64}},
-        {3u, ir::BinOp{ir::BinOpKind::And, 2u, 2u, ir::OpSize::I64}},
+        {3u, ir::Extend{2u, ir::OpSize::I8, ir::OpSize::I64, false}},
+        {4u, ir::BinOp{ir::BinOpKind::And, 3u, 3u, ir::OpSize::I64}},
     };
     REQUIRE(ir::validate(s).ok);
 }

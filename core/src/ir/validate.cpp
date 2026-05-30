@@ -32,7 +32,7 @@ std::optional<OpSize> result_size_static(const Op& op) {
         else if constexpr (std::is_same_v<T, LoadReg>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadSegBase>) return OpSize::I64;
         else if constexpr (std::is_same_v<T, BinOp>)       return x.size;
-        else if constexpr (std::is_same_v<T, Compare>)     return OpSize::I64;
+        else if constexpr (std::is_same_v<T, Compare>)     return OpSize::I8;
         else if constexpr (std::is_same_v<T, Select>)      return x.size;
         else if constexpr (std::is_same_v<T, LoadMem>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadMemTSO>)  return x.size;
@@ -245,7 +245,7 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
         } else if constexpr (std::is_same_v<T, CallReg>) {
             if (r == x.target) return OpSize::I64;
         } else if constexpr (std::is_same_v<T, Extend>) {
-            (void)x; (void)r;
+            if (r == x.value) return x.from_size;
         } else if constexpr (std::is_same_v<T, Truncate>) {
             // Truncate accepts any source size strictly wider than
             // to_size; the validator can't pin it without per-op
@@ -305,9 +305,6 @@ ValidationResult validate(const std::vector<Stmt>& stmts) {
                     if constexpr (std::is_same_v<T, StoreReg>) {
                         return r != op.value
                             || bit_width(relaxed_it->second) >= bit_width(op.size);
-                    } else if constexpr (std::is_same_v<T, Extend>) {
-                        return r != op.value
-                            || bit_width(relaxed_it->second) >= bit_width(op.from_size);
                     } else {
                         return true;
                     }
