@@ -1789,3 +1789,17 @@ TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {
     REQUIRE(d.find("#0x5000") != std::string::npos);
     REQUIRE(d.find("#0x5003") != std::string::npos);
 }
+
+TEST_CASE("Lowerer: AESKEYGENASSIST emits AES S-box and TBL selection") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::VecAesKeygenAssist{0u, 0x1Bu}},
+        {std::nullopt, ir::StoreVecReg{2u, 1u}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("aese") != std::string::npos);
+    REQUIRE(d.find("tbl") != std::string::npos);
+    REQUIRE(d.find("eor") != std::string::npos);
+}

@@ -152,18 +152,19 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{48u, WriteFlagsPtestYmm{14u, 14u, 14u, 14u}});
     c.visit(Stmt{49u, VecTbl2{14u, 14u, 14u}});
     c.visit(Stmt{50u, VecAes{14u, 14u, VecAesKind::Enc}});
-    c.visit(Stmt{51u, Bswap{0u, OpSize::I64}});
-    c.visit(Stmt{52u, Crc32c{0u, 0u, OpSize::I32}});
-    c.visit(Stmt{53u, LoadVecRegHi{0u}});
-    c.visit(Stmt{54u, StoreVecRegHi{0u, 14u}});
-    c.visit(Stmt{55u, VecFpFma{14u, 14u, 14u, false, false, VecFpSize::S4}});
-    c.visit(Stmt{56u, VecFpScalarFma{14u, 14u, 14u, 14u, false, false, FpSize::F32}});
+    c.visit(Stmt{51u, VecAesKeygenAssist{14u, 0x1Bu}});
+    c.visit(Stmt{52u, Bswap{0u, OpSize::I64}});
+    c.visit(Stmt{53u, Crc32c{0u, 0u, OpSize::I32}});
+    c.visit(Stmt{54u, LoadVecRegHi{0u}});
+    c.visit(Stmt{55u, StoreVecRegHi{0u, 14u}});
+    c.visit(Stmt{56u, VecFpFma{14u, 14u, 14u, false, false, VecFpSize::S4}});
+    c.visit(Stmt{57u, VecFpScalarFma{14u, 14u, 14u, 14u, false, false, FpSize::F32}});
     c.visit(Stmt{std::nullopt, RepStos{OpSize::I8, false, 0u, 0u}});
     c.visit(Stmt{std::nullopt, RepMovs{OpSize::I8, false, 0u, 0u}});
-    c.visit(Stmt{57u, X87Load{1u}});
-    c.visit(Stmt{std::nullopt, X87Store{2u, 57u}});
-    c.visit(Stmt{std::nullopt, X87Push{57u}});
-    c.visit(Stmt{58u, X87Pop{}});
+    c.visit(Stmt{58u, X87Load{1u}});
+    c.visit(Stmt{std::nullopt, X87Store{2u, 58u}});
+    c.visit(Stmt{std::nullopt, X87Push{58u}});
+    c.visit(Stmt{59u, X87Pop{}});
 
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));

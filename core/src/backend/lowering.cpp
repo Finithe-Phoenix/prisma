@@ -324,6 +324,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecAes>) {
                 bump(op.src, i); bump(op.key, i);
             }
+            else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
+                bump(op.src, i);
+            }
             else if constexpr (std::is_same_v<T, ir::Bswap>) {
                 bump(op.value, i);
             }
@@ -1479,6 +1482,25 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecAes"};
             }
             emitter_.vaes(rd, r_src, r_key, op.kind);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
+            // F2-IR-058 AESKEYGENASSIST key-schedule helper.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecAesKeygenAssist without result"};
+            }
+            Emitter::FpReg r_src;
+            if (!fp_reg_of(op.src, r_src)) {
+                return {false, LowerError::DanglingRef,
+                        "VecAesKeygenAssist.src"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "VecAesKeygenAssist"};
+            }
+            emitter_.vaes_keygenassist(rd, r_src, op.rcon);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Bswap>) {

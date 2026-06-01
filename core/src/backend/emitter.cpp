@@ -1511,6 +1511,51 @@ void Emitter::vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind) {
     }
 }
 
+void Emitter::vaes_keygenassist(FpReg dst, FpReg src, std::uint8_t rcon) {
+    // V29..V31 are outside the lowerer's V0..V23 FP allocation pool and
+    // are reserved for emitter internals. This helper needs three V regs:
+    // the S-box table result, the output index/RCON vector, and a high
+    // 64-bit lane scratch for materialising 128-bit constants.
+    constexpr int kSboxV = kInternalFpScratchV;  // V31
+    constexpr int kAuxV  = 30;
+    constexpr int kHiV   = 29;
+    const vixl_aa::VRegister v_sbox(kSboxV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_aux (kAuxV,  vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_src (static_cast<int>(src), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst (static_cast<int>(dst), vixl_aa::kFormat16B);
+
+    auto load_q = [&](int vreg, std::uint64_t lo, std::uint64_t hi) {
+        double d_lo;
+        double d_hi;
+        std::memcpy(&d_lo, &lo, sizeof d_lo);
+        std::memcpy(&d_hi, &hi, sizeof d_hi);
+        impl_->masm.Fmov(vixl_aa::DRegister(vreg), d_lo);
+        impl_->masm.Fmov(vixl_aa::DRegister(kHiV), d_hi);
+        const vixl_aa::VRegister v_d(vreg, vixl_aa::kFormat2D);
+        const vixl_aa::VRegister v_h(kHiV, vixl_aa::kFormat2D);
+        impl_->masm.Mov(v_d, 1, v_h, 0);
+    };
+
+    // AESE with a zero key applies SubBytes+ShiftRows. The TBL index
+    // then selects S(src dword1), RotWord(S(src dword1)), S(src dword3),
+    // and RotWord(S(src dword3)) in x86 byte order.
+    impl_->masm.Mov(v_sbox, v_src);
+    impl_->masm.Movi(v_aux, 0);
+    impl_->masm.Aese(v_sbox, v_aux);
+
+    constexpr std::uint64_t kIdxLo = 0x040b0e010b0e0104ULL;
+    constexpr std::uint64_t kIdxHi = 0x0c0306090306090cULL;
+    load_q(kAuxV, kIdxLo, kIdxHi);
+    impl_->masm.Tbl(v_dst, v_sbox, v_aux);
+
+    if (rcon != 0u) {
+        const std::uint64_t rcon_lane =
+            static_cast<std::uint64_t>(rcon) << 32u;
+        load_q(kAuxV, rcon_lane, rcon_lane);
+        impl_->masm.Eor(v_dst, v_dst, v_aux);
+    }
+}
+
 void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
     // Sequence:
     //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set

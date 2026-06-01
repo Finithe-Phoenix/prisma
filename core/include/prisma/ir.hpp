@@ -767,6 +767,19 @@ struct VecAes {
     VecAesKind kind;
 };
 
+// F2-IR-058 — AESKEYGENASSIST. Builds the AES key-schedule helper
+// vector from the source key material and the imm8 RCON byte:
+//   dst.dword0 = SubWord(src.dword1)
+//   dst.dword1 = RotWord(SubWord(src.dword1)) ^ rcon
+//   dst.dword2 = SubWord(src.dword3)
+//   dst.dword3 = RotWord(SubWord(src.dword3)) ^ rcon
+// `rcon` is XORed into byte 0 of dword1 and dword3, matching Intel's
+// little-endian architectural result.
+struct VecAesKeygenAssist {
+    Ref          src;
+    std::uint8_t rcon;
+};
+
 // F2-IR-056 — GPR byte-swap (the lowering target for x86 MOVBE).
 // Reverses the byte order of `value` interpreted at `size`. Maps to
 // ARM64 REV / REV (32-bit) / REV16 depending on size.
@@ -959,6 +972,7 @@ using Op = std::variant<
     WriteFlagsPtestYmm,
     VecTbl2,
     VecAes,
+    VecAesKeygenAssist,
     Bswap,
     Crc32c,
     LoadVecRegHi, StoreVecRegHi,
@@ -1089,6 +1103,7 @@ bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept;
 bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept;
 bool operator==(const VecAes& a, const VecAes& b) noexcept;
+bool operator==(const VecAesKeygenAssist& a, const VecAesKeygenAssist& b) noexcept;
 bool operator==(const Bswap& a, const Bswap& b) noexcept;
 bool operator==(const Crc32c& a, const Crc32c& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;

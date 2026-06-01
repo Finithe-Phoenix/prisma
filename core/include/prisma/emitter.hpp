@@ -522,6 +522,11 @@ public:
     // adds MixColumns separately; finally we XOR with the round key.
     void vaes(FpReg dst, FpReg src, FpReg key, ir::VecAesKind kind);
 
+    // F2-IR-058 — AESKEYGENASSIST. Uses AESE-with-zero to apply the
+    // AES S-box, TBL to select the dword1/dword3 byte pattern required
+    // by x86, then XORs the imm8 RCON byte into output bytes 4 and 12.
+    void vaes_keygenassist(FpReg dst, FpReg src, std::uint8_t rcon);
+
     // F2-IR-056 — byte-reverse the contents of `rn` interpreted at
     // `size` and write to `rd`. Maps to ARM64 REV (I64), REV W
     // (I32), REV16 (I16). I8 emits a plain MOV.

@@ -412,6 +412,11 @@ std::string pretty_print(const Op& op) {
             os << "vaes." << k << ' ';
             print_ref(os, x.src); os << ", ";
             print_ref(os, x.key);
+        } else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) {
+            os << "vaes.keygenassist ";
+            print_ref(os, x.src);
+            os << ", rcon=0x" << std::hex << static_cast<unsigned>(x.rcon)
+               << std::dec;
         } else if constexpr (std::is_same_v<T, VecBlend>) {
             const char* lane_n = "?";
             switch (x.lane) {

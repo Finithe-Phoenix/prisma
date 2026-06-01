@@ -284,6 +284,28 @@ TEST_CASE("dce: plain LoadMem (non-TSO) IS removable when its result is dead") {
     REQUIRE(out.empty());
 }
 
+TEST_CASE("dce: unused AESKEYGENASSIST is removable") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::VecAesKeygenAssist{0u, 0x1Bu}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("dce: live AESKEYGENASSIST keeps its source vector") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::VecAesKeygenAssist{0u, 0x1Bu}},
+        {std::nullopt, ir::StoreVecReg{2u, 1u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 3);
+    REQUIRE(std::holds_alternative<ir::LoadVecReg>(out[0].op));
+    REQUIRE(std::holds_alternative<ir::VecAesKeygenAssist>(out[1].op));
+    REQUIRE(std::holds_alternative<ir::StoreVecReg>(out[2].op));
+}
+
 TEST_CASE("dce: x87 stack mutations stay but unused x87 loads disappear") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},

@@ -2481,6 +2481,64 @@ TEST_CASE("decode AESIMC xmm0, xmm1 (66 0F 38 DB C1) — F2-IR-055") {
     REQUIRE(found);
 }
 
+TEST_CASE("decode AESKEYGENASSIST xmm0, xmm1, 0x1b — F2-IR-058") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0x3A, 0xDF, 0xC1, 0x1B}, r);
+    bool found_load_src = false;
+    bool found_keygen = false;
+    bool found_store = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::LoadVecReg>(s.op)) {
+            found_load_src =
+                std::get<ir::LoadVecReg>(s.op).xmm_index == 1u;
+        }
+        if (std::holds_alternative<ir::VecAesKeygenAssist>(s.op)) {
+            const auto& op = std::get<ir::VecAesKeygenAssist>(s.op);
+            REQUIRE(op.rcon == 0x1Bu);
+            found_keygen = true;
+        }
+        if (std::holds_alternative<ir::StoreVecReg>(s.op)) {
+            found_store =
+                std::get<ir::StoreVecReg>(s.op).xmm_index == 0u;
+        }
+    }
+    REQUIRE(found_load_src);
+    REQUIRE(found_keygen);
+    REQUIRE(found_store);
+}
+
+TEST_CASE("decode AESKEYGENASSIST memory source consumes imm before RIP address") {
+    ir::Ref r = 0;
+    auto d = decode_ok(
+        {0x66, 0x0F, 0x3A, 0xDF, 0x05, 0x34, 0x12, 0x00, 0x00, 0x36},
+        r,
+        0x1000);
+    bool found_keygen = false;
+    bool found_load_mem = false;
+    bool found_rip_addr = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(s.op)) found_load_mem = true;
+        if (s.op == ir::Op{ir::Constant{0x223EULL, ir::OpSize::I64}}) {
+            found_rip_addr = true;
+        }
+        if (std::holds_alternative<ir::VecAesKeygenAssist>(s.op)) {
+            REQUIRE(std::get<ir::VecAesKeygenAssist>(s.op).rcon == 0x36u);
+            found_keygen = true;
+        }
+    }
+    REQUIRE(found_load_mem);
+    REQUIRE(found_rip_addr);
+    REQUIRE(found_keygen);
+    REQUIRE(d.bytes_consumed == 10);
+}
+
+TEST_CASE("decode AESKEYGENASSIST missing imm is rejected") {
+    ir::Ref r = 0;
+    std::vector<std::uint8_t> bytes{0x66, 0x0F, 0x3A, 0xDF, 0xC1};
+    auto res = decoder::decode_one(std::span<const std::uint8_t>{bytes}, r);
+    REQUIRE(std::holds_alternative<decoder::DecodeError>(res));
+}
+
 TEST_CASE("decode CALL r/m64 (FF D1 = CALL rcx) with real_call_ret emits CallReg") {
     // 48 FF D1 — REX.W (just makes the size consistent) + Group5 /2.
     // ModRM D1: mod=11 reg=010 (Group5 /2 = CALL) rm=001 (rcx).

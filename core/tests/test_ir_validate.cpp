@@ -399,3 +399,22 @@ TEST_CASE("validate: x87 store with undefined value is rejected") {
     REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
     REQUIRE(r.error->bad_ref == 99u);
 }
+
+TEST_CASE("validate: AESKEYGENASSIST reads only its source vector") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::VecAesKeygenAssist{0u, 0x1Bu}},
+        {std::nullopt, ir::StoreVecReg{2u, 1u}},
+    };
+    REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: AESKEYGENASSIST undefined source is rejected") {
+    std::vector<ir::Stmt> s = {
+        {1u, ir::VecAesKeygenAssist{99u, 0x1Bu}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
+    REQUIRE(r.error->bad_ref == 99u);
+}

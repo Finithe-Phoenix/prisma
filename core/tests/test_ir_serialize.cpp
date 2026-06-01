@@ -263,6 +263,11 @@ TEST_CASE("ir_serialize: x87 stack ops round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{2u}, Op{X87Pop{}}});
 }
 
+TEST_CASE("ir_serialize: AESKEYGENASSIST round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{9u},
+        Op{VecAesKeygenAssist{Ref{3u}, 0x1Bu}}});
+}
+
 TEST_CASE("ir_serialize: InlineAsm round-trip preserves the byte payload",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt,
