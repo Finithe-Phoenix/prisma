@@ -6,12 +6,12 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-05-17 (after direct-thread cache stage 1).
+Last updated: 2026-06-01 (after AESKEYGENASSIST F2-IR-058).
 
 ## Currently active
 
-Branch: `work-f2-ps-004`.
-CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅, shell-stub ✅.
+Branch: `codex/aeskeygenassist`.
+Local validation on `4ee4297`: Debug 897/897, ASan/UBSan 894 cases (`~signal_handler*`), Zydis 897/897.
 
 ## Queue (priority order)
 
@@ -34,7 +34,7 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | — | ⏸ queued | VSIB encoding + per-element conditional load. |
 | 14 | AES hardware crypto opcodes (AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) | 1 commit | `5811568` | ✅ done | New `VecAes` IR op + `vaes` emitter primitive (5-way switch). AESKEYGENASSIST queued separately. |
 | 14b | SHA-NI crypto opcodes | 3-4 commits | — | ⏸ queued | x86 SHA1RNDS4 / SHA1MSGx / SHA256RNDS2 / SHA256MSGx → ARM NEON SHA family. SHA256RNDS2's implicit xmm0 dependency needs careful IR plumbing. |
-| 14c | AESKEYGENASSIST | 2 commits | — | 🟡 in_progress | Key-schedule helper. No direct ARM equivalent; software emulation needed. |
+| 14c | AESKEYGENASSIST | 1 commit | `4ee4297` | ✅ done | F2-IR-058 landed with `VecAesKeygenAssist`, decoder, ARM64 AESE/TBL lowering, serialization/profiler/DCE plumbing, and tests. |
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
 | 15 | Direct branch threading | 4-6 commits | `5a4fb7e` | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
@@ -86,6 +86,7 @@ CI on `9d1660a`: lint-docs ✅, ir-spec ✅, core-stub ✅, core-sanitizers ✅,
 | 22 | feat(runtime,backend): F2-BK-010 call/ret return-stack | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; first-class call/ret terminators + dispatcher RAS hit/miss counters. |
 | 23 | feat(core): x87 reduced-F64 bridge + stack forwarding | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; RFC 0013 documents precision scope. |
 | 24 | feat(runtime): dispatcher direct-thread cache | `5a4fb7e` | Direct branch successors can run from the executable cache without another translate() call; SMC hash checks preserved. |
+| 25 | feat(ir,decoder,backend): F2-IR-058 - AESKEYGENASSIST | `4ee4297` | 897/897 Debug + ASan/UBSan (`~signal_handler*`) + Zydis 897/897. Gemini review caught the RIP-relative test gap; fixed before commit. |
 
 ## Standing decisions (carry across items)
 
