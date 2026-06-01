@@ -283,6 +283,9 @@ bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept {
 bool operator==(const VecAes& a, const VecAes& b) noexcept {
     return a.src == b.src && a.key == b.key && a.kind == b.kind;
 }
+bool operator==(const VecAesKeygenAssist& a, const VecAesKeygenAssist& b) noexcept {
+    return a.src == b.src && a.rcon == b.rcon;
+}
 bool operator==(const Bswap& a, const Bswap& b) noexcept {
     return a.value == b.value && a.size == b.size;
 }

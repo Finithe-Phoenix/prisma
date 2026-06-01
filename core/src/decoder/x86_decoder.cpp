@@ -3436,6 +3436,43 @@ std::variant<Decoded, DecodeError> decode_one(
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
 
+            // F2-IR-058 — AESKEYGENASSIST xmm1, xmm2/m128, imm8.
+            // Unlike AESENC/AESDEC, the destination is not read; ModRM.r/m
+            // is the only vector input and imm8 is the RCON byte.
+            if (!vex.present && sub3 == 0xDFu) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t rcon =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+                Decoded d;
+                const ir::Ref r_src = next_ref++;
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({r_src,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref r_addr = emit_address(
+                        d.stmts, m, next_ref,
+                        instruction_guest_pc + cursor);
+                    d.stmts.push_back({r_src, ir::LoadVec{r_addr}});
+                }
+                const ir::Ref r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecAesKeygenAssist{r_src, rcon}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // F2-IR-005 follow-up — AVX lane-crossing 128-bit moves
             // (66 0F 3A, VEX.L=1 only):
             //   sub3 = 0x18 — VINSERTF128 ymm1, ymm2, xmm3/m128, imm8

@@ -82,6 +82,10 @@ TEST_CASE("Pretty-print produces stable-looking output for the example") {
     Stmt s_pdep{3u, BinOp{BinOpKind::Pdep, 0u, 1u, OpSize::I64}};
     REQUIRE(pretty_print(s_pdep) == "%3 = pdep.i64 %0, %1");
 
+    Stmt s_aeskg{4u, VecAesKeygenAssist{3u, 0x1Bu}};
+    REQUIRE(pretty_print(s_aeskg) ==
+            "%4 = vaes.keygenassist %3, rcon=0x1b");
+
     Stmt s_ret{std::nullopt, Return{}};
     REQUIRE(pretty_print(s_ret) == "ret");
 
@@ -102,6 +106,15 @@ TEST_CASE("x87 stack ops have structural equality and stable pretty-print") {
             "x87_store st(1), %7");
     REQUIRE(pretty_print(Stmt{std::nullopt, X87Push{7u}}) == "x87_push %7");
     REQUIRE(pretty_print(Stmt{8u, X87Pop{}}) == "%8 = x87_pop");
+}
+
+TEST_CASE("AESKEYGENASSIST IR compares src and rcon") {
+    REQUIRE(Op{VecAesKeygenAssist{1u, 0x36u}} ==
+            Op{VecAesKeygenAssist{1u, 0x36u}});
+    REQUIRE_FALSE(Op{VecAesKeygenAssist{1u, 0x36u}} ==
+                  Op{VecAesKeygenAssist{2u, 0x36u}});
+    REQUIRE_FALSE(Op{VecAesKeygenAssist{1u, 0x36u}} ==
+                  Op{VecAesKeygenAssist{1u, 0x1Bu}});
 }
 
 TEST_CASE("kInvalidRef renders as %?") {

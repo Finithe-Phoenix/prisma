@@ -120,11 +120,13 @@ enum class OpKind : std::uint8_t {
     kX87Store           = 84,
     kX87Push            = 85,
     kX87Pop             = 86,
+    kVecAesKeygenAssist = 87,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
-constexpr std::uint8_t kMaxOpKind = static_cast<std::uint8_t>(OpKind::kX87Pop);
+constexpr std::uint8_t kMaxOpKind =
+    static_cast<std::uint8_t>(OpKind::kVecAesKeygenAssist);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -322,6 +324,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) return OpKind::kWriteFlagsPtestYmm;
         else if constexpr (std::is_same_v<T, VecTbl2>)       return OpKind::kVecTbl2;
         else if constexpr (std::is_same_v<T, VecAes>)        return OpKind::kVecAes;
+        else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) return OpKind::kVecAesKeygenAssist;
         else if constexpr (std::is_same_v<T, Bswap>)         return OpKind::kBswap;
         else if constexpr (std::is_same_v<T, Crc32c>)        return OpKind::kCrc32c;
         else if constexpr (std::is_same_v<T, X87Load>)       return OpKind::kX87Load;
@@ -723,6 +726,10 @@ void write_payload(std::vector<std::uint8_t>& out, const VecAes& x) {
     put_u32(out, x.src);
     put_u32(out, x.key);
     put_u8(out, static_cast<std::uint8_t>(x.kind));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecAesKeygenAssist& x) {
+    put_u32(out, x.src);
+    put_u8(out, x.rcon);
 }
 void write_payload(std::vector<std::uint8_t>& out, const Bswap& x) {
     put_u32(out, x.value);
@@ -1269,6 +1276,13 @@ DeserializeError read_payload_vec_aes(Cursor& c, Stmt& s) {
     s.op = VecAes{src, key, static_cast<VecAesKind>(kind)};
     return DeserializeError::Ok;
 }
+DeserializeError read_payload_vec_aes_keygenassist(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t src  = c.take_u32();
+    const std::uint8_t  rcon = c.take_u8();
+    s.op = VecAesKeygenAssist{src, rcon};
+    return DeserializeError::Ok;
+}
 DeserializeError read_payload_bswap(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
     const std::uint32_t v    = c.take_u32();
@@ -1672,6 +1686,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kWriteFlagsPtestYmm: return read_payload_write_flags_ptest_ymm(c, s);
         case OpKind::kVecTbl2:     return read_payload_vec_tbl2(c, s);
         case OpKind::kVecAes:      return read_payload_vec_aes(c, s);
+        case OpKind::kVecAesKeygenAssist: return read_payload_vec_aes_keygenassist(c, s);
         case OpKind::kBswap:       return read_payload_bswap(c, s);
         case OpKind::kCrc32c:      return read_payload_crc32c(c, s);
         case OpKind::kX87Load:     return read_payload_x87_load(c, s);

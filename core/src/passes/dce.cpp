@@ -43,10 +43,14 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::WriteFlags>) return true;
         else if constexpr (std::is_same_v<T, ir::ReadFlag>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>) return true;
+        else if constexpr (std::is_same_v<T, ir::VecConstant>) return true;
+        else if constexpr (std::is_same_v<T, ir::LoadVecReg>) return true;
+        else if constexpr (std::is_same_v<T, ir::LoadVecRegHi>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) return true;
         else if constexpr (std::is_same_v<T, ir::VecTbl2>) return true;
         else if constexpr (std::is_same_v<T, ir::VecAes>) return true;
+        else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) return true;
         else if constexpr (std::is_same_v<T, ir::Bswap>) return true;
         else if constexpr (std::is_same_v<T, ir::Crc32c>) return true;
         else if constexpr (std::is_same_v<T, ir::X87Load>) return true;
@@ -180,6 +184,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.src_lo); into.insert(x.src_hi); into.insert(x.idx);
         } else if constexpr (std::is_same_v<T, ir::VecAes>) {
             into.insert(x.src); into.insert(x.key);
+        } else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
+            into.insert(x.src);
         } else if constexpr (std::is_same_v<T, ir::Bswap>) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::Crc32c>) {

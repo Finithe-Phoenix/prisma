@@ -72,6 +72,7 @@ public:
         Crc32c,
         X87Load, X87Store,
         X87Push, X87Pop,
+        VecAesKeygenAssist,
         kCount  // sentinel
     };
 

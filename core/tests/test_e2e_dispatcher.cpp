@@ -2907,3 +2907,31 @@ TEST_CASE("e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul"
     REQUIRE(disp.state().ymm_hi[2].lo == u64_of_double(120.0));
     REQUIRE(disp.state().ymm_hi[2].hi == u64_of_double(200.0));
 }
+
+TEST_CASE("e2e: AESKEYGENASSIST xmm0, xmm1, 0x1b — F2-IR-058") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    std::vector<std::uint8_t> code{
+        0x66, 0x0F, 0x3A, 0xDF, 0xC1, 0x1B,  // aeskeygenassist xmm0, xmm1, 0x1b
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= code.size()) return {};
+        return std::span<const std::uint8_t>(code.data() + off,
+                                             code.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    // src = 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff
+    disp.state().xmm[1].lo = 0x7766554433221100ULL;
+    disp.state().xmm[1].hi = 0xffeeddccbbaa9988ULL;
+    auto r = disp.run(0x4000, 100);
+    INFO("dispatch: " << r.message);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Expected from native x86 AES-NI:
+    // 1b fc 33 f5 e7 33 f5 1b 4b c1 28 16 da 28 16 4b
+    REQUIRE(disp.state().xmm[0].lo == 0x1bf533e7f533fc1bULL);
+    REQUIRE(disp.state().xmm[0].hi == 0x4b1628da1628c14bULL);
+}
