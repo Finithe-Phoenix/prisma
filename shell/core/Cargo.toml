@@ -20,6 +20,8 @@ thiserror       = { workspace = true }
 [dev-dependencies]
 # The ABI-version integration test compares against the raw constant.
 prisma-core-sys = { path = "../core-sys" }
+# The hybrid e2e (PE loader -> DBT) drives the orchestrator's loader.
+prisma_orchestrator = { path = "../orchestrator" }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
