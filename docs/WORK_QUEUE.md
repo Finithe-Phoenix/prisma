@@ -38,11 +38,11 @@ Local validation baseline on `2482e65`: Debug 897/897 (x86_64 container).
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
 | 15 | Direct branch threading | 4-6 commits | `5a4fb7e` | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
-| 16a | RFC 0014 — C-ABI FFI boundary core↔shell | 1 commit | — | 🔄 [~\|claude] | Contract: pure C ABI, opaque handles, status codes, panic/exception firewall, `PRISMA_CAPI_VERSION`. |
-| 16b | `prisma_core_c` C API (header + impl + tests) | 1-2 commits | — | 🔄 [~\|claude] | `capi.h` + shared lib target + Catch2 coverage of the C surface. |
-| 16c | Rust bridge crates `core-sys` + `core` | 1-2 commits | — | 🔄 [~\|claude] | Hand-written extern decls + safe RAII wrapper + cross-language integration tests. |
-| 16d | Hybrid e2e: PE loader → DBT | 1-2 commits | — | 🔄 [~\|claude] | Minimal x86-64 PE parse in safe Rust, image handed to Dispatcher via FFI. |
-| 16e | CI: `ffi-link` workflow | 1 commit | — | 🔄 [~\|claude] | Build `prisma_core_c` + clippy/test bridge crates on every PR. |
+| 16a | RFC 0014 — C-ABI FFI boundary core↔shell | 1 commit | `09efbc4` | ✅ done | Contract: pure C ABI, opaque handles, status codes, panic/exception firewall, `PRISMA_CAPI_VERSION`. |
+| 16b | `prisma_core_c` C API (header + impl + tests) | 1-2 commits | `ea37029` | ✅ done | `capi.h` + shared lib target + 8 Catch2 cases (905/905 suite green in container). |
+| 16c | Rust bridge crates `core-sys` + `core` | 1-2 commits | `9f68ca6` | ✅ done | Hand-written extern decls + safe RAII wrapper + 9 cross-language integration tests. |
+| 16d | Hybrid e2e: PE loader → DBT | 1-2 commits | `ef542f4` | ✅ done | `map_image()` with checked bounds + pe_e2e.rs: PE → Rust parse/map → C++ translate (all hosts) / execute (ARM64). |
+| 16e | CI: `ffi-link` workflow | 1 commit | `bf86cca` | ✅ done | ffi-link (x86_64) + ffi-link-arm64 (real ARM64 JIT execution in CI, public-repo runner). |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 
