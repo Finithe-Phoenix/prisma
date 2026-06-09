@@ -37,7 +37,7 @@ Local validation on `4ee4297`: Debug 897/897, ASan/UBSan 894 cases (`~signal_han
 | 14c | AESKEYGENASSIST | 1 commit | `4ee4297` | ✅ done | F2-IR-058 landed with `VecAesKeygenAssist`, decoder, ARM64 AESE/TBL lowering, serialization/profiler/DCE plumbing, and tests. |
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
-| 15 | Direct branch threading | 4-6 commits | `5a4fb7e` | 🟡 partial | Stage 1 executes cached direct JumpRel/CondJumpRel successors inside Dispatcher with SMC hash checks. In-JIT patching still queued. |
+| 15 | Direct branch threading | 4-6 commits | `b1e112f` | 🟡 partial | Stage 2 also threads direct CallRel and REP clamp re-entry/fallthrough successors through the same hash-checked dispatcher path. In-JIT patching still queued. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 
