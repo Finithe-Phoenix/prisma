@@ -1,0 +1,31 @@
+# prisma-core — safe Rust wrapper over the DBT core's C ABI
+# (RFC 0014). RAII handles, Result-based errors, and lifetimes that
+# tie a Dispatcher to its Translator and guest memory.
+
+[package]
+name          = "prisma-core"
+version       = { workspace = true }
+edition       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+authors       = { workspace = true }
+rust-version  = { workspace = true }
+
+description = "Safe Rust API for the Prisma DBT core"
+
+[dependencies]
+prisma-core-sys = { path = "../core-sys" }
+thiserror       = { workspace = true }
+
+[dev-dependencies]
+# The ABI-version integration test compares against the raw constant.
+prisma-core-sys = { path = "../core-sys" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use        = "deny"
+
+[lints.clippy]
+all      = "warn"
+pedantic = "warn"
+nursery  = "warn"

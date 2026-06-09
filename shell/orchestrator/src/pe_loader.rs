@@ -223,7 +223,7 @@ mod tests {
     use super::*;
 
     /// Builds the smallest possible PE32+ that `parse` accepts:
-    /// DOS stub (64 bytes) → e_lfanew=64 → NT magic → COFF header →
+    /// DOS stub (64 bytes) → `e_lfanew=64` → NT magic → COFF header →
     /// optional header (240 bytes for PE32+) → 1 section. Total 408
     /// bytes.
     fn synth_minimal_pe() -> Vec<u8> {

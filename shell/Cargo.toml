@@ -6,6 +6,15 @@
 resolver = "2"
 members = [
     "orchestrator",
+    "core-sys",
+    "core",
+]
+# The bridge crates (core-sys, core) link against the C++ core's
+# prisma_core_c shared library (RFC 0014) and need PRISMA_CORE_LIB_DIR
+# at link time. Default cargo invocations cover the pure-Rust
+# orchestrator; the ffi-link CI job covers the bridge.
+default-members = [
+    "orchestrator",
 ]
 
 [workspace.package]
@@ -14,7 +23,7 @@ edition       = "2021"  # bump to 2024 once it's stable.
 license       = "Apache-2.0"
 repository    = "https://github.com/prisma-emu/prisma"
 authors       = ["Danny <danny@prisma-emu.dev>"]
-rust-version  = "1.75"
+rust-version  = "1.82"  # bumped from 1.75 for the FFI bridge (ptr::from_ref et al.)
 
 [workspace.dependencies]
 serde      = { version = "1.0",  features = ["derive"] }
