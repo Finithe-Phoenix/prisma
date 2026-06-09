@@ -24,6 +24,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# RFC 0014: the static prisma_* libraries link into the prisma_core_c
+# shared library consumed by the Rust shell, so everything builds PIC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Export compile_commands.json for clangd / clang-tidy.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -352,6 +356,29 @@ target_link_libraries(prisma_emitter
 )
 
 # ---------------------------------------------------------------------------
+# prisma_core_c — C ABI shared library for non-C++ consumers (RFC 0014).
+#
+# The Rust shell links this (and only this); the static prisma_*
+# libraries fold in transitively. Keep the exported surface limited to
+# what core/include/prisma/capi.h declares.
+# ---------------------------------------------------------------------------
+
+add_library(prisma_core_c SHARED
+    src/capi/capi.cpp
+)
+
+target_include_directories(prisma_core_c
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(prisma_core_c
+    PRIVATE
+        prisma_translator
+        prisma_warnings
+)
+
+# ---------------------------------------------------------------------------
 # prisma_run — CLI that executes a guest x86_64 byte blob end-to-end.
 # ---------------------------------------------------------------------------
 #
@@ -445,6 +472,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_cache_stress.cpp
         tests/test_sha256.cpp
         tests/test_benchmarks.cpp
+        tests/test_capi.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
@@ -455,6 +483,7 @@ if(PRISMA_BUILD_TESTS)
             prisma_passes
             prisma_cache
             prisma_translator
+            prisma_core_c
             prisma_warnings
             Catch2::Catch2WithMain
     )
