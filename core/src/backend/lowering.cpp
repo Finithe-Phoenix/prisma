@@ -1474,8 +1474,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecGather>) {
-            // F2-IR-059 VPGATHERDD xmm. Per dword lane: if the mask
-            // lane's MSB is set, load 32 bits from
+            // F2-IR-059 gather family. Per lane (geometry from the
+            // op's lane descriptor): if the mask lane's MSB is set,
+            // load elem-width bits from
             // base + (sx64(index) << scale_shift) and insert into the
             // result; otherwise the lane keeps prev's value. Masked-off
             // lanes must not touch memory (their address may be
@@ -1498,22 +1499,29 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecGather tmp"};
             }
             emitter_.vmov_q(rd, r_prev);
-            for (std::uint8_t lane = 0; lane < 4u; ++lane) {
+            const bool e64 = op.elem_is64 != 0;
+            const bool i64 = op.index_is64 != 0;
+            const auto elane =
+                e64 ? Emitter::VecLane::D2 : Emitter::VecLane::S4;
+            const auto ilane =
+                i64 ? Emitter::VecLane::D2 : Emitter::VecLane::S4;
+            for (std::uint8_t lane = 0; lane < op.lane_count; ++lane) {
+                const std::uint8_t dl =
+                    static_cast<std::uint8_t>(op.dest_lane_base + lane);
+                const std::uint8_t xl =
+                    static_cast<std::uint8_t>(op.index_lane_base + lane);
                 Emitter::Label skip = emitter_.create_label();
-                // MSB of the 32-bit mask lane decides participation.
+                // MSB of the elem-width mask lane decides participation.
                 // vumov zero-extends into the X register, so a 64-bit
-                // lsr by 31 isolates exactly that bit.
-                emitter_.vumov_w_from_lane(t, r_mask, lane,
-                                           Emitter::VecLane::S4);
-                emitter_.lsr_imm(t, t, 31u);
+                // lsr by (lane width - 1) isolates exactly that bit.
+                emitter_.vumov_w_from_lane(t, r_mask, dl, elane);
+                emitter_.lsr_imm(t, t, e64 ? 63u : 31u);
                 emitter_.cbz(t, skip);
-                emitter_.vumov_w_from_lane(t, r_idx, lane,
-                                           Emitter::VecLane::S4);
-                emitter_.sxtw(t, t);
+                emitter_.vumov_w_from_lane(t, r_idx, xl, ilane);
+                if (!i64) emitter_.sxtw(t, t);  // dword indices sign-extend
                 emitter_.add_lsl(t, r_base, t, op.scale_shift);
-                emitter_.load(t, t, ir::OpSize::I32);
-                emitter_.vins_lane_from_w(rd, rd, lane, t,
-                                          Emitter::VecLane::S4);
+                emitter_.load(t, t, e64 ? ir::OpSize::I64 : ir::OpSize::I32);
+                emitter_.vins_lane_from_w(rd, rd, dl, t, elane);
                 emitter_.bind(skip);
             }
             return {};

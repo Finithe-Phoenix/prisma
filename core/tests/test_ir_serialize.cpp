@@ -268,6 +268,22 @@ TEST_CASE("ir_serialize: AESKEYGENASSIST round-trip", "[ir_serialize]") {
         Op{VecAesKeygenAssist{Ref{3u}, 0x1Bu}}});
 }
 
+TEST_CASE("ir_serialize: VecGather round-trip", "[ir_serialize]") {
+    // Default descriptor: the original VPGATHERDD xmm shape.
+    check_single_stmt_roundtrip(Stmt{Ref{9u},
+        Op{VecGather{Ref{1u}, Ref{2u}, Ref{3u}, Ref{4u}, 2u}}});
+    // VPGATHERDQ ymm hi half: qword elements, dword indices read
+    // from index lanes 2..3.
+    check_single_stmt_roundtrip(Stmt{Ref{10u},
+        Op{VecGather{Ref{1u}, Ref{2u}, Ref{3u}, Ref{4u}, 3u,
+                     1u, 0u, 2u, 0u, 2u}}});
+    // VPGATHERQD ymm hi half: dword elements written to dest/mask
+    // lanes 2..3, qword indices.
+    check_single_stmt_roundtrip(Stmt{Ref{11u},
+        Op{VecGather{Ref{1u}, Ref{2u}, Ref{3u}, Ref{4u}, 0u,
+                     0u, 1u, 2u, 2u, 0u}}});
+}
+
 TEST_CASE("ir_serialize: InlineAsm round-trip preserves the byte payload",
           "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt,

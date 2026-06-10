@@ -33,7 +33,9 @@ namespace prisma::ir {
 // Binary format constants. Bumping `kVersion` is a one-way door; old
 // readers must reject newer versions (RFC 0009 §"Version policy").
 inline constexpr std::uint32_t kSerializeMagic   = 0x42524950u;  // 'PIRB' LE
-inline constexpr std::uint16_t kSerializeVersion = 0x0001u;
+// v2: VecGather payload grew the lane descriptor (elem/index width,
+// lane count, dest/index lane bases) for the full gather family.
+inline constexpr std::uint16_t kSerializeVersion = 0x0002u;
 
 // Failure modes for `deserialize_*`. Each has a single canonical cause
 // — see RFC 0009 §"Error taxonomy".
