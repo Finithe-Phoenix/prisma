@@ -2758,6 +2758,10 @@ std::variant<Decoded, DecodeError> decode_one(
                 // VPERMD ymm (66 0F 38 36). F2-IR-052.
                 const bool avx_permd =
                     vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x36u;
+                // VPGATHER/VGATHER ymm (66 0F 38 90..93). F2-IR-059.
+                const bool avx_gather =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op >= 0x90u && avx256_op <= 0x93u);
                 // VPSHUFB ymm (66 0F 38 00) and VPABS B/W/D ymm
                 // (66 0F 38 1C/1D/1E).
                 const bool avx_pshufb_pabs =
@@ -2824,7 +2828,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
                       avx_ptest || avx_blend_vex || avx_permq ||
-                      avx_permd ||
+                      avx_permd || avx_gather ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -4529,10 +4533,9 @@ std::variant<Decoded, DecodeError> decode_one(
             //   93 W0: VGATHERQPS   93 W1: VGATHERQPD
             // FP forms are bit-identical loads — the mask test is the
             // lane MSB (the FP sign bit) in every form — so they
-            // share the integer decode path. ymm forms stage in
-            // later.
-            if (vex.present && !vex.L
-                && sub3 >= 0x90u && sub3 <= 0x93u) {
+            // share the integer decode path. ymm forms emit two
+            // half-gathers following the established lo/hi idiom.
+            if (vex.present && sub3 >= 0x90u && sub3 <= 0x93u) {
                 const bool idx64  = (sub3 & 1u) != 0u;
                 const bool elem64 = rex.w;  // VEX.W via the C4 payload
                 if (has_address_size_override) {
@@ -4589,47 +4592,136 @@ std::variant<Decoded, DecodeError> decode_one(
                             static_cast<std::int64_t>(m.disp)),
                             ir::OpSize::I64}});
                 }
-                const ir::Ref r_index = next_ref++;
-                const ir::Ref r_mask  = next_ref++;
-                d.stmts.push_back({r_index, ir::LoadVecReg{idx_xmm}});
-                d.stmts.push_back({r_mask,  ir::LoadVecReg{mask_xmm}});
-                ir::Ref r_prev = next_ref++;
-                d.stmts.push_back({r_prev,  ir::LoadVecReg{dst_xmm}});
-                // Mixed-width QD form: only dest lanes 0..1 are real
-                // elements — the upper 64 bits of the destination read
-                // as zero afterwards, so zero them in prev before the
-                // gather passes it through.
-                if (idx64 && !elem64) {
-                    const ir::Ref r_keep = next_ref++;
-                    const ir::Ref r_pm   = next_ref++;
-                    d.stmts.push_back({r_keep,
-                        ir::VecConstant{~0ULL, 0ULL}});
-                    d.stmts.push_back({r_pm,
-                        ir::VecBinOp{ir::VecBinOpKind::And, r_prev,
-                                     r_keep, ir::VecLane::S4}});
-                    r_prev = r_pm;
-                }
+                const std::uint8_t scale =
+                    static_cast<std::uint8_t>(m.scale_shift);
+                const std::uint8_t e64u  = elem64 ? 1u : 0u;
+                const std::uint8_t i64u  = idx64 ? 1u : 0u;
                 const std::uint8_t lanes = (elem64 || idx64) ? 2u : 4u;
-                const ir::Ref r_dst = next_ref++;
-                d.stmts.push_back({r_dst,
-                    ir::VecGather{r_base, r_index, r_mask, r_prev,
-                        static_cast<std::uint8_t>(m.scale_shift),
-                        static_cast<std::uint8_t>(elem64 ? 1u : 0u),
-                        static_cast<std::uint8_t>(idx64 ? 1u : 0u),
-                        lanes, 0u, 0u}});
-                const ir::Ref r_zero = next_ref++;
-                d.stmts.push_back({r_zero, ir::VecConstant{0ULL, 0ULL}});
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecReg{dst_xmm, r_dst}});
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecRegHi{dst_xmm, r_zero}});
-                // Architectural completion state: the mask register
-                // reads as all zeroes afterwards (and the VEX.128
-                // write clears its upper lane too).
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecReg{mask_xmm, r_zero}});
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecRegHi{mask_xmm, r_zero}});
+                if (!vex.L) {
+                    const ir::Ref r_index = next_ref++;
+                    const ir::Ref r_mask  = next_ref++;
+                    d.stmts.push_back({r_index, ir::LoadVecReg{idx_xmm}});
+                    d.stmts.push_back({r_mask,  ir::LoadVecReg{mask_xmm}});
+                    ir::Ref r_prev = next_ref++;
+                    d.stmts.push_back({r_prev,  ir::LoadVecReg{dst_xmm}});
+                    // Mixed-width QD form: only dest lanes 0..1 are
+                    // real elements — the upper 64 bits of the
+                    // destination read as zero afterwards, so zero
+                    // them in prev before the gather passes it
+                    // through.
+                    if (idx64 && !elem64) {
+                        const ir::Ref r_keep = next_ref++;
+                        const ir::Ref r_pm   = next_ref++;
+                        d.stmts.push_back({r_keep,
+                            ir::VecConstant{~0ULL, 0ULL}});
+                        d.stmts.push_back({r_pm,
+                            ir::VecBinOp{ir::VecBinOpKind::And, r_prev,
+                                         r_keep, ir::VecLane::S4}});
+                        r_prev = r_pm;
+                    }
+                    const ir::Ref r_dst = next_ref++;
+                    d.stmts.push_back({r_dst,
+                        ir::VecGather{r_base, r_index, r_mask, r_prev,
+                            scale, e64u, i64u, lanes, 0u, 0u}});
+                    const ir::Ref r_zero = next_ref++;
+                    d.stmts.push_back({r_zero,
+                        ir::VecConstant{0ULL, 0ULL}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{dst_xmm, r_dst}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_zero}});
+                    // Architectural completion state: the mask
+                    // register reads as all zeroes afterwards (and
+                    // the VEX.128 write clears its upper lane too).
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{mask_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{mask_xmm, r_zero}});
+                } else if (idx64 && !elem64) {
+                    // QD/QPS ymm: xmm dest (4 dword elements) fed by
+                    // a ymm index (4 qwords). The hi gather chains on
+                    // the lo result and writes dest/mask lanes 2..3;
+                    // dest bits 255:128 zero per VEX.
+                    const ir::Ref r_index_lo = next_ref++;
+                    const ir::Ref r_index_hi = next_ref++;
+                    const ir::Ref r_mask     = next_ref++;
+                    const ir::Ref r_prev     = next_ref++;
+                    d.stmts.push_back({r_index_lo,
+                        ir::LoadVecReg{idx_xmm}});
+                    d.stmts.push_back({r_index_hi,
+                        ir::LoadVecRegHi{idx_xmm}});
+                    d.stmts.push_back({r_mask, ir::LoadVecReg{mask_xmm}});
+                    d.stmts.push_back({r_prev, ir::LoadVecReg{dst_xmm}});
+                    const ir::Ref r_lo = next_ref++;
+                    d.stmts.push_back({r_lo,
+                        ir::VecGather{r_base, r_index_lo, r_mask,
+                            r_prev, scale, 0u, 1u, 2u, 0u, 0u}});
+                    const ir::Ref r_hi = next_ref++;
+                    d.stmts.push_back({r_hi,
+                        ir::VecGather{r_base, r_index_hi, r_mask,
+                            r_lo, scale, 0u, 1u, 2u, 2u, 0u}});
+                    const ir::Ref r_zero = next_ref++;
+                    d.stmts.push_back({r_zero,
+                        ir::VecConstant{0ULL, 0ULL}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{dst_xmm, r_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{mask_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{mask_xmm, r_zero}});
+                } else {
+                    // ymm-dest forms (DD/DPS, DQ/DPD, QQ/QPD): two
+                    // half-gathers against the ymm mask/prev halves.
+                    // DQ/DPD's index register is a single xmm whose
+                    // dword lanes 2..3 feed the hi half; the other
+                    // forms read a real hi index half.
+                    const bool idx_in_lo = elem64 && !idx64;
+                    const ir::Ref r_index_lo = next_ref++;
+                    d.stmts.push_back({r_index_lo,
+                        ir::LoadVecReg{idx_xmm}});
+                    ir::Ref r_index_hi = r_index_lo;
+                    if (!idx_in_lo) {
+                        r_index_hi = next_ref++;
+                        d.stmts.push_back({r_index_hi,
+                            ir::LoadVecRegHi{idx_xmm}});
+                    }
+                    const std::uint8_t ib_hi = idx_in_lo ? 2u : 0u;
+                    const ir::Ref r_mask_lo = next_ref++;
+                    const ir::Ref r_mask_hi = next_ref++;
+                    const ir::Ref r_prev_lo = next_ref++;
+                    const ir::Ref r_prev_hi = next_ref++;
+                    d.stmts.push_back({r_mask_lo,
+                        ir::LoadVecReg{mask_xmm}});
+                    d.stmts.push_back({r_mask_hi,
+                        ir::LoadVecRegHi{mask_xmm}});
+                    d.stmts.push_back({r_prev_lo,
+                        ir::LoadVecReg{dst_xmm}});
+                    d.stmts.push_back({r_prev_hi,
+                        ir::LoadVecRegHi{dst_xmm}});
+                    const ir::Ref r_lo = next_ref++;
+                    d.stmts.push_back({r_lo,
+                        ir::VecGather{r_base, r_index_lo, r_mask_lo,
+                            r_prev_lo, scale, e64u, i64u, lanes,
+                            0u, 0u}});
+                    const ir::Ref r_hi = next_ref++;
+                    d.stmts.push_back({r_hi,
+                        ir::VecGather{r_base, r_index_hi, r_mask_hi,
+                            r_prev_hi, scale, e64u, i64u, lanes,
+                            0u, ib_hi}});
+                    const ir::Ref r_zero = next_ref++;
+                    d.stmts.push_back({r_zero,
+                        ir::VecConstant{0ULL, 0ULL}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{dst_xmm, r_lo}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{mask_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{mask_xmm, r_zero}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }

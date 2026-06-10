@@ -2411,6 +2411,156 @@ TEST_CASE("e2e: VGATHERDPS xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 FP gather") 
     REQUIRE(disp.state().ymm_hi[1].lo == 0u);
 }
 
+TEST_CASE("e2e: VPGATHERDD ymm1, [rax + ymm2*4], ymm3 — F2-IR-059 ymm gather") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0x65, 0x90, 0x0C, 0x90,  // vpgatherdd ymm1,[rax+ymm2*4],ymm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint32_t, 8> table{
+        100u, 101u, 102u, 103u, 104u, 105u, 106u, 107u};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // Indices: lo half {7, P, 3, P}, hi half {1, P, 5, P} with the
+    // poisoned lanes masked off in BOTH halves.
+    disp.state().xmm[2].lo    = (0x4000'0000ull << 32) | 7ull;
+    disp.state().xmm[2].hi    = (0x4000'0000ull << 32) | 3ull;
+    disp.state().ymm_hi[2].lo = (0x4000'0000ull << 32) | 1ull;
+    disp.state().ymm_hi[2].hi = (0x4000'0000ull << 32) | 5ull;
+    // Mask MSBs: lanes 0 and 2 of each half active.
+    disp.state().xmm[3].lo    = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[3].hi    = 0x0000'0000'8000'0000ull;
+    disp.state().ymm_hi[3].lo = 0x0000'0000'8000'0000ull;
+    disp.state().ymm_hi[3].hi = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[1].lo    = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi    = 0xCCCC'CCCC'DDDD'DDDDull;
+    disp.state().ymm_hi[1].lo = 0xEEEE'EEEE'FFFF'FFFFull;
+    disp.state().ymm_hi[1].hi = 0x1111'1111'2222'2222ull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Lo half: lane 0 ← table[7], lane 2 ← table[3], odd lanes kept.
+    REQUIRE(disp.state().xmm[1].lo == ((0xAAAA'AAAAull << 32) | 107ull));
+    REQUIRE(disp.state().xmm[1].hi == ((0xCCCC'CCCCull << 32) | 103ull));
+    // Hi half: lane 4 ← table[1], lane 6 ← table[5], odd lanes kept.
+    REQUIRE(disp.state().ymm_hi[1].lo ==
+            ((0xEEEE'EEEEull << 32) | 101ull));
+    REQUIRE(disp.state().ymm_hi[1].hi ==
+            ((0x1111'1111ull << 32) | 105ull));
+    // Full ymm mask cleared.
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[3].lo == 0u);
+    REQUIRE(disp.state().ymm_hi[3].hi == 0u);
+}
+
+TEST_CASE("e2e: VPGATHERDQ ymm1, [rax + xmm2*8], ymm3 — F2-IR-059 split index") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0xE5, 0x90, 0x0C, 0xD0,  // vpgatherdq ymm1,[rax+xmm2*8],ymm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint64_t, 4> table{
+        1000ull, 1001ull, 1002ull, 1003ull};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // One xmm of dword indices feeds all four qword elements; index
+    // lanes 2..3 drive the hi half (index_lane_base = 2 lowering).
+    // Lanes: {3, P, 1, P} with the poisoned ones masked off.
+    disp.state().xmm[2].lo = (0x4000'0000ull << 32) | 3ull;
+    disp.state().xmm[2].hi = (0x4000'0000ull << 32) | 1ull;
+    // Qword mask lanes {on, off, on, off}.
+    disp.state().xmm[3].lo    = 0x8000'0000'0000'0000ull;
+    disp.state().xmm[3].hi    = 0u;
+    disp.state().ymm_hi[3].lo = 0x8000'0000'0000'0000ull;
+    disp.state().ymm_hi[3].hi = 0u;
+    disp.state().xmm[1].lo    = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi    = 0xCCCC'CCCC'DDDD'DDDDull;
+    disp.state().ymm_hi[1].lo = 0xEEEE'EEEE'FFFF'FFFFull;
+    disp.state().ymm_hi[1].hi = 0x1111'1111'2222'2222ull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[1].lo == 1003ull);              // table[3]
+    REQUIRE(disp.state().xmm[1].hi == 0xCCCC'CCCC'DDDD'DDDDull);
+    REQUIRE(disp.state().ymm_hi[1].lo == 1001ull);           // table[1]
+    REQUIRE(disp.state().ymm_hi[1].hi == 0x1111'1111'2222'2222ull);
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().ymm_hi[3].lo == 0u);
+}
+
+TEST_CASE("e2e: VPGATHERQD xmm1, [rax + ymm2*4], xmm3 — F2-IR-059 ymm index, xmm dest") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0x65, 0x91, 0x0C, 0x90,  // vpgatherqd xmm1,[rax+ymm2*4],xmm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint32_t, 8> table{
+        100u, 101u, 102u, 103u, 104u, 105u, 106u, 107u};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // Four qword indices across the ymm: {6, P64, 2, P64}.
+    disp.state().xmm[2].lo    = 6ull;
+    disp.state().xmm[2].hi    = 0x4000'0000'0000'0000ull;
+    disp.state().ymm_hi[2].lo = 2ull;
+    disp.state().ymm_hi[2].hi = 0x4000'0000'0000'0000ull;
+    // Dword mask lanes 0..3: lanes 0 and 2 active.
+    disp.state().xmm[3].lo    = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[3].hi    = 0x0000'0000'8000'0000ull;
+    disp.state().ymm_hi[3].lo = 0x7777'7777'7777'7777ull;  // junk → 0
+    disp.state().xmm[1].lo    = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi    = 0xCCCC'CCCC'DDDD'DDDDull;
+    disp.state().ymm_hi[1].lo = 0x9999'9999'9999'9999ull;  // junk → 0
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Lane 0 ← table[6], lane 1 kept, lane 2 ← table[2], lane 3 kept.
+    REQUIRE(disp.state().xmm[1].lo == ((0xAAAA'AAAAull << 32) | 106ull));
+    REQUIRE(disp.state().xmm[1].hi == ((0xCCCC'CCCCull << 32) | 102ull));
+    // VEX.256 with an xmm dest zeroes bits 255:128, and the mask
+    // (including its untouched upper half) reads as zero.
+    REQUIRE(disp.state().ymm_hi[1].lo == 0u);
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[3].lo == 0u);
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
