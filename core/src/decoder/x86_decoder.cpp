@@ -4514,19 +4514,22 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
-            // F2-IR-059 — VPGATHERDD xmm1, vm32x, xmm2
-            // (VEX.128.66.0F38.W0 90 /r). VSIB addressing: the SIB
-            // index field names an XMM register holding four signed
-            // dword indices; vex.vvvv names the mask register. For
-            // each dword lane whose mask MSB is set, a dword loads
-            // from base + (sx64(index[i]) << scale) into that dest
-            // lane; other lanes keep their previous contents, and
-            // masked-off lanes never touch memory. The mask register
-            // zeroes on completion. dest/index/mask must be pairwise
-            // distinct (#UD otherwise). ymm forms and the other
-            // element widths stage in later.
-            if (vex.present && !vex.L && sub3 == 0x90u) {
-                if (rex.w) return DecodeError::UnsupportedEncoding;
+            // F2-IR-059 — VPGATHER family (VEX.66.0F38 90/91 /r).
+            // VSIB addressing: the SIB index field names an XMM
+            // register of signed indices; vex.vvvv names the mask
+            // register. For each elem-width lane whose mask MSB is
+            // set, a load from base + (sx64(index[i]) << scale)
+            // replaces that dest lane; other lanes keep their
+            // previous contents, and masked-off lanes never touch
+            // memory. The mask register zeroes on completion.
+            // dest/index/mask must be pairwise distinct (#UD).
+            //   90 W0: VPGATHERDD   90 W1: VPGATHERDQ
+            //   91 W0: VPGATHERQD   91 W1: VPGATHERQQ
+            // ymm forms stage in later.
+            if (vex.present && !vex.L
+                && (sub3 == 0x90u || sub3 == 0x91u)) {
+                const bool idx64  = sub3 == 0x91u;
+                const bool elem64 = rex.w;  // VEX.W via the C4 payload
                 if (has_address_size_override) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -4583,14 +4586,32 @@ std::variant<Decoded, DecodeError> decode_one(
                 }
                 const ir::Ref r_index = next_ref++;
                 const ir::Ref r_mask  = next_ref++;
-                const ir::Ref r_prev  = next_ref++;
                 d.stmts.push_back({r_index, ir::LoadVecReg{idx_xmm}});
                 d.stmts.push_back({r_mask,  ir::LoadVecReg{mask_xmm}});
+                ir::Ref r_prev = next_ref++;
                 d.stmts.push_back({r_prev,  ir::LoadVecReg{dst_xmm}});
+                // Mixed-width QD form: only dest lanes 0..1 are real
+                // elements — the upper 64 bits of the destination read
+                // as zero afterwards, so zero them in prev before the
+                // gather passes it through.
+                if (idx64 && !elem64) {
+                    const ir::Ref r_keep = next_ref++;
+                    const ir::Ref r_pm   = next_ref++;
+                    d.stmts.push_back({r_keep,
+                        ir::VecConstant{~0ULL, 0ULL}});
+                    d.stmts.push_back({r_pm,
+                        ir::VecBinOp{ir::VecBinOpKind::And, r_prev,
+                                     r_keep, ir::VecLane::S4}});
+                    r_prev = r_pm;
+                }
+                const std::uint8_t lanes = (elem64 || idx64) ? 2u : 4u;
                 const ir::Ref r_dst = next_ref++;
                 d.stmts.push_back({r_dst,
                     ir::VecGather{r_base, r_index, r_mask, r_prev,
-                        static_cast<std::uint8_t>(m.scale_shift)}});
+                        static_cast<std::uint8_t>(m.scale_shift),
+                        static_cast<std::uint8_t>(elem64 ? 1u : 0u),
+                        static_cast<std::uint8_t>(idx64 ? 1u : 0u),
+                        lanes, 0u, 0u}});
                 const ir::Ref r_zero = next_ref++;
                 d.stmts.push_back({r_zero, ir::VecConstant{0ULL, 0ULL}});
                 d.stmts.push_back({std::nullopt,

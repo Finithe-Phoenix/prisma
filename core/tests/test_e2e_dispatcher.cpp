@@ -2245,6 +2245,129 @@ TEST_CASE("e2e: VPGATHERDD xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 masked gathe
     REQUIRE(disp.state().ymm_hi[3].lo == 0u);
 }
 
+TEST_CASE("e2e: VPGATHERDQ xmm1, [rax + xmm2*8], xmm3 — F2-IR-059 qword gather") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0xE1, 0x90, 0x0C, 0xD0,  // vpgatherdq xmm1,[rax+xmm2*8],xmm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint64_t, 4> table{
+        1000ull, 1001ull, 1002ull, 1003ull};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // Dword indices for the two qword elements: {3, POISON}. The
+    // poisoned index belongs to the masked-off element 1.
+    disp.state().xmm[2].lo = (0x4000'0000ull << 32) | 3ull;
+    disp.state().xmm[2].hi = 0u;
+    // Qword mask lanes: element 0 active (bit 63), element 1 inactive.
+    disp.state().xmm[3].lo = 0x8000'0000'0000'0000ull;
+    disp.state().xmm[3].hi = 0x7FFF'FFFF'FFFF'FFFFull;  // MSB clear
+    disp.state().xmm[1].lo = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi = 0xCCCC'CCCC'DDDD'DDDDull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[1].lo == 1003ull);              // table[3]
+    REQUIRE(disp.state().xmm[1].hi == 0xCCCC'CCCC'DDDD'DDDDull);
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[1].lo == 0u);
+}
+
+TEST_CASE("e2e: VPGATHERQQ xmm1, [rax + xmm2*8], xmm3 — F2-IR-059 qword indices") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0xE1, 0x91, 0x0C, 0xD0,  // vpgatherqq xmm1,[rax+xmm2*8],xmm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint64_t, 4> table{
+        2000ull, 2001ull, 2002ull, 2003ull};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // Qword indices: element 0 gathers table[2]; element 1 is a
+    // poisoned 64-bit index on a masked-off lane.
+    disp.state().xmm[2].lo = 2ull;
+    disp.state().xmm[2].hi = 0x4000'0000'0000'0000ull;
+    disp.state().xmm[3].lo = 0x8000'0000'0000'0000ull;
+    disp.state().xmm[3].hi = 0u;
+    disp.state().xmm[1].lo = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi = 0xCCCC'CCCC'DDDD'DDDDull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[1].lo == 2002ull);              // table[2]
+    REQUIRE(disp.state().xmm[1].hi == 0xCCCC'CCCC'DDDD'DDDDull);
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[1].lo == 0u);
+}
+
+TEST_CASE("e2e: VPGATHERQD xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 mixed widths") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0x61, 0x91, 0x0C, 0x90,  // vpgatherqd xmm1,[rax+xmm2*4],xmm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint32_t, 8> table{
+        100u, 101u, 102u, 103u, 104u, 105u, 106u, 107u};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // Qword indices for the two dword elements: {5, POISON(masked)}.
+    disp.state().xmm[2].lo = 5ull;
+    disp.state().xmm[2].hi = 0x4000'0000'0000'0000ull;
+    // Dword mask lanes 0..1: lane 0 active, lane 1 inactive.
+    disp.state().xmm[3].lo = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[3].hi = 0u;
+    disp.state().xmm[1].lo = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi = 0xCCCC'CCCC'DDDD'DDDDull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Lane 0 ← table[5]; lane 1 keeps 0xAAAAAAAA; the destination's
+    // upper 64 bits read as zero for the QD form.
+    REQUIRE(disp.state().xmm[1].lo == ((0xAAAA'AAAAull << 32) | 105ull));
+    REQUIRE(disp.state().xmm[1].hi == 0u);
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[1].lo == 0u);
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.

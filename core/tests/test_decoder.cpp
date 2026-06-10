@@ -2333,6 +2333,69 @@ TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm4*4], xmm3 (C4 E2 61 90 0C A0) — 
     REQUIRE(loads_xmm4);
 }
 
+TEST_CASE("decode VPGATHERDQ xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 90 0C D0) — F2-IR-059 qword elements") {
+    // byte3 0xE1: W=1 (qword elements) vvvv=~0011 (mask xmm3) L=0
+    // pp=01. SIB D0: scale=11 (×8) index=010 (xmm2) base=000 (rax).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x90, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->scale_shift == 3u);
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 0u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VPGATHERQQ xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 91 0C D0) — F2-IR-059 qword indices+elements") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x91, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VPGATHERQD xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 91 0C 90) — F2-IR-059 mixed widths") {
+    // W0 + qword indices: two dword elements; the upper 64 bits of
+    // the destination zero, expressed as an And of prev with a
+    // lo-64-ones constant before the gather.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x91, 0x0C, 0x90}, r);
+    bool found = false, has_and = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+        if (const auto* b = std::get_if<ir::VecBinOp>(&s.op)) {
+            if (b->op == ir::VecBinOpKind::And) has_and = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(has_and);
+}
+
+TEST_CASE("decode VPGATHERQQ rejects dest==mask (#UD) — F2-IR-059") {
+    // vvvv=~0001=1110 names xmm1 == dest xmm1 → UnsupportedEncoding.
+    ir::Ref r = 0;
+    auto res = decode_any({0xC4, 0xE2, 0xF1, 0x91, 0x0C, 0xD0}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
 TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm12*4], xmm3 (C4 A2 61 90 0C A0) — F2-IR-059 VSIB xmm12") {
     // byte2 0xA2: X̄=0 → VEX.X=1, so SIB index 100b names xmm12.
     // This worked before the vsib-mode fix only by accident of the
