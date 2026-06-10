@@ -2062,6 +2062,8 @@ TEST_CASE("e2e: REP MOVSB — F2-BK-009 native loop memcpy") {
     for (std::size_t i = 0; i < 24; ++i) REQUIRE(dst_buf[i] == src_buf[i]);
     for (std::size_t i = 24; i < 64; ++i) REQUIRE(dst_buf[i] == 0xCC);
     REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rcx)] == 0ULL);
+    REQUIRE(r.stats.direct_thread_misses == 1u);
+    REQUIRE(r.stats.direct_thread_installs == 1u);
 }
 
 TEST_CASE("e2e: REP STOSB with RCX=0 — F2-BK-008 zero-iteration skip") {
@@ -2188,6 +2190,9 @@ TEST_CASE("e2e: REP STOSB beyond clamp — Blocker A re-entry path") {
     REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] ==
             reinterpret_cast<std::uint64_t>(&buf[8u + kCount]));
     REQUIRE(disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] == 0x42ULL);
+    REQUIRE(r.stats.direct_thread_hits == 1u);
+    REQUIRE(r.stats.direct_thread_misses == 1u);
+    REQUIRE(r.stats.direct_thread_installs == 1u);
 }
 
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {

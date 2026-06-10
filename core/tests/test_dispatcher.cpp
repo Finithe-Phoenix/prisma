@@ -114,6 +114,8 @@ TEST_CASE("Dispatcher: return-stack predictor hits on direct CALL/RET",
     REQUIRE(r.stats.ras_hits == 1);
     REQUIRE(r.stats.ras_misses == 0);
     REQUIRE(r.stats.ras_underflows == 1);
+    REQUIRE(r.stats.direct_thread_misses == 1);
+    REQUIRE(r.stats.direct_thread_installs == 1);
 }
 
 TEST_CASE("Dispatcher: CMP + JE branches to the taken leg on equal operands",
