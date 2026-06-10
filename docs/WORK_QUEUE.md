@@ -6,12 +6,13 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-09 (FFI bridge arc claimed).
+Last updated: 2026-06-10 (VPGATHER family completed).
 
 ## Currently active
 
-Branch: `claude/ffi-bridge` (C++/Rust hybrid bridge, RFC 0014).
-Local validation baseline on `2482e65`: Debug 897/897 (x86_64 container).
+Branch: `claude/vpgather-family` (F2-IR-059 completion arc).
+Local validation baseline on `7dbfe0c` (origin/main): Debug 907/907
+(5104 assertions, x86_64 container); 932/932 at arc close.
 
 ## Queue (priority order)
 
@@ -31,7 +32,7 @@ Local validation baseline on `2482e65`: Debug 897/897 (x86_64 container).
 | 11 | Real CALL/RET semantics (opt-in) | 1 commit | `9787f25` | ✅ done | Threaded via `decode_one`'s 4th param + `Translator::set_real_call_ret()`. Decoder emits push/pop sequences when on. Default off keeps the 86 legacy e2e tests untouched. |
 | 11b | Migrate e2e corpus to real CALL/RET by default | done in batch | `710ae71` | ✅ done | All 79 e2e tests migrated to `install_halt_return_stack()` AND Translator default flipped to `real_call_ret=true`. Programs with function calls now translate with real semantics by default. |
 | 12 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
-| 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | `a8a19c0` | 🟡 partial | F2-IR-059: VPGATHERDD xmm landed via new `VecGather` IR op (per-lane cbz-guarded loads, VSIB decode, #UD checks). Remaining: ymm, Q widths, FP forms, VSIB xmm4/xmm12 index. |
+| 13 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits | `a8a19c0`, `a3c39e6`, `185cef3`, `b061255`, `f287af7`, `ae3b82e` | ✅ done | F2-IR-059 complete: all 16 forms (DD/DQ/QD/QQ + DPS/DPD/QPS/QPD, xmm + ymm) via the VecGather lane descriptor; VSIB xmm4 fixed (xmm12 pinned); kSerializeVersion 1→2. Lean mirror still queued (pre-existing debt). |
 | 14 | AES hardware crypto opcodes (AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC) | 1 commit | `5811568` | ✅ done | New `VecAes` IR op + `vaes` emitter primitive (5-way switch). AESKEYGENASSIST queued separately. |
 | 14b | SHA-NI crypto opcodes | 3-4 commits | — | ⏸ queued | x86 SHA1RNDS4 / SHA1MSGx / SHA256RNDS2 / SHA256MSGx → ARM NEON SHA family. SHA256RNDS2's implicit xmm0 dependency needs careful IR plumbing. |
 | 14c | AESKEYGENASSIST | 1 commit | `4ee4297` | ✅ done | F2-IR-058 landed with `VecAesKeygenAssist`, decoder, ARM64 AESE/TBL lowering, serialization/profiler/DCE plumbing, and tests. |
@@ -45,8 +46,6 @@ Local validation baseline on `2482e65`: Debug 897/897 (x86_64 container).
 | 16e | CI: `ffi-link` workflow | 1 commit | `bf86cca` | ✅ done | ffi-link (x86_64) + ffi-link-arm64 (real ARM64 JIT execution in CI, public-repo runner). |
 | 17a | CI: full C++ suite on ARM64 runner | 1 commit | `0ff071e` | ✅ done | `core-build-arm64` — the whole e2e JIT corpus now executes in CI, not just on Apple Silicon. |
 | 17b | Proptest decoder fuzzing via bridge | 1 commit | `0e8a1e2` | ✅ done | 3 properties (noise, instruction-shaped, determinism+cache), 1,280+ cases/run; complements AFL++. |
-| 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
-| 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 
 ## Completed (this session)
 
@@ -94,6 +93,7 @@ Local validation baseline on `2482e65`: Debug 897/897 (x86_64 container).
 | 23 | feat(core): x87 reduced-F64 bridge + stack forwarding | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; RFC 0013 documents precision scope. |
 | 24 | feat(runtime): dispatcher direct-thread cache | `5a4fb7e` | Direct branch successors can run from the executable cache without another translate() call; SMC hash checks preserved. |
 | 25 | feat(ir,decoder,backend): F2-IR-058 - AESKEYGENASSIST | `4ee4297` | 897/897 Debug + ASan/UBSan (`~signal_handler*`) + Zydis 897/897. Gemini review caught the RIP-relative test gap; fixed before commit. |
+| 26 | feat(ir,decoder,backend): F2-IR-059 complete - VPGATHER/VGATHER family | `a3c39e6` `185cef3` `b061255` `f287af7` `ae3b82e` | 932/932 (5227 assertions) Debug + ASan/UBSan in container. VSIB xmm4 fix, VecGather lane descriptor, Q widths, FP forms, ymm lo/hi (incl. index_lane_base=2 split-index and QD chained-halves geometries). 9 ARM64 e2e gathers with poisoned-masked-index proofs. Codex + Gemini external review (see docs/REVIEWS/). |
 
 ## Standing decisions (carry across items)
 
