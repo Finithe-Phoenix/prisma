@@ -71,7 +71,8 @@ std::variant<ModRmOperand, DecodeError> parse_modrm(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
-    bool address_size_override);
+    bool address_size_override,
+    bool vsib = false);
 ir::Ref emit_address(
     std::vector<ir::Stmt>& stmts,
     const ModRmOperand& op,
@@ -862,7 +863,8 @@ std::variant<ModRmOperand, DecodeError> parse_modrm(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
-    bool address_size_override) {
+    bool address_size_override,
+    bool vsib) {
     auto modrm_byte = consume_le<1>(bytes, cursor);
     if (std::holds_alternative<DecodeError>(modrm_byte)) {
         return std::get<DecodeError>(modrm_byte);
@@ -900,7 +902,10 @@ std::variant<ModRmOperand, DecodeError> parse_modrm(
         const unsigned index_lo = (sib >> 3) & 0x7u;
         const unsigned base_lo = sib & 0x7u;
 
-        if (!(index_lo == 0b100u && !rex.x)) {
+        // SIB index 100b without (V)REX.X means "no index" only for
+        // GPR addressing (RSP cannot be an index). Under VSIB the
+        // field is a plain vector-register number, so xmm4 is real.
+        if (vsib || !(index_lo == 0b100u && !rex.x)) {
             m.has_index = true;
             m.index = gpr_from_index(index_lo | (rex.x ? 0x8u : 0u));
         }
@@ -4525,15 +4530,16 @@ std::variant<Decoded, DecodeError> decode_one(
                 if (has_address_size_override) {
                     return DecodeError::UnsupportedEncoding;
                 }
-                auto modrm = parse_modrm(bytes, cursor, rex, false);
+                auto modrm = parse_modrm(bytes, cursor, rex, false,
+                                         /*vsib=*/true);
                 if (std::holds_alternative<DecodeError>(modrm)) {
                     return std::get<DecodeError>(modrm);
                 }
                 const auto& m = std::get<ModRmOperand>(modrm);
-                // VSIB requires a memory operand with a SIB index. An
-                // absent index means the encoding named xmm4/xmm12
-                // (SIB index 100b), which parse_modrm cannot express
-                // yet — reject rather than mis-decode.
+                // VSIB requires a memory operand with a SIB byte; in
+                // vsib mode parse_modrm always reports the index (even
+                // 100b = xmm4), so !has_index means the encoding had
+                // no SIB byte at all.
                 if (m.mod == 0b11 || !m.has_index || m.rip_relative) {
                     return DecodeError::UnsupportedEncoding;
                 }

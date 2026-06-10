@@ -2315,6 +2315,42 @@ TEST_CASE("decode VPGATHERDD rejects register-direct rm — F2-IR-059") {
     REQUIRE(std::holds_alternative<DecodeError>(res));
 }
 
+TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm4*4], xmm3 (C4 E2 61 90 0C A0) — F2-IR-059 VSIB xmm4") {
+    // SIB A0: scale=10 (×4) index=100 base=000 (rax). For GPR
+    // addressing index 100b without REX.X means "no index" (RSP rule);
+    // under VSIB it names xmm4 and must decode as a live index.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x90, 0x0C, 0xA0}, r);
+    bool found = false;
+    bool loads_xmm4 = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecGather>(s.op)) found = true;
+        if (const auto* lv = std::get_if<ir::LoadVecReg>(&s.op)) {
+            if (lv->xmm_index == 4u) loads_xmm4 = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(loads_xmm4);
+}
+
+TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm12*4], xmm3 (C4 A2 61 90 0C A0) — F2-IR-059 VSIB xmm12") {
+    // byte2 0xA2: X̄=0 → VEX.X=1, so SIB index 100b names xmm12.
+    // This worked before the vsib-mode fix only by accident of the
+    // GPR index math — pin it so the fix can't regress it.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xA2, 0x61, 0x90, 0x0C, 0xA0}, r);
+    bool found = false;
+    bool loads_xmm12 = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecGather>(s.op)) found = true;
+        if (const auto* lv = std::get_if<ir::LoadVecReg>(&s.op)) {
+            if (lv->xmm_index == 12u) loads_xmm12 = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(loads_xmm12);
+}
+
 // F2-IR-053 BMI2 variable-count shifts: SHLX / SARX / SHRX. All three
 // share `sub3 == 0xF7`, with the legacy prefix encoded in VEX.pp.
 TEST_CASE("decode SHLX r32a, r/m32, r32b (C4 E2 69 F7 C1) — F2-IR-053") {
