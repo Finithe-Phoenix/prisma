@@ -2195,6 +2195,54 @@ TEST_CASE("e2e: REP STOSB beyond clamp — Blocker A re-entry path") {
     REQUIRE(r.stats.direct_thread_installs == 1u);
 }
 
+TEST_CASE("e2e: VPGATHERDD xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 masked gather") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0x61, 0x90, 0x0C, 0x90,  // vpgatherdd xmm1,[rax+xmm2*4],xmm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    alignas(16) std::array<std::uint32_t, 8> table{
+        100u, 101u, 102u, 103u, 104u, 105u, 106u, 107u};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    // Indices per dword lane: {7, POISON, 3, POISON}. The poisoned
+    // lanes are masked off below — a correct gather never forms or
+    // dereferences their addresses (they point ~4 GiB away).
+    disp.state().xmm[2].lo = (0x4000'0000ull << 32) | 7ull;
+    disp.state().xmm[2].hi = (0x4000'0000ull << 32) | 3ull;
+    // Mask MSBs: lanes 0 and 2 active, lanes 1 and 3 inactive.
+    disp.state().xmm[3].lo = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[3].hi = 0x0000'0000'8000'0000ull;
+    // Pre-fill the destination so kept lanes are observable.
+    disp.state().xmm[1].lo = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi = 0xCCCC'CCCC'DDDD'DDDDull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    // Lane 0 ← table[7], lane 1 keeps 0xAAAAAAAA,
+    // lane 2 ← table[3], lane 3 keeps 0xCCCCCCCC.
+    REQUIRE(disp.state().xmm[1].lo == ((0xAAAA'AAAAull << 32) | 107ull));
+    REQUIRE(disp.state().xmm[1].hi == ((0xCCCC'CCCCull << 32) | 103ull));
+    // The mask register reads as all zeroes on completion, and the
+    // VEX.128 writes cleared both upper lanes.
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[1].lo == 0u);
+    REQUIRE(disp.state().ymm_hi[3].lo == 0u);
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.

@@ -70,6 +70,12 @@ public:
     void lsl (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shl
     void lsr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Shr
     void asr (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Sar
+    // Immediate-count logical shift right (F2-IR-059 mask-bit tests).
+    void lsr_imm(arm64::Reg rd, arm64::Reg rn, unsigned shift);
+    // `add rd, rn, rm, lsl #shift` — one-instruction scaled-index
+    // address arithmetic (F2-IR-059 VSIB lanes).
+    void add_lsl(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm,
+                 unsigned shift);
     void ror (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // Ror (ARM64 native)
     // Rotate-left is not a native ARM64 op. `rol(rd, rn, rm, tmp)`
     // implements it as `neg tmp, rm; ror rd, rn, tmp` — the caller

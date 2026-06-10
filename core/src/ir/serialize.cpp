@@ -121,12 +121,13 @@ enum class OpKind : std::uint8_t {
     kX87Push            = 85,
     kX87Pop             = 86,
     kVecAesKeygenAssist = 87,
+    kVecGather          = 88,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
 constexpr std::uint8_t kMaxOpKind =
-    static_cast<std::uint8_t>(OpKind::kVecAesKeygenAssist);
+    static_cast<std::uint8_t>(OpKind::kVecGather);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -327,6 +328,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) return OpKind::kVecAesKeygenAssist;
         else if constexpr (std::is_same_v<T, Bswap>)         return OpKind::kBswap;
         else if constexpr (std::is_same_v<T, Crc32c>)        return OpKind::kCrc32c;
+        else if constexpr (std::is_same_v<T, VecGather>)     return OpKind::kVecGather;
         else if constexpr (std::is_same_v<T, X87Load>)       return OpKind::kX87Load;
         else if constexpr (std::is_same_v<T, X87Store>)      return OpKind::kX87Store;
         else if constexpr (std::is_same_v<T, X87Push>)       return OpKind::kX87Push;
@@ -739,6 +741,13 @@ void write_payload(std::vector<std::uint8_t>& out, const Crc32c& x) {
     put_u32(out, x.crc);
     put_u32(out, x.data);
     put_u8(out, static_cast<std::uint8_t>(x.data_size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecGather& x) {
+    put_u32(out, x.base);
+    put_u32(out, x.index);
+    put_u32(out, x.mask);
+    put_u32(out, x.prev);
+    put_u8(out, x.scale_shift);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -1305,6 +1314,18 @@ DeserializeError read_payload_crc32c(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_vec_gather(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t base  = c.take_u32();
+    const std::uint32_t index = c.take_u32();
+    const std::uint32_t mask  = c.take_u32();
+    const std::uint32_t prev  = c.take_u32();
+    const std::uint8_t  scale = c.take_u8();
+    if (scale > 3u) return DeserializeError::BadSize;
+    s.op = VecGather{base, index, mask, prev, scale};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_blend(Cursor& c, Stmt& s) {
     if (!c.remaining(4 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint32_t dst  = c.take_u32();
@@ -1689,6 +1710,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecAesKeygenAssist: return read_payload_vec_aes_keygenassist(c, s);
         case OpKind::kBswap:       return read_payload_bswap(c, s);
         case OpKind::kCrc32c:      return read_payload_crc32c(c, s);
+        case OpKind::kVecGather:   return read_payload_vec_gather(c, s);
         case OpKind::kX87Load:     return read_payload_x87_load(c, s);
         case OpKind::kX87Store:    return read_payload_x87_store(c, s);
         case OpKind::kX87Push:     return read_payload_x87_push(c, s);

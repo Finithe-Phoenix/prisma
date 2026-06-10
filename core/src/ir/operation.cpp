@@ -292,6 +292,10 @@ bool operator==(const Bswap& a, const Bswap& b) noexcept {
 bool operator==(const Crc32c& a, const Crc32c& b) noexcept {
     return a.crc == b.crc && a.data == b.data && a.data_size == b.data_size;
 }
+bool operator==(const VecGather& a, const VecGather& b) noexcept {
+    return a.base == b.base && a.index == b.index && a.mask == b.mask
+        && a.prev == b.prev && a.scale_shift == b.scale_shift;
+}
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {
     return a.result == b.result && a.op == b.op;

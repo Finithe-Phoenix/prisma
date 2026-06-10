@@ -1769,6 +1769,30 @@ TEST_CASE("Lowerer: WriteFlagsPtestYmm emits per-half AND + BIC + OR + msr nzcv"
     REQUIRE(d.find("msr nzcv") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: VecGather emits per-lane mask test + guarded load") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadVecReg{2u}},   // indices
+        {2u, ir::LoadVecReg{3u}},   // mask
+        {3u, ir::LoadVecReg{1u}},   // previous dst
+        {4u, ir::VecGather{0u, 1u, 2u, 3u, /*scale_shift=*/2u}},
+        {std::nullopt, ir::StoreVecReg{1u, 4u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Per lane: lane extract (vixl prints umov's alias `mov w, v.s[i]`),
+    // lsr #31, cbz over the load, sxtw, add with scaled index, ldr w,
+    // ins back into the result.
+    REQUIRE(d.find(".s[")     != std::string::npos);
+    REQUIRE(d.find("lsr")     != std::string::npos);
+    REQUIRE(d.find("cbz")     != std::string::npos);
+    REQUIRE(d.find("sxtw")    != std::string::npos);
+    REQUIRE(d.find("lsl #2")  != std::string::npos);
+    REQUIRE(d.find("ldr w")   != std::string::npos);
+}
+
 TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {
     constexpr std::uint64_t kPcRep   = 0x5000ull;
     constexpr std::uint64_t kPcAfter = 0x5003ull;  // 3-byte F3 48 A5
