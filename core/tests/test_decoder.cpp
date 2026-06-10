@@ -2388,6 +2388,74 @@ TEST_CASE("decode VPGATHERQD xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 91 0C 90) — 
     REQUIRE(has_and);
 }
 
+TEST_CASE("decode VGATHERDPS xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 92 0C 90) — F2-IR-059 FP form") {
+    // Bit-identical to VPGATHERDD: same descriptor, the mask test is
+    // the float sign bit (lane MSB).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x92, 0x0C, 0x90}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 0u);
+            REQUIRE(g->lane_count == 4u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VGATHERDPD xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 92 0C D0) — F2-IR-059 FP qword") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x92, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 0u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VGATHERQPS xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 93 0C 90) — F2-IR-059 FP mixed") {
+    // QD geometry: dword elements from qword indices, dest upper 64
+    // bits zeroed via the And-with-keep-constant idiom.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x93, 0x0C, 0x90}, r);
+    bool found = false, has_and = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+        if (const auto* b = std::get_if<ir::VecBinOp>(&s.op)) {
+            if (b->op == ir::VecBinOpKind::And) has_and = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(has_and);
+}
+
+TEST_CASE("decode VGATHERQPD xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 93 0C D0) — F2-IR-059 FP qword both") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x93, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
 TEST_CASE("decode VPGATHERQQ rejects dest==mask (#UD) — F2-IR-059") {
     // vvvv=~0001=1110 names xmm1 == dest xmm1 → UnsupportedEncoding.
     ir::Ref r = 0;

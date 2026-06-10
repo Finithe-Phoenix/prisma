@@ -4514,21 +4514,26 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
-            // F2-IR-059 — VPGATHER family (VEX.66.0F38 90/91 /r).
-            // VSIB addressing: the SIB index field names an XMM
-            // register of signed indices; vex.vvvv names the mask
-            // register. For each elem-width lane whose mask MSB is
-            // set, a load from base + (sx64(index[i]) << scale)
+            // F2-IR-059 — VPGATHER/VGATHER family (VEX.66.0F38
+            // 90-93 /r). VSIB addressing: the SIB index field names
+            // an XMM register of signed indices; vex.vvvv names the
+            // mask register. For each elem-width lane whose mask MSB
+            // is set, a load from base + (sx64(index[i]) << scale)
             // replaces that dest lane; other lanes keep their
             // previous contents, and masked-off lanes never touch
             // memory. The mask register zeroes on completion.
             // dest/index/mask must be pairwise distinct (#UD).
             //   90 W0: VPGATHERDD   90 W1: VPGATHERDQ
             //   91 W0: VPGATHERQD   91 W1: VPGATHERQQ
-            // ymm forms stage in later.
+            //   92 W0: VGATHERDPS   92 W1: VGATHERDPD
+            //   93 W0: VGATHERQPS   93 W1: VGATHERQPD
+            // FP forms are bit-identical loads — the mask test is the
+            // lane MSB (the FP sign bit) in every form — so they
+            // share the integer decode path. ymm forms stage in
+            // later.
             if (vex.present && !vex.L
-                && (sub3 == 0x90u || sub3 == 0x91u)) {
-                const bool idx64  = sub3 == 0x91u;
+                && sub3 >= 0x90u && sub3 <= 0x93u) {
+                const bool idx64  = (sub3 & 1u) != 0u;
                 const bool elem64 = rex.w;  // VEX.W via the C4 payload
                 if (has_address_size_override) {
                     return DecodeError::UnsupportedEncoding;

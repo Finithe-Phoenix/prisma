@@ -2368,6 +2368,49 @@ TEST_CASE("e2e: VPGATHERQD xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 mixed widths
     REQUIRE(disp.state().ymm_hi[1].lo == 0u);
 }
 
+TEST_CASE("e2e: VGATHERDPS xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 FP gather") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    translator::Translator tx;
+    std::vector<std::uint8_t> bytes{
+        0xC4, 0xE2, 0x61, 0x92, 0x0C, 0x90,  // vgatherdps xmm1,[rax+xmm2*4],xmm3
+        0xC3,                                 // ret
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= bytes.size()) return {};
+        return std::span<const std::uint8_t>(bytes.data() + off,
+                                             bytes.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+
+    // Float bit patterns (the gather is a bit copy; 0x3FC00000=1.5f).
+    alignas(16) std::array<std::uint32_t, 8> table{
+        0x3F80'0000u, 0x3FC0'0000u, 0x4000'0000u, 0x4040'0000u,
+        0x4080'0000u, 0x40A0'0000u, 0x40C0'0000u, 0x40E0'0000u};
+    disp.state().gpr[static_cast<std::size_t>(ir::Gpr::Rax)] =
+        reinterpret_cast<std::uint64_t>(table.data());
+    disp.state().xmm[2].lo = (0x4000'0000ull << 32) | 6ull;
+    disp.state().xmm[2].hi = (0x4000'0000ull << 32) | 1ull;
+    // Mask = float sign bit per lane: lanes 0 and 2 active.
+    disp.state().xmm[3].lo = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[3].hi = 0x0000'0000'8000'0000ull;
+    disp.state().xmm[1].lo = 0xAAAA'AAAA'BBBB'BBBBull;
+    disp.state().xmm[1].hi = 0xCCCC'CCCC'DDDD'DDDDull;
+
+    auto r = disp.run(0x4000, 100);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state().xmm[1].lo ==
+            ((0xAAAA'AAAAull << 32) | 0x40C0'0000ull));      // table[6]
+    REQUIRE(disp.state().xmm[1].hi ==
+            ((0xCCCC'CCCCull << 32) | 0x3FC0'0000ull));      // table[1]
+    REQUIRE(disp.state().xmm[3].lo == 0u);
+    REQUIRE(disp.state().xmm[3].hi == 0u);
+    REQUIRE(disp.state().ymm_hi[1].lo == 0u);
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
