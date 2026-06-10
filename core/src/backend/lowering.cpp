@@ -333,6 +333,10 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Crc32c>) {
                 bump(op.crc, i); bump(op.data, i);
             }
+            else if constexpr (std::is_same_v<T, ir::VecGather>) {
+                bump(op.base, i); bump(op.index, i);
+                bump(op.mask, i); bump(op.prev, i);
+            }
             else if constexpr (std::is_same_v<T, ir::X87Load>) {
                 (void)op;
             }
@@ -1467,6 +1471,51 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecTbl2"};
             }
             emitter_.vtbl2_q(rd, r_lo, r_hi, r_idx);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecGather>) {
+            // F2-IR-059 VPGATHERDD xmm. Per dword lane: if the mask
+            // lane's MSB is set, load 32 bits from
+            // base + (sx64(index) << scale_shift) and insert into the
+            // result; otherwise the lane keeps prev's value. Masked-off
+            // lanes must not touch memory (their address may be
+            // invalid by design), so each load hides behind a cbz.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecGather without result"};
+            }
+            arm64::Reg r_base;
+            if (!reg_of(op.base, r_base)) return {false, LowerError::DanglingRef, "VecGather.base"};
+            Emitter::FpReg r_idx, r_mask, r_prev;
+            if (!fp_reg_of(op.index, r_idx)) return {false, LowerError::DanglingRef, "VecGather.index"};
+            if (!fp_reg_of(op.mask,  r_mask)) return {false, LowerError::DanglingRef, "VecGather.mask"};
+            if (!fp_reg_of(op.prev,  r_prev)) return {false, LowerError::DanglingRef, "VecGather.prev"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecGather"};
+            }
+            arm64::Reg t;
+            if (!allocate_temporary(t)) {
+                return {false, LowerError::OutOfScratchRegs, "VecGather tmp"};
+            }
+            emitter_.vmov_q(rd, r_prev);
+            for (std::uint8_t lane = 0; lane < 4u; ++lane) {
+                Emitter::Label skip = emitter_.create_label();
+                // MSB of the 32-bit mask lane decides participation.
+                // vumov zero-extends into the X register, so a 64-bit
+                // lsr by 31 isolates exactly that bit.
+                emitter_.vumov_w_from_lane(t, r_mask, lane,
+                                           Emitter::VecLane::S4);
+                emitter_.lsr_imm(t, t, 31u);
+                emitter_.cbz(t, skip);
+                emitter_.vumov_w_from_lane(t, r_idx, lane,
+                                           Emitter::VecLane::S4);
+                emitter_.sxtw(t, t);
+                emitter_.add_lsl(t, r_base, t, op.scale_shift);
+                emitter_.load(t, t, ir::OpSize::I32);
+                emitter_.vins_lane_from_w(rd, rd, lane, t,
+                                          Emitter::VecLane::S4);
+                emitter_.bind(skip);
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecAes>) {

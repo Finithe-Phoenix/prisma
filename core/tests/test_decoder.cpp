@@ -2273,6 +2273,48 @@ TEST_CASE("decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls
     REQUIRE(std::holds_alternative<ir::WriteFlagsPtest>(d.stmts.back().op));
 }
 
+TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 90 0C 90) — F2-IR-059") {
+    // VEX 3-byte: mmmmm=02 (0F38) → byte2 0xE2 (R̄X̄B̄=111).
+    // byte3: W=0 vvvv=~0011=1100 (mask xmm3) L=0 pp=01 → 0x61.
+    // ModRM 0C: mod=00 reg=001 (dst xmm1) rm=100 (SIB).
+    // SIB 90: scale=10 (×4) index=010 (xmm2, VSIB) base=000 (rax).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x90, 0x0C, 0x90}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecGather>(s.op)) {
+            const auto& g = std::get<ir::VecGather>(s.op);
+            REQUIRE(g.scale_shift == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+    // Dest + mask both write low and high lanes (VEX.128 upper-zeroing
+    // plus the architectural mask clear).
+    int stores = 0, stores_hi = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::StoreVecReg>(s.op))   ++stores;
+        if (std::holds_alternative<ir::StoreVecRegHi>(s.op)) ++stores_hi;
+    }
+    REQUIRE(stores == 2);
+    REQUIRE(stores_hi == 2);
+}
+
+TEST_CASE("decode VPGATHERDD rejects dest==mask (#UD) — F2-IR-059") {
+    // vvvv=~0001=1110 names xmm1 == dest xmm1 → UnsupportedEncoding.
+    ir::Ref r = 0;
+    auto res = decode_any({0xC4, 0xE2, 0x71, 0x90, 0x0C, 0x90}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("decode VPGATHERDD rejects register-direct rm — F2-IR-059") {
+    // mod=11 has no VSIB memory operand → UnsupportedEncoding.
+    ir::Ref r = 0;
+    auto res = decode_any({0xC4, 0xE2, 0x61, 0x90, 0xCA}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+}
+
 // F2-IR-053 BMI2 variable-count shifts: SHLX / SARX / SHRX. All three
 // share `sub3 == 0xF7`, with the legacy prefix encoded in VEX.pp.
 TEST_CASE("decode SHLX r32a, r/m32, r32b (C4 E2 69 F7 C1) — F2-IR-053") {

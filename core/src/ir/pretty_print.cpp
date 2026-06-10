@@ -400,6 +400,13 @@ std::string pretty_print(const Op& op) {
             os << "crc32c." << size_suffix(x.data_size) << ' ';
             print_ref(os, x.crc); os << ", ";
             print_ref(os, x.data);
+        } else if constexpr (std::is_same_v<T, VecGather>) {
+            os << "vgather.s4 base=";
+            print_ref(os, x.base); os << ", idx=";
+            print_ref(os, x.index); os << ", mask=";
+            print_ref(os, x.mask); os << ", prev=";
+            print_ref(os, x.prev);
+            os << ", scale=" << (1u << x.scale_shift);
         } else if constexpr (std::is_same_v<T, VecAes>) {
             const char* k = "?";
             switch (x.kind) {

@@ -800,6 +800,26 @@ struct Crc32c {
     OpSize data_size;
 };
 
+// F2-IR-059 — VPGATHERDD xmm (VEX.128.66.0F38.W0 90 /r) gather.
+//   For each dword lane i (0..3):
+//     if (mask[i].MSB)  dst[i] = mem32[base + (sx64(index[i]) << scale_shift)]
+//     else              dst[i] = prev[i]
+// Lanes whose mask MSB is clear MUST NOT touch memory — their address
+// may be invalid by design — so lowering branches around each load.
+// Architecturally the mask register is zeroed on completion; the
+// decoder emits an explicit VecConstant{0} + StoreVecReg for that, so
+// the op itself is a single-result gather with per-lane memory reads.
+// Wider forms (ymm, qword data/indices) extend this struct with a
+// lane descriptor when they land; today only the dword/dword xmm
+// shape exists.
+struct VecGather {
+    Ref          base;         // 64-bit base address (disp folded in)
+    Ref          index;        // 128-bit vector of signed dword indices
+    Ref          mask;         // 128-bit mask vector
+    Ref          prev;         // previous dst; non-gathered lanes keep it
+    std::uint8_t scale_shift;  // 0..3, scale = 1 << scale_shift
+};
+
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
 //   Predicate = imm8 & 7 from the x86 encoding:
 //     0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
@@ -975,6 +995,7 @@ using Op = std::variant<
     VecAesKeygenAssist,
     Bswap,
     Crc32c,
+    VecGather,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs,
@@ -1106,6 +1127,7 @@ bool operator==(const VecAes& a, const VecAes& b) noexcept;
 bool operator==(const VecAesKeygenAssist& a, const VecAesKeygenAssist& b) noexcept;
 bool operator==(const Bswap& a, const Bswap& b) noexcept;
 bool operator==(const Crc32c& a, const Crc32c& b) noexcept;
+bool operator==(const VecGather& a, const VecGather& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
 bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;

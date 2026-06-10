@@ -4509,6 +4509,99 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
+            // F2-IR-059 — VPGATHERDD xmm1, vm32x, xmm2
+            // (VEX.128.66.0F38.W0 90 /r). VSIB addressing: the SIB
+            // index field names an XMM register holding four signed
+            // dword indices; vex.vvvv names the mask register. For
+            // each dword lane whose mask MSB is set, a dword loads
+            // from base + (sx64(index[i]) << scale) into that dest
+            // lane; other lanes keep their previous contents, and
+            // masked-off lanes never touch memory. The mask register
+            // zeroes on completion. dest/index/mask must be pairwise
+            // distinct (#UD otherwise). ymm forms and the other
+            // element widths stage in later.
+            if (vex.present && !vex.L && sub3 == 0x90u) {
+                if (rex.w) return DecodeError::UnsupportedEncoding;
+                if (has_address_size_override) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                auto modrm = parse_modrm(bytes, cursor, rex, false);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                // VSIB requires a memory operand with a SIB index. An
+                // absent index means the encoding named xmm4/xmm12
+                // (SIB index 100b), which parse_modrm cannot express
+                // yet — reject rather than mis-decode.
+                if (m.mod == 0b11 || !m.has_index || m.rip_relative) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                const std::uint8_t dst_xmm =
+                    static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t idx_xmm = static_cast<std::uint8_t>(
+                    static_cast<unsigned>(m.index));
+                const std::uint8_t mask_xmm =
+                    static_cast<std::uint8_t>(vex.vvvv);
+                if (dst_xmm == idx_xmm || dst_xmm == mask_xmm
+                    || idx_xmm == mask_xmm) {
+                    return DecodeError::UnsupportedEncoding;  // #UD
+                }
+                Decoded d;
+                // Base address value with the displacement folded in.
+                ir::Ref r_base;
+                if (m.has_base) {
+                    const ir::Ref r_base_reg = next_ref++;
+                    d.stmts.push_back({r_base_reg,
+                        ir::LoadReg{m.base, ir::OpSize::I64}});
+                    if (m.disp != 0) {
+                        const ir::Ref r_disp = next_ref++;
+                        const ir::Ref r_sum  = next_ref++;
+                        d.stmts.push_back({r_disp,
+                            ir::Constant{static_cast<std::uint64_t>(
+                                static_cast<std::int64_t>(m.disp)),
+                                ir::OpSize::I64}});
+                        d.stmts.push_back({r_sum,
+                            ir::BinOp{ir::BinOpKind::Add, r_base_reg,
+                                      r_disp, ir::OpSize::I64}});
+                        r_base = r_sum;
+                    } else {
+                        r_base = r_base_reg;
+                    }
+                } else {
+                    r_base = next_ref++;
+                    d.stmts.push_back({r_base,
+                        ir::Constant{static_cast<std::uint64_t>(
+                            static_cast<std::int64_t>(m.disp)),
+                            ir::OpSize::I64}});
+                }
+                const ir::Ref r_index = next_ref++;
+                const ir::Ref r_mask  = next_ref++;
+                const ir::Ref r_prev  = next_ref++;
+                d.stmts.push_back({r_index, ir::LoadVecReg{idx_xmm}});
+                d.stmts.push_back({r_mask,  ir::LoadVecReg{mask_xmm}});
+                d.stmts.push_back({r_prev,  ir::LoadVecReg{dst_xmm}});
+                const ir::Ref r_dst = next_ref++;
+                d.stmts.push_back({r_dst,
+                    ir::VecGather{r_base, r_index, r_mask, r_prev,
+                        static_cast<std::uint8_t>(m.scale_shift)}});
+                const ir::Ref r_zero = next_ref++;
+                d.stmts.push_back({r_zero, ir::VecConstant{0ULL, 0ULL}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{dst_xmm, r_dst}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{dst_xmm, r_zero}});
+                // Architectural completion state: the mask register
+                // reads as all zeroes afterwards (and the VEX.128
+                // write clears its upper lane too).
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{mask_xmm, r_zero}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecRegHi{mask_xmm, r_zero}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // F2-IR-052 — VPERMD ymm1, ymm2, ymm3/m256
             // (VEX.256.66.0F38.W0 36 /r). For each of the eight 32-bit
             // dst elements, the corresponding ymm2 (vex.vvvv) dword

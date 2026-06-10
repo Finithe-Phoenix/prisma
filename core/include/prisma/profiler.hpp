@@ -73,6 +73,7 @@ public:
         X87Load, X87Store,
         X87Push, X87Pop,
         VecAesKeygenAssist,
+        VecGather,
         kCount  // sentinel
     };
 

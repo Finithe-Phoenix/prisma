@@ -53,6 +53,9 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) return true;
         else if constexpr (std::is_same_v<T, ir::Bswap>) return true;
         else if constexpr (std::is_same_v<T, ir::Crc32c>) return true;
+        // Dead gathers drop like dead LoadMems: once the result is
+        // unused, the conditional loads are unobservable.
+        else if constexpr (std::is_same_v<T, ir::VecGather>) return true;
         else if constexpr (std::is_same_v<T, ir::X87Load>) return true;
         else if constexpr (std::is_same_v<T, ir::JumpReg>) return false;
         // Everything else is impure: StoreReg, StoreMem*, LoadMemTSO,
@@ -190,6 +193,9 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::Crc32c>) {
             into.insert(x.crc); into.insert(x.data);
+        } else if constexpr (std::is_same_v<T, ir::VecGather>) {
+            into.insert(x.base); into.insert(x.index);
+            into.insert(x.mask); into.insert(x.prev);
         } else if constexpr (std::is_same_v<T, ir::X87Load>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::X87Store>) {

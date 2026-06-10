@@ -87,6 +87,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, VecAes>)        return OpCounter::Kind::VecAes;
         else if constexpr (std::is_same_v<T, Bswap>)         return OpCounter::Kind::Bswap;
         else if constexpr (std::is_same_v<T, Crc32c>)        return OpCounter::Kind::Crc32c;
+        else if constexpr (std::is_same_v<T, VecGather>)     return OpCounter::Kind::VecGather;
         else if constexpr (std::is_same_v<T, LoadVecRegHi>)  return OpCounter::Kind::LoadVecRegHi;
         else if constexpr (std::is_same_v<T, StoreVecRegHi>) return OpCounter::Kind::StoreVecRegHi;
         else if constexpr (std::is_same_v<T, VecFpFma>)      return OpCounter::Kind::VecFpFma;
