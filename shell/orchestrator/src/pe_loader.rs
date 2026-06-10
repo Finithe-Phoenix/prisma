@@ -82,6 +82,87 @@ pub enum PeError {
 
     #[error("unsupported optional header magic: {0:#06x}")]
     UnsupportedOptHeader(u16),
+
+    #[error("section {0} maps outside the image (va {1:#x} + {2:#x} > {3:#x})")]
+    SectionOutOfImage(usize, u32, u32, u32),
+
+    #[error("section {0} raw data lies outside the file ({1:#x} + {2:#x} > {3:#x})")]
+    SectionRawOutOfFile(usize, u32, u32, usize),
+
+    #[error("entry point RVA {0:#x} lies outside the image ({1:#x})")]
+    EntryOutOfImage(u32, u32),
+
+    #[error("image_base + size_of_image wraps the 64-bit address space")]
+    ImageWrapsAddressSpace,
+}
+
+/// A PE image laid out flat in guest virtual memory: `bytes[i]` is the
+/// byte at guest address `base + i`. This is what the C++ dispatcher
+/// fetches guest code from (via `prisma-core`'s `GuestImage`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappedImage {
+    pub base: u64,
+    pub entry_pc: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// Lay out a parsed PE in guest virtual memory.
+///
+/// Zero-filled `size_of_image` bytes at `image_base`, each section's
+/// raw data copied to its virtual address. No relocations, no imports
+/// — the Fase 2 hybrid path loads fully-linked position-dependent
+/// images. All bounds come from untrusted input, so every offset is
+/// checked; malformed sections error instead of truncating silently.
+pub fn map_image(img: &PeImage, file: &[u8]) -> Result<MappedImage, PeError> {
+    if img.entry_point_rva >= img.size_of_image {
+        return Err(PeError::EntryOutOfImage(
+            img.entry_point_rva,
+            img.size_of_image,
+        ));
+    }
+    if img
+        .image_base
+        .checked_add(u64::from(img.size_of_image))
+        .is_none()
+    {
+        return Err(PeError::ImageWrapsAddressSpace);
+    }
+
+    let mut bytes = vec![0u8; img.size_of_image as usize];
+    for (idx, sec) in img.sections.iter().enumerate() {
+        if sec.raw_data_size == 0 {
+            continue; // purely virtual section (.bss-style)
+        }
+        let va_end = sec
+            .virtual_address
+            .checked_add(sec.raw_data_size)
+            .filter(|&end| end <= img.size_of_image)
+            .ok_or(PeError::SectionOutOfImage(
+                idx,
+                sec.virtual_address,
+                sec.raw_data_size,
+                img.size_of_image,
+            ))?;
+        let raw_end = sec
+            .raw_data_offset
+            .checked_add(sec.raw_data_size)
+            .map(|end| end as usize)
+            .filter(|&end| end <= file.len())
+            .ok_or(PeError::SectionRawOutOfFile(
+                idx,
+                sec.raw_data_offset,
+                sec.raw_data_size,
+                file.len(),
+            ))?;
+        bytes[sec.virtual_address as usize..va_end as usize]
+            .copy_from_slice(&file[sec.raw_data_offset as usize..raw_end]);
+    }
+
+    Ok(MappedImage {
+        base: img.image_base,
+        entry_pc: img.image_base + u64::from(img.entry_point_rva),
+        bytes,
+    })
 }
 
 /// Parse a PE/COFF byte slice into a `PeImage`. Read-only; the
@@ -223,7 +304,7 @@ mod tests {
     use super::*;
 
     /// Builds the smallest possible PE32+ that `parse` accepts:
-    /// DOS stub (64 bytes) → e_lfanew=64 → NT magic → COFF header →
+    /// DOS stub (64 bytes) → `e_lfanew=64` → NT magic → COFF header →
     /// optional header (240 bytes for PE32+) → 1 section. Total 408
     /// bytes.
     fn synth_minimal_pe() -> Vec<u8> {
@@ -295,5 +376,59 @@ mod tests {
         buf[opt..opt + 2].copy_from_slice(&0x9999u16.to_le_bytes());
         let r = parse(&buf);
         assert!(matches!(r, Err(PeError::UnsupportedOptHeader(_))));
+    }
+
+    /// Synth PE with `code` appended as .text raw data at VA 0x1000.
+    fn synth_pe_with_code(code: &[u8]) -> Vec<u8> {
+        let mut buf = synth_minimal_pe();
+        let sec = 64 + 4 + 20 + 240;
+        let raw_off = u32::try_from(buf.len()).unwrap();
+        let raw_size = u32::try_from(code.len()).unwrap();
+        buf[sec + 16..sec + 20].copy_from_slice(&raw_size.to_le_bytes());
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes());
+        buf.extend_from_slice(code);
+        buf
+    }
+
+    #[test]
+    fn maps_section_raw_data_to_virtual_address() {
+        let code = [0x48u8, 0x31, 0xC0, 0xC3]; // xor rax,rax ; ret
+        let buf = synth_pe_with_code(&code);
+        let img = parse(&buf).expect("parse");
+        let mapped = map_image(&img, &buf).expect("map");
+
+        assert_eq!(mapped.base, 0x1_4000_0000);
+        assert_eq!(mapped.entry_pc, 0x1_4000_1000);
+        assert_eq!(mapped.bytes.len(), 0x10000);
+        assert_eq!(&mapped.bytes[0x1000..0x1000 + code.len()], &code);
+        // Outside the section stays zero-filled.
+        assert!(mapped.bytes[..0x1000].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn map_rejects_section_past_image_end() {
+        let buf = synth_pe_with_code(&[0xC3]);
+        let mut img = parse(&buf).expect("parse");
+        img.sections[0].virtual_address = img.size_of_image;
+        let r = map_image(&img, &buf);
+        assert!(matches!(r, Err(PeError::SectionOutOfImage(0, _, _, _))));
+    }
+
+    #[test]
+    fn map_rejects_raw_data_past_file_end() {
+        let buf = synth_pe_with_code(&[0xC3]);
+        let mut img = parse(&buf).expect("parse");
+        img.sections[0].raw_data_size = 0x4000;
+        let r = map_image(&img, &buf);
+        assert!(matches!(r, Err(PeError::SectionRawOutOfFile(0, _, _, _))));
+    }
+
+    #[test]
+    fn map_rejects_entry_outside_image() {
+        let buf = synth_pe_with_code(&[0xC3]);
+        let mut img = parse(&buf).expect("parse");
+        img.entry_point_rva = img.size_of_image;
+        let r = map_image(&img, &buf);
+        assert!(matches!(r, Err(PeError::EntryOutOfImage(_, _))));
     }
 }

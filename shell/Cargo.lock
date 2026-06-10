@@ -247,6 +247,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "prisma-core"
+version = "0.0.1"
+dependencies = [
+ "prisma-core-sys",
+ "prisma_orchestrator",
+ "thiserror",
+]
+
+[[package]]
+name = "prisma-core-sys"
+version = "0.0.1"
+
+[[package]]
 name = "prisma_orchestrator"
 version = "0.0.1"
 dependencies = [

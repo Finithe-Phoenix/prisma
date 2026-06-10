@@ -1,0 +1,28 @@
+# prisma-core-sys — raw extern "C" declarations for the Prisma DBT
+# core's C ABI (core/include/prisma/capi.h, RFC 0014).
+#
+# Hand-written by design: the boundary is small, and skipping bindgen
+# keeps libclang out of the build environment. Drift between this
+# crate and capi.h is caught by the cross-language integration tests
+# in ../core (a signature mismatch fails the ffi-link CI job).
+
+[package]
+name          = "prisma-core-sys"
+version       = { workspace = true }
+edition       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+authors       = { workspace = true }
+rust-version  = { workspace = true }
+links         = "prisma_core_c"
+
+description = "Raw FFI bindings to the Prisma DBT core C ABI"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use        = "deny"
+
+[lints.clippy]
+all      = "warn"
+pedantic = "warn"
+nursery  = "warn"

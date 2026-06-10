@@ -54,9 +54,9 @@ mod tests {
         let h = Sha256Hash::from_bytes(b"some-entry");
         let e = CacheEntry {
             guest_addr: 0x1000,
-            content_hash: 0xCAFEBABE,
+            content_hash: 0xCAFE_BABE,
             guest_size: 16,
-            code_sha256: h.clone(),
+            code_sha256: h,
             code_bytes: vec![0x90, 0x90, 0xC3],
             compressed: false,
         };
@@ -71,7 +71,7 @@ mod tests {
     fn cache_msg_query_and_reply_round_trip() {
         let q = CacheMsg::Query {
             guest_addr: 0x4000,
-            content_hash: 0xDEADBEEF,
+            content_hash: 0xDEAD_BEEF,
         };
         let s = serde_json::to_string(&q).unwrap();
         let r: CacheMsg = serde_json::from_str(&s).unwrap();

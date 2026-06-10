@@ -1,0 +1,104 @@
+name: ffi bridge (C++/Rust)
+
+# RFC 0014 — cross-language gate. Builds the prisma_core_c shared
+# library, then lints and tests the Rust bridge crates against it.
+#
+# Two jobs:
+#   ffi-link        ubuntu-latest (x86_64) — boundary mechanics +
+#                   translation-only coverage on the cheap runner.
+#   ffi-link-arm64  ubuntu-24.04-arm — same suite, but the aarch64
+#                   gate opens: the hybrid PE e2e executes guest code
+#                   in the ARM64 JIT for real.
+#
+# Runs on every PR (no path filters) so both contexts are eligible to
+# be required checks without going Pending.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ffi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ffi-link:
+    name: ffi-link
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C++ toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang-17
+
+      - name: Build prisma_core_c
+        run: |
+          set -euo pipefail
+          cmake -S core -B core/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DPRISMA_BUILD_TESTS=OFF
+          cmake --build core/build --target prisma_core_c
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup component add clippy
+          rustup component add rustfmt
+
+      - name: fmt + clippy (whole workspace, all targets)
+        env:
+          PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/core/build
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path shell/Cargo.toml --all -- --check
+          cargo clippy --manifest-path shell/Cargo.toml \
+            --workspace --all-targets -- -D warnings
+
+      - name: Cross-language tests
+        env:
+          PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/core/build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/core/build
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path shell/Cargo.toml --workspace
+
+  ffi-link-arm64:
+    name: ffi-link-arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C++ toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang-17
+
+      - name: Build prisma_core_c
+        run: |
+          set -euo pipefail
+          cmake -S core -B core/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DPRISMA_BUILD_TESTS=OFF
+          cmake --build core/build --target prisma_core_c
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup component add clippy
+
+      - name: Cross-language tests (JIT executes on real ARM64)
+        env:
+          PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/core/build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/core/build
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path shell/Cargo.toml --workspace

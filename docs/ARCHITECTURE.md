@@ -330,3 +330,45 @@ Setup recipe in [`AGENT_PLAYBOOK.md`](AGENT_PLAYBOOK.md) §1. E2E
 JIT tests still need real ARM64 (Apple silicon or a future
 `linux/arm64` runner); decoder / IR / lowering shape tests + the
 full sanitizer suite run fine on x86_64.
+
+## FFI bridge update (2026-06-09)
+
+### The C++/Rust hybrid boundary (RFC 0014)
+
+The Rust shell now drives the C++ core through a C ABI:
+
+```
+shell/orchestrator (pe_loader, config, integrity)
+        |  safe Rust API
+shell/core (prisma-core: RAII handles, Result errors, lifetimes)
+        |  hand-written extern "C" decls
+shell/core-sys (prisma-core-sys)
+        |  C ABI - opaque handles, status codes, version gate
+core/include/prisma/capi.h  ->  libprisma_core_c.so
+        |  C++20
+prisma_translator + prisma_runtime (Dispatcher)
+```
+
+Boundary rules live in [RFC 0014](rfc/0014-ffi-boundary-core-shell.md):
+no exception or panic crosses in either direction (the Rust guest
+memory reader trampoline converts panics into fetch faults), out
+params are written only on `PRISMA_OK`, and `PRISMA_CAPI_VERSION`
+gates startup. No cxx / bindgen / Corrosion - the surface is small
+enough to maintain by hand, and the cross-language integration tests
+(`shell/core/tests/`) catch drift as a link or behaviour failure.
+
+The milestone test is `shell/core/tests/pe_e2e.rs`: a synthetic
+x86-64 PE32+ is parsed and mapped by the orchestrator loader in safe
+Rust, then translated (every host) and executed (ARM64 hosts) by the
+DBT through the bridge. The `ffi-link-arm64` CI job runs this on a
+real ARM64 runner, so guest execution is now continuously verified
+in CI - not just on a developer Apple Silicon machine.
+
+Build workflow (two commands, builds stay separate by design):
+
+```bash
+cmake --build core/build --target prisma_core_c
+PRISMA_CORE_LIB_DIR=$PWD/core/build \
+LD_LIBRARY_PATH=$PWD/core/build \
+  cargo test --manifest-path shell/Cargo.toml --workspace
+```

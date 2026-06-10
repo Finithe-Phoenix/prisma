@@ -1,8 +1,16 @@
 # shell — Prisma Orchestrator (Rust)
 
-**Lenguaje:** Rust 1.75+ (edition 2024 cuando estable).
+**Lenguaje:** Rust 1.82+ (edition 2024 cuando estable).
 **Build:** Cargo workspace.
 **Target:** `.so` compilado para Android ARM64, consumido por la app Kotlin vía JNI.
+
+> **FFI bridge (RFC 0014):** el workspace ahora contiene `core-sys`
+> (bindings `extern "C"` crudos a `libprisma_core_c`) y `core`
+> (wrapper seguro RAII). Compila el lado C++ primero y apunta
+> `PRISMA_CORE_LIB_DIR` (y `LD_LIBRARY_PATH` para los test binaries)
+> a `core/build`. `cargo build`/`test` plano cubre solo el
+> orchestrator puro-Rust (`default-members`); los crates del puente
+> corren bajo los jobs `ffi-link` de CI.
 
 ## Responsabilidad
 
