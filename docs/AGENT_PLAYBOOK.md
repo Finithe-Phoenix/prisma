@@ -324,7 +324,8 @@ Direct-threading is being staged deliberately:
    must pass current guest bytes so the content hash rejects stale SMC
    entries.
 3. `Dispatcher` first tries a hash-checked cached successor for direct
-   `JumpRel` / `CondJumpRel` exits.
+   `JumpRel`, `CondJumpRel`, `CallRel`, and bounded `RepStos` /
+   `RepMovs` exits.
 4. If the successor is not cached but is fetchable, `Dispatcher`
    translates it in-place and continues the direct chain. Translation
    failure and fetch failure are surfaced with the same public exit

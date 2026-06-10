@@ -281,14 +281,16 @@ shape, and the dispatcher keeps RAS-style push/pop/hit/miss counters
 for return prediction work.
 
 The first direct-threading stages are live in the dispatcher. For
-direct `JumpRel` and `CondJumpRel` exits, block metadata records target
-and fallthrough guest PCs. If the selected successor is already
-translated and the current guest bytes still match the cached content
-hash, the dispatcher executes that cached block immediately. If the
-successor is not cached yet, the dispatcher translates it in-place and
-continues the direct chain without bouncing through the outer dispatch
-loop. This preserves SMC safety, halt-PC checks, and step limits while
-leaving deeper in-JIT patching for the next runtime optimization stage.
+direct `JumpRel`, `CondJumpRel`, `CallRel`, and bounded `RepStos` /
+`RepMovs` exits, block metadata records the valid target and
+fallthrough guest PCs. If the selected successor is already translated
+and the current guest bytes still match the cached content hash, the
+dispatcher executes that cached block immediately. If the successor is
+not cached yet, the dispatcher translates it in-place and continues the
+direct chain without bouncing through the outer dispatch loop. This
+preserves SMC safety, halt-PC checks, return-stack bookkeeping, and step
+limits while leaving deeper in-JIT patching for the next runtime
+optimization stage.
 
 ### Blocker A — REP STOS / MOVSB DoS clamp
 

@@ -27,6 +27,14 @@ bool direct_thread_candidate(const translator::TranslatedBlock& block,
         return next_pc == block.target_guest_pc
             || next_pc == block.fallthrough_guest_pc;
     }
+    if (block.exit_kind == translator::BlockExitKind::CallRel) {
+        return next_pc == block.target_guest_pc;
+    }
+    if (block.exit_kind == translator::BlockExitKind::RepStos
+        || block.exit_kind == translator::BlockExitKind::RepMovs) {
+        return next_pc == block.target_guest_pc
+            || next_pc == block.fallthrough_guest_pc;
+    }
     return false;
 }
 
