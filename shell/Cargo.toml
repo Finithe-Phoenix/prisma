@@ -32,6 +32,8 @@ sha2       = "0.10"
 zstd       = "0.13"
 thiserror  = "1.0"
 anyhow     = "1.0"
+# Property-based fuzzing of parsers (CLAUDE.md testing conventions).
+proptest   = "1.5"
 
 [profile.release]
 lto             = "thin"

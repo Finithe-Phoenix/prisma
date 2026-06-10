@@ -22,6 +22,8 @@ thiserror       = { workspace = true }
 prisma-core-sys = { path = "../core-sys" }
 # The hybrid e2e (PE loader -> DBT) drives the orchestrator's loader.
 prisma_orchestrator = { path = "../orchestrator" }
+# Property-based decoder fuzzing through the bridge.
+proptest = { workspace = true }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
