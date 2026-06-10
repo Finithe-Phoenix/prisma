@@ -1476,12 +1476,14 @@ TEST_CASE("e2e: cache hit — running the same blob twice reuses the translation
 
     // First run: cold path.
     runtime::Dispatcher d1{tx, reader};
+    d1.install_halt_return_stack();  // the RET pops the halt sentinel
     REQUIRE(d1.run(0x4000, 100).exit == runtime::DispatchExit::Halted);
     REQUIRE(tx.stats().cache_misses == 1);
     REQUIRE(tx.stats().cache_hits == 0);
 
     // Second run on the *same* Translator — should hit the cache.
     runtime::Dispatcher d2{tx, reader};
+    d2.install_halt_return_stack();
     REQUIRE(d2.run(0x4000, 100).exit == runtime::DispatchExit::Halted);
     REQUIRE(tx.stats().cache_hits == 1);
 }

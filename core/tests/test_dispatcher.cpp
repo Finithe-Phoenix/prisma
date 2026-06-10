@@ -56,6 +56,10 @@ TEST_CASE("Dispatcher: halts cleanly on RET (x0 = 0 sentinel)",
 
     translator::Translator t;
     runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+    // With real CALL/RET semantics on by default (F2-IR-054), the RET
+    // pops the halt sentinel off the guest stack — which must exist.
+    // Latent SEGFAULT before core-build-arm64 ran this in CI.
+    d.install_halt_return_stack();
 
     auto r = d.run(0x1000, /*max_steps=*/10);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
@@ -79,6 +83,7 @@ TEST_CASE("Dispatcher: JMP chain reaches a RET and halts",
 
     translator::Translator t;
     runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+    d.install_halt_return_stack();  // the final RET pops the sentinel
 
     auto r = d.run(0x1000, /*max_steps=*/10);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
@@ -145,6 +150,7 @@ TEST_CASE("Dispatcher: CMP + JE branches to the taken leg on equal operands",
 
     translator::Translator t;
     runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+    d.install_halt_return_stack();  // the final RET pops the sentinel
 
     auto r = d.run(0x2000, /*max_steps=*/20);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);

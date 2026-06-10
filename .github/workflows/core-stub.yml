@@ -36,3 +36,25 @@ jobs:
           else
             echo "core/CMakeLists.txt not yet present (Fase 1 not started). Scaffolding check only."
           fi
+
+  # Same suite on a real ARM64 runner (free for public repos). This is
+  # where the e2e corpus actually EXECUTES translated guest code in the
+  # JIT — on x86_64 those assertions are skipped behind the is_arm64
+  # gate. Before this job, JIT execution was only verified on developer
+  # Apple Silicon machines.
+  core-build-arm64:
+    name: core-build-arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run the full suite (JIT executes here)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+          cmake -S core -B core/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17
+          cmake --build core/build
+          ctest --test-dir core/build --output-on-failure

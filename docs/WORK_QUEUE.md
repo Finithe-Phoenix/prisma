@@ -43,6 +43,8 @@ Local validation baseline on `2482e65`: Debug 897/897 (x86_64 container).
 | 16c | Rust bridge crates `core-sys` + `core` | 1-2 commits | `9f68ca6` | ✅ done | Hand-written extern decls + safe RAII wrapper + 9 cross-language integration tests. |
 | 16d | Hybrid e2e: PE loader → DBT | 1-2 commits | `ef542f4` | ✅ done | `map_image()` with checked bounds + pe_e2e.rs: PE → Rust parse/map → C++ translate (all hosts) / execute (ARM64). |
 | 16e | CI: `ffi-link` workflow | 1 commit | `bf86cca` | ✅ done | ffi-link (x86_64) + ffi-link-arm64 (real ARM64 JIT execution in CI, public-repo runner). |
+| 17a | CI: full C++ suite on ARM64 runner | 1 commit | `0ff071e` | ✅ done | `core-build-arm64` — the whole e2e JIT corpus now executes in CI, not just on Apple Silicon. |
+| 17b | Proptest decoder fuzzing via bridge | 1 commit | `0e8a1e2` | ✅ done | 3 properties (noise, instruction-shaped, determinism+cache), 1,280+ cases/run; complements AFL++. |
 | 5 | VPGATHER {D,Q}{PS,PD,D,Q} family | 6-8 commits, `core/src/decoder/` + new IR op | — | ⏸ queued | Lane-crossing AVX-256. Each variant is its own opcode (`66 0F 38 90/91/92/93`). |
 | 6 | F2-IR-007/008 x87 baseline | 6-8 commits, new domain | `d9f12b5` | ✅ done | Reduced-F64 x87 bridge, decoder/backend coverage, and F2-PS-001 stack forwarding landed; precision divergence documented in RFC 0013. |
 
