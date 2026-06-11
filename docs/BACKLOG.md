@@ -415,21 +415,21 @@ translator on a reference Linux ARM64 box.
 - [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
 - [ ] F2-SY-006: Implement clone (threads).
 - [ ] F2-SY-007: Implement futex (critical for pthread).
-- [x] (abbe81c) F2-SY-008: Implement gettimeofday / clock_gettime.
-- [x] (abbe81c) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
+- [x] (abbe81c,9ba0dd9) F2-SY-008: Implement gettimeofday / clock_gettime.
+- [x] (abbe81c,9ba0dd9) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
 - [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
 - [ ] F2-SY-011: Implement execve (cross-ISA — requires translator re-entry).
 - [x] (abbe81c) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
-- [ ] F2-SY-013: Implement fcntl (subset).
-- [ ] F2-SY-014: Implement ioctl (passthrough with struct translation).
+- [x] (9ba0dd9) F2-SY-013: Implement fcntl (subset).
+- [x] (9ba0dd9) F2-SY-014: Implement ioctl (passthrough with struct translation).
 - [ ] F2-SY-015: Implement socket / bind / listen / accept / connect.
 - [ ] F2-SY-016: Implement read / write socket families.
 - [ ] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
 - [ ] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
-- [x] (abbe81c) F2-SY-019: Implement getcwd / chdir / fchdir.
-- [ ] F2-SY-020: Implement unlink / rename / mkdir / rmdir.
-- [ ] F2-SY-021: Implement lseek / pread / pwrite.
-- [ ] F2-SY-022: Implement readv / writev.
+- [x] (abbe81c,9ba0dd9) F2-SY-019: Implement getcwd / chdir / fchdir.
+- [x] (9ba0dd9) F2-SY-020: Implement unlink / rename / mkdir / rmdir.
+- [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
+- [x] (9ba0dd9) F2-SY-022: Implement readv / writev.
 - [ ] F2-SY-023: Implement poll / ppoll / select / epoll_wait.
 - [ ] F2-SY-024: Implement epoll_create / epoll_ctl.
 - [ ] F2-SY-025: Implement getdents / getdents64.
