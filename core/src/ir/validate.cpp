@@ -116,6 +116,9 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) {
             visit(x.src);
         }
+        else if constexpr (std::is_same_v<T, VecSha>) {
+            visit(x.a); visit(x.b); visit(x.wk);
+        }
         else if constexpr (std::is_same_v<T, Bswap>) {
             visit(x.value);
         }
@@ -198,6 +201,7 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecTbl2>
             || std::is_same_v<T, VecAes>
             || std::is_same_v<T, VecAesKeygenAssist>
+            || std::is_same_v<T, VecSha>
             || std::is_same_v<T, Bswap>
             || std::is_same_v<T, Crc32c>
             || std::is_same_v<T, VecGather>

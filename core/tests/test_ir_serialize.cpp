@@ -268,6 +268,23 @@ TEST_CASE("ir_serialize: AESKEYGENASSIST round-trip", "[ir_serialize]") {
         Op{VecAesKeygenAssist{Ref{3u}, 0x1Bu}}});
 }
 
+TEST_CASE("ir_serialize: VecSha round-trip (every kind)", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{9u},
+        Op{VecSha{VecShaKind::Sha1Rnds4, Ref{1u}, Ref{2u}, Ref{2u}, 3u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{10u},
+        Op{VecSha{VecShaKind::Sha1Nexte, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{11u},
+        Op{VecSha{VecShaKind::Sha1Msg1, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{12u},
+        Op{VecSha{VecShaKind::Sha1Msg2, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{13u},
+        Op{VecSha{VecShaKind::Sha256Rnds2, Ref{1u}, Ref{2u}, Ref{3u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{14u},
+        Op{VecSha{VecShaKind::Sha256Msg1, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{15u},
+        Op{VecSha{VecShaKind::Sha256Msg2, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+}
+
 TEST_CASE("ir_serialize: VecGather round-trip", "[ir_serialize]") {
     // Default descriptor: the original VPGATHERDD xmm shape.
     check_single_stmt_roundtrip(Stmt{Ref{9u},

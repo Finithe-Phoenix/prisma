@@ -74,6 +74,7 @@ public:
         X87Push, X87Pop,
         VecAesKeygenAssist,
         VecGather,
+        VecSha,
         kCount  // sentinel
     };
 

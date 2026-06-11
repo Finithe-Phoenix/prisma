@@ -418,3 +418,26 @@ TEST_CASE("validate: AESKEYGENASSIST undefined source is rejected") {
     REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
     REQUIRE(r.error->bad_ref == 99u);
 }
+
+TEST_CASE("validate: VecSha reads a, b and wk") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::LoadVecReg{0u}},
+        {3u, ir::VecSha{ir::VecShaKind::Sha256Rnds2, 0u, 1u, 2u, 0u}},
+        {std::nullopt, ir::StoreVecReg{1u, 3u}},
+    };
+    REQUIRE(ir::validate(s).ok);
+}
+
+TEST_CASE("validate: VecSha undefined wk ref is rejected") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::VecSha{ir::VecShaKind::Sha256Rnds2, 0u, 1u, 99u, 0u}},
+    };
+    auto r = ir::validate(s);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error->code == ir::ValidationCode::UndefinedRef);
+    REQUIRE(r.error->bad_ref == 99u);
+}

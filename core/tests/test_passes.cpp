@@ -306,6 +306,29 @@ TEST_CASE("dce: live AESKEYGENASSIST keeps its source vector") {
     REQUIRE(std::holds_alternative<ir::StoreVecReg>(out[2].op));
 }
 
+TEST_CASE("dce: unused VecSha is removable") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::VecSha{ir::VecShaKind::Sha256Msg1, 0u, 1u, 1u, 0u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("dce: live VecSha keeps all three operand refs") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::LoadVecReg{0u}},
+        {3u, ir::VecSha{ir::VecShaKind::Sha256Rnds2, 0u, 1u, 2u, 0u}},
+        {std::nullopt, ir::StoreVecReg{3u, 3u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 5);
+    REQUIRE(std::holds_alternative<ir::VecSha>(out[3].op));
+}
+
 TEST_CASE("dce: x87 stack mutations stay but unused x87 loads disappear") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{0x3FF0'0000'0000'0000ULL, ir::OpSize::I64}},

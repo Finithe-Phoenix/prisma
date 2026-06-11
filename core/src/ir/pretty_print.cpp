@@ -433,6 +433,27 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.src);
             os << ", rcon=0x" << std::hex << static_cast<unsigned>(x.rcon)
                << std::dec;
+        } else if constexpr (std::is_same_v<T, VecSha>) {
+            const char* k = "?";
+            switch (x.kind) {
+                case VecShaKind::Sha1Rnds4:   k = "sha1rnds4";   break;
+                case VecShaKind::Sha1Nexte:   k = "sha1nexte";   break;
+                case VecShaKind::Sha1Msg1:    k = "sha1msg1";    break;
+                case VecShaKind::Sha1Msg2:    k = "sha1msg2";    break;
+                case VecShaKind::Sha256Rnds2: k = "sha256rnds2"; break;
+                case VecShaKind::Sha256Msg1:  k = "sha256msg1";  break;
+                case VecShaKind::Sha256Msg2:  k = "sha256msg2";  break;
+            }
+            os << "vsha." << k << ' ';
+            print_ref(os, x.a); os << ", ";
+            print_ref(os, x.b);
+            if (x.kind == VecShaKind::Sha256Rnds2) {
+                os << ", wk=";
+                print_ref(os, x.wk);
+            }
+            if (x.kind == VecShaKind::Sha1Rnds4) {
+                os << ", f=" << static_cast<unsigned>(x.imm);
+            }
         } else if constexpr (std::is_same_v<T, VecBlend>) {
             const char* lane_n = "?";
             switch (x.lane) {

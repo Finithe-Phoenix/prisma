@@ -117,6 +117,17 @@ TEST_CASE("AESKEYGENASSIST IR compares src and rcon") {
                   Op{VecAesKeygenAssist{1u, 0x1Bu}});
 }
 
+TEST_CASE("VecSha IR compares kind, refs and imm") {
+    REQUIRE(Op{VecSha{VecShaKind::Sha1Rnds4, 1u, 2u, 2u, 3u}} ==
+            Op{VecSha{VecShaKind::Sha1Rnds4, 1u, 2u, 2u, 3u}});
+    REQUIRE_FALSE(Op{VecSha{VecShaKind::Sha1Rnds4, 1u, 2u, 2u, 3u}} ==
+                  Op{VecSha{VecShaKind::Sha1Nexte, 1u, 2u, 2u, 3u}});
+    REQUIRE_FALSE(Op{VecSha{VecShaKind::Sha1Rnds4, 1u, 2u, 2u, 3u}} ==
+                  Op{VecSha{VecShaKind::Sha1Rnds4, 1u, 2u, 2u, 0u}});
+    REQUIRE_FALSE(Op{VecSha{VecShaKind::Sha256Rnds2, 1u, 2u, 3u, 0u}} ==
+                  Op{VecSha{VecShaKind::Sha256Rnds2, 1u, 2u, 4u, 0u}});
+}
+
 TEST_CASE("kInvalidRef renders as %?") {
     Stmt s{kInvalidRef, Constant{0, OpSize::I8}};
     REQUIRE(pretty_print(s) == "%? = const.i8 0x0");

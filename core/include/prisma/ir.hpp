@@ -780,6 +780,35 @@ struct VecAesKeygenAssist {
     std::uint8_t rcon;
 };
 
+// F2-IR-060 — SHA-NI (NP 0F 38 C8..CD + NP 0F 3A CC ib). One op per
+// x86 instruction; the kind selects the variant. Operand roles:
+//   a  = the destination register's prior value (RMW source 1)
+//   b  = the xmm/m128 operand (source 2)
+//   wk = the implicit XMM0 {WK0, WK1} — Sha256Rnds2 only. Other
+//        kinds must still pass a valid Ref (pass b again); the
+//        operand walkers visit every Ref (the VecAes convention).
+//   imm = Sha1Rnds4's round-function/K selector (imm8 & 3); 0 else.
+// Lane-order note: the SHA-1 kinds keep W0/A in the HIGH dword
+// (lane 3) while the SHA-256 kinds are ascending (W0 in lane 0),
+// matching the Intel SDM exactly.
+enum class VecShaKind : std::uint8_t {
+    Sha1Rnds4 = 0,
+    Sha1Nexte,
+    Sha1Msg1,
+    Sha1Msg2,
+    Sha256Rnds2,
+    Sha256Msg1,
+    Sha256Msg2,
+};
+
+struct VecSha {
+    VecShaKind   kind;
+    Ref          a;
+    Ref          b;
+    Ref          wk;
+    std::uint8_t imm;
+};
+
 // F2-IR-056 — GPR byte-swap (the lowering target for x86 MOVBE).
 // Reverses the byte order of `value` interpreted at `size`. Maps to
 // ARM64 REV / REV (32-bit) / REV16 depending on size.
@@ -1001,6 +1030,7 @@ using Op = std::variant<
     VecTbl2,
     VecAes,
     VecAesKeygenAssist,
+    VecSha,
     Bswap,
     Crc32c,
     VecGather,
@@ -1135,6 +1165,7 @@ bool operator==(const VecAes& a, const VecAes& b) noexcept;
 bool operator==(const VecAesKeygenAssist& a, const VecAesKeygenAssist& b) noexcept;
 bool operator==(const Bswap& a, const Bswap& b) noexcept;
 bool operator==(const Crc32c& a, const Crc32c& b) noexcept;
+bool operator==(const VecSha& a, const VecSha& b) noexcept;
 bool operator==(const VecGather& a, const VecGather& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;

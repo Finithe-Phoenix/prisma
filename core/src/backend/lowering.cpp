@@ -327,6 +327,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
                 bump(op.src, i);
             }
+            else if constexpr (std::is_same_v<T, ir::VecSha>) {
+                bump(op.a, i); bump(op.b, i); bump(op.wk, i);
+            }
             else if constexpr (std::is_same_v<T, ir::Bswap>) {
                 bump(op.value, i);
             }
