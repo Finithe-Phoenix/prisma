@@ -1847,6 +1847,97 @@ TEST_CASE("Lowerer: VecGather dword elements, qword indices (QD hi shape)") {
     REQUIRE(d.find("sxtw")    == std::string::npos);
 }
 
+namespace {
+// Shared scaffold for the SHA lowering tests: a/b/wk live in
+// xmm1/xmm2/xmm0, result stores back to xmm1.
+std::string lower_sha(ir::VecShaKind kind, std::uint8_t imm, bool& ok) {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::LoadVecReg{0u}},
+        {3u, ir::VecSha{kind, 0u, 1u, 2u, imm}},
+        {std::nullopt, ir::StoreVecReg{1u, 3u}},
+        {std::nullopt, ir::Return{}},
+    };
+    return lower_to_disasm(stmts, ok);
+}
+}  // namespace
+
+TEST_CASE("Lowerer: SHA1RNDS4 selects sha1c/sha1p/sha1m by imm — F2-IR-060") {
+    bool ok;
+    const std::string c = lower_sha(ir::VecShaKind::Sha1Rnds4, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(c.find("sha1c")  != std::string::npos);
+    REQUIRE(c.find("rev64")  != std::string::npos);
+    REQUIRE(c.find("ext")    != std::string::npos);
+    const std::string p = lower_sha(ir::VecShaKind::Sha1Rnds4, 1u, ok);
+    REQUIRE(ok);
+    REQUIRE(p.find("sha1p")  != std::string::npos);
+    const std::string m = lower_sha(ir::VecShaKind::Sha1Rnds4, 2u, ok);
+    REQUIRE(ok);
+    REQUIRE(m.find("sha1m")  != std::string::npos);
+    const std::string p3 = lower_sha(ir::VecShaKind::Sha1Rnds4, 3u, ok);
+    REQUIRE(ok);
+    REQUIRE(p3.find("sha1p") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA1NEXTE is pure NEON rol30 + lane add — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha1Nexte, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("shl")  != std::string::npos);
+    REQUIRE(d.find("ushr") != std::string::npos);
+    REQUIRE(d.find("orr")  != std::string::npos);
+    REQUIRE(d.find(".s[3]") != std::string::npos);
+    REQUIRE(d.find("add")  != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA1MSG1 is EXT+EOR and avoids sha1su0 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha1Msg1, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ext") != std::string::npos);
+    REQUIRE(d.find("eor") != std::string::npos);
+    // SHA1SU0 folds the W[t-8] term x86 defers to the caller — its
+    // presence here would double-apply it.
+    REQUIRE(d.find("sha1su0") == std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA1MSG2 uses sha1su1 with lane reversal — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha1Msg2, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha1su1") != std::string::npos);
+    REQUIRE(d.find("rev64")   != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA256RNDS2 runs sha256h + sha256h2 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha256Rnds2, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha256h")  != std::string::npos);
+    REQUIRE(d.find("sha256h2") != std::string::npos);
+    REQUIRE(d.find("zip1")     != std::string::npos);
+    REQUIRE(d.find("zip2")     != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA256MSG1 maps directly to sha256su0 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha256Msg1, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha256su0") != std::string::npos);
+    // Ascending lanes on both sides: no reversal emitted.
+    REQUIRE(d.find("rev64") == std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA256MSG2 uses sha256su1 with cleared lane 0 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha256Msg2, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha256su1") != std::string::npos);
+    REQUIRE(d.find(".s[0]") != std::string::npos);  // wzr into lane 0
+}
+
 TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {
     constexpr std::uint64_t kPcRep   = 0x5000ull;
     constexpr std::uint64_t kPcAfter = 0x5003ull;  // 3-byte F3 48 A5

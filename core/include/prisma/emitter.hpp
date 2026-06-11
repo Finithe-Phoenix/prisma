@@ -533,6 +533,37 @@ public:
     // by x86, then XORs the imm8 RCON byte into output bytes 4 and 12.
     void vaes_keygenassist(FpReg dst, FpReg src, std::uint8_t rcon);
 
+    // F2-IR-060 — SHA-NI primitives. All NEON-resident on the
+    // reserved V29..V31 internal scratch trio; no GPRs consumed.
+    // The SHA-1 forms bridge the lane-order gap (x86 keeps A/W0 in
+    // the HIGH dword, ARM crypto ops are ascending) with EXT #8 +
+    // REV64 reversals around the hardware op.
+    //
+    //   vsha1_rnds4:   4 SHA-1 rounds via SHA1C/SHA1P/SHA1M, Sn = 0
+    //                  (x86 pre-adds E into W0 via SHA1NEXTE) and
+    //                  the selector's K constant pre-added to W.
+    //   vsha1_nexte:   rol30(a.lane3) added into b.lane3, lanes 2..0
+    //                  copied from b. Pure NEON, no crypto op.
+    //   vsha1_msg1:    EXT + EOR two-term schedule XOR. SHA1SU0 is
+    //                  deliberately NOT used: it folds a third XOR
+    //                  term that x86 defers to the caller's PXOR.
+    //   vsha1_msg2:    SHA1SU1, exact modulo the lane reversal.
+    //   vsha256_rnds2: SHA256H + SHA256H2 with WK2=WK3=0. The x86
+    //                  2-round results are elements 2..3 of ARM's
+    //                  4-round outputs, which depend only on
+    //                  WK0/WK1 — the garbage rounds never reach them.
+    //   vsha256_msg1:  SHA256SU0, exact (both ISAs ascending here).
+    //   vsha256_msg2:  SHA256SU1 with Vn = 0 and b.lane0 cleared,
+    //                  zeroing ARM's internal W[t-7] addend (x86's
+    //                  caller adds that term with an explicit PADDD).
+    void vsha1_rnds4(FpReg dst, FpReg a, FpReg b, std::uint8_t sel);
+    void vsha1_nexte(FpReg dst, FpReg a, FpReg b);
+    void vsha1_msg1(FpReg dst, FpReg a, FpReg b);
+    void vsha1_msg2(FpReg dst, FpReg a, FpReg b);
+    void vsha256_rnds2(FpReg dst, FpReg a, FpReg b, FpReg wk);
+    void vsha256_msg1(FpReg dst, FpReg a, FpReg b);
+    void vsha256_msg2(FpReg dst, FpReg a, FpReg b);
+
     // F2-IR-056 — byte-reverse the contents of `rn` interpreted at
     // `size` and write to `rd`. Maps to ARM64 REV (I64), REV W
     // (I32), REV16 (I16). I8 emits a plain MOV.

@@ -1544,6 +1544,45 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.vaes(rd, r_src, r_key, op.kind);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::VecSha>) {
+            // F2-IR-060 SHA-NI: thin dispatch onto the NEON-resident
+            // emitter primitives (V29..V31 internal scratch).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecSha without result"};
+            }
+            Emitter::FpReg r_a, r_b, r_wk;
+            if (!fp_reg_of(op.a,  r_a))  return {false, LowerError::DanglingRef, "VecSha.a"};
+            if (!fp_reg_of(op.b,  r_b))  return {false, LowerError::DanglingRef, "VecSha.b"};
+            if (!fp_reg_of(op.wk, r_wk)) return {false, LowerError::DanglingRef, "VecSha.wk"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecSha"};
+            }
+            switch (op.kind) {
+                case ir::VecShaKind::Sha1Rnds4:
+                    emitter_.vsha1_rnds4(rd, r_a, r_b, op.imm);
+                    break;
+                case ir::VecShaKind::Sha1Nexte:
+                    emitter_.vsha1_nexte(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha1Msg1:
+                    emitter_.vsha1_msg1(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha1Msg2:
+                    emitter_.vsha1_msg2(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha256Rnds2:
+                    emitter_.vsha256_rnds2(rd, r_a, r_b, r_wk);
+                    break;
+                case ir::VecShaKind::Sha256Msg1:
+                    emitter_.vsha256_msg1(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha256Msg2:
+                    emitter_.vsha256_msg2(rd, r_a, r_b);
+                    break;
+            }
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
             // F2-IR-058 AESKEYGENASSIST key-schedule helper.
             if (!s.result.has_value()) {

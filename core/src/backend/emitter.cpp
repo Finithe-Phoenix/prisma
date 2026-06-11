@@ -1564,6 +1564,203 @@ void Emitter::vaes_keygenassist(FpReg dst, FpReg src, std::uint8_t rcon) {
     }
 }
 
+void Emitter::vsha1_rnds4(FpReg dst, FpReg a, FpReg b, std::uint8_t sel) {
+    // x86 keeps {A,B,C,D} / {W0+E,W1,W2,W3} in lanes 3..0; ARM's
+    // SHA1C/P/M are ascending, so the dword order reverses on the
+    // way in and out (EXT #8 + REV64). ARM does not add K and takes
+    // E in Sn: the K constant is pre-added into the message vector
+    // and Sn is zero because x86 already folded E into the W0 lane
+    // (that is SHA1NEXTE's job).
+    constexpr int kStateV = kInternalFpScratchV;  // V31
+    constexpr int kMsgV   = 30;
+    constexpr int kConstV = 29;
+    const vixl_aa::VRegister v_state16(kStateV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_state4s(kStateV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_msg16(kMsgV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_msg4s(kMsgV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_k4s(kConstV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_k2d(kConstV, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_zero16(kConstV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_a16(static_cast<int>(a), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b16(static_cast<int>(b), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
+                                     vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst4s(static_cast<int>(dst),
+                                     vixl_aa::kFormat4S);
+
+    impl_->masm.Ext(v_state16, v_a16, v_a16, 8);
+    impl_->masm.Rev64(v_state4s, v_state4s);
+    impl_->masm.Ext(v_msg16, v_b16, v_b16, 8);
+    impl_->masm.Rev64(v_msg4s, v_msg4s);
+
+    static constexpr std::uint32_t kSha1K[4] = {
+        0x5A827999u, 0x6ED9EBA1u, 0x8F1BBCDCu, 0xCA62C1D6u};
+    const std::uint64_t k  = kSha1K[sel & 3u];
+    const std::uint64_t kk = k | (k << 32u);
+    double d_kk;
+    std::memcpy(&d_kk, &kk, sizeof d_kk);
+    impl_->masm.Fmov(vixl_aa::DRegister(kConstV), d_kk);
+    impl_->masm.Mov(v_k2d, 1, v_k2d, 0);
+    impl_->masm.Add(v_msg4s, v_msg4s, v_k4s);
+
+    impl_->masm.Movi(v_zero16, 0);
+    const vixl_aa::QRegister q_state(kStateV);
+    const vixl_aa::SRegister s_e(kConstV);
+    switch (sel & 3u) {
+        case 0:  impl_->masm.Sha1c(q_state, s_e, v_msg4s); break;
+        case 2:  impl_->masm.Sha1m(q_state, s_e, v_msg4s); break;
+        default: impl_->masm.Sha1p(q_state, s_e, v_msg4s); break;
+    }
+
+    impl_->masm.Ext(v_dst16, v_state16, v_state16, 8);
+    impl_->masm.Rev64(v_dst4s, v_dst4s);
+}
+
+void Emitter::vsha1_nexte(FpReg dst, FpReg a, FpReg b) {
+    // dst = b, with rol30(a.lane3) added into lane 3. rol30 computes
+    // on all four lanes (shl+ushr+orr), then only lane 3 survives
+    // into the zeroed addend vector.
+    constexpr int kRolV = kInternalFpScratchV;  // V31
+    constexpr int kAddV = 30;
+    const vixl_aa::VRegister v_rol4s(kRolV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_rol16(kRolV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_add4s(kAddV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_add16(kAddV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_a4s(static_cast<int>(a), vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_b4s(static_cast<int>(b), vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_dst4s(static_cast<int>(dst),
+                                     vixl_aa::kFormat4S);
+    impl_->masm.Shl(v_rol4s, v_a4s, 30);
+    impl_->masm.Ushr(v_add4s, v_a4s, 2);
+    impl_->masm.Orr(v_rol16, v_rol16, v_add16);
+    impl_->masm.Movi(v_add16, 0);
+    impl_->masm.Mov(v_add4s, 3, v_rol4s, 3);
+    impl_->masm.Add(v_dst4s, v_b4s, v_add4s);
+}
+
+void Emitter::vsha1_msg1(FpReg dst, FpReg a, FpReg b) {
+    // dst = a ^ {W2,W3,W4,W5}: the shifted window is EXT(b:a, #8)
+    // (b supplies W4/W5 from its high half, a supplies W2/W3 from
+    // its low half). SHA1SU0 is NOT used — it would fold the W[t-8]
+    // term that x86 leaves to the caller's explicit PXOR.
+    constexpr int kWinV = kInternalFpScratchV;  // V31
+    const vixl_aa::VRegister v_win16(kWinV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_a16(static_cast<int>(a), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b16(static_cast<int>(b), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
+                                     vixl_aa::kFormat16B);
+    impl_->masm.Ext(v_win16, v_b16, v_a16, 8);
+    impl_->masm.Eor(v_dst16, v_win16, v_a16);
+}
+
+void Emitter::vsha1_msg2(FpReg dst, FpReg a, FpReg b) {
+    // SHA1SU1 matches SHA1MSG2 exactly in ascending lane order
+    // (including the lane-chained ROL: rotate distributes over XOR),
+    // so reverse both inputs, run it, reverse the result back.
+    constexpr int kAccV = kInternalFpScratchV;  // V31
+    constexpr int kWinV = 30;
+    const vixl_aa::VRegister v_acc16(kAccV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_acc4s(kAccV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_win16(kWinV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_win4s(kWinV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_a16(static_cast<int>(a), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b16(static_cast<int>(b), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
+                                     vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst4s(static_cast<int>(dst),
+                                     vixl_aa::kFormat4S);
+    impl_->masm.Ext(v_acc16, v_a16, v_a16, 8);
+    impl_->masm.Rev64(v_acc4s, v_acc4s);
+    impl_->masm.Ext(v_win16, v_b16, v_b16, 8);
+    impl_->masm.Rev64(v_win4s, v_win4s);
+    impl_->masm.Sha1su1(v_acc4s, v_win4s);
+    impl_->masm.Ext(v_dst16, v_acc16, v_acc16, 8);
+    impl_->masm.Rev64(v_dst4s, v_dst4s);
+}
+
+void Emitter::vsha256_rnds2(FpReg dst, FpReg a, FpReg b, FpReg wk) {
+    // a = {C,D,G,H}, b = {A,B,E,F} (x86 lanes 3..0); wk = XMM0 with
+    // {WK1,WK0} in lanes 1..0. ARM SHA256H/H2 run FOUR rounds, but
+    // the round recurrence is a shift register: with WK2=WK3=0 the
+    // garbage of rounds 3..4 only reaches elements 0..1 of the ARM
+    // outputs {A4,A3,A2,A1} / {E4,E3,E2,E1}; elements 2..3 are the
+    // exact x86 two-round results.
+    constexpr int kAbcdV = kInternalFpScratchV;  // V31
+    constexpr int kEfghV = 30;
+    constexpr int kWV    = 29;
+    const vixl_aa::VRegister v_abcd16(kAbcdV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_abcd4s(kAbcdV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_abcd2d(kAbcdV, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_efgh4s(kEfghV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_efgh2d(kEfghV, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_w16(kWV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_w4s(kWV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_w2d(kWV, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_a2d(static_cast<int>(a), vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_b2d(static_cast<int>(b), vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_wk2d(static_cast<int>(wk),
+                                    vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
+                                     vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst2d(static_cast<int>(dst),
+                                     vixl_aa::kFormat2D);
+
+    impl_->masm.Zip2(v_abcd2d, v_b2d, v_a2d);   // {B,A,D,C}
+    impl_->masm.Rev64(v_abcd4s, v_abcd4s);      // {A,B,C,D}
+    impl_->masm.Zip1(v_efgh2d, v_b2d, v_a2d);   // {F,E,H,G}
+    impl_->masm.Rev64(v_efgh4s, v_efgh4s);      // {E,F,G,H}
+    impl_->masm.Movi(v_w16, 0);
+    impl_->masm.Mov(v_w2d, 0, v_wk2d, 0);       // {WK0,WK1,0,0}
+
+    impl_->masm.Mov(v_dst16, v_abcd16);
+    const vixl_aa::QRegister q_dst(static_cast<int>(dst));
+    const vixl_aa::QRegister q_abcd(kAbcdV);
+    const vixl_aa::QRegister q_efgh(kEfghV);
+    impl_->masm.Sha256h(q_dst, q_efgh, v_w4s);   // {A4,A3,A2,A1}
+    impl_->masm.Sha256h2(q_efgh, q_abcd, v_w4s); // {E4,E3,E2,E1}
+
+    impl_->masm.Zip2(v_abcd2d, v_efgh2d, v_dst2d);  // {E2,E1,A2,A1}
+    impl_->masm.Rev64(v_abcd4s, v_abcd4s);          // x86 {F2,E2,B2,A2}
+    impl_->masm.Mov(v_dst16, v_abcd16);
+}
+
+void Emitter::vsha256_msg1(FpReg dst, FpReg a, FpReg b) {
+    // SHA256SU0 is an exact match: both ISAs are ascending here and
+    // both take W4 from the second operand's low dword.
+    const vixl_aa::VRegister v_a16(static_cast<int>(a), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b4s(static_cast<int>(b), vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
+                                     vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst4s(static_cast<int>(dst),
+                                     vixl_aa::kFormat4S);
+    impl_->masm.Mov(v_dst16, v_a16);
+    impl_->masm.Sha256su0(v_dst4s, v_b4s);
+}
+
+void Emitter::vsha256_msg2(FpReg dst, FpReg a, FpReg b) {
+    // SHA256SU1's internal W[t-7] addend reads Vn lanes 1..3 and Vm
+    // lane 0 — disjoint from its sigma1 source (Vm lanes 2..3). With
+    // Vn = 0 and b.lane0 cleared the addend is zero and what remains
+    // is exactly SHA256MSG2, including the lane 0/1 -> 2/3 chaining.
+    constexpr int kZeroV = kInternalFpScratchV;  // V31
+    constexpr int kWinV  = 30;
+    const vixl_aa::VRegister v_zero16(kZeroV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_zero4s(kZeroV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_win16(kWinV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_win4s(kWinV, vixl_aa::kFormat4S);
+    const vixl_aa::VRegister v_a16(static_cast<int>(a), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_b16(static_cast<int>(b), vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
+                                     vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_dst4s(static_cast<int>(dst),
+                                     vixl_aa::kFormat4S);
+    impl_->masm.Movi(v_zero16, 0);
+    impl_->masm.Mov(v_win16, v_b16);
+    impl_->masm.Mov(v_win4s, 0, vixl_aa::wzr);
+    impl_->masm.Mov(v_dst16, v_a16);
+    impl_->masm.Sha256su1(v_dst4s, v_zero4s, v_win4s);
+}
+
 void Emitter::vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane) {
     // Sequence:
     //   cmlt v_t.<lane>, vmask.<lane>, #0    ; t[i] = all-1s if mask[i] MSB set
