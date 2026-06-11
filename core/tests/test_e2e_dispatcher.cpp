@@ -2561,6 +2561,234 @@ TEST_CASE("e2e: VPGATHERQD xmm1, [rax + ymm2*4], xmm3 — F2-IR-059 ymm index, x
     REQUIRE(disp.state().ymm_hi[3].lo == 0u);
 }
 
+// ---- F2-IR-060 SHA-NI e2e: JIT output vs exact SDM references ----
+namespace sha_e2e {
+
+using V4 = std::array<std::uint32_t, 4>;  // lane 0 = bits 31:0
+using Xmm = std::pair<std::uint64_t, std::uint64_t>;
+
+inline Xmm pack(const V4& v) {
+    return {(static_cast<std::uint64_t>(v[1]) << 32) | v[0],
+            (static_cast<std::uint64_t>(v[3]) << 32) | v[2]};
+}
+
+inline std::uint32_t rol(std::uint32_t x, unsigned n) {
+    return (x << n) | (x >> (32u - n));
+}
+inline std::uint32_t ror(std::uint32_t x, unsigned n) {
+    return (x >> n) | (x << (32u - n));
+}
+
+// Intel SDM pseudocode, lane-exact.
+inline V4 ref_sha1rnds4(const V4& s, const V4& m, unsigned imm) {
+    std::uint32_t A = s[3], B = s[2], C = s[1], D = s[0];
+    const std::uint32_t W[4] = {m[3], m[2], m[1], m[0]};  // {W0E,W1,W2,W3}
+    static constexpr std::uint32_t K[4] = {
+        0x5A827999u, 0x6ED9EBA1u, 0x8F1BBCDCu, 0xCA62C1D6u};
+    std::uint32_t E = 0;  // round 0's E lives inside W0E
+    for (int i = 0; i < 4; ++i) {
+        std::uint32_t f = 0;
+        switch (imm & 3u) {
+            case 0:  f = (B & C) ^ (~B & D);          break;
+            case 2:  f = (B & C) ^ (B & D) ^ (C & D); break;
+            default: f = B ^ C ^ D;                   break;
+        }
+        const std::uint32_t t = f + rol(A, 5) + W[i] + E + K[imm & 3u];
+        E = D; D = C; C = rol(B, 30); B = A; A = t;
+    }
+    return {D, C, B, A};
+}
+
+inline V4 ref_sha1nexte(const V4& a, const V4& b) {
+    V4 r = b;
+    r[3] = b[3] + rol(a[3], 30);
+    return r;
+}
+
+inline V4 ref_sha1msg1(const V4& a, const V4& b) {
+    const std::uint32_t W0 = a[3], W1 = a[2], W2 = a[1], W3 = a[0];
+    const std::uint32_t W4 = b[3], W5 = b[2];  // b lanes 1,0 ignored
+    return {W5 ^ W3, W4 ^ W2, W3 ^ W1, W2 ^ W0};
+}
+
+inline V4 ref_sha1msg2(const V4& a, const V4& b) {
+    const std::uint32_t W13 = b[2], W14 = b[1], W15 = b[0];  // b lane3 ignored
+    const std::uint32_t W16 = rol(a[3] ^ W13, 1);
+    const std::uint32_t W17 = rol(a[2] ^ W14, 1);
+    const std::uint32_t W18 = rol(a[1] ^ W15, 1);
+    const std::uint32_t W19 = rol(a[0] ^ W16, 1);  // chained on W16
+    return {W19, W18, W17, W16};
+}
+
+inline V4 ref_sha256rnds2(const V4& cdgh, const V4& abef,
+                          std::uint32_t wk0, std::uint32_t wk1) {
+    std::uint32_t A = abef[3], B = abef[2], E = abef[1], F = abef[0];
+    std::uint32_t C = cdgh[3], D = cdgh[2], G = cdgh[1], H = cdgh[0];
+    const std::uint32_t WK[2] = {wk0, wk1};
+    for (int i = 0; i < 2; ++i) {
+        const std::uint32_t s1 = ror(E, 6) ^ ror(E, 11) ^ ror(E, 25);
+        const std::uint32_t ch = (E & F) ^ (~E & G);
+        const std::uint32_t t1 = H + s1 + ch + WK[i];
+        const std::uint32_t s0 = ror(A, 2) ^ ror(A, 13) ^ ror(A, 22);
+        const std::uint32_t mj = (A & B) ^ (A & C) ^ (B & C);
+        const std::uint32_t t2 = s0 + mj;
+        H = G; G = F; F = E; E = D + t1; D = C; C = B; B = A; A = t1 + t2;
+    }
+    return {F, E, B, A};
+}
+
+inline std::uint32_t sig0(std::uint32_t x) {
+    return ror(x, 7) ^ ror(x, 18) ^ (x >> 3);
+}
+inline std::uint32_t sig1(std::uint32_t x) {
+    return ror(x, 17) ^ ror(x, 19) ^ (x >> 10);
+}
+
+inline V4 ref_sha256msg1(const V4& a, const V4& b) {
+    return {a[0] + sig0(a[1]), a[1] + sig0(a[2]),
+            a[2] + sig0(a[3]), a[3] + sig0(b[0])};  // b lanes 1..3 ignored
+}
+
+inline V4 ref_sha256msg2(const V4& a, const V4& b) {
+    const std::uint32_t W14 = b[2], W15 = b[3];  // b lanes 0,1 ignored
+    const std::uint32_t W16 = a[0] + sig1(W14);
+    const std::uint32_t W17 = a[1] + sig1(W15);
+    const std::uint32_t W18 = a[2] + sig1(W16);  // chained
+    const std::uint32_t W19 = a[3] + sig1(W17);  // chained
+    return {W16, W17, W18, W19};
+}
+
+struct Result {
+    Xmm xmm1;
+    Xmm xmm2;
+    bool halted;
+};
+
+// Runs `body` + RET at guest 0x4000 with xmm0/1/2 seeded.
+inline Result run(std::vector<std::uint8_t> body,
+                  Xmm x0, Xmm x1, Xmm x2) {
+    translator::Translator tx;
+    body.push_back(0xC3);  // ret
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state().xmm[0].lo = x0.first; disp.state().xmm[0].hi = x0.second;
+    disp.state().xmm[1].lo = x1.first; disp.state().xmm[1].hi = x1.second;
+    disp.state().xmm[2].lo = x2.first; disp.state().xmm[2].hi = x2.second;
+    auto r = disp.run(0x4000, 100);
+    return {{disp.state().xmm[1].lo, disp.state().xmm[1].hi},
+            {disp.state().xmm[2].lo, disp.state().xmm[2].hi},
+            r.exit == runtime::DispatchExit::Halted};
+}
+
+}  // namespace sha_e2e
+
+TEST_CASE("e2e: SHA1RNDS4 all selectors vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    const V4 state = {0x76543210u, 0xFEDCBA98u, 0x89ABCDEFu, 0x01234567u};
+    const V4 msg   = {0x80000001u, 0x7FFFFFFFu, 0xDEADBEEFu, 0xC0FFEE00u};
+    for (unsigned imm = 0; imm < 4; ++imm) {
+        // sha1rnds4 xmm1, xmm2, imm (ModRM CA: reg=xmm1 rm=xmm2).
+        auto r = run({0x0F, 0x3A, 0xCC, 0xCA,
+                      static_cast<std::uint8_t>(imm)},
+                     {0, 0}, pack(state), pack(msg));
+        REQUIRE(r.halted);
+        REQUIRE(r.xmm1 == pack(ref_sha1rnds4(state, msg, imm)));
+    }
+    // imm8 upper bits are ignored: 0xE6 behaves as 2.
+    auto r = run({0x0F, 0x3A, 0xCC, 0xCA, 0xE6},
+                 {0, 0}, pack(state), pack(msg));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1rnds4(state, msg, 2u)));
+}
+
+TEST_CASE("e2e: SHA1NEXTE vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    // Asymmetric lane-3 pattern catches ROL30-vs-ROR30; lower lanes
+    // of the result must come from the SOURCE, not the dest.
+    const V4 a = {0x11111111u, 0x22222222u, 0x33333333u, 0x80000001u};
+    const V4 b = {0xA0A0A0A0u, 0xB0B0B0B0u, 0xC0C0C0C0u, 0x80000000u};
+    auto r = run({0x0F, 0x38, 0xC8, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1nexte(a, b)));
+}
+
+TEST_CASE("e2e: SHA1MSG1 ignores src2 low half — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    const V4 a = {0x00000004u, 0x00000003u, 0x00000002u, 0x00000001u};
+    const V4 b = {0xDEADDEADu, 0xBEEFBEEFu, 0x00000006u, 0x00000005u};
+    auto r = run({0x0F, 0x38, 0xC9, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1msg1(a, b)));
+}
+
+TEST_CASE("e2e: SHA1MSG2 lane chaining + ROL1 carry — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    // Bit-31-set inputs exercise the rotate-across-carry; b lane 3
+    // (W12) is garbage the instruction must ignore.
+    const V4 a = {0x80000000u, 0xC0000001u, 0x9999AAAAu, 0xF0F0F0F0u};
+    const V4 b = {0x80000003u, 0x7FFFFFFEu, 0x12345678u, 0xDEADC0DEu};
+    auto r = run({0x0F, 0x38, 0xCA, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1msg2(a, b)));
+}
+
+TEST_CASE("e2e: SHA256RNDS2 + ping-pong chaining vs reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    // SHA-256("abc") schedule-0 state: H0..H7 split {CDGH}/{ABEF}.
+    const V4 cdgh = {0x5BE0CD19u, 0x1F83D9ABu, 0xA54FF53Au, 0x3C6EF372u};
+    const V4 abef = {0x9B05688Cu, 0x510E527Fu, 0xBB67AE85u, 0x6A09E667u};
+    const std::uint32_t wk0 = 0x428A2F98u + 0x61626380u;
+    const std::uint32_t wk1 = 0x71374491u;
+    // XMM0 upper lanes are garbage the instruction must ignore.
+    const Xmm x0 = {(static_cast<std::uint64_t>(wk1) << 32) | wk0,
+                    0xDEADBEEF'CAFEF00Dull};
+    // Two chained ops: sha256rnds2 xmm1, xmm2 then xmm2, xmm1 —
+    // the architectural ping-pong (new CDGH = old ABEF source).
+    auto r = run({0x0F, 0x38, 0xCB, 0xCA,    // xmm1 <- rounds(xmm1, xmm2)
+                  0x0F, 0x38, 0xCB, 0xD1},   // xmm2 <- rounds(xmm2, xmm1')
+                 x0, pack(cdgh), pack(abef));
+    REQUIRE(r.halted);
+    const V4 first = ref_sha256rnds2(cdgh, abef, wk0, wk1);
+    REQUIRE(r.xmm1 == pack(first));
+    REQUIRE(r.xmm2 == pack(ref_sha256rnds2(abef, first, wk0, wk1)));
+}
+
+TEST_CASE("e2e: SHA256MSG1 vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    // MSB-set lanes distinguish SHR3 (logical) from a rotate; b lanes
+    // 1..3 are garbage the instruction must ignore.
+    const V4 a = {0x80000000u, 0x61626380u, 0x000002A0u, 0xFEDCBA98u};
+    const V4 b = {0x80000001u, 0xBAADF00Du, 0xDEADBEEFu, 0xCAFEF00Du};
+    auto r = run({0x0F, 0x38, 0xCC, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha256msg1(a, b)));
+}
+
+TEST_CASE("e2e: SHA256MSG2 lane chaining vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    using namespace sha_e2e;
+    // Lanes 2,3 depend on the freshly computed lanes 0,1; b lanes
+    // 0,1 (W12,W13) are garbage the instruction must ignore.
+    const V4 a = {0x00010203u, 0x84858687u, 0x08090A0Bu, 0x8C8D8E8Fu};
+    const V4 b = {0xDEADDEADu, 0xBEEFBEEFu, 0x80000400u, 0xC0001000u};
+    auto r = run({0x0F, 0x38, 0xCD, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha256msg2(a, b)));
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
