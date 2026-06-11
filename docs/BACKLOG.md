@@ -445,7 +445,7 @@ translator on a reference Linux ARM64 box.
 - [ ] F2-SY-035: timespec / timeval / sigset_t struct translation.
 - [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ).
 - [ ] F2-SY-037: Syscall fuzz harness (AFL++ over syscall numbers + args).
-- [ ] F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
+- [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
 ### F2-IR — IR for full x86_64
 
