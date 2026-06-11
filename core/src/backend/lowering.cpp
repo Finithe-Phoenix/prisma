@@ -703,15 +703,24 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // Guest CPUID with translation-time-baked values (the
             // Translator derives them from runtime::host_features()).
             // Modelled leaves:
-            //   EAX=0            -> EAX = cpuid_max_leaf, EBX/ECX/EDX = 0
-            //                       (vendor string deliberately zero);
-            //   EAX=7, ECX=0     -> EBX = cpuid_leaf7_ebx, rest 0;
-            //   everything else  -> all zeros.
+            //   EAX=0                -> EAX = cpuid_max_leaf, EBX/ECX/
+            //                           EDX = 0 (vendor deliberately
+            //                           zero);
+            //   EAX=7 or EAX>7 basic -> leaf-7 view: EBX =
+            //                           cpuid_leaf7_ebx when ECX=0,
+            //                           zeros otherwise. The >max
+            //                           clamp matches the SDM ("data
+            //                           for the highest basic
+            //                           information leaf").
+            //   EAX=1..6             -> all zeros (placeholder until
+            //                           those leaves are modelled);
+            //   EAX bit 31 set       -> all zeros (extended range
+            //                           unmodelled).
             // CPUID must not affect guest flags (SDM: "Flags Affected:
-            // None"), so the leaf dispatch uses eor/orr + cbz/cbnz
-            // instead of cmp — NZCV set by an earlier CmpFlags survives.
-            // The W-forms also give the architectural EAX/ECX (not
-            // RAX/RCX) comparison: upper RAX/RCX bits are ignored.
+            // None"), so the leaf dispatch uses orr/eor/lsr + cbz/cbnz
+            // instead of cmp — NZCV set by an earlier CmpFlags
+            // survives. The W-forms also give the architectural
+            // EAX/ECX (not RAX/RCX) comparison: upper bits ignored.
             const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
             const arm64::Reg rbx = arm64::host_reg_for(ir::Gpr::Rbx);
             const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
@@ -722,14 +731,21 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                         "Cpuid temporaries"};
             }
             Emitter::Label leaf0 = emitter_.create_label();
+            Emitter::Label leaf7 = emitter_.create_label();
             Emitter::Label other = emitter_.create_label();
             Emitter::Label done  = emitter_.create_label();
-            emitter_.orr_w(t0, rax, rax);  // t0 = EAX, zero-extended
+            emitter_.orr_w(t0, rax, rax);   // t0 = EAX, zero-extended
             emitter_.cbz(t0, leaf0);
             emitter_.mov_imm64(t1, 7);
-            emitter_.eor_w(t0, t0, t1);    // t0 = EAX ^ 7
-            emitter_.cbnz(t0, other);
-            emitter_.orr_w(t0, rcx, rcx);  // t0 = ECX (subleaf)
+            emitter_.eor_w(t1, t0, t1);     // t1 = EAX ^ 7
+            emitter_.cbz(t1, leaf7);
+            emitter_.lsr_imm(t1, t0, 31);   // extended range (bit 31)?
+            emitter_.cbnz(t1, other);
+            emitter_.lsr_imm(t1, t0, 3);    // EAX >= 8: clamp to max
+            emitter_.cbnz(t1, leaf7);       // basic leaf (7) per SDM
+            emitter_.branch(other);         // EAX in 1..6: unmodelled
+            emitter_.bind(leaf7);
+            emitter_.orr_w(t0, rcx, rcx);   // t0 = ECX (subleaf)
             emitter_.cbnz(t0, other);
             // CPUID.(EAX=7, ECX=0): EAX = max subleaf (0), EBX = the
             // baked feature bits (bit 29 = SHA when the host has the

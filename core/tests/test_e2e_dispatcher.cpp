@@ -2659,6 +2659,16 @@ inline V4 ref_sha256msg2(const V4& a, const V4& b) {
     return {W16, W17, W18, W19};
 }
 
+// The VecSha lowering emits ARMv8 crypto instructions unconditionally;
+// an ARM64 host without the optional SHA extensions would SIGILL with
+// no in-JIT recovery. Execution tests skip there (Codex review
+// 2026-06-11). Honour any test override so CPUID tests can't leak
+// state into these.
+inline bool host_has_sha_crypto() {
+    const auto& hf = runtime::host_features();
+    return hf.feat_sha1 && hf.feat_sha256;
+}
+
 struct Result {
     Xmm xmm1;
     Xmm xmm2;
@@ -2692,6 +2702,10 @@ inline Result run(std::vector<std::uint8_t> body,
 
 TEST_CASE("e2e: SHA1RNDS4 all selectors vs SDM reference — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     const V4 state = {0x76543210u, 0xFEDCBA98u, 0x89ABCDEFu, 0x01234567u};
     const V4 msg   = {0x80000001u, 0x7FFFFFFFu, 0xDEADBEEFu, 0xC0FFEE00u};
@@ -2712,6 +2726,10 @@ TEST_CASE("e2e: SHA1RNDS4 all selectors vs SDM reference — F2-IR-060") {
 
 TEST_CASE("e2e: SHA1NEXTE vs SDM reference — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     // Asymmetric lane-3 pattern catches ROL30-vs-ROR30; lower lanes
     // of the result must come from the SOURCE, not the dest.
@@ -2724,6 +2742,10 @@ TEST_CASE("e2e: SHA1NEXTE vs SDM reference — F2-IR-060") {
 
 TEST_CASE("e2e: SHA1MSG1 ignores src2 low half — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     const V4 a = {0x00000004u, 0x00000003u, 0x00000002u, 0x00000001u};
     const V4 b = {0xDEADDEADu, 0xBEEFBEEFu, 0x00000006u, 0x00000005u};
@@ -2734,6 +2756,10 @@ TEST_CASE("e2e: SHA1MSG1 ignores src2 low half — F2-IR-060") {
 
 TEST_CASE("e2e: SHA1MSG2 lane chaining + ROL1 carry — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     // Bit-31-set inputs exercise the rotate-across-carry; b lane 3
     // (W12) is garbage the instruction must ignore.
@@ -2746,6 +2772,10 @@ TEST_CASE("e2e: SHA1MSG2 lane chaining + ROL1 carry — F2-IR-060") {
 
 TEST_CASE("e2e: SHA256RNDS2 + ping-pong chaining vs reference — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     // SHA-256("abc") schedule-0 state: H0..H7 split {CDGH}/{ABEF}.
     const V4 cdgh = {0x5BE0CD19u, 0x1F83D9ABu, 0xA54FF53Au, 0x3C6EF372u};
@@ -2768,6 +2798,10 @@ TEST_CASE("e2e: SHA256RNDS2 + ping-pong chaining vs reference — F2-IR-060") {
 
 TEST_CASE("e2e: SHA256MSG1 vs SDM reference — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     // MSB-set lanes distinguish SHR3 (logical) from a rotate; b lanes
     // 1..3 are garbage the instruction must ignore.
@@ -2780,6 +2814,10 @@ TEST_CASE("e2e: SHA256MSG1 vs SDM reference — F2-IR-060") {
 
 TEST_CASE("e2e: SHA256MSG2 lane chaining vs SDM reference — F2-IR-060") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
     using namespace sha_e2e;
     // Lanes 2,3 depend on the freshly computed lanes 0,1; b lanes
     // 0,1 (W12,W13) are garbage the instruction must ignore.
@@ -3171,6 +3209,10 @@ TEST_CASE("e2e: SHA-256 full-digest KAT via canonical SHA-NI loop "
             REQUIRE(std::holds_alternative<translator::TranslatedBlock>(tr));
             continue;
         }
+        if (!sha_e2e::host_has_sha_crypto()) {
+            SUCCEED("ARM64 host lacks SHA crypto — JIT half skipped");
+            break;
+        }
 
         // JIT half: schedule words and K live in host memory the
         // guest addresses through rdx / rcx; rbx points at the
@@ -3217,6 +3259,10 @@ TEST_CASE("e2e: SHA-1 full-digest KAT via canonical SHA-NI loop "
             auto tr = tx.translate(0x4000, body);
             REQUIRE(std::holds_alternative<translator::TranslatedBlock>(tr));
             continue;
+        }
+        if (!sha_e2e::host_has_sha_crypto()) {
+            SUCCEED("ARM64 host lacks SHA crypto — JIT half skipped");
+            break;
         }
 
         // SHA-1 message registers carry W0 in lane 3, so the guest
@@ -3313,6 +3359,20 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         REQUIRE(s1[ir::Gpr::Rbx] == 0u);
         auto s2 = run_cpuid(7, 1);  // leaf 7 subleaf 1
         REQUIRE(s2[ir::Gpr::Rbx] == 0u);
+    }
+    SECTION("basic leaves above the max clamp to leaf 7 per the SDM") {
+        FeatureOverrideGuard guard{sha_host};
+        auto s1 = run_cpuid(8, 0);
+        REQUIRE(s1[ir::Gpr::Rbx] == (1ull << 29));
+        auto s2 = run_cpuid(0x12345u, 0);
+        REQUIRE(s2[ir::Gpr::Rbx] == (1ull << 29));
+        // ... but the clamped view keeps subleaf semantics ...
+        auto s3 = run_cpuid(8, 1);
+        REQUIRE(s3[ir::Gpr::Rbx] == 0u);
+        // ... and the extended range (bit 31) is not clamped into it.
+        auto s4 = run_cpuid(0x80000000u, 0);
+        REQUIRE(s4[ir::Gpr::Rax] == 0u);
+        REQUIRE(s4[ir::Gpr::Rbx] == 0u);
     }
     SECTION("leaf compare reads EAX, not RAX") {
         FeatureOverrideGuard guard{sha_host};

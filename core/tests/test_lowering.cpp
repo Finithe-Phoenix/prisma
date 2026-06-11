@@ -309,6 +309,7 @@ TEST_CASE("Lowerer: Cpuid emits the leaf-dispatch without touching NZCV") {
     REQUIRE(d.find("cbz")  != std::string::npos);
     REQUIRE(d.find("cbnz") != std::string::npos);
     REQUIRE(d.find("eor")  != std::string::npos);
+    REQUIRE(d.find("lsr")  != std::string::npos);  // >max-leaf clamp
     REQUIRE(d.find("cmp")  == std::string::npos);
     REQUIRE(d.find("subs") == std::string::npos);
     REQUIRE(d.find("ret")  != std::string::npos);
