@@ -408,25 +408,25 @@ translator on a reference Linux ARM64 box.
 
 ### F2-SY — Syscall layer
 
-- [x] (HEAD) F2-SY-001: Design syscall dispatch (guest syscall # → host syscall # or emulation).
-- [x] (HEAD) F2-SY-002: Implement open, close, read, write (minimal stdio).
-- [x] (HEAD) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
-- [x] (HEAD) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
-- [x] (HEAD) F2-SY-005: Implement brk / sbrk.
+- [x] (abbe81c) F2-SY-001: Design syscall dispatch (guest syscall # → host syscall # or emulation).
+- [x] (abbe81c) F2-SY-002: Implement open, close, read, write (minimal stdio).
+- [x] (abbe81c) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
+- [x] (abbe81c) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
+- [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
 - [ ] F2-SY-006: Implement clone (threads).
 - [ ] F2-SY-007: Implement futex (critical for pthread).
-- [x] (HEAD) F2-SY-008: Implement gettimeofday / clock_gettime.
-- [x] (HEAD) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
-- [x] (HEAD) F2-SY-010: Implement exit / exit_group.
+- [x] (abbe81c) F2-SY-008: Implement gettimeofday / clock_gettime.
+- [x] (abbe81c) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
+- [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
 - [ ] F2-SY-011: Implement execve (cross-ISA — requires translator re-entry).
-- [x] (HEAD) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
+- [x] (abbe81c) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
 - [ ] F2-SY-013: Implement fcntl (subset).
 - [ ] F2-SY-014: Implement ioctl (passthrough with struct translation).
 - [ ] F2-SY-015: Implement socket / bind / listen / accept / connect.
 - [ ] F2-SY-016: Implement read / write socket families.
 - [ ] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
 - [ ] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
-- [ ] F2-SY-019: Implement getcwd / chdir / fchdir.
+- [x] (abbe81c) F2-SY-019: Implement getcwd / chdir / fchdir.
 - [ ] F2-SY-020: Implement unlink / rename / mkdir / rmdir.
 - [ ] F2-SY-021: Implement lseek / pread / pwrite.
 - [ ] F2-SY-022: Implement readv / writev.
