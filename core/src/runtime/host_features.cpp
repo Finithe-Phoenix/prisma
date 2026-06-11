@@ -56,6 +56,7 @@ HostFeatures detect() {
     f.feat_crc32    = sysctl_bool("hw.optional.arm.FEAT_CRC32");
     f.feat_sha1     = sysctl_bool("hw.optional.arm.FEAT_SHA1");
     f.feat_sha256   = sysctl_bool("hw.optional.arm.FEAT_SHA256");
+    f.feat_aes      = sysctl_bool("hw.optional.arm.FEAT_AES");
 #elif defined(__linux__)
     const unsigned long hwcap  = ::getauxval(AT_HWCAP);
 #    ifdef AT_HWCAP2
@@ -93,6 +94,9 @@ HostFeatures detect() {
 #    endif
 #    ifdef HWCAP_SHA2
     f.feat_sha256  = (hwcap & HWCAP_SHA2)     != 0;
+#    endif
+#    ifdef HWCAP_AES
+    f.feat_aes     = (hwcap & HWCAP_AES)      != 0;
 #    endif
     // Silence unused-var when the host kernel lacks the defines.
     (void)hwcap;

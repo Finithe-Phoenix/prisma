@@ -28,6 +28,7 @@ TEST_CASE("host_features: returns a stable result across calls") {
     REQUIRE(a.feat_crc32   == b.feat_crc32);
     REQUIRE(a.feat_sha1    == b.feat_sha1);
     REQUIRE(a.feat_sha256  == b.feat_sha256);
+    REQUIRE(a.feat_aes     == b.feat_aes);
 }
 
 TEST_CASE("host_features: test override returns the injected struct") {
@@ -66,6 +67,7 @@ TEST_CASE("host_features: apple-silicon hosts should expose SHA crypto") {
 #if defined(__APPLE__) && defined(__arm64__)
     REQUIRE(host_features().feat_sha1);
     REQUIRE(host_features().feat_sha256);
+    REQUIRE(host_features().feat_aes);
 #else
     SUCCEED("not an Apple Silicon host — assertion skipped");
 #endif

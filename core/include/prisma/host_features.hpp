@@ -55,6 +55,12 @@ struct HostFeatures {
     //             when both are present.
     bool feat_sha1{false};
     bool feat_sha256{false};
+
+    // FEAT_AES — ARMv8 crypto extension backing the AES-NI lowering
+    //             (F2-IR-055/058: AESE/AESD/AESMC/AESIMC). Optional on
+    //             v8.0 cores, same caveat as the SHA pair. Gates the
+    //             guest CPUID.1:ECX.AESNI bit.
+    bool feat_aes{false};
 };
 
 // Returns a reference to the process-wide detected feature set. First
