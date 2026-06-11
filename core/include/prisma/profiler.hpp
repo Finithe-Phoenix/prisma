@@ -76,6 +76,7 @@ public:
         VecGather,
         VecSha,
         Xgetbv,
+        Rdtsc,
         kCount  // sentinel
     };
 

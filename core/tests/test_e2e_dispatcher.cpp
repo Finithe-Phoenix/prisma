@@ -3361,11 +3361,10 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         FeatureOverrideGuard guard{runtime::HostFeatures{}};
         auto s = run_cpuid(1, 0);
         REQUIRE(s[ir::Gpr::Rax] == 0x000206A7u);
-        // EDX: FPU, CMOV, SSE, SSE2 — nothing else. TSC stays off
-        // until RDTSC returns a real counter; CX8 until CMPXCHG8B
-        // decodes.
+        // EDX: FPU, TSC, CX8, CMOV, SSE, SSE2 — nothing else.
         REQUIRE(s[ir::Gpr::Rdx] ==
-                ((1u << 0) | (1u << 15) | (1u << 25) | (1u << 26)));
+                ((1u << 0) | (1u << 4) | (1u << 8) | (1u << 15) |
+                 (1u << 25) | (1u << 26)));
         const std::uint64_t ecx = s[ir::Gpr::Rcx];
         REQUIRE((ecx & (1u << 0)) != 0u);    // SSE3
         REQUIRE((ecx & (1u << 9)) != 0u);    // SSSE3
@@ -3373,10 +3372,10 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         REQUIRE((ecx & (1u << 13)) != 0u);   // CMPXCHG16B
         REQUIRE((ecx & (1u << 19)) != 0u);   // SSE4.1
         REQUIRE((ecx & (1u << 22)) != 0u);   // MOVBE
+        REQUIRE((ecx & (1u << 23)) != 0u);   // POPCNT (32/64 + mem)
         REQUIRE((ecx & (1u << 27)) != 0u);   // OSXSAVE
         REQUIRE((ecx & (1u << 28)) != 0u);   // AVX
         REQUIRE((ecx & (1u << 20)) == 0u);   // SSE4.2 off: PCMPxSTRx
-        REQUIRE((ecx & (1u << 23)) == 0u);   // POPCNT off: 32-bit form
         REQUIRE((ecx & (1u << 25)) == 0u);   // AESNI off: no host AES
         REQUIRE((ecx & (1u << 26)) == 0u);   // XSAVE deliberately off
         REQUIRE((ecx & (1u << 1)) == 0u);    // PCLMULQDQ not decoded
@@ -3462,6 +3461,157 @@ TEST_CASE("e2e: XGETBV reports XCR0 = x87|SSE|AVX — guest AVX gate") {
         REQUIRE(disp.state()[ir::Gpr::Rax] == 0u);
         REQUIRE(disp.state()[ir::Gpr::Rdx] == 0u);
     }
+}
+
+TEST_CASE("e2e: RDTSC is monotonic and non-zero — decoder gap sweep") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    // rdtsc; mov rbx, rax; rdtsc; ret — second reading in EDX:EAX,
+    // first stashed in RBX (low 32 bits suffice for the comparison
+    // since CNTVCT won't wrap during a test).
+    static const std::vector<std::uint8_t> body{
+        0x0F, 0x31,
+        0x48, 0x89, 0xC3,  // mov rbx, rax
+        0x0F, 0x31,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    auto r = disp.run(0x4000, 4);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    const std::uint64_t first = disp.state()[ir::Gpr::Rbx];
+    const std::uint64_t second =
+        disp.state()[ir::Gpr::Rax] |
+        (disp.state()[ir::Gpr::Rdx] << 32);
+    REQUIRE(second != 0u);
+    REQUIRE(second >= first);
+}
+
+TEST_CASE("e2e: CMPXCHG8B success and failure paths + ZF direction") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto run_c8b = [](std::uint64_t mem_init, std::uint32_t eax,
+                      std::uint32_t edx) {
+        translator::Translator tx;
+        // lock cmpxchg8b [rsi]; jz +3 (skip mov rdi, 1); ret
+        // RDI = 1 on the ZF=0 (failure) path, 2 on success.
+        static thread_local std::uint64_t mem;
+        mem = mem_init;
+        std::vector<std::uint8_t> body{
+            0xF0, 0x0F, 0xC7, 0x0E,                          // lock cmpxchg8b [rsi]
+            0x74, 0x0B,                                       // jz +11 (to movabs rdi,2)
+            0x48, 0xBF, 0x01, 0, 0, 0, 0, 0, 0, 0,            // movabs rdi, 1
+            0xC3,                                             // ret
+            0x48, 0xBF, 0x02, 0, 0, 0, 0, 0, 0, 0,            // movabs rdi, 2
+            0xC3,                                             // ret
+        };
+        auto reader =
+            [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+            if (pc < 0x4000ull) return {};
+            const std::size_t off =
+                static_cast<std::size_t>(pc - 0x4000ull);
+            if (off >= body.size()) return {};
+            return std::span<const std::uint8_t>(body.data() + off,
+                                                 body.size() - off);
+        };
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rsi] = reinterpret_cast<std::uint64_t>(&mem);
+        disp.state()[ir::Gpr::Rax] = 0xAAAA0000ull | eax;  // upper garbage
+        disp.state()[ir::Gpr::Rdx] = 0xBBBB0000ull << 32 | edx;
+        disp.state()[ir::Gpr::Rbx] = 0x11111111u;
+        disp.state()[ir::Gpr::Rcx] = 0x22222222u;
+        auto r = disp.run(0x4000, 8);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        struct Out {
+            std::uint64_t mem, rdi, rax, rdx;
+        };
+        return Out{mem, disp.state()[ir::Gpr::Rdi],
+                   disp.state()[ir::Gpr::Rax],
+                   disp.state()[ir::Gpr::Rdx]};
+    };
+
+    SECTION("match stores ECX:EBX and sets ZF") {
+        auto o = run_c8b(0x00000004'00000003ull, 0x3u, 0x4u);
+        REQUIRE(o.mem == 0x22222222'11111111ull);
+        REQUIRE(o.rdi == 2u);  // jz taken
+    }
+    SECTION("mismatch loads m64 into EDX:EAX, clears ZF") {
+        auto o = run_c8b(0x00000009'00000008ull, 0x3u, 0x4u);
+        REQUIRE(o.mem == 0x00000009'00000008ull);  // unchanged value
+        REQUIRE(o.rdi == 1u);  // jz not taken
+        REQUIRE(o.rax == 0x8u);  // EAX <- m64 lo (zero-extended)
+        REQUIRE(o.rdx == 0x9u);  // EDX <- m64 hi
+    }
+}
+
+TEST_CASE("e2e: BSF/BSR real results + src==0 preserves dst") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto run_scan = [](std::vector<std::uint8_t> body, std::uint64_t rax,
+                       std::uint64_t rcx) {
+        translator::Translator tx;
+        body.push_back(0xC3);
+        auto reader =
+            [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+            if (pc < 0x4000ull) return {};
+            const std::size_t off =
+                static_cast<std::size_t>(pc - 0x4000ull);
+            if (off >= body.size()) return {};
+            return std::span<const std::uint8_t>(body.data() + off,
+                                                 body.size() - off);
+        };
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rax] = rax;
+        disp.state()[ir::Gpr::Rcx] = rcx;
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        return disp.state()[ir::Gpr::Rax];
+    };
+
+    // bsf rax, rcx (48 0F BC C1)
+    REQUIRE(run_scan({0x48, 0x0F, 0xBC, 0xC1}, 0xDEAD, 0x10) == 4u);
+    // bsr rax, rcx (48 0F BD C1)
+    REQUIRE(run_scan({0x48, 0x0F, 0xBD, 0xC1}, 0xDEAD,
+                     0x8000000000000000ull) == 63u);
+    // src == 0 preserves dst (zero-extended low half).
+    REQUIRE(run_scan({0x48, 0x0F, 0xBC, 0xC1}, 0xDEAD, 0) == 0xDEADu);
+    // 32-bit form: bsr eax, ecx (0F BD C1).
+    REQUIRE(run_scan({0x0F, 0xBD, 0xC1}, 0, 0x80000000ull) == 31u);
+}
+
+TEST_CASE("e2e: POPCNT 32-bit form counts and sets ZF") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    // popcnt eax, ecx; jz +N — ECX = 0xF0F0 → 8, ZF clear.
+    static const std::vector<std::uint8_t> body{
+        0xF3, 0x0F, 0xB8, 0xC1,                    // popcnt eax, ecx
+        0x74, 0x0B,                                 // jz +11 (to movabs rdi,2)
+        0x48, 0xBF, 0x01, 0, 0, 0, 0, 0, 0, 0,      // movabs rdi, 1
+        0xC3,
+        0x48, 0xBF, 0x02, 0, 0, 0, 0, 0, 0, 0,      // movabs rdi, 2
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rcx] = 0xF0F0u;
+    auto r = disp.run(0x4000, 8);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 8u);
+    REQUIRE(disp.state()[ir::Gpr::Rdi] == 1u);  // ZF clear: jz not taken
 }
 
 TEST_CASE("e2e: VZEROUPPER / VZEROALL — F2 AVX transition hygiene") {

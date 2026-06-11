@@ -1792,6 +1792,13 @@ void Emitter::clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
         impl_->masm.Clz(to_vixl_x(rd), to_vixl_x(rn));
     }
 }
+void Emitter::mrs_cntvct(arm64::Reg rd) {
+    // mrs Xd, CNTVCT_EL0 (op0=3 op1=3 CRn=14 CRm=0 op2=2): base
+    // encoding 0xD53BE040 | Rt.
+    vixl::ExactAssemblyScope scope(&impl_->masm,
+                                   vixl_aa::kInstructionSize);
+    impl_->masm.dci(0xD53BE040u | to_vixl_x(rd).GetCode());
+}
 void Emitter::rbit_clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz) {
     // tzcnt = clz(rbit(x)).
     if (sz == ir::OpSize::I32) {

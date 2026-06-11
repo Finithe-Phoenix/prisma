@@ -75,6 +75,9 @@ bool operator==(const Cpuid&, const Cpuid&) noexcept {
 bool operator==(const Xgetbv&, const Xgetbv&) noexcept {
     return true;
 }
+bool operator==(const Rdtsc&, const Rdtsc&) noexcept {
+    return true;
+}
 bool operator==(const Syscall&, const Syscall&) noexcept {
     return true;
 }

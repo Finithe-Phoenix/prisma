@@ -168,6 +168,7 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{60u, VecGather{0u, 14u, 14u, 14u, 2u}});
     c.visit(Stmt{61u, VecSha{VecShaKind::Sha1Msg1, 14u, 14u, 14u, 0u}});
     c.visit(Stmt{std::nullopt, Xgetbv{}});
+    c.visit(Stmt{62u, Rdtsc{}});
 
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));

@@ -778,6 +778,20 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.bind(done);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::Rdtsc>) {
+            // Guest RDTSC time source: the ARM virtual counter.
+            // Monotonic; frequency is CNTFRQ, not core clock — guests
+            // calibrate ratios, so any monotonic source is sound.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Rdtsc without result"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Rdtsc"};
+            }
+            emitter_.mrs_cntvct(rd);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::Xgetbv>) {
             // XGETBV with a translation-time-baked XCR0. ECX selects
             // the XCR; only XCR0 (ECX=0) is modelled — other indices

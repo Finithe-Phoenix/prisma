@@ -334,6 +334,21 @@ TEST_CASE("Lowerer: Xgetbv reports the baked XCR0 for ECX=0, flag-free") {
     REQUIRE(d.find("subs") == std::string::npos);
 }
 
+TEST_CASE("Lowerer: Rdtsc reads the ARM virtual counter") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Rdtsc{}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // vixl disassembles the raw encoding as an mrs of S3_3_C14_C0_2
+    // (= CNTVCT_EL0).
+    REQUIRE(d.find("mrs") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: Cpuid with default options keeps the all-zero model") {
     // Standalone Lowerer uses (no Translator) default to max_leaf = 0
     // and no leaf-7 features — the legacy placeholder behaviour.

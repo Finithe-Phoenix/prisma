@@ -78,13 +78,14 @@ ir::Ref emit_address(
     const ModRmOperand& op,
     ir::Ref& next_ref,
     std::uint64_t rip_after);
-std::variant<Decoded, DecodeError> decode_cmpxchg_r64_rm64(
+std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
     std::uint64_t instruction_guest_pc,
     bool address_size_override,
-    ir::Ref& next_ref);
+    ir::Ref& next_ref,
+    ir::OpSize size);
 std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
     std::span<const Byte> bytes,
     std::size_t& cursor,
@@ -92,13 +93,21 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
     std::uint64_t instruction_guest_pc,
     bool address_size_override,
     ir::Ref& next_ref);
-std::variant<Decoded, DecodeError> decode_xadd_r64_rm64(
+std::variant<Decoded, DecodeError> decode_cmpxchg8b_m64(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
     std::uint64_t instruction_guest_pc,
     bool address_size_override,
     ir::Ref& next_ref);
+std::variant<Decoded, DecodeError> decode_xadd_rm_r(
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    const RexPrefix& rex,
+    std::uint64_t instruction_guest_pc,
+    bool address_size_override,
+    ir::Ref& next_ref,
+    ir::OpSize size);
 
 constexpr ir::Gpr gpr_from_index(unsigned idx) noexcept {
     return static_cast<ir::Gpr>(idx);
@@ -522,17 +531,21 @@ std::variant<Decoded, DecodeError> decode_xchg_r64_rm64(
     return d;
 }
 
-// CMPXCHG r/m64, r64 (0F B1 /r).
+// CMPXCHG r/m, r (0F B1 /r; 16/32/64-bit via prefixes).
 // Encodes:
-//   if RAX == dst: dst = src else RAX = dst
-//   ZF = (RAX == dst)
-std::variant<Decoded, DecodeError> decode_cmpxchg_r64_rm64(
+//   if accumulator == dst: dst = src else accumulator = dst
+//   ZF = (accumulator == dst)
+// On success the accumulator is NOT written (upper RAX bits are
+// preserved), so the writeback selects between the full 64-bit RAX
+// and the zero-extended dst value.
+std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
     std::uint64_t instruction_guest_pc,
     bool address_size_override,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    ir::OpSize size) {
     auto modrm = parse_modrm(bytes, cursor, rex, address_size_override);
     if (std::holds_alternative<DecodeError>(modrm)) {
         return std::get<DecodeError>(modrm);
@@ -540,34 +553,38 @@ std::variant<Decoded, DecodeError> decode_cmpxchg_r64_rm64(
     const auto& m = std::get<ModRmOperand>(modrm);
 
     Decoded d;
-    const ir::Ref ref_rax = next_ref++;
-    d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    const ir::Ref ref_acc = next_ref++;
+    d.stmts.push_back({ref_acc, ir::LoadReg{ir::Gpr::Rax, size}});
+    const ir::Ref ref_rax_full = next_ref++;
+    d.stmts.push_back({ref_rax_full, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
 
     const ir::Ref ref_src = next_ref++;
-    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), ir::OpSize::I64}});
+    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), size}});
 
     ir::Ref ref_addr = ir::kInvalidRef;
     ir::Ref ref_dst;
     if (m.mod == 0b11u) {
         ref_dst = next_ref++;
-        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, ir::OpSize::I64}});
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
     } else {
         ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
         ref_dst = next_ref++;
-        d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
+        d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, size}});
     }
 
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_rax, ref_dst, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_acc, ref_dst, size}});
     const ir::Ref ref_new_dst = next_ref++;
     const ir::Ref ref_new_rax = next_ref++;
-    d.stmts.push_back({ref_new_dst, ir::Select{ir::CondCode::Eq, ref_src, ref_dst, ir::OpSize::I64}});
-    d.stmts.push_back({ref_new_rax, ir::Select{ir::CondCode::Eq, ref_rax, ref_dst, ir::OpSize::I64}});
+    d.stmts.push_back({ref_new_dst, ir::Select{ir::CondCode::Eq, ref_src, ref_dst, size}});
+    // ref_dst is a zero-extended narrow value, which is exactly the
+    // architectural accumulator writeback for the failure path.
+    d.stmts.push_back({ref_new_rax, ir::Select{ir::CondCode::Eq, ref_rax_full, ref_dst, ir::OpSize::I64}});
 
     if (m.mod == 0b11u) {
         d.stmts.push_back(
-            {std::nullopt, ir::StoreReg{m.base, ref_new_dst, ir::OpSize::I64}});
+            {std::nullopt, ir::StoreReg{m.base, ref_new_dst, size}});
     } else {
-        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_new_dst, ir::OpSize::I64}});
+        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_new_dst, size}});
     }
     d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
     d.bytes_consumed = cursor;
@@ -601,8 +618,6 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
 
     Decoded d;
     const ir::Ref ref_mem_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
-    const ir::Ref ref_zero = next_ref++;
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
     const ir::Ref ref_rax = next_ref++;
     d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
     const ir::Ref ref_rdx = next_ref++;
@@ -629,23 +644,28 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
     d.stmts.push_back({ref_eq_high, ir::Compare{ir::CondCode::Eq, ref_high_before, ref_rdx, ir::OpSize::I64}});
     const ir::Ref ref_eq_pair = next_ref++;
     d.stmts.push_back({ref_eq_pair, ir::BinOp{ir::BinOpKind::And, ref_eq_low, ref_eq_high, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_eq_pair, ref_zero, ir::OpSize::I64}});
+    // Guest-visible ZF must be 1 on SUCCESS (eq_pair == 1). Comparing
+    // against 1 gives that; the old `cmp eq_pair, 0` left ZF inverted
+    // (jz/jnz after lock cmpxchg16b branched the wrong way).
+    const ir::Ref ref_one = next_ref++;
+    d.stmts.push_back({ref_one, ir::Constant{1u, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_eq_pair, ref_one, ir::OpSize::I64}});
 
     const ir::Ref ref_new_low = next_ref++;
     d.stmts.push_back(
-        {ref_new_low, ir::Select{ir::CondCode::Ne, ref_rbx, ref_low_before, ir::OpSize::I64}});
+        {ref_new_low, ir::Select{ir::CondCode::Eq, ref_rbx, ref_low_before, ir::OpSize::I64}});
     const ir::Ref ref_new_high = next_ref++;
     d.stmts.push_back(
-        {ref_new_high, ir::Select{ir::CondCode::Ne, ref_rcx, ref_high_before, ir::OpSize::I64}});
+        {ref_new_high, ir::Select{ir::CondCode::Eq, ref_rcx, ref_high_before, ir::OpSize::I64}});
     d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_mem_addr, ref_new_low, ir::OpSize::I64}});
     d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_high_addr, ref_new_high, ir::OpSize::I64}});
 
     const ir::Ref ref_new_rax = next_ref++;
     d.stmts.push_back(
-        {ref_new_rax, ir::Select{ir::CondCode::Ne, ref_rax, ref_low_before, ir::OpSize::I64}});
+        {ref_new_rax, ir::Select{ir::CondCode::Eq, ref_rax, ref_low_before, ir::OpSize::I64}});
     const ir::Ref ref_new_rdx = next_ref++;
     d.stmts.push_back(
-        {ref_new_rdx, ir::Select{ir::CondCode::Ne, ref_rdx, ref_high_before, ir::OpSize::I64}});
+        {ref_new_rdx, ir::Select{ir::CondCode::Eq, ref_rdx, ref_high_before, ir::OpSize::I64}});
     d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
     d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_new_rdx, ir::OpSize::I64}});
 
@@ -653,12 +673,13 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
     return d;
 }
 
-// XADD r/m64, r64 (0F C1 /r).
-// Encodes:
-//   tmp = r/m64
-//   r/m64 = tmp + reg
-//   reg = tmp
-std::variant<Decoded, DecodeError> decode_xadd_r64_rm64(
+// CMPXCHG8B m64 (0F C7 /1 without REX.W).
+// Compares EDX:EAX with m64 as a single 64-bit value; on match
+// stores ECX:EBX, else loads m64 into EDX:EAX. ZF = match. Unlike
+// the 16B form this uses one 64-bit TSO load/store, so the data
+// access has the same atomicity story as every other I64 access.
+// On success EDX:EAX are not written (upper RAX/RDX preserved).
+std::variant<Decoded, DecodeError> decode_cmpxchg8b_m64(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
@@ -670,26 +691,114 @@ std::variant<Decoded, DecodeError> decode_xadd_r64_rm64(
         return std::get<DecodeError>(modrm);
     }
     const auto& m = std::get<ModRmOperand>(modrm);
+    if (m.reg != 1u) return DecodeError::UnsupportedEncoding;
+    if (m.mod == 0b11u) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+    const ir::Ref ref_c32 = next_ref++;
+    d.stmts.push_back({ref_c32, ir::Constant{32u, ir::OpSize::I64}});
+
+    const ir::Ref ref_eax = next_ref++;
+    d.stmts.push_back({ref_eax, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}});
+    const ir::Ref ref_edx = next_ref++;
+    d.stmts.push_back({ref_edx, ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I32}});
+    const ir::Ref ref_ebx = next_ref++;
+    d.stmts.push_back({ref_ebx, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I32}});
+    const ir::Ref ref_ecx = next_ref++;
+    d.stmts.push_back({ref_ecx, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I32}});
+    const ir::Ref ref_rax_full = next_ref++;
+    d.stmts.push_back({ref_rax_full, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    const ir::Ref ref_rdx_full = next_ref++;
+    d.stmts.push_back({ref_rdx_full, ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}});
+
+    const ir::Ref ref_cmp_hi = next_ref++;
+    d.stmts.push_back({ref_cmp_hi,
+        ir::BinOp{ir::BinOpKind::Shl, ref_edx, ref_c32, ir::OpSize::I64}});
+    const ir::Ref ref_cmp_val = next_ref++;
+    d.stmts.push_back({ref_cmp_val,
+        ir::BinOp{ir::BinOpKind::Or, ref_cmp_hi, ref_eax, ir::OpSize::I64}});
+    const ir::Ref ref_new_hi = next_ref++;
+    d.stmts.push_back({ref_new_hi,
+        ir::BinOp{ir::BinOpKind::Shl, ref_ecx, ref_c32, ir::OpSize::I64}});
+    const ir::Ref ref_new_val = next_ref++;
+    d.stmts.push_back({ref_new_val,
+        ir::BinOp{ir::BinOpKind::Or, ref_new_hi, ref_ebx, ir::OpSize::I64}});
+
+    const ir::Ref ref_mem = next_ref++;
+    d.stmts.push_back({ref_mem, ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
+
+    // ZF = (EDX:EAX == m64); CMP's other flags diverge from the SDM's
+    // "unaffected" but ZF is the only architecturally defined output.
+    d.stmts.push_back({std::nullopt,
+        ir::CmpFlags{ref_cmp_val, ref_mem, ir::OpSize::I64}});
+
+    // DEST is always written (locked semantics): new value on match,
+    // its own value otherwise.
+    const ir::Ref ref_store_val = next_ref++;
+    d.stmts.push_back({ref_store_val,
+        ir::Select{ir::CondCode::Eq, ref_new_val, ref_mem, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+        ir::StoreMemTSO{ref_addr, ref_store_val, ir::OpSize::I64}});
+
+    const ir::Ref ref_mem_lo = next_ref++;
+    d.stmts.push_back({ref_mem_lo, ir::Truncate{ref_mem, ir::OpSize::I32}});
+    const ir::Ref ref_mem_hi = next_ref++;
+    d.stmts.push_back({ref_mem_hi,
+        ir::BinOp{ir::BinOpKind::Shr, ref_mem, ref_c32, ir::OpSize::I64}});
+    const ir::Ref ref_new_rax = next_ref++;
+    d.stmts.push_back({ref_new_rax,
+        ir::Select{ir::CondCode::Eq, ref_rax_full, ref_mem_lo, ir::OpSize::I64}});
+    const ir::Ref ref_new_rdx = next_ref++;
+    d.stmts.push_back({ref_new_rdx,
+        ir::Select{ir::CondCode::Eq, ref_rdx_full, ref_mem_hi, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_new_rdx, ir::OpSize::I64}});
+
+    d.bytes_consumed = cursor;
+    return d;
+}
+
+// XADD r/m, r (0F C1 /r; 32/64-bit via REX.W).
+// Encodes:
+//   tmp = r/m
+//   r/m = tmp + reg
+//   reg = tmp
+// Flag gap (queued): x86 XADD sets the arithmetic flags from the
+// addition; this decode leaves NZCV untouched.
+std::variant<Decoded, DecodeError> decode_xadd_rm_r(
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    const RexPrefix& rex,
+    std::uint64_t instruction_guest_pc,
+    bool address_size_override,
+    ir::Ref& next_ref,
+    ir::OpSize size) {
+    auto modrm = parse_modrm(bytes, cursor, rex, address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
 
     Decoded d;
     const ir::Ref ref_src = next_ref++;
-    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), ir::OpSize::I64}});
+    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), size}});
 
     const ir::Ref ref_dst = next_ref++;
     if (m.mod == 0b11u) {
-        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, ir::OpSize::I64}});
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
         const ir::Ref ref_sum = next_ref++;
-        d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_sum, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, ir::OpSize::I64}});
+        d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_sum, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
     } else {
         const ir::Ref ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
-        d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
+        d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, size}});
         const ir::Ref ref_sum = next_ref++;
-        d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, ir::OpSize::I64}});
-        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_sum, ir::OpSize::I64}});
+        d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_sum, size}});
         d.stmts.push_back(
-            {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, ir::OpSize::I64}});
+            {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
     }
     d.bytes_consumed = cursor;
     return d;
@@ -1485,116 +1594,83 @@ std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
     return d;
 }
 
-// BSF / BSR r64, r/m64 (0F BC /r, 0F BD /r) — MVP register-direct only.
-//
-// This is a placeholder decode for now:
-//   * result register receives 0
-//   * flags are computed as (src == 0) to preserve a flag-like effect
-// A future lowering pass will replace this with a real bit-scan lowering.
-std::variant<Decoded, DecodeError> decode_bsf_bsr_r64_r_rm(
+// BSF / BSR r, r/m (0F BC / 0F BD; 32/64-bit via REX.W).
+//   dst = index of lowest (BSF) / highest (BSR) set bit of src.
+//   src == 0: ZF = 1 and dst is left unchanged (Intel documents the
+//             destination as undefined, but real silicon and AMD
+//             preserve it and software relies on that). The 32-bit
+//             form still zero-extends the preserved low half — the
+//             one corner where we pick a concrete behaviour inside
+//             Intel's "undefined".
+//   src != 0: ZF = 0.
+// BSF(src) == TZCNT(src) and BSR(src) == width-1 - LZCNT(src) for
+// non-zero sources, so this reuses the F2-IR-045 ops.
+std::variant<Decoded, DecodeError> decode_bsf_bsr(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
-    ir::Ref& next_ref) {
+    ir::Ref& next_ref,
+    ir::OpSize size,
+    bool is_bsr) {
     if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     Decoded d;
     const ir::Ref ref_src = next_ref++;
+    d.stmts.push_back({ref_src, ir::LoadReg{m.base, size}});
+    const ir::Ref ref_old = next_ref++;
+    d.stmts.push_back({ref_old, ir::LoadReg{gpr_from_index(m.reg), size}});
+    ir::Ref ref_cnt;
+    if (is_bsr) {
+        const ir::Ref ref_lz = next_ref++;
+        d.stmts.push_back({ref_lz, ir::Lzcnt{ref_src, size}});
+        const ir::Ref ref_w = next_ref++;
+        d.stmts.push_back({ref_w,
+            ir::Constant{ir::bit_width(size) - 1u, size}});
+        ref_cnt = next_ref++;
+        d.stmts.push_back({ref_cnt,
+            ir::BinOp{ir::BinOpKind::Sub, ref_w, ref_lz, size}});
+    } else {
+        ref_cnt = next_ref++;
+        d.stmts.push_back({ref_cnt, ir::Tzcnt{ref_src, size}});
+    }
     const ir::Ref ref_zero = next_ref++;
-    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
+    d.stmts.push_back({ref_zero, ir::Constant{0u, size}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, size}});
+    const ir::Ref ref_res = next_ref++;
+    d.stmts.push_back({ref_res,
+        ir::Select{ir::CondCode::Eq, ref_old, ref_cnt, size}});
+    d.stmts.push_back({std::nullopt,
+        ir::StoreReg{gpr_from_index(m.reg), ref_res, size}});
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
-// LZCNT r64, r/m64 (F3 48 0F BD /r) — MVP register-direct only.
-//
-// This is a placeholder decode for now:
-//   * result register receives 0
-//   * flags are computed as (src == 0) to preserve a flag-like effect
-//   * source and destination are both 64-bit GPRs
-// A future lowering pass will replace this with a real leading-zero count lowering.
-std::variant<Decoded, DecodeError> decode_lzcnt_r64_r_rm(
-    const ModRmOperand& m,
-    std::size_t bytes_consumed,
-    ir::Ref& next_ref) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
-    Decoded d;
-    const ir::Ref ref_src = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
-    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
-    d.bytes_consumed = bytes_consumed;
-    return d;
-}
 
-// TZCNT r64, r/m64 (F3 48 0F BC /r) — MVP register-direct only.
-//
-// This is a placeholder decode for now:
-//   * result register receives 0
-//   * flags are computed as (src == 0) to preserve a flag-like effect
-//   * source and destination are both 64-bit GPRs
-// A future lowering pass will replace this with a real trailing-zero count lowering.
-std::variant<Decoded, DecodeError> decode_tzcnt_r64_r_rm(
-    const ModRmOperand& m,
-    std::size_t bytes_consumed,
-    ir::Ref& next_ref) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
-    Decoded d;
-    const ir::Ref ref_src = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
-    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
-    d.bytes_consumed = bytes_consumed;
-    return d;
-}
-
-// POPCNT r64, r/m64 (F3 48 0F B8 /r) — MVP register-direct only.
-//
-// This is a placeholder decode for now:
-//   * result register receives 0
-//   * flags are computed as (src == 0) to preserve a flag-like effect
-//   * source and destination are both 64-bit GPRs
-std::variant<Decoded, DecodeError> decode_popcnt_r64_r_rm(
-    const ModRmOperand& m,
-    std::size_t bytes_consumed,
-    ir::Ref& next_ref) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
-    Decoded d;
-    const ir::Ref ref_src = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
-    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_zero, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_src, ref_zero, ir::OpSize::I64}});
-    d.bytes_consumed = bytes_consumed;
-    return d;
-}
-
-// RDTSC / RDTSCP placeholder.
-//
-// There is no time-source or serializing side-effect op in the IR yet, so
-// for now we model both forms as zeroing the architecturally-written outputs:
-//   * RDTSC  -> EDX:EAX = 0
-//   * RDTSCP -> EDX:EAX = 0, ECX = 0
-std::variant<Decoded, DecodeError> decode_rdtsc_placeholder(
+// RDTSC / RDTSCP via the ir::Rdtsc time source (ARM virtual counter).
+//   * RDTSC  -> EDX:EAX = counter
+//   * RDTSCP -> EDX:EAX = counter, ECX = 0 (IA32_TSC_AUX unmodelled;
+//               zero is the conventional single-socket value).
+// RDTSCP's "waits for prior instructions" serializing property is not
+// modelled — blocks execute sequentially in this DBT anyway.
+std::variant<Decoded, DecodeError> decode_rdtsc(
     std::size_t bytes_consumed,
     ir::Ref& next_ref,
     bool with_aux) {
     Decoded d;
-    const ir::Ref ref_zero = next_ref++;
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I32}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_zero, ir::OpSize::I32}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_zero, ir::OpSize::I32}});
+    const ir::Ref ref_tsc = next_ref++;
+    d.stmts.push_back({ref_tsc, ir::Rdtsc{}});
+    const ir::Ref ref_lo = next_ref++;
+    d.stmts.push_back({ref_lo, ir::Truncate{ref_tsc, ir::OpSize::I32}});
+    const ir::Ref ref_c32 = next_ref++;
+    d.stmts.push_back({ref_c32, ir::Constant{32u, ir::OpSize::I64}});
+    const ir::Ref ref_hi = next_ref++;
+    d.stmts.push_back({ref_hi,
+        ir::BinOp{ir::BinOpKind::Shr, ref_tsc, ref_c32, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_lo, ir::OpSize::I32}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_hi, ir::OpSize::I32}});
     if (with_aux) {
+        const ir::Ref ref_zero = next_ref++;
+        d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I32}});
         d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rcx, ref_zero, ir::OpSize::I32}});
     }
     d.bytes_consumed = bytes_consumed;
@@ -2148,37 +2224,39 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
             return DispatchDecodeResult{decode_bt_group_imm8_dispatch(
                 bytes, cursor, rex, has_address_size_override, next_ref)};
         case TwoByteDispatchKind::Cmpxchg:
-            if (!rex.w) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            // 16-bit form stays rejected: x86 16-bit register writes
+            // preserve the upper bits and StoreReg-vs-Select handling
+            // for that case is not modelled yet.
             if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-            return DispatchDecodeResult{decode_cmpxchg_r64_rm64(
-                bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref)};
+            return DispatchDecodeResult{decode_cmpxchg_rm_r(
+                bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref,
+                rex.w ? ir::OpSize::I64 : ir::OpSize::I32)};
         case TwoByteDispatchKind::Xadd:
-            if (!rex.w) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-            return DispatchDecodeResult{decode_xadd_r64_rm64(
-                bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref)};
+            return DispatchDecodeResult{decode_xadd_rm_r(
+                bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref,
+                rex.w ? ir::OpSize::I64 : ir::OpSize::I32)};
         case TwoByteDispatchKind::Cmpxchg16b:
-            if (!rex.w) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (!rex.w) {
+                return DispatchDecodeResult{decode_cmpxchg8b_m64(
+                    bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref)};
+            }
             return DispatchDecodeResult{decode_cmpxchg16b_m128(
                 bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref)};
-        case TwoByteDispatchKind::Popcnt: {
-            if (!has_f3) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-            if (!rex.w) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-            if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-
-            auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
-            if (std::holds_alternative<DecodeError>(modrm)) {
-                return DispatchDecodeResult{std::get<DecodeError>(modrm)};
-            }
-            const auto& m = std::get<ModRmOperand>(modrm);
-            return DispatchDecodeResult{decode_popcnt_r64_r_rm(m, cursor, next_ref)};
-        }
+        case TwoByteDispatchKind::Popcnt:
+            // F3 0F B8 (the only valid POPCNT encoding) is owned by
+            // the inline F2-IR-044 handler before dispatch; reaching
+            // here means an invalid combination.
+            return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
         case TwoByteDispatchKind::BitScanOrCount: {
-            if (!rex.w) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            // F3-prefixed forms (LZCNT / TZCNT) are owned by the
+            // inline F2-IR-045 handler before dispatch; reaching here
+            // with F3 means an unsupported combination (e.g. 66 F3).
+            if (has_f3) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
 
             auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
@@ -2186,19 +2264,17 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
                 return DispatchDecodeResult{std::get<DecodeError>(modrm)};
             }
             const auto& m = std::get<ModRmOperand>(modrm);
-            if (has_f3) {
-                return subop == 0xBDu
-                           ? DispatchDecodeResult{decode_lzcnt_r64_r_rm(m, cursor, next_ref)}
-                           : DispatchDecodeResult{decode_tzcnt_r64_r_rm(m, cursor, next_ref)};
-            }
-            return DispatchDecodeResult{decode_bsf_bsr_r64_r_rm(m, cursor, next_ref)};
+            return DispatchDecodeResult{decode_bsf_bsr(
+                m, cursor, next_ref,
+                rex.w ? ir::OpSize::I64 : ir::OpSize::I32,
+                /*is_bsr=*/subop == 0xBDu)};
         }
         case TwoByteDispatchKind::Rdtsc:
             if (rex.present || has_operand_size_override || has_address_size_override) {
                 return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             }
             if (has_lock || has_f2 || has_f3) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-            return DispatchDecodeResult{decode_rdtsc_placeholder(cursor, next_ref, false)};
+            return DispatchDecodeResult{decode_rdtsc(cursor, next_ref, false)};
         case TwoByteDispatchKind::Cpuid:
             if (rex.present || has_operand_size_override || has_address_size_override) {
                 return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
@@ -2222,7 +2298,7 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
                 return DispatchDecodeResult{std::get<DecodeError>(third)};
             }
             if (static_cast<Byte>(std::get<std::uint64_t>(third)) == 0xF9u) {
-                return DispatchDecodeResult{decode_rdtsc_placeholder(cursor, next_ref, true)};
+                return DispatchDecodeResult{decode_rdtsc(cursor, next_ref, true)};
             }
             if (static_cast<Byte>(std::get<std::uint64_t>(third)) == 0xD0u) {
                 return DispatchDecodeResult{decode_xgetbv(cursor)};
@@ -5443,6 +5519,32 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
+            // SSE4.1 MOVNTDQA xmm, m128 (66 0F 38 2A) — a plain
+            // 128-bit load; the non-temporal hint has no equivalent
+            // in the IR's memory model and is dropped. VEX form
+            // requires vvvv = 1111.
+            if (sub3 == 0x2Au) {
+                if (vex.present && vex.vvvv != 0) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                if (m.mod == 0b11) return DecodeError::UnsupportedEncoding;
+                Decoded d;
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                const ir::Ref r_val = next_ref++;
+                d.stmts.push_back({r_val, ir::LoadVec{r_addr}});
+                d.stmts.push_back({std::nullopt,
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_val}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
             // SSE4.1 PMOVZX/SX widening converts (66 0F 38 20..25, 30..35).
             // VEX.L=1 → ymm output: each 128-bit half built independently.
             // The lo half uses the low source bytes (existing VecExtend
@@ -6888,10 +6990,98 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // SSE3 HSUBPS / HSUBPD (F2/66 0F 7D) — synthesized:
+        //   hsub(a, b) = even_lanes(a:b) - odd_lanes(a:b)
+        // via two SHUFPS/SHUFPD-style shuffles + a packed subtract.
+        // SSE3 ADDSUBPS / ADDSUBPD (F2/66 0F D0) — synthesized:
+        //   lanes alternate sub (even) / add (odd); a VecBlend with a
+        //   constant MSB mask picks the add result in odd lanes (the
+        //   FMA3 MADDSUB precedent). VEX.128 honours vvvv; VEX.L=1 is
+        //   not in the AVX-256 allowlist yet.
+        if (!has_lock && !has_f3 &&
+            (subop == 0x7Du || subop == 0xD0u) &&
+            ((has_f2 && !has_operand_size_override) ||
+             (!has_f2 && has_operand_size_override))) {
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const bool is_pd = has_operand_size_override;
+            const ir::VecFpSize size = is_pd ? ir::VecFpSize::D2
+                                             : ir::VecFpSize::S4;
+            Decoded d;
+            const std::uint8_t lhs_xmm = vex.present
+                ? static_cast<std::uint8_t>(vex.vvvv)
+                : static_cast<std::uint8_t>(m.reg);
+            std::optional<ir::Ref> r_addr_lo;
+            if (m.mod != 0b11) {
+                r_addr_lo = emit_address(d.stmts, m, next_ref,
+                                         instruction_guest_pc + cursor);
+            }
+            const ir::Ref r_lhs = next_ref++;
+            const ir::Ref r_rhs = next_ref++;
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{lhs_xmm}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_rhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                d.stmts.push_back({r_rhs, ir::LoadVec{*r_addr_lo}});
+            }
+            ir::Ref r_res;
+            if (subop == 0x7Du) {
+                // even = {a0,a2,b0,b2} (PS, 0x88) / {a0,b0} (PD, 0);
+                // odd  = {a1,a3,b1,b3} (PS, 0xDD) / {a1,b1} (PD, 3).
+                const ir::Ref r_even = next_ref++;
+                const ir::Ref r_odd = next_ref++;
+                d.stmts.push_back({r_even,
+                    ir::VecShuffle2Src{is_pd, r_lhs, r_rhs,
+                        static_cast<std::uint8_t>(is_pd ? 0x0u : 0x88u)}});
+                d.stmts.push_back({r_odd,
+                    ir::VecShuffle2Src{is_pd, r_lhs, r_rhs,
+                        static_cast<std::uint8_t>(is_pd ? 0x3u : 0xDDu)}});
+                r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecFpBinOp{ir::VecFpBinOpKind::Sub,
+                                   r_even, r_odd, size}});
+            } else {
+                const ir::Ref r_sub = next_ref++;
+                const ir::Ref r_add = next_ref++;
+                const ir::Ref r_mask = next_ref++;
+                d.stmts.push_back({r_sub,
+                    ir::VecFpBinOp{ir::VecFpBinOpKind::Sub,
+                                   r_lhs, r_rhs, size}});
+                d.stmts.push_back({r_add,
+                    ir::VecFpBinOp{ir::VecFpBinOpKind::Add,
+                                   r_lhs, r_rhs, size}});
+                d.stmts.push_back({r_mask, is_pd
+                    ? ir::Op{ir::VecConstant{0u, 0x8000000000000000ull}}
+                    : ir::Op{ir::VecConstant{0x8000000000000000ull,
+                                             0x8000000000000000ull}}});
+                r_res = next_ref++;
+                d.stmts.push_back({r_res,
+                    ir::VecBlend{r_sub, r_add, r_mask,
+                                 is_pd ? ir::VecLane::D2 : ir::VecLane::S4}});
+            }
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-044/045: POPCNT / LZCNT / TZCNT (F3 0F B8/BC/BD).
         //   F3 0F B8 /r — POPCNT
         //   F3 0F BC /r — TZCNT (BMI1)
         //   F3 0F BD /r — LZCNT (BMI1)
+        // POPCNT additionally sets ZF = (src == 0) — software tests
+        // it after counting. Its other flags are architecturally
+        // CLEARED; the CmpFlags approximation leaves SF = sign(src),
+        // a documented divergence nobody is known to consume.
+        // LZCNT/TZCNT's CF = (src == 0) is not expressible via
+        // CmpFlags and stays a queued gap (BMI1/LZCNT are not
+        // advertised via CPUID).
         if (has_f3 && !has_lock && !has_f2 && !has_operand_size_override &&
             (subop == 0xB8u || subop == 0xBCu || subop == 0xBDu)) {
             auto modrm = parse_modrm(bytes, cursor, rex,
@@ -6900,19 +7090,32 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(modrm);
             }
             const auto& m = std::get<ModRmOperand>(modrm);
-            if (m.mod != 0b11) return DecodeError::UnsupportedEncoding;
             const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
             const ir::Gpr dst_gpr = static_cast<ir::Gpr>(m.reg);
             Decoded d;
-            const ir::Ref r_src = next_ref++;
+            ir::Ref r_src;
+            if (m.mod == 0b11) {
+                r_src = next_ref++;
+                d.stmts.push_back({r_src, ir::LoadReg{m.base, size}});
+            } else {
+                const ir::Ref r_addr = emit_address(
+                    d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                r_src = next_ref++;
+                d.stmts.push_back({r_src, ir::LoadMemTSO{r_addr, size}});
+            }
             const ir::Ref r_res = next_ref++;
-            d.stmts.push_back({r_src, ir::LoadReg{m.base, size}});
             if (subop == 0xB8u) {
                 d.stmts.push_back({r_res, ir::Popcnt{r_src, size}});
             } else if (subop == 0xBDu) {
                 d.stmts.push_back({r_res, ir::Lzcnt{r_src, size}});
             } else {
                 d.stmts.push_back({r_res, ir::Tzcnt{r_src, size}});
+            }
+            if (subop == 0xB8u) {
+                const ir::Ref r_zero = next_ref++;
+                d.stmts.push_back({r_zero, ir::Constant{0u, size}});
+                d.stmts.push_back({std::nullopt,
+                    ir::CmpFlags{r_src, r_zero, size}});
             }
             d.stmts.push_back({std::nullopt,
                 ir::StoreReg{dst_gpr, r_res, size}});
@@ -6941,14 +7144,30 @@ std::variant<Decoded, DecodeError> decode_one(
                 has_f3 ? ir::FpSize::F32 : ir::FpSize::F64;
             Decoded d;
             if (subop == 0x2Au) {
-                // int → FP: read GPR (m.base), produce 128-bit, store xmm[m.reg].
+                // int → FP into the low lane. Legacy CVTSI2SS/SD keep
+                // DEST's upper lanes; the VEX forms merge them from
+                // vvvv (the old decode zeroed them in both cases).
+                const std::uint8_t merge_xmm = vex.present
+                    ? vex.vvvv
+                    : static_cast<std::uint8_t>(m.reg);
                 const ir::Ref r_int = next_ref++;
-                const ir::Ref r_xmm = next_ref++;
+                const ir::Ref r_cvt = next_ref++;
+                const ir::Ref r_bits = next_ref++;
+                const ir::Ref r_merge = next_ref++;
+                const ir::Ref r_res = next_ref++;
                 d.stmts.push_back({r_int, ir::LoadReg{m.base, int_sz}});
-                d.stmts.push_back({r_xmm,
+                d.stmts.push_back({r_cvt,
                     ir::IntToFpScalar{r_int, int_sz, fp_sz}});
+                d.stmts.push_back({r_bits, ir::GprFromXmm{r_cvt,
+                    fp_sz == ir::FpSize::F32 ? ir::OpSize::I32
+                                             : ir::OpSize::I64}});
+                d.stmts.push_back({r_merge, ir::LoadVecReg{merge_xmm}});
+                d.stmts.push_back({r_res,
+                    ir::VecInsertLane{r_merge, r_bits, 0,
+                        fp_sz == ir::FpSize::F32 ? ir::VecLane::S4
+                                                 : ir::VecLane::D2}});
                 d.stmts.push_back({std::nullopt,
-                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_xmm}});
+                    ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), r_res}});
             } else {
                 // FP → int (truncate). Encoding: /r reg is GPR DEST,
                 // rm is XMM SOURCE. m.reg gives the reg field index;

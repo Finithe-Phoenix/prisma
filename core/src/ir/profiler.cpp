@@ -34,6 +34,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, RetAdjusted>) return OpCounter::Kind::RetAdjusted;
         else if constexpr (std::is_same_v<T, Cpuid>)       return OpCounter::Kind::Cpuid;
         else if constexpr (std::is_same_v<T, Xgetbv>)      return OpCounter::Kind::Xgetbv;
+        else if constexpr (std::is_same_v<T, Rdtsc>)       return OpCounter::Kind::Rdtsc;
         else if constexpr (std::is_same_v<T, Syscall>)     return OpCounter::Kind::Syscall;
         else if constexpr (std::is_same_v<T, Trap>)        return OpCounter::Kind::Trap;
         else if constexpr (std::is_same_v<T, Extend>)      return OpCounter::Kind::Extend;

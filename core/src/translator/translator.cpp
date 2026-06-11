@@ -317,33 +317,26 @@ TranslateResult Translator::translate(
     // field = 8 chunks (64 bytes) so alignment probes read sane data.
     lopts.cpuid_leaf1_eax = 0x000206A7u;
     lopts.cpuid_leaf1_ebx = 0x00000800u;
-    // Leaf 1 EDX: FPU, CMOV, SSE, SSE2. Deliberately clear with the
-    // reason each would bite:
-    //   TSC — RDTSC decodes but returns constant zero today; guests
-    //         calibrating timers would spin forever. Re-add once the
-    //         lowering reads CNTVCT_EL0.
-    //   CX8 — CMPXCHG8B (0F C7 /1 without REX.W) does not decode
-    //         (the dispatch is REX.W-only CMPXCHG16B).
-    //   MMX / FXSR — not decoded.
-    lopts.cpuid_leaf1_edx = (1u << 0) | (1u << 15) | (1u << 25) |
-                            (1u << 26);
-    // Leaf 1 ECX: SSE3, SSSE3, FMA (96/96 forms), CMPXCHG16B,
-    // SSE4.1, MOVBE, OSXSAVE, AVX. Deliberately clear:
+    // Leaf 1 EDX: FPU, TSC (RDTSC reads CNTVCT_EL0), CX8 (CMPXCHG8B
+    // decoded), CMOV, SSE, SSE2. MMX / FXSR deliberately clear (not
+    // decoded).
+    lopts.cpuid_leaf1_edx = (1u << 0) | (1u << 4) | (1u << 8) |
+                            (1u << 15) | (1u << 25) | (1u << 26);
+    // Leaf 1 ECX: SSE3 (ADDSUB/HSUB now decoded), SSSE3, FMA (96/96
+    // forms), CMPXCHG16B, SSE4.1, MOVBE, POPCNT (32/64-bit + memory
+    // forms + ZF), OSXSAVE, AVX. Deliberately clear:
     //   SSE4.2 — its canonical use-case PCMPISTRI/PCMPESTRI (string
     //            functions) is not decoded; only PCMPGTQ/CRC32 are.
-    //   POPCNT — the decoder is REX.W-only; the 32-bit form
-    //            compilers emit for `int` does not decode yet.
     //   XSAVE  — instructions + CPUID leaf 0xD unmodelled; the
     //            canonical AVX gate (Intel's sequence, MSVC's
     //            __isa_available, glibc) checks OSXSAVE+XGETBV only.
     //   PCLMULQDQ / F16C / RDRAND — not decoded.
     // Known thin spots inside advertised families (loud decode
-    // failures by design, queued): SSE3 ADDSUBPS/HSUBPS, SSSE3
-    // PMADDUBSW/PMULHRSW/PSIGN, SSE4.1 INSERTPS/BLENDPS-imm/DPPS/
-    // PACKUSDW/MOVNTDQA.
+    // failures by design, queued): SSSE3 PMADDUBSW/PMULHRSW/PSIGN,
+    // SSE4.1 INSERTPS/BLENDPS-imm/DPPS/PACKUSDW.
     lopts.cpuid_leaf1_ecx = (1u << 0) | (1u << 9) | (1u << 12) |
                             (1u << 13) | (1u << 19) | (1u << 22) |
-                            (1u << 27) | (1u << 28);
+                            (1u << 23) | (1u << 27) | (1u << 28);
     // Leaf 7 EBX: BMI2 (bit 8) — SHLX/SARX/SHRX, RORX, MULX, BZHI,
     // PDEP, PEXT are all decoded; that is the complete BMI2 set. BMI1
     // deliberately clear (ANDN/BEXTR/BLSI/BLSMSK/BLSR not decoded);

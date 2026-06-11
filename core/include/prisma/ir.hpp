@@ -227,6 +227,15 @@ struct Syscall {};
 // the canonical guest gate for AVX/FMA usage.
 struct Xgetbv  {};
 
+// RDTSC time source — produces the current 64-bit counter value as an
+// SSA result; the decoder splits it into the architectural EDX:EAX
+// writes. Lowered to ARM's virtual counter (mrs CNTVCT_EL0), which is
+// monotonic but ticks at CNTFRQ rather than core frequency — guest
+// calibration loops measure ratios, so any monotonic source works.
+// NOT pure: two reads must stay two reads (CSE/DCE must never merge
+// or drop it; neither pass lists it as pure).
+struct Rdtsc   {};
+
 // ---- Width adjustment -------------------------------------------------
 //
 // Extend{value, from_size, to_size, signed} grows a narrower SSA value
@@ -1045,7 +1054,7 @@ using Op = std::variant<
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs,
     X87Load, X87Store, X87Push, X87Pop,
-    Xgetbv
+    Xgetbv, Rdtsc
 >;
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1128,7 @@ bool operator==(const CallReg& a, const CallReg& b) noexcept;
 bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
 bool operator==(const Cpuid&, const Cpuid&) noexcept;
 bool operator==(const Xgetbv&, const Xgetbv&) noexcept;
+bool operator==(const Rdtsc&, const Rdtsc&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
 bool operator==(const Extend& a, const Extend& b) noexcept;
