@@ -254,3 +254,32 @@ interrupt semantics.
 (two-eyes resolution) in any combination of the options above. Once
 both are cleared, this branch is mergeable — the tests are green, the
 protocol is otherwise clean, and the code quality is high.
+
+---
+
+## Session 2026-06-09/10 — direct-threading stage 2 + FFI bridge + ARM64 CI + VPGATHER
+
+**PRs:** #6 (`da7bab8`), #7 (`a89495b`), #8 (`10c985f`), #9 (`7dbfe0c`)
+— all merged to `main` by Danny after green CI.
+
+**Two-eyes ledger.** All feature commits in these PRs are single-author
+(Claude) and several touch protected territory (`ir.hpp`, decoder,
+lowering, dispatcher). Mitigations applied, mirroring the Blocker B
+option-2 precedent:
+
+- [RFC 0014](rfc/0014-ffi-boundary-core-shell.md) documents the FFI
+  architecture decision (PR #7) before implementation.
+- The `VecGather` IR op (PR #9) follows the AGENT_PLAYBOOK 13-file
+  recipe with decode/lowering/e2e coverage, including a
+  poisoned-index test proving masked-off lanes never touch memory.
+- Danny merged each PR personally with full CI green — including the
+  new `core-build-arm64` and `ffi-link-arm64` jobs, which execute the
+  JIT corpus on real ARM64 hardware on every PR (previously
+  Apple-Silicon-only coverage).
+
+**Notable find.** `core-build-arm64`'s first run exposed four latent
+SEGFAULTs: tests running RET-terminated programs without
+`install_halt_return_stack()` after the F2-IR-054 default flip
+(missed by migration 11b, invisible on x86_64 where the tests skip).
+Fixed in `be5ebb6`. This is exactly the class of gap the ARM64 jobs
+exist to close.
