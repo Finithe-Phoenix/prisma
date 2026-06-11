@@ -2261,6 +2261,12 @@ void Emitter::flush_literal_pool() {
     impl_->masm.EmitLiteralPool(vixl_aa::LiteralPool::kBranchRequired);
 }
 
+std::size_t Emitter::current_offset() const noexcept {
+    const auto offset = impl_->masm.GetCursorOffset();
+    if (offset <= 0) return 0;
+    return static_cast<std::size_t>(offset);
+}
+
 void Emitter::finalize() {
     if (impl_->finalized) return;
     impl_->masm.FinalizeCode();

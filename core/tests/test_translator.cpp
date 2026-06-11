@@ -6,6 +6,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
+#include <cstring>
 #include <variant>
 #include <vector>
 
@@ -25,6 +26,12 @@ constexpr bool is_arm64 =
 #else
     false;
 #endif
+
+std::uint32_t read_u32(const std::uint8_t* p) {
+    std::uint32_t v = 0;
+    std::memcpy(&v, p, sizeof(v));
+    return v;
+}
 
 }  // namespace
 
@@ -92,12 +99,18 @@ TEST_CASE("Translator: exposes call/return terminator metadata") {
     const auto& bc = std::get<translator::TranslatedBlock>(rc);
     REQUIRE(bc.exit_kind == translator::BlockExitKind::CallRel);
     REQUIRE(bc.return_guest_pc == 0x1005u);
+    REQUIRE(bc.direct_patch.available);
+    REQUIRE(bc.direct_patch.target_guest_pc == bc.target_guest_pc);
+    REQUIRE(bc.direct_patch.branch_offset + 4 <= bc.code_size);
+    REQUIRE(bc.direct_patch.fallback_offset ==
+            bc.direct_patch.branch_offset + 4);
 
     const std::vector<std::uint8_t> ret = {0xC3};
     auto rr = t.translate(0x1005, ret);
     REQUIRE(std::holds_alternative<translator::TranslatedBlock>(rr));
     const auto& br = std::get<translator::TranslatedBlock>(rr);
     REQUIRE(br.exit_kind == translator::BlockExitKind::RetAdjusted);
+    REQUIRE_FALSE(br.direct_patch.available);
 }
 
 TEST_CASE("Translator: exposes direct branch metadata and cache probes") {
@@ -112,6 +125,16 @@ TEST_CASE("Translator: exposes direct branch metadata and cache probes") {
     REQUIRE(block.target_guest_pc == 0x3000u);
     REQUIRE(block.fallthrough_guest_pc == 0u);
     REQUIRE_FALSE(block.from_cache);
+    REQUIRE(block.direct_patch.available);
+    REQUIRE(block.direct_patch.target_guest_pc == block.target_guest_pc);
+    REQUIRE(block.direct_patch.branch_offset % 4 == 0);
+    REQUIRE(block.direct_patch.branch_offset + 4 <= block.code_size);
+    REQUIRE(block.direct_patch.fallback_offset ==
+            block.direct_patch.branch_offset + 4);
+    const std::uint32_t branch =
+        read_u32(block.code_entry + block.direct_patch.branch_offset);
+    REQUIRE((branch & 0xFC00'0000u) == 0x1400'0000u);
+    REQUIRE((branch & 0x03FF'FFFFu) == 1u);
 
     const auto before = t.stats();
     auto cached = t.lookup_cached(0x3000, loop);
@@ -120,12 +143,29 @@ TEST_CASE("Translator: exposes direct branch metadata and cache probes") {
     REQUIRE(cached->code_entry == block.code_entry);
     REQUIRE(cached->exit_kind == translator::BlockExitKind::JumpRel);
     REQUIRE(cached->target_guest_pc == 0x3000u);
+    REQUIRE(cached->direct_patch.available);
+    REQUIRE(cached->direct_patch.branch_offset ==
+            block.direct_patch.branch_offset);
     REQUIRE(t.stats().cache_hits == before.cache_hits);
     REQUIRE(t.stats().cache_misses == before.cache_misses);
 
     const std::vector<std::uint8_t> stale = {0xEB, 0x00};
     REQUIRE_FALSE(t.lookup_cached(0x3000, stale).has_value());
     REQUIRE_FALSE(t.lookup_cached(0x4000, loop).has_value());
+}
+
+TEST_CASE("Translator: conditional direct exits are not single-slot patchable yet") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> je = {0x74, 0x02};  // je +2
+    auto translated = t.translate(0x8000, je);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(translated));
+
+    const auto& block = std::get<translator::TranslatedBlock>(translated);
+    REQUIRE(block.exit_kind == translator::BlockExitKind::CondJumpRel);
+    REQUIRE(block.target_guest_pc == 0x8004u);
+    REQUIRE(block.fallthrough_guest_pc == 0x8002u);
+    REQUIRE_FALSE(block.direct_patch.available);
 }
 
 TEST_CASE("Translator: modifying guest bytes at same addr triggers re-translation") {

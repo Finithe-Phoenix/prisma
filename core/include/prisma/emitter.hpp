@@ -711,6 +711,11 @@ public:
 
     // --- lifecycle ---
 
+    // Current write cursor in bytes from the start of the code buffer.
+    // Valid before finalize(); used by ABI/JIT patch metadata to point
+    // at a specific instruction word.
+    [[nodiscard]] std::size_t current_offset() const noexcept;
+
     // Finalize the buffer: resolve labels, emit any literal pool, flush
     // internal state. Call exactly once before reading bytes.
     void finalize();

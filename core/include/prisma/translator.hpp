@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -64,6 +65,13 @@ enum class BlockExitKind {
 };
 
 struct TranslatedBlock {
+    struct DirectPatchSite {
+        bool available{false};
+        std::size_t branch_offset{0};
+        std::size_t fallback_offset{0};
+        std::uint64_t target_guest_pc{0};
+    };
+
     // Pointer to the executable code. Owned by the Translator; invalid
     // after Translator destruction or after cache eviction of the key.
     const std::uint8_t* code_entry{nullptr};
@@ -80,6 +88,10 @@ struct TranslatedBlock {
     std::uint64_t target_guest_pc{0};
     std::uint64_t fallthrough_guest_pc{0};
     std::uint64_t return_guest_pc{0};
+    // Optional JIT tail-branch patch site. Present only for direct exits
+    // with one fixed successor; the dispatcher still decides whether it
+    // is safe to apply based on its SMC policy.
+    DirectPatchSite direct_patch{};
 };
 
 using TranslateResult = std::variant<TranslatedBlock, TranslateError>;
@@ -160,6 +172,7 @@ private:
         std::uint64_t target_guest_pc{0};
         std::uint64_t fallthrough_guest_pc{0};
         std::uint64_t return_guest_pc{0};
+        TranslatedBlock::DirectPatchSite direct_patch{};
     };
 
     passes::PassManager           pipeline_;

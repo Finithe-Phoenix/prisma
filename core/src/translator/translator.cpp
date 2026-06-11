@@ -84,6 +84,10 @@ ExitMetadata exit_metadata(const std::vector<ir::Stmt>& body) noexcept {
     }, body.back().op);
 }
 
+bool can_use_patchable_tail(BlockExitKind kind) noexcept {
+    return kind == BlockExitKind::JumpRel || kind == BlockExitKind::CallRel;
+}
+
 // ---------------------------------------------------------------------
 // Block prologue / epilogue (F1-RT-004/005/006 groundwork).
 //
@@ -196,7 +200,8 @@ std::optional<TranslatedBlock> Translator::lookup_cached(
         rec.exit_kind,
         rec.target_guest_pc,
         rec.fallthrough_guest_pc,
-        rec.return_guest_pc};
+        rec.return_guest_pc,
+        rec.direct_patch};
 }
 
 TranslateResult Translator::translate(
@@ -229,7 +234,8 @@ TranslateResult Translator::translate(
                 rec.exit_kind,
                 rec.target_guest_pc,
                 rec.fallthrough_guest_pc,
-                rec.return_guest_pc};
+                rec.return_guest_pc,
+                rec.direct_patch};
         }
         // SMC: the guest bytes at this address changed. Drop the record,
         // drop the persistent cache entry, fall through to retranslate.
@@ -368,7 +374,20 @@ TranslateResult Translator::translate(
     }
 
     // Epilogue: store pinned host regs back to state[], then ret.
-    emit_epilogue_and_ret(em);
+    // Direct exits with exactly one static successor use a patchable tail
+    // slot. It still returns normally until the runtime decides SMC policy
+    // allows patching the branch word to a successor entry point.
+    TranslatedBlock::DirectPatchSite direct_patch{};
+    if (body_has_terminator && can_use_patchable_tail(exit.kind)) {
+        const auto patch = backend::abi::emit_block_epilogue_patchable_tail(em);
+        direct_patch = TranslatedBlock::DirectPatchSite{
+            /*available=*/true,
+            patch.branch_offset,
+            patch.fallback_offset,
+            exit.target_guest_pc};
+    } else {
+        emit_epilogue_and_ret(em);
+    }
     em.finalize();
 
     const auto emitted = em.code_bytes();
@@ -403,7 +422,8 @@ TranslateResult Translator::translate(
         exit.kind,
         exit.target_guest_pc,
         exit.fallthrough_guest_pc,
-        exit.return_guest_pc};
+        exit.return_guest_pc,
+        direct_patch};
 
     ++stats_.cache_misses;  // accounted only on success; see comment above.
     return TranslatedBlock{
@@ -414,7 +434,8 @@ TranslateResult Translator::translate(
         exit.kind,
         exit.target_guest_pc,
         exit.fallthrough_guest_pc,
-        exit.return_guest_pc};
+        exit.return_guest_pc,
+        direct_patch};
 }
 
 }  // namespace prisma::translator
