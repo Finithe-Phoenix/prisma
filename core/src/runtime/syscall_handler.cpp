@@ -28,8 +28,11 @@
 #include <pthread.h>
 
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -289,7 +292,129 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
-        // -- Default: unimplemented -> ENOSYS ----------------------------------
+        case kX64Fchdir: {
+            const int fd = static_cast<int>(a1);
+            result = ::fchdir(fd);
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-020: unlink / rename / mkdir / rmdir -----------------------
+        case kX64Unlink: {
+            const char* path =
+                reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1));
+            result = ::unlink(path);
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Rename: {
+            const char* oldpath =
+                reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1));
+            const char* newpath =
+                reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a2));
+            result = ::rename(oldpath, newpath);
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Mkdir: {
+            const char* path =
+                reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1));
+            result = ::mkdir(path, static_cast<::mode_t>(a2));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Rmdir: {
+            const char* path =
+                reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1));
+            result = ::rmdir(path);
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-021: lseek --------------------------------------------------
+        case kX64Lseek: {
+            result = ::lseek(static_cast<int>(a1), static_cast<::off_t>(a2),
+                             static_cast<int>(a3));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-008: nanosleep ---------------------------------------------
+        case kX64Nanosleep: {
+            const struct ::timespec* req =
+                reinterpret_cast<const struct ::timespec*>(
+                    static_cast<std::uintptr_t>(a1));
+            struct ::timespec* rem =
+                reinterpret_cast<struct ::timespec*>(
+                    static_cast<std::uintptr_t>(a2));
+            result = ::nanosleep(req, rem);
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-013: fcntl -------------------------------------------------
+        case kX64Fcntl: {
+            result = ::fcntl(static_cast<int>(a1), static_cast<int>(a2), a3);
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-022: readv / writev ---------------------------------------
+        case kX64Readv: {
+            result = static_cast<std::int64_t>(::readv(
+                static_cast<int>(a1),
+                reinterpret_cast<const struct ::iovec*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Writev: {
+            result = static_cast<std::int64_t>(::writev(
+                static_cast<int>(a1),
+                reinterpret_cast<const struct ::iovec*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-020: readlink ----------------------------------------------
+        case kX64Readlink: {
+            result = static_cast<std::int64_t>(::readlink(
+                reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1)),
+                reinterpret_cast<char*>(static_cast<std::uintptr_t>(a2)),
+                static_cast<std::size_t>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-009: getppid / getgid / getegid ----------------------------
+        case kX64Getppid:
+            result = static_cast<std::int64_t>(::getppid());
+            break;
+        case kX64Getgid:
+            result = static_cast<std::int64_t>(::getgid());
+            break;
+        case kX64Getegid:
+            result = static_cast<std::int64_t>(::getegid());
+            break;
+
+        // -- F2-SY-008: time --------------------------------------------------
+        case kX64Time: {
+            result = static_cast<std::int64_t>(::time(
+                reinterpret_cast<::time_t*>(static_cast<std::uintptr_t>(a1))));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-014: ioctl (passthrough) -----------------------------------
+        case kX64Ioctl: {
+            result = ::ioctl(static_cast<int>(a1),
+                             static_cast<unsigned long>(a2), a3);
+            if (result < 0) result = -errno;
+            break;
+        }
         default:
             result = -ENOSYS;
             break;
