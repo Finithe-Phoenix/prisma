@@ -287,10 +287,16 @@ fallthrough guest PCs. If the selected successor is already translated
 and the current guest bytes still match the cached content hash, the
 dispatcher executes that cached block immediately. If the successor is
 not cached yet, the dispatcher translates it in-place and continues the
-direct chain without bouncing through the outer dispatch loop. This
-preserves SMC safety, halt-PC checks, return-stack bookkeeping, and step
-limits while leaving deeper in-JIT patching for the next runtime
-optimization stage.
+direct chain without bouncing through the outer dispatch loop.
+
+For `JumpRel` and `CallRel`, the translator emits a patchable AArch64
+tail slot (`b fallback`) after restoring the block ABI. The dispatcher
+may patch that slot to a translated successor, but only as a one-hop
+chain: before entering a patched source it re-reads and hash-checks the
+target bytes, and it unpatches if the target is stale, a halt PC, or
+would consume more steps than remain. This keeps SMC safety, halt-PC
+checks, return-stack bookkeeping, and step limits visible while still
+cutting the C++ dispatch round trip on hot direct edges.
 
 ### Blocker A — REP STOS / MOVSB DoS clamp
 

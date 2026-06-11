@@ -332,6 +332,11 @@ Direct-threading is being staged deliberately:
    values as the outer loop.
 5. Halt-PC checks and `max_steps` must be evaluated before every
    successor execute. Never bypass them for a faster loop.
+6. `JumpRel` and `CallRel` blocks may also expose a patchable AArch64
+   tail branch. The dispatcher can patch only a single hop, verifies the
+   patched target with `lookup_cached(target, current_bytes)` before
+   entering the patched source, and unpatches if the target is stale, a
+   halt PC, or would overrun the remaining step budget.
 
 Useful counters:
 
@@ -339,6 +344,7 @@ Useful counters:
 - `direct_thread_misses`: cached lookup missed for a direct successor.
 - `direct_thread_installs`: direct successor was translated in-place.
 
-The next stage is in-JIT patching of direct branch exits. Keep it
-behind the same SMC hash discipline: no branch may jump to stale code
-after guest bytes change.
+In-JIT direct-exit patching must stay behind the same SMC hash
+discipline: no branch may jump to stale code after guest bytes change.
+Do not permit multi-hop JIT chains until the dispatcher can account an
+arbitrary chain while preserving halt-PC, max-step, and RAS visibility.
