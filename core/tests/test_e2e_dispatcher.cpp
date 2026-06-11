@@ -2789,6 +2789,440 @@ TEST_CASE("e2e: SHA256MSG2 lane chaining vs SDM reference — F2-IR-060") {
     REQUIRE(r.xmm1 == pack(ref_sha256msg2(a, b)));
 }
 
+// ---- F2-IR-060 follow-up: full-digest KATs (FIPS 180-4) ------------
+//
+// The per-instruction tests above pin each SHA-NI op against the SDM
+// in isolation; these run the *canonical* SHA-NI compression loops
+// (the Intel whitepaper register dance, fully unrolled) over real
+// padded messages and compare the final digests against FIPS 180-4
+// known answers. That catches cross-instruction composition bugs —
+// lane-convention mismatches between ops, WK plumbing, schedule
+// chaining — that no single-instruction test can see.
+//
+// Each KAT also evaluates a host-side mirror of the exact same
+// instruction sequence built from the sha_e2e::ref_* SDM models.
+// The mirror is asserted on every host (including x86_64 CI), so a
+// bug in the test's own orchestration is caught everywhere; the JIT
+// half runs under the usual ARM64 guard.
+namespace sha_kat {
+
+using sha_e2e::V4;
+using Bytes = std::vector<std::uint8_t>;
+
+// x86 encodings, registers 0..7 only (no REX needed). Memory operands
+// are always [base + disp32] (mod=10); base must not be rsp/rbp.
+inline std::uint8_t modrm_rr(unsigned reg, unsigned rm) {
+    return static_cast<std::uint8_t>(0xC0u | (reg << 3) | rm);
+}
+inline void emit_mem(Bytes& o, unsigned reg, unsigned base,
+                     std::uint32_t disp) {
+    o.push_back(static_cast<std::uint8_t>(0x80u | (reg << 3) | base));
+    o.push_back(static_cast<std::uint8_t>(disp));
+    o.push_back(static_cast<std::uint8_t>(disp >> 8));
+    o.push_back(static_cast<std::uint8_t>(disp >> 16));
+    o.push_back(static_cast<std::uint8_t>(disp >> 24));
+}
+inline void movdqu_load(Bytes& o, unsigned x, unsigned base,
+                        std::uint32_t d) {
+    o.insert(o.end(), {0xF3, 0x0F, 0x6F}); emit_mem(o, x, base, d);
+}
+inline void movdqa_store(Bytes& o, unsigned x, unsigned base,
+                         std::uint32_t d) {
+    o.insert(o.end(), {0x66, 0x0F, 0x7F}); emit_mem(o, x, base, d);
+}
+inline void movdqa_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x66, 0x0F, 0x6F, modrm_rr(dst, src)});
+}
+inline void paddd_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x66, 0x0F, 0xFE, modrm_rr(dst, src)});
+}
+inline void paddd_mem(Bytes& o, unsigned dst, unsigned base,
+                      std::uint32_t d) {
+    o.insert(o.end(), {0x66, 0x0F, 0xFE}); emit_mem(o, dst, base, d);
+}
+inline void pshufd_rr(Bytes& o, unsigned dst, unsigned src,
+                      std::uint8_t imm) {
+    o.insert(o.end(), {0x66, 0x0F, 0x70, modrm_rr(dst, src), imm});
+}
+inline void palignr_rr(Bytes& o, unsigned dst, unsigned src,
+                       std::uint8_t imm) {
+    o.insert(o.end(), {0x66, 0x0F, 0x3A, 0x0F, modrm_rr(dst, src), imm});
+}
+inline void pxor_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x66, 0x0F, 0xEF, modrm_rr(dst, src)});
+}
+inline void sha256rnds2(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCB, modrm_rr(dst, src)});
+}
+inline void sha256msg1(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCC, modrm_rr(dst, src)});
+}
+inline void sha256msg2(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCD, modrm_rr(dst, src)});
+}
+inline void sha1rnds4(Bytes& o, unsigned dst, unsigned src,
+                      std::uint8_t imm) {
+    o.insert(o.end(), {0x0F, 0x3A, 0xCC, modrm_rr(dst, src), imm});
+}
+inline void sha1nexte_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xC8, modrm_rr(dst, src)});
+}
+inline void sha1nexte_mem(Bytes& o, unsigned dst, unsigned base,
+                          std::uint32_t d) {
+    o.insert(o.end(), {0x0F, 0x38, 0xC8}); emit_mem(o, dst, base, d);
+}
+inline void sha1msg1(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xC9, modrm_rr(dst, src)});
+}
+inline void sha1msg2(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCA, modrm_rr(dst, src)});
+}
+
+constexpr unsigned kRcx = 1;  // -> K constant table (SHA-256 only)
+constexpr unsigned kRdx = 2;  // -> schedule words, 16 dwords per block
+constexpr unsigned kRbx = 3;  // -> 32-byte per-block state-save scratch
+
+// FIPS 180-4 §5.1.1 padding (shared by SHA-1 / SHA-256): append 0x80,
+// zero-fill to 56 mod 64, then the 64-bit big-endian bit length.
+// Returns the schedule words W (big-endian dwords re-parsed to native),
+// 16 per block.
+inline std::vector<std::uint32_t> pad_to_words(const char* msg,
+                                               std::size_t len) {
+    std::vector<std::uint8_t> bytes(msg, msg + len);
+    const std::uint64_t bit_len = static_cast<std::uint64_t>(len) * 8u;
+    bytes.push_back(0x80u);
+    while (bytes.size() % 64u != 56u) bytes.push_back(0x00u);
+    for (int i = 7; i >= 0; --i) {
+        bytes.push_back(static_cast<std::uint8_t>(bit_len >> (8 * i)));
+    }
+    std::vector<std::uint32_t> w(bytes.size() / 4u);
+    for (std::size_t i = 0; i < w.size(); ++i) {
+        w[i] = (std::uint32_t{bytes[4 * i]} << 24) |
+               (std::uint32_t{bytes[4 * i + 1]} << 16) |
+               (std::uint32_t{bytes[4 * i + 2]} << 8) |
+               std::uint32_t{bytes[4 * i + 3]};
+    }
+    return w;
+}
+
+inline V4 lane_add(const V4& a, const V4& b) {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]};
+}
+inline V4 lane_xor(const V4& a, const V4& b) {
+    return {a[0] ^ b[0], a[1] ^ b[1], a[2] ^ b[2], a[3] ^ b[3]};
+}
+// PALIGNR dst, src, 4 == lanes {src[1], src[2], src[3], dst[0]}.
+inline V4 alignr4(const V4& dst, const V4& src) {
+    return {src[1], src[2], src[3], dst[0]};
+}
+inline V4 unpack(std::uint64_t lo, std::uint64_t hi) {
+    return {static_cast<std::uint32_t>(lo),
+            static_cast<std::uint32_t>(lo >> 32),
+            static_cast<std::uint32_t>(hi),
+            static_cast<std::uint32_t>(hi >> 32)};
+}
+
+alignas(16) constexpr std::uint32_t kSha256K[64] = {
+    0x428A2F98u, 0x71374491u, 0xB5C0FBCFu, 0xE9B5DBA5u, 0x3956C25Bu,
+    0x59F111F1u, 0x923F82A4u, 0xAB1C5ED5u, 0xD807AA98u, 0x12835B01u,
+    0x243185BEu, 0x550C7DC3u, 0x72BE5D74u, 0x80DEB1FEu, 0x9BDC06A7u,
+    0xC19BF174u, 0xE49B69C1u, 0xEFBE4786u, 0x0FC19DC6u, 0x240CA1CCu,
+    0x2DE92C6Fu, 0x4A7484AAu, 0x5CB0A9DCu, 0x76F988DAu, 0x983E5152u,
+    0xA831C66Du, 0xB00327C8u, 0xBF597FC7u, 0xC6E00BF3u, 0xD5A79147u,
+    0x06CA6351u, 0x14292967u, 0x27B70A85u, 0x2E1B2138u, 0x4D2C6DFCu,
+    0x53380D13u, 0x650A7354u, 0x766A0ABBu, 0x81C2C92Eu, 0x92722C85u,
+    0xA2BFE8A1u, 0xA81A664Bu, 0xC24B8B70u, 0xC76C51A3u, 0xD192E819u,
+    0xD6990624u, 0xF40E3585u, 0x106AA070u, 0x19A4C116u, 0x1E376C08u,
+    0x2748774Cu, 0x34B0BCB5u, 0x391C0CB3u, 0x4ED8AA4Au, 0x5B9CCA4Fu,
+    0x682E6FF3u, 0x748F82EEu, 0x78A5636Fu, 0x84C87814u, 0x8CC70208u,
+    0x90BEFFFAu, 0xA4506CEBu, 0xBEF9A3F7u, 0xC67178F2u};
+
+// Canonical unrolled SHA-NI SHA-256 compression for `blocks` blocks.
+// Register convention (Intel whitepaper): xmm1 = {ABEF} (A in lane 3),
+// xmm2 = {CDGH}, xmm0 = WK, xmm3-6 = schedule, xmm7 = palignr temp.
+// `jmp +0` between blocks keeps each translated block modest.
+inline Bytes gen_sha256(unsigned blocks) {
+    Bytes o;
+    const unsigned M[4] = {3, 4, 5, 6};
+    for (unsigned b = 0; b < blocks; ++b) {
+        if (b != 0) o.insert(o.end(), {0xEB, 0x00});
+        movdqa_store(o, 1, kRbx, 0);
+        movdqa_store(o, 2, kRbx, 16);
+        for (unsigned j = 0; j < 4; ++j) {
+            movdqu_load(o, M[j], kRdx, 64u * b + 16u * j);
+        }
+        for (unsigned g = 0; g < 16; ++g) {
+            movdqa_rr(o, 0, M[g % 4]);
+            paddd_mem(o, 0, kRcx, 16u * g);   // xmm0 = W + K
+            sha256rnds2(o, 2, 1);             // rounds 4g, 4g+1
+            pshufd_rr(o, 0, 0, 0x0E);         // WK2/WK3 into lanes 0,1
+            sha256rnds2(o, 1, 2);             // rounds 4g+2, 4g+3
+            if (g < 12) {                     // W[4(g+4)..4(g+4)+3]
+                movdqa_rr(o, 7, M[(g + 3) % 4]);
+                palignr_rr(o, 7, M[(g + 2) % 4], 4);
+                sha256msg1(o, M[g % 4], M[(g + 1) % 4]);
+                paddd_rr(o, M[g % 4], 7);
+                sha256msg2(o, M[g % 4], M[(g + 3) % 4]);
+            }
+        }
+        paddd_mem(o, 1, kRbx, 0);
+        paddd_mem(o, 2, kRbx, 16);
+    }
+    return o;
+}
+
+// Host-side mirror of gen_sha256 built on the sha_e2e::ref_* models —
+// same register dance, same lane conventions, no JIT.
+inline void host_sha256(const std::uint32_t* w, unsigned blocks,
+                        V4& abef, V4& cdgh) {
+    using sha_e2e::ref_sha256rnds2;
+    using sha_e2e::ref_sha256msg1;
+    using sha_e2e::ref_sha256msg2;
+    for (unsigned b = 0; b < blocks; ++b) {
+        const V4 abef0 = abef, cdgh0 = cdgh;
+        V4 m[4];
+        for (unsigned j = 0; j < 4; ++j) {
+            const std::uint32_t* p = w + 16u * b + 4u * j;
+            m[j] = {p[0], p[1], p[2], p[3]};
+        }
+        for (unsigned g = 0; g < 16; ++g) {
+            const V4 k = {kSha256K[4 * g], kSha256K[4 * g + 1],
+                          kSha256K[4 * g + 2], kSha256K[4 * g + 3]};
+            const V4 wk = lane_add(m[g % 4], k);
+            cdgh = ref_sha256rnds2(cdgh, abef, wk[0], wk[1]);
+            abef = ref_sha256rnds2(abef, cdgh, wk[2], wk[3]);
+            if (g < 12) {
+                const V4 t = alignr4(m[(g + 3) % 4], m[(g + 2) % 4]);
+                m[g % 4] = ref_sha256msg2(
+                    lane_add(ref_sha256msg1(m[g % 4], m[(g + 1) % 4]), t),
+                    m[(g + 3) % 4]);
+            }
+        }
+        abef = lane_add(abef, abef0);
+        cdgh = lane_add(cdgh, cdgh0);
+    }
+}
+
+// Canonical unrolled SHA-NI SHA-1 compression. xmm1 = {ABCD} (A in
+// lane 3); xmm2/xmm3 ping-pong the E+W operand (the sha1nexte chain);
+// xmm4-7 = schedule with W0-in-lane-3 group order. K is implicit in
+// SHA1RNDS4's immediate, so there is no constant table.
+inline Bytes gen_sha1(unsigned blocks) {
+    Bytes o;
+    const unsigned M[4] = {4, 5, 6, 7};
+    for (unsigned b = 0; b < blocks; ++b) {
+        if (b != 0) o.insert(o.end(), {0xEB, 0x00});
+        movdqa_store(o, 1, kRbx, 0);   // {ABCD} save
+        movdqa_store(o, 2, kRbx, 16);  // {0,0,0,E} save
+        for (unsigned j = 0; j < 4; ++j) {
+            movdqu_load(o, M[j], kRdx, 64u * b + 16u * j);
+        }
+        for (unsigned g = 0; g < 20; ++g) {
+            const unsigned e_cur = (g % 2 == 0) ? 2 : 3;
+            const unsigned e_nxt = (g % 2 == 0) ? 3 : 2;
+            if (g == 0) {
+                paddd_rr(o, e_cur, M[0]);  // {0,0,0,E} + {W0..W3}
+            } else {
+                sha1nexte_rr(o, e_cur, M[g % 4]);
+            }
+            movdqa_rr(o, e_nxt, 1);        // ABCD snapshot for group g+1
+            sha1rnds4(o, 1, e_cur, static_cast<std::uint8_t>(g / 5));
+            if (g < 16) {                  // W[4(g+4)..4(g+4)+3]
+                sha1msg1(o, M[g % 4], M[(g + 1) % 4]);
+                pxor_rr(o, M[g % 4], M[(g + 2) % 4]);
+                sha1msg2(o, M[g % 4], M[(g + 3) % 4]);
+            }
+        }
+        // Group 19's snapshot (pre-final-rnds4 ABCD) sits in xmm2;
+        // E' = saved E + rol30(its lane 3) via nexte against the save.
+        sha1nexte_mem(o, 2, kRbx, 16);
+        paddd_mem(o, 1, kRbx, 0);
+    }
+    return o;
+}
+
+// Host-side mirror of gen_sha1 on the sha_e2e::ref_* models.
+inline void host_sha1(const std::uint32_t* w, unsigned blocks,
+                      V4& abcd, V4& e_vec) {
+    using sha_e2e::ref_sha1rnds4;
+    using sha_e2e::ref_sha1nexte;
+    using sha_e2e::ref_sha1msg1;
+    using sha_e2e::ref_sha1msg2;
+    for (unsigned b = 0; b < blocks; ++b) {
+        const V4 abcd0 = abcd, e0_save = e_vec;
+        V4 m[4];
+        for (unsigned j = 0; j < 4; ++j) {
+            const std::uint32_t* p = w + 16u * b + 4u * j;
+            m[j] = {p[3], p[2], p[1], p[0]};  // W0 in lane 3
+        }
+        V4 e[2] = {e_vec, {}};
+        for (unsigned g = 0; g < 20; ++g) {
+            const unsigned cur = g % 2, nxt = 1 - cur;
+            if (g == 0) {
+                e[cur] = lane_add(e[cur], m[0]);
+            } else {
+                e[cur] = ref_sha1nexte(e[cur], m[g % 4]);
+            }
+            e[nxt] = abcd;
+            abcd = ref_sha1rnds4(abcd, e[cur], g / 5);
+            if (g < 16) {
+                m[g % 4] = ref_sha1msg2(
+                    lane_xor(ref_sha1msg1(m[g % 4], m[(g + 1) % 4]),
+                             m[(g + 2) % 4]),
+                    m[(g + 3) % 4]);
+            }
+        }
+        e_vec = ref_sha1nexte(e[0], e0_save);
+        abcd = lane_add(abcd, abcd0);
+    }
+}
+
+struct JitState {
+    V4 xmm1;
+    V4 xmm2;
+    bool halted;
+};
+
+// Runs the generated program + RET with rcx/rdx/rbx and xmm1/xmm2
+// seeded, returning the final state registers.
+inline JitState run_kat(Bytes body, std::uint64_t k_ptr,
+                        std::uint64_t msg_ptr, std::uint64_t scratch_ptr,
+                        sha_e2e::Xmm x1, sha_e2e::Xmm x2) {
+    translator::Translator tx;
+    body.push_back(0xC3);  // ret
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rcx] = k_ptr;
+    disp.state()[ir::Gpr::Rdx] = msg_ptr;
+    disp.state()[ir::Gpr::Rbx] = scratch_ptr;
+    disp.state().xmm[1].lo = x1.first; disp.state().xmm[1].hi = x1.second;
+    disp.state().xmm[2].lo = x2.first; disp.state().xmm[2].hi = x2.second;
+    auto r = disp.run(0x4000, 16);
+    return {unpack(disp.state().xmm[1].lo, disp.state().xmm[1].hi),
+            unpack(disp.state().xmm[2].lo, disp.state().xmm[2].hi),
+            r.exit == runtime::DispatchExit::Halted};
+}
+
+struct Kat {
+    const char* msg;
+    std::size_t len;
+};
+
+// FIPS 180-4 / NIST CAVP known answers: empty, "abc" (one block),
+// and the 448-bit two-block message.
+constexpr const char* kTwoBlockMsg =
+    "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+constexpr Kat kKats[3] = {{"", 0}, {"abc", 3}, {kTwoBlockMsg, 56}};
+
+constexpr std::uint32_t kSha256Expected[3][8] = {
+    {0xE3B0C442u, 0x98FC1C14u, 0x9AFBF4C8u, 0x996FB924u,
+     0x27AE41E4u, 0x649B934Cu, 0xA495991Bu, 0x7852B855u},
+    {0xBA7816BFu, 0x8F01CFEAu, 0x414140DEu, 0x5DAE2223u,
+     0xB00361A3u, 0x96177A9Cu, 0xB410FF61u, 0xF20015ADu},
+    {0x248D6A61u, 0xD20638B8u, 0xE5C02693u, 0x0C3E6039u,
+     0xA33CE459u, 0x64FF2167u, 0xF6ECEDD4u, 0x19DB06C1u}};
+
+constexpr std::uint32_t kSha1Expected[3][5] = {
+    {0xDA39A3EEu, 0x5E6B4B0Du, 0x3255BFEFu, 0x95601890u, 0xAFD80709u},
+    {0xA9993E36u, 0x4706816Au, 0xBA3E2571u, 0x7850C26Cu, 0x9CD0D89Du},
+    {0x84983E44u, 0x1C3BD26Eu, 0xBAAE4AA1u, 0xF95129E5u, 0xE54670F1u}};
+
+}  // namespace sha_kat
+
+TEST_CASE("e2e: SHA-256 full-digest KAT via canonical SHA-NI loop "
+          "— F2-IR-060") {
+    using namespace sha_kat;
+    const V4 iv_abef = {0x9B05688Cu, 0x510E527Fu, 0xBB67AE85u, 0x6A09E667u};
+    const V4 iv_cdgh = {0x5BE0CD19u, 0x1F83D9ABu, 0xA54FF53Au, 0x3C6EF372u};
+    for (std::size_t k = 0; k < 3; ++k) {
+        INFO("message #" << k << " (" << kKats[k].len << " bytes)");
+        const auto w = pad_to_words(kKats[k].msg, kKats[k].len);
+        const unsigned blocks = static_cast<unsigned>(w.size() / 16u);
+
+        // Host-side mirror first: validates the loop orchestration on
+        // every host, ARM64 or not.
+        V4 abef = iv_abef, cdgh = iv_cdgh;
+        host_sha256(w.data(), blocks, abef, cdgh);
+        const std::uint32_t host_digest[8] = {
+            abef[3], abef[2], cdgh[3], cdgh[2],
+            abef[1], abef[0], cdgh[1], cdgh[0]};
+        for (int i = 0; i < 8; ++i) {
+            REQUIRE(host_digest[i] == kSha256Expected[k][i]);
+        }
+
+        if constexpr (!is_arm64) continue;
+
+        // JIT half: schedule words and K live in host memory the
+        // guest addresses through rdx / rcx; rbx points at the
+        // per-block state-save scratch.
+        alignas(16) std::uint32_t scratch[8] = {};
+        const auto body = gen_sha256(blocks);
+        auto r = run_kat(body,
+                         reinterpret_cast<std::uint64_t>(kSha256K),
+                         reinterpret_cast<std::uint64_t>(w.data()),
+                         reinterpret_cast<std::uint64_t>(scratch),
+                         sha_e2e::pack(iv_abef), sha_e2e::pack(iv_cdgh));
+        REQUIRE(r.halted);
+        const std::uint32_t jit_digest[8] = {
+            r.xmm1[3], r.xmm1[2], r.xmm2[3], r.xmm2[2],
+            r.xmm1[1], r.xmm1[0], r.xmm2[1], r.xmm2[0]};
+        for (int i = 0; i < 8; ++i) {
+            REQUIRE(jit_digest[i] == kSha256Expected[k][i]);
+        }
+    }
+}
+
+TEST_CASE("e2e: SHA-1 full-digest KAT via canonical SHA-NI loop "
+          "— F2-IR-060") {
+    using namespace sha_kat;
+    const V4 iv_abcd = {0x10325476u, 0x98BADCFEu, 0xEFCDAB89u, 0x67452301u};
+    const V4 iv_e = {0u, 0u, 0u, 0xC3D2E1F0u};
+    for (std::size_t k = 0; k < 3; ++k) {
+        INFO("message #" << k << " (" << kKats[k].len << " bytes)");
+        const auto w = pad_to_words(kKats[k].msg, kKats[k].len);
+        const unsigned blocks = static_cast<unsigned>(w.size() / 16u);
+
+        V4 abcd = iv_abcd, e_vec = iv_e;
+        host_sha1(w.data(), blocks, abcd, e_vec);
+        const std::uint32_t host_digest[5] = {
+            abcd[3], abcd[2], abcd[1], abcd[0], e_vec[3]};
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(host_digest[i] == kSha1Expected[k][i]);
+        }
+
+        if constexpr (!is_arm64) continue;
+
+        // SHA-1 message registers carry W0 in lane 3, so the guest
+        // buffer stores each 4-word group reversed.
+        std::vector<std::uint32_t> guest_w(w.size());
+        for (std::size_t g = 0; g < w.size() / 4u; ++g) {
+            for (std::size_t j = 0; j < 4u; ++j) {
+                guest_w[4 * g + j] = w[4 * g + (3 - j)];
+            }
+        }
+        alignas(16) std::uint32_t scratch[8] = {};
+        const auto body = gen_sha1(blocks);
+        auto r = run_kat(body, /*k_ptr=*/0,
+                         reinterpret_cast<std::uint64_t>(guest_w.data()),
+                         reinterpret_cast<std::uint64_t>(scratch),
+                         sha_e2e::pack(iv_abcd), sha_e2e::pack(iv_e));
+        REQUIRE(r.halted);
+        const std::uint32_t jit_digest[5] = {
+            r.xmm1[3], r.xmm1[2], r.xmm1[1], r.xmm1[0], r.xmm2[3]};
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(jit_digest[i] == kSha1Expected[k][i]);
+        }
+    }
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
