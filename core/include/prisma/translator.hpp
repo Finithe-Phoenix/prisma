@@ -65,6 +65,7 @@ enum class BlockExitKind {
 struct TranslatedBlock {
     struct DirectPatchSite {
         bool available{false};
+        bool auto_patch_safe{false};
         std::size_t branch_offset{0};
         std::size_t fallback_offset{0};
         std::uint64_t target_guest_pc{0};

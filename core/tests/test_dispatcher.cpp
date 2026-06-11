@@ -229,6 +229,24 @@ TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",
     REQUIRE(r.stats.direct_thread_installs == 1);
 }
 
+TEST_CASE("Dispatcher: halt PC wins over exact step-limit exhaustion",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) { SUCCEED("skipped"); return; }
+
+    // 0x4050: EB 0E  jmp +14 -> 0x4060
+    GuestMemory mem;
+    mem.segments[0x4050] = {0xEB, 0x0E};
+
+    translator::Translator t;
+    runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+    d.add_halt_pc(0x4060);
+
+    auto r = d.run(0x4050, 1);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(r.final_pc == 0x4060u);
+    REQUIRE(r.stats.blocks_executed == 1);
+}
+
 TEST_CASE("Dispatcher: fetch failure when PC leaves known memory",
           "[arm64-only]") {
     if constexpr (!is_arm64) { SUCCEED("skipped"); return; }

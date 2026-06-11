@@ -107,6 +107,7 @@ TEST_CASE("Translator: exposes call/return terminator metadata") {
     REQUIRE(bc.exit_kind == translator::BlockExitKind::CallRel);
     REQUIRE(bc.return_guest_pc == 0x1005u);
     REQUIRE(bc.direct_patch.available);
+    REQUIRE_FALSE(bc.direct_patch.auto_patch_safe);
     REQUIRE(bc.direct_patch.target_guest_pc == bc.target_guest_pc);
     REQUIRE(bc.direct_patch.branch_offset + 4 <= bc.code_size);
     REQUIRE(bc.direct_patch.fallback_offset ==
@@ -133,6 +134,7 @@ TEST_CASE("Translator: exposes direct branch metadata and cache probes") {
     REQUIRE(block.fallthrough_guest_pc == 0u);
     REQUIRE_FALSE(block.from_cache);
     REQUIRE(block.direct_patch.available);
+    REQUIRE(block.direct_patch.auto_patch_safe);
     REQUIRE(block.direct_patch.target_guest_pc == block.target_guest_pc);
     REQUIRE(block.direct_patch.branch_offset % 4 == 0);
     REQUIRE(block.direct_patch.branch_offset + 4 <= block.code_size);
@@ -173,6 +175,27 @@ TEST_CASE("Translator: conditional direct exits are not single-slot patchable ye
     REQUIRE(block.target_guest_pc == 0x8004u);
     REQUIRE(block.fallthrough_guest_pc == 0x8002u);
     REQUIRE_FALSE(block.direct_patch.available);
+}
+
+TEST_CASE("Translator: guest-memory writes keep direct patch slots manual-only") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> store_then_jump = {
+        0x48, 0x89, 0x18,  // mov [rax], rbx
+        0xEB, 0x00,        // jmp +0 -> 0xD005
+    };
+    auto translated = t.translate(0xD000, store_then_jump);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(translated));
+    const auto& block = std::get<translator::TranslatedBlock>(translated);
+    REQUIRE(block.exit_kind == translator::BlockExitKind::JumpRel);
+    REQUIRE(block.direct_patch.available);
+    REQUIRE_FALSE(block.direct_patch.auto_patch_safe);
+
+    const std::vector<std::uint8_t> target = {0xC3};
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(
+        t.translate(0xD005, target)));
+    REQUIRE(t.patch_direct_exit(0xD000, 0xD005) ==
+            translator::DirectPatchResult::SourceNotPatchable);
 }
 
 TEST_CASE("Translator: direct-exit patch API patches and restores the tail slot") {

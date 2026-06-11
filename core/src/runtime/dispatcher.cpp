@@ -212,6 +212,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                     ++stats.direct_thread_installs;
                 }
                 if (threading_block->direct_patch.available
+                    && threading_block->direct_patch.auto_patch_safe
                     && threading_block->direct_patch.target_guest_pc == pc
                     && halt_pcs_.count(pc) == 0) {
                     (void)translator_.patch_direct_exit(threading_pc, pc);
@@ -222,6 +223,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
 
             ++stats.direct_thread_hits;
             if (threading_block->direct_patch.available
+                && threading_block->direct_patch.auto_patch_safe
                 && threading_block->direct_patch.target_guest_pc == pc
                 && halt_pcs_.count(pc) == 0) {
                 (void)translator_.patch_direct_exit(threading_pc, pc);
@@ -231,6 +233,9 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
     }
 
     stats.unique_pcs_seen = seen_pcs.size();
+    if (halt_pcs_.count(pc) != 0) {
+        return {DispatchExit::Halted, pc, stats, {}};
+    }
     return {DispatchExit::StepLimit, pc, stats, {}};
 }
 

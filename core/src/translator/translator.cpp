@@ -89,6 +89,30 @@ bool can_use_patchable_tail(BlockExitKind kind) noexcept {
     return kind == BlockExitKind::JumpRel || kind == BlockExitKind::CallRel;
 }
 
+bool op_may_write_guest_memory(const ir::Op& op) noexcept {
+    return std::visit([](const auto& inner) noexcept {
+        using T = std::decay_t<decltype(inner)>;
+        return std::is_same_v<T, ir::StoreMem>
+            || std::is_same_v<T, ir::StoreMemTSO>
+            || std::is_same_v<T, ir::StoreVec>
+            || std::is_same_v<T, ir::CallRel>
+            || std::is_same_v<T, ir::CallReg>
+            || std::is_same_v<T, ir::RepStos>
+            || std::is_same_v<T, ir::RepMovs>
+            || std::is_same_v<T, ir::InlineAsm>;
+    }, op);
+}
+
+bool body_may_write_guest_memory(
+    const std::vector<ir::Stmt>& body) noexcept {
+    for (const auto& stmt : body) {
+        if (op_may_write_guest_memory(stmt.op)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------
 // Block prologue / epilogue (F1-RT-004/005/006 groundwork).
 //
@@ -203,6 +227,9 @@ DirectPatchResult Translator::patch_direct_exit(
     Record& source = source_it->second;
     const Record& target = target_it->second;
     if (!source.direct_patch.available) {
+        return DirectPatchResult::SourceNotPatchable;
+    }
+    if (!source.direct_patch.auto_patch_safe) {
         return DirectPatchResult::SourceNotPatchable;
     }
     if (source.direct_patch.target_guest_pc != target_guest_pc) {
@@ -526,6 +553,7 @@ TranslateResult Translator::translate(
         const auto patch = backend::abi::emit_block_epilogue_patchable_tail(em);
         direct_patch = TranslatedBlock::DirectPatchSite{
             /*available=*/true,
+            /*auto_patch_safe=*/!body_may_write_guest_memory(body),
             patch.branch_offset,
             patch.fallback_offset,
             exit.target_guest_pc};
