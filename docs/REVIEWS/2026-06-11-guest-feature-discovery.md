@@ -43,9 +43,9 @@ territory; this record is the two-eyes mechanism per CONTRIBUTING.md.
 - Debug suite: 973/973 (x86_64 container); ASan/UBSan green.
 - New coverage: decoder (XGETBV, VZEROUPPER, VZEROALL, vvvv reject,
   3× VEX-scalar vvvv-merge pins), lowering (XGETBV flag-free shape),
-  serialize/cfg/profiler/zydis for the new op, e2e (XGETBV EDX:EAX +
-  RBX survival, VZERO xmm/ymm_hi matrix, CPUID vendor + leaf-1 bits
-  + AESNI gating + BMI2).
+  serialize/cfg/profiler/zydis for the new op, e2e (XGETBV EDX:EAX
+  with RBX survival, VZERO xmm/ymm_hi matrix, CPUID vendor, leaf-1
+  bits, AESNI gating, BMI2).
 
 ## External reviews
 
