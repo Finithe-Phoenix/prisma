@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 
 #include "prisma/cpu_state.hpp"
@@ -89,6 +90,66 @@ enum X64Sysno : std::uint64_t {
 
 }  // namespace prisma::runtime
 
+// F2-SY-038: strace-like syscall logger. Check PRISMA_STRACE env var once.
+static bool strace_enabled() noexcept {
+    static const bool enabled = []() noexcept {
+        const char* v = std::getenv("PRISMA_STRACE");
+        return v != nullptr && v[0] != '\0';
+    }();
+    return enabled;
+}
+
+static const char* syscall_name(std::uint64_t n) noexcept {
+    using namespace prisma::runtime;
+    switch (n) {
+        case kX64Read:        return "read";
+        case kX64Write:       return "write";
+        case kX64Open:        return "open";
+        case kX64Close:       return "close";
+        case kX64Stat:        return "stat";
+        case kX64Fstat:       return "fstat";
+        case kX64Lstat:       return "lstat";
+        case kX64Lseek:       return "lseek";
+        case kX64Mmap:        return "mmap";
+        case kX64Mprotect:    return "mprotect";
+        case kX64Munmap:      return "munmap";
+        case kX64Brk:         return "brk";
+        case kX64RtSigaction: return "rt_sigaction";
+        case kX64RtSigprocmask: return "rt_sigprocmask";
+        case kX64Ioctl:       return "ioctl";
+        case kX64Readv:       return "readv";
+        case kX64Writev:      return "writev";
+        case kX64Dup:         return "dup";
+        case kX64Dup2:        return "dup2";
+        case kX64Nanosleep:   return "nanosleep";
+        case kX64Fcntl:       return "fcntl";
+        case kX64Getcwd:      return "getcwd";
+        case kX64Chdir:       return "chdir";
+        case kX64Fchdir:      return "fchdir";
+        case kX64Rename:      return "rename";
+        case kX64Mkdir:       return "mkdir";
+        case kX64Rmdir:       return "rmdir";
+        case kX64Unlink:      return "unlink";
+        case kX64Readlink:    return "readlink";
+        case kX64Getpid:      return "getpid";
+        case kX64Getuid:      return "getuid";
+        case kX64Geteuid:     return "geteuid";
+        case kX64Gettid:      return "gettid";
+        case kX64Getppid:     return "getppid";
+        case kX64Getgid:      return "getgid";
+        case kX64Getegid:     return "getegid";
+        case kX64Exit:        return "exit";
+        case kX64ExitGroup:   return "exit_group";
+        case kX64Uname:       return "uname";
+        case kX64Getdents:    return "getdents";
+        case kX64Getdents64:  return "getdents64";
+        case kX64ClockGettime: return "clock_gettime";
+        case kX64Gettimeofday: return "gettimeofday";
+        case kX64Time:        return "time";
+        default:              return "???";
+    }
+}
+
 extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     using namespace prisma::runtime;
     using ir::Gpr;
@@ -102,6 +163,17 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     const std::uint64_t a6 = state->gpr[static_cast<std::size_t>(Gpr::R9)];
 
     std::int64_t result = 0;
+
+    if (strace_enabled()) {
+        std::fprintf(stderr, "[prisma-strace] %s(%llu, %llu, %llu, %llu, %llu, %llu) = ",
+                     syscall_name(sysno),
+                     static_cast<unsigned long long>(a1),
+                     static_cast<unsigned long long>(a2),
+                     static_cast<unsigned long long>(a3),
+                     static_cast<unsigned long long>(a4),
+                     static_cast<unsigned long long>(a5),
+                     static_cast<unsigned long long>(a6));
+    }
 
     switch (sysno) {
         // -- F2-SY-002: minimal stdio ------------------------------------------
@@ -418,6 +490,10 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
         default:
             result = -ENOSYS;
             break;
+    }
+
+    if (strace_enabled()) {
+        std::fprintf(stderr, "%lld\n", static_cast<long long>(result));
     }
 
     state->gpr[static_cast<std::size_t>(Gpr::Rax)] = static_cast<std::uint64_t>(result);
