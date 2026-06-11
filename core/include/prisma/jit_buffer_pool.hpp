@@ -37,53 +37,69 @@ inline constexpr std::size_t kBlockAlignment = 16u;  // 16-byte aligned starts
 // need the translated code to be reachable; pass back to `release` when
 // done (no-op today).
 struct JitBlock {
-    const std::uint8_t* entry{nullptr};   // first byte of the region
-    std::size_t         size_bytes{0};    // capacity, not used count
-    std::size_t         slab_index{0};    // for `release`
-    std::size_t         offset_in_slab{0};
+  const std::uint8_t* entry{nullptr};  // first byte of the region
+  std::size_t size_bytes{0};           // capacity, not used count
+  std::size_t slab_index{0};           // for `release`
+  std::size_t offset_in_slab{0};
 };
 
 struct JitPoolStats {
-    std::size_t total_slabs{0};
-    std::size_t total_bytes_allocated{0};   // sum of slab sizes
-    std::size_t total_bytes_used{0};        // sum of acquired regions
-    std::size_t acquire_count{0};
+  std::size_t total_slabs{0};
+  std::size_t total_bytes_allocated{0};  // sum of slab sizes
+  std::size_t total_bytes_used{0};       // sum of acquired regions
+  std::size_t acquire_count{0};
+};
+
+enum class JitPatchResult {
+  Patched,
+  SiteNotOwned,
+  Unaligned,
+  OutOfRange,
 };
 
 class JitSlabPool {
-public:
-    JitSlabPool();
-    ~JitSlabPool();
+ public:
+  JitSlabPool();
+  ~JitSlabPool();
 
-    JitSlabPool(const JitSlabPool&)            = delete;
-    JitSlabPool& operator=(const JitSlabPool&) = delete;
-    JitSlabPool(JitSlabPool&&)                 = delete;
-    JitSlabPool& operator=(JitSlabPool&&)      = delete;
+  JitSlabPool(const JitSlabPool&) = delete;
+  JitSlabPool& operator=(const JitSlabPool&) = delete;
+  JitSlabPool(JitSlabPool&&) = delete;
+  JitSlabPool& operator=(JitSlabPool&&) = delete;
 
-    // Carve out a region of at least `bytes` and copy `src` into it.
-    // Returns a JitBlock pointing at the (now executable) entry.
-    // Throws std::bad_alloc on slab-allocation failure. `bytes` is
-    // rounded up to kBlockAlignment.
-    [[nodiscard]] JitBlock acquire(std::span<const std::uint8_t> src);
+  // Carve out a region of at least `bytes` and copy `src` into it.
+  // Returns a JitBlock pointing at the (now executable) entry.
+  // Throws std::bad_alloc on slab-allocation failure. `bytes` is
+  // rounded up to kBlockAlignment.
+  [[nodiscard]] JitBlock acquire(std::span<const std::uint8_t> src);
 
-    // No-op today. Reserved for the future free-list reuse pass.
-    void release(JitBlock blk) noexcept;
+  // No-op today. Reserved for the future free-list reuse pass.
+  void release(JitBlock blk) noexcept;
 
-    [[nodiscard]] JitPoolStats stats() const;
+  // Patch one 4-byte AArch64 unconditional `b target` instruction
+  // inside an already-acquired block. This is the primitive future
+  // direct-threading uses for block exits after the dispatcher has
+  // hash-checked the successor. The method only validates ownership,
+  // alignment, and the architectural +/-128 MiB branch range; higher
+  // layers still own SMC invalidation policy.
+  [[nodiscard]] JitPatchResult patch_aarch64_branch(const JitBlock& block, std::size_t offset,
+                                                    const std::uint8_t* target);
 
-private:
-    struct Slab {
-        std::uint8_t* base{nullptr};
-        std::size_t   capacity{0};
-        std::size_t   cursor{0};   // next free byte offset
-    };
+  [[nodiscard]] JitPoolStats stats() const;
 
-    [[nodiscard]] Slab allocate_slab(std::size_t bytes);
-    void               free_slab(Slab& s) noexcept;
+ private:
+  struct Slab {
+    std::uint8_t* base{nullptr};
+    std::size_t capacity{0};
+    std::size_t cursor{0};  // next free byte offset
+  };
 
-    mutable std::mutex      mu_;
-    std::vector<Slab>       slabs_;
-    JitPoolStats            stats_{};
+  [[nodiscard]] Slab allocate_slab(std::size_t bytes);
+  void free_slab(Slab& s) noexcept;
+
+  mutable std::mutex mu_;
+  std::vector<Slab> slabs_;
+  JitPoolStats stats_{};
 };
 
 }  // namespace prisma::runtime
