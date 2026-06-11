@@ -18,6 +18,10 @@
 
 #include "prisma/passes.hpp"
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -90,15 +94,32 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
             return (a >> n) | (a << (64 - n));
         }
         case ir::BinOpKind::UMulHi: {
-            const __uint128_t prod =
-                static_cast<__uint128_t>(a) * static_cast<__uint128_t>(b);
+#if defined(__SIZEOF_INT128__)
+            const unsigned __int128 prod =
+                static_cast<unsigned __int128>(a) * static_cast<unsigned __int128>(b);
             return static_cast<std::uint64_t>(prod >> 64);
+#elif defined(_M_X64)
+            std::uint64_t hi;
+            _umul128(a, b, &hi);
+            return hi;
+#else
+            return 0;
+#endif
         }
         case ir::BinOpKind::SMulHi: {
-            const __int128_t prod =
-                static_cast<__int128_t>(static_cast<std::int64_t>(a)) *
-                static_cast<__int128_t>(static_cast<std::int64_t>(b));
+#if defined(__SIZEOF_INT128__)
+            const __int128 prod =
+                static_cast<__int128>(static_cast<std::int64_t>(a)) *
+                static_cast<__int128>(static_cast<std::int64_t>(b));
             return static_cast<std::uint64_t>(prod >> 64);
+#elif defined(_M_X64)
+            std::int64_t hi;
+            _mul128(static_cast<std::int64_t>(a),
+                    static_cast<std::int64_t>(b), &hi);
+            return static_cast<std::uint64_t>(hi);
+#else
+            return 0;
+#endif
         }
         case ir::BinOpKind::UDiv: {
             if (b == 0) return 0;  // ARM64 udiv returns 0 on /0.

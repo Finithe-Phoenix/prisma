@@ -19,7 +19,6 @@ bool is_terminator(const Op& op) noexcept {
         || std::holds_alternative<Trap>(op)
         || std::holds_alternative<Cpuid>(op)
         || std::holds_alternative<Xgetbv>(op)
-        || std::holds_alternative<Syscall>(op)
         || std::holds_alternative<InlineAsm>(op)
         || std::holds_alternative<CondJumpFlags>(op)
         || std::holds_alternative<RepStos>(op)

@@ -12,12 +12,17 @@
 
 #include <csetjmp>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
 #include "prisma/emitter.hpp"
 #include "prisma/jit_memory.hpp"
 #include "prisma/signal_handler.hpp"
+#include "prisma/smc_guard.hpp"
+
+#include <sys/mman.h>
+#include <unistd.h>
 
 using namespace prisma;
 
@@ -28,6 +33,62 @@ constexpr bool is_arm64 =
 #else
     false;
 #endif
+
+std::size_t host_page() {
+    long v = ::sysconf(_SC_PAGESIZE);
+    return v > 0 ? static_cast<std::size_t>(v) : 4096;
+}
+
+class MappedPage {
+public:
+    MappedPage() {
+        bytes_ = host_page();
+        void* p = ::mmap(nullptr, bytes_,
+                         PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS,
+                         -1, 0);
+        REQUIRE(p != MAP_FAILED);
+        ptr_ = static_cast<std::uint8_t*>(p);
+    }
+    ~MappedPage() {
+        if (ptr_ != nullptr) {
+            ::munmap(ptr_, bytes_);
+        }
+    }
+
+    [[nodiscard]] std::uint8_t* data() const noexcept { return ptr_; }
+    [[nodiscard]] std::uint64_t addr() const noexcept {
+        return reinterpret_cast<std::uint64_t>(ptr_);
+    }
+
+private:
+    std::uint8_t* ptr_{nullptr};
+    std::size_t bytes_{0};
+};
+
+struct SmcCallbackState {
+    volatile std::sig_atomic_t calls{0};
+    volatile std::sig_atomic_t key{0};
+};
+
+void record_smc_invalidation(std::uint64_t cache_key, void* ctx) noexcept {
+    auto* state = static_cast<SmcCallbackState*>(ctx);
+    state->key = static_cast<std::sig_atomic_t>(cache_key);
+    ++state->calls;
+}
+
+class SmcSignalScope {
+public:
+    explicit SmcSignalScope(runtime::SmcGuard& guard) {
+        runtime::set_global_smc_guard(&guard);
+    }
+    ~SmcSignalScope() {
+        runtime::clear_smc_invalidate_callback();
+        runtime::set_global_smc_guard(nullptr);
+    }
+    SmcSignalScope(const SmcSignalScope&) = delete;
+    SmcSignalScope& operator=(const SmcSignalScope&) = delete;
+};
 }  // namespace
 
 TEST_CASE("signal_handler: SIGSEGV recovery via setjmp/longjmp") {
@@ -46,6 +107,28 @@ TEST_CASE("signal_handler: SIGSEGV recovery via setjmp/longjmp") {
         // Resumed after the fault.
         REQUIRE(runtime::last_fault_kind() == runtime::FaultKind::Segv);
     }
+}
+
+TEST_CASE("signal_handler: SmcGuard fault invokes the invalidate callback") {
+    runtime::install_handlers();
+
+    MappedPage page;
+    runtime::SmcGuard guard;
+    SmcSignalScope scope(guard);
+
+    SmcCallbackState state{};
+    runtime::set_smc_invalidate_callback(&record_smc_invalidation, &state);
+
+    constexpr std::uint64_t kCacheKey = 77;
+    guard.on_translate(page.addr(), /*guest_byte_len=*/16, kCacheKey);
+    REQUIRE(guard.is_tracked(page.addr()));
+
+    page.data()[0] = 0x5A;
+
+    REQUIRE(page.data()[0] == 0x5A);
+    REQUIRE(state.calls == 1);
+    REQUIRE(state.key == static_cast<std::sig_atomic_t>(kCacheKey));
+    REQUIRE_FALSE(guard.is_tracked(page.addr()));
 }
 
 TEST_CASE("signal_handler: SIGILL recovery from an illegal ARM64 instruction",

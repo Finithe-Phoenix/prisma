@@ -68,15 +68,26 @@ function(prisma_add_vixl TARGET_NAME)
         VIXL_CODE_BUFFER_MALLOC
     )
 
-    # vixl source is C++14-compatible but our project is C++20; downgrade
-    # standard just for vixl to match their testing.
-    target_compile_features(${TARGET_NAME} PRIVATE cxx_std_14)
+    # vixl source requires C++17 as of 2026. Match the project's C++20
+    # baseline by setting at least C++17.
+    set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD 17)
+    set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD_REQUIRED ON)
+
+    # On MSVC, __cplusplus defaults to 199711L unless /Zc:__cplusplus is
+    # passed. vixl checks `__cplusplus >= 201703L` to require C++17, so we
+    # must enable the MSVC conformance mode flag here.
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>
+    )
 
     # vixl's own code style triggers warnings that our core would treat as
     # errors. Fully neutralise warnings for vixl translation units — this is
     # third-party code, we audit by version-pinning not by lint.
-    # -w disables all warnings in clang/gcc.
-    target_compile_options(${TARGET_NAME} PRIVATE -w)
+    # -w disables all warnings in clang/gcc; /W0 does the same on MSVC.
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-w>
+        $<$<CXX_COMPILER_ID:MSVC>:/W0>
+    )
 
     # Consumers expect to include headers as `<aarch64/macro-assembler-aarch64.h>`.
     # vixl's layout supports that via `src/aarch64/` being an include dir.

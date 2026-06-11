@@ -46,7 +46,11 @@
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
 
+namespace prisma::runtime { struct CpuStateFrame; }
+
 namespace prisma::backend {
+
+using SyscallHandlerFn = void (*)(runtime::CpuStateFrame*);
 
 enum class LowerError {
     UnsupportedOp,       // IR op we do not lower yet (e.g. Compare, Jump).
@@ -102,6 +106,12 @@ struct LowerOptions {
     std::uint32_t cpuid_leaf1_edx{0};
     std::uint32_t cpuid_leaf7_ebx{0};
     std::uint64_t xgetbv_xcr0{0};
+
+    // Syscall dispatch: when non-null, `Syscall` IR ops emit a `blr` to
+    // this function instead of halting. The handler receives the guest
+    // CpuStateFrame, reads guest registers (RAX = sysno, etc.), performs
+    // the host operation, and writes results back to the frame.
+    SyscallHandlerFn syscall_handler{nullptr};
 };
 
 class Lowerer {

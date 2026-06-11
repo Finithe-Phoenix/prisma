@@ -682,6 +682,13 @@ public:
     // most-recent flag-producing instruction (CmpFlags in our IR).
     void branch_cc(Label label, ir::CondCode cc);
 
+    // Branch with link to register: `blr rn`. Calls the function at the
+    // address in `rn` using AAPCS64 calling convention. x30 (LR) is set
+    // to the return address; callee-saved registers (x19-x29) are
+    // preserved by the callee; caller-saved registers (x0-x17) may be
+    // clobbered and must be saved by the caller as needed.
+    void blr(arm64::Reg rn);
+
     // Compare-and-branch on a 64-bit register without touching NZCV.
     // `cbnz(r, label)` branches when r != 0; `cbz` when r == 0. These
     // are how we lower `CondJump{cond_ref, true, false}` where the

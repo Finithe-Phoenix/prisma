@@ -2243,6 +2243,10 @@ void Emitter::branch_cc(Label label, ir::CondCode cc) {
     impl_->masm.B(impl_->labels[label.id - 1].get(), to_vixl_cond(cc));
 }
 
+void Emitter::blr(arm64::Reg rn) {
+    impl_->masm.Blr(to_vixl_x(rn));
+}
+
 void Emitter::cbnz(arm64::Reg r, Label label) {
     if (label.id == 0 || label.id > impl_->labels.size()) return;
     impl_->masm.Cbnz(to_vixl_x(r), impl_->labels[label.id - 1].get());

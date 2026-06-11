@@ -20,8 +20,10 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 
 #include "prisma/smc_guard.hpp"
 
@@ -32,6 +34,9 @@ namespace {
 // Per-thread recovery state.
 thread_local std::jmp_buf* tls_current_jb = nullptr;
 thread_local FaultKind     tls_last_fault = FaultKind::None;
+
+std::atomic<SmcInvalidateCallback> g_smc_invalidate_callback{nullptr};
+std::atomic<void*> g_smc_invalidate_ctx{nullptr};
 
 // Map POSIX signal numbers to our FaultKind enum.
 FaultKind fault_for_signal(int sig) noexcept {
@@ -57,13 +62,14 @@ void prisma_sig_handler(int sig, siginfo_t* info, void* /*ctx*/) {
     if (sig == SIGSEGV && info != nullptr) {
         SmcGuard* g = global_smc_guard();
         if (g != nullptr) {
-            // The cache wiring lives in a future commit. The handler
-            // currently consumes the fault if the address belongs to a
-            // tracked page; the no-op callback means cache entries are
-            // forgotten by the SmcGuard but the cache itself is not
-            // notified yet. Translator integration (separate change)
-            // will replace this with a real invalidate hook.
-            const auto cb = [](std::uint64_t) {};
+            const auto cb = [](std::uint64_t cache_key) {
+                auto* ctx = g_smc_invalidate_ctx.load(std::memory_order_acquire);
+                auto callback =
+                    g_smc_invalidate_callback.load(std::memory_order_acquire);
+                if (callback != nullptr) {
+                    callback(cache_key, ctx);
+                }
+            };
             if (g->handle_fault(info->si_addr, cb)) {
                 // The page is now RW; returning from the signal handler
                 // re-runs the faulting instruction.
@@ -100,6 +106,17 @@ void install_one(int sig) {
 }
 
 }  // namespace
+
+void set_smc_invalidate_callback(SmcInvalidateCallback callback,
+                                 void* ctx) noexcept {
+    g_smc_invalidate_ctx.store(ctx, std::memory_order_release);
+    g_smc_invalidate_callback.store(callback, std::memory_order_release);
+}
+
+void clear_smc_invalidate_callback() noexcept {
+    g_smc_invalidate_callback.store(nullptr, std::memory_order_release);
+    g_smc_invalidate_ctx.store(nullptr, std::memory_order_release);
+}
 
 void install_handlers() {
     install_one(SIGSEGV);

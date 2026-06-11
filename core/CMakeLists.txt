@@ -24,6 +24,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# MSVC's __cplusplus defaults to 199711L even with /std:c++20 unless
+# /Zc:__cplusplus is passed. Libraries like vixl check __cplusplus to
+# require C++17, so enable this globally.
+if(MSVC)
+    add_compile_options(/Zc:__cplusplus)
+endif()
+
 # RFC 0014: the static prisma_* libraries link into the prisma_core_c
 # shared library consumed by the Rust shell, so everything builds PIC.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -38,14 +45,17 @@ endif()
 
 add_library(prisma_warnings INTERFACE)
 target_compile_options(prisma_warnings INTERFACE
-    -Wall -Wextra -Wpedantic
-    -Wshadow -Wconversion -Wsign-conversion
-    -Wold-style-cast -Wnon-virtual-dtor
-    -Wcast-align -Wunused -Woverloaded-virtual
-    -Wnull-dereference -Wdouble-promotion
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:
+        -Wall -Wextra -Wpedantic
+        -Wshadow -Wconversion -Wsign-conversion
+        -Wold-style-cast -Wnon-virtual-dtor
+        -Wcast-align -Wunused -Woverloaded-virtual
+        -Wnull-dereference -Wdouble-promotion
+    >
 )
 if(PRISMA_WARNINGS_AS_ERRORS)
-    target_compile_options(prisma_warnings INTERFACE -Werror)
+    target_compile_options(prisma_warnings INTERFACE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Werror>)
 endif()
 
 # When sanitizers are enabled below, they attach to prisma_warnings so every
@@ -202,6 +212,7 @@ add_library(prisma_runtime STATIC
     src/runtime/host_features.cpp
     src/runtime/smc_guard.cpp
     src/runtime/guest_signal.cpp
+    src/runtime/syscall_handler.cpp
 )
 
 target_include_directories(prisma_runtime

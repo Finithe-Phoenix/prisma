@@ -820,10 +820,44 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Syscall>) {
-            // Conservative placeholder: terminate the current block and
-            // return the halt sentinel until the syscall layer exists.
-            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
-            if (options_.emit_ret_on_terminator) emitter_.ret();
+            // Save caller-saved pinned guest regs (x10-x17 = guest
+            // rax..rdi) back to the state frame so the C++ handler sees
+            // the current guest register values (args in RDI/RSI/RDX).
+            // The callee-saved regs (x19-x26 = guest r8..r15) are
+            // preserved across the AAPCS64 blr call automatically.
+            // x27 is the state pointer (abi::kStatePtrReg).
+            for (std::size_t i = 0; i < 8; ++i) {
+                const auto g = static_cast<ir::Gpr>(i);
+                const auto host = arm64::host_reg_for(g);
+                const std::int32_t off =
+                    runtime::CpuStateFrame::gpr_offset_bytes(g);
+                emitter_.store_offset(host, arm64::Reg::X27, off);
+            }
+
+            // If a syscall handler has been configured, emit blr to it.
+            // The handler reads guest regs from the state frame, performs
+            // the host operation, and writes results (including RAX / CF)
+            // back to the frame.
+            if (options_.syscall_handler) {
+                const std::uint64_t fn_addr =
+                    reinterpret_cast<std::uint64_t>(options_.syscall_handler);
+                // Use x9 (first scratch reg) as the call target.
+                // All x0-x9 are caller-saved and will be clobbered by
+                // the called function anyway.
+                emitter_.mov_imm64(arm64::Reg::X9, fn_addr);
+                emitter_.blr(arm64::Reg::X9);
+            }
+
+            // Reload caller-saved pinned guest regs from the state frame
+            // so the host registers reflect any changes the handler made
+            // (most importantly RAX = return value).
+            for (std::size_t i = 0; i < 8; ++i) {
+                const auto g = static_cast<ir::Gpr>(i);
+                const auto host = arm64::host_reg_for(g);
+                const std::int32_t off =
+                    runtime::CpuStateFrame::gpr_offset_bytes(g);
+                emitter_.load_offset(host, arm64::Reg::X27, off);
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {

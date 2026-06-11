@@ -18,6 +18,7 @@
 #include "prisma/ir.hpp"
 #include "prisma/jit_buffer_pool.hpp"
 #include "prisma/lowering.hpp"
+#include "prisma/syscall_handler.hpp"
 
 namespace prisma::translator {
 
@@ -532,6 +533,7 @@ TranslateResult Translator::translate(
     // XCR0: x87 + SSE + AVX state enabled — what XGETBV(0) reports,
     // matching the OSXSAVE + AVX bits above.
     lopts.xgetbv_xcr0 = 0x7u;
+    lopts.syscall_handler = runtime::prisma_syscall_handler;
     backend::Lowerer lw(em, lopts);
     auto lr = lw.lower(body);
     if (!lr.success) {
