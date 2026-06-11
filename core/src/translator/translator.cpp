@@ -212,6 +212,10 @@ DirectPatchResult Translator::patch_direct_exit(
         direct_patch_incoming_[target_guest_pc].insert(source_guest_pc);
         return DirectPatchResult::Ok;
     }
+    if (has_incoming_direct_patch(source_guest_pc)
+        || target.direct_patch_applied) {
+        return DirectPatchResult::WouldCreateChain;
+    }
 
     const auto patched = pool_->patch_aarch64_branch(
         source.jit_block,
@@ -267,6 +271,36 @@ bool Translator::direct_exit_is_patched(
     return it != by_addr_.end() && it->second.direct_patch_applied;
 }
 
+std::optional<TranslatedBlock> Translator::active_direct_patch_target(
+    std::uint64_t source_guest_pc) const {
+    auto source_it = by_addr_.find(source_guest_pc);
+    if (source_it == by_addr_.end()) {
+        return std::nullopt;
+    }
+
+    const Record& source = source_it->second;
+    if (!source.direct_patch_applied) {
+        return std::nullopt;
+    }
+
+    auto target_it = by_addr_.find(source.direct_patch.target_guest_pc);
+    if (target_it == by_addr_.end()) {
+        return std::nullopt;
+    }
+
+    const Record& rec = target_it->second;
+    return TranslatedBlock{
+        rec.entry,
+        rec.code_size,
+        rec.guest_size,
+        /*from_cache=*/true,
+        rec.exit_kind,
+        rec.target_guest_pc,
+        rec.fallthrough_guest_pc,
+        rec.return_guest_pc,
+        rec.direct_patch};
+}
+
 void Translator::unpatch_incoming_to(std::uint64_t target_guest_pc) {
     auto incoming = direct_patch_incoming_.find(target_guest_pc);
     if (incoming == direct_patch_incoming_.end()) {
@@ -281,6 +315,13 @@ void Translator::unpatch_incoming_to(std::uint64_t target_guest_pc) {
     for (std::uint64_t source : sources) {
         (void)unpatch_direct_exit(source);
     }
+}
+
+bool Translator::has_incoming_direct_patch(
+    std::uint64_t target_guest_pc) const {
+    auto incoming = direct_patch_incoming_.find(target_guest_pc);
+    return incoming != direct_patch_incoming_.end()
+        && !incoming->second.empty();
 }
 
 std::optional<TranslatedBlock> Translator::lookup_cached(

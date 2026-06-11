@@ -101,6 +101,7 @@ enum class DirectPatchResult {
     SourceNotPatchable,
     TargetMismatch,
     SelfTarget,
+    WouldCreateChain,
     PatchFailed,
 };
 
@@ -143,6 +144,8 @@ public:
     [[nodiscard]] DirectPatchResult unpatch_direct_exit(
         std::uint64_t source_guest_pc);
     [[nodiscard]] bool direct_exit_is_patched(
+        std::uint64_t source_guest_pc) const;
+    [[nodiscard]] std::optional<TranslatedBlock> active_direct_patch_target(
         std::uint64_t source_guest_pc) const;
 
     // Override the pass pipeline. Defaults to passes::default_pipeline().
@@ -198,6 +201,8 @@ private:
     };
 
     void unpatch_incoming_to(std::uint64_t target_guest_pc);
+    [[nodiscard]] bool has_incoming_direct_patch(
+        std::uint64_t target_guest_pc) const;
 
     passes::PassManager           pipeline_;
     passes::FunctionPassManager   function_pipeline_;

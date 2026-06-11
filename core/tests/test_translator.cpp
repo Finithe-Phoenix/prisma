@@ -261,6 +261,38 @@ TEST_CASE("Translator: retranslation unpatches stale incoming direct exits") {
     REQUIRE(read_u32(site) == 0x1400'0001u);
 }
 
+TEST_CASE("Translator: direct-exit patches reject multi-hop chains") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> a_to_b = {0xEB, 0x0E};  // 0xC000 -> 0xC010
+    const std::vector<std::uint8_t> b_to_c = {0xEB, 0x0E};  // 0xC010 -> 0xC020
+    const std::vector<std::uint8_t> c = {0xC3};
+
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(
+        t.translate(0xC000, a_to_b)));
+    auto b_result = t.translate(0xC010, b_to_c);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(b_result));
+    const auto b_block = std::get<translator::TranslatedBlock>(b_result);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(
+        t.translate(0xC020, c)));
+
+    REQUIRE(t.patch_direct_exit(0xC000, 0xC010) ==
+            translator::DirectPatchResult::Ok);
+    auto active = t.active_direct_patch_target(0xC000);
+    REQUIRE(active.has_value());
+    REQUIRE(active->code_entry == b_block.code_entry);
+
+    REQUIRE(t.patch_direct_exit(0xC010, 0xC020) ==
+            translator::DirectPatchResult::WouldCreateChain);
+
+    REQUIRE(t.unpatch_direct_exit(0xC000) ==
+            translator::DirectPatchResult::Ok);
+    REQUIRE(t.patch_direct_exit(0xC010, 0xC020) ==
+            translator::DirectPatchResult::Ok);
+    REQUIRE(t.patch_direct_exit(0xC000, 0xC010) ==
+            translator::DirectPatchResult::WouldCreateChain);
+}
+
 TEST_CASE("Translator: modifying guest bytes at same addr triggers re-translation") {
     const std::vector<std::uint8_t> v1 = {
         0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

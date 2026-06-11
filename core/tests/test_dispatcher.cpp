@@ -181,6 +181,31 @@ TEST_CASE("Dispatcher: step limit trips when the program loops forever",
     REQUIRE(r.stats.direct_thread_installs == 0);
 }
 
+TEST_CASE("Dispatcher: one-hop JIT patches preserve the block step budget",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) { SUCCEED("skipped"); return; }
+
+    // 0x3100: EB 0E  jmp +14 -> 0x3110
+    // 0x3110: EB EE  jmp -18 -> 0x3100
+    //
+    // The dispatcher may patch 0x3100 -> 0x3110, but it must still
+    // account both blocks and stop exactly at max_steps.
+    GuestMemory mem;
+    mem.segments[0x3100] = {0xEB, 0x0E};
+    mem.segments[0x3110] = {0xEB, 0xEE};
+
+    translator::Translator t;
+    runtime::Dispatcher d(t, [&](std::uint64_t pc) { return mem.read(pc); });
+
+    auto r = d.run(0x3100, /*max_steps=*/6);
+    REQUIRE(r.exit == runtime::DispatchExit::StepLimit);
+    REQUIRE(r.stats.blocks_executed == 6);
+    REQUIRE(r.stats.steps_taken == 6);
+    REQUIRE(r.final_pc == 0x3100u);
+    REQUIRE(t.direct_exit_is_patched(0x3100));
+    REQUIRE_FALSE(t.direct_exit_is_patched(0x3110));
+}
+
 TEST_CASE("Dispatcher: custom halt PC stops even without a guest RET",
           "[arm64-only]") {
     if constexpr (!is_arm64) { SUCCEED("skipped"); return; }

@@ -2,6 +2,7 @@
 
 #include "prisma/dispatcher.hpp"
 
+#include <optional>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -69,6 +70,43 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
     state_.guest_pc = pc;
 
     std::size_t step = 0;
+    auto account_executed =
+        [&](std::uint64_t executed_pc,
+            const translator::TranslatedBlock& executed_block,
+            std::uint64_t observed_next_pc) {
+            if (executed_block.exit_kind == translator::BlockExitKind::CallRel
+                || executed_block.exit_kind == translator::BlockExitKind::CallReg) {
+                ++stats.ras_pushes;
+                if (return_stack_depth_ == return_stack_.size()) {
+                    return_stack_[return_stack_.size() - 1] =
+                        executed_block.return_guest_pc;
+                    ++stats.ras_overflows;
+                } else {
+                    return_stack_[return_stack_depth_++] =
+                        executed_block.return_guest_pc;
+                }
+            } else if (executed_block.exit_kind
+                       == translator::BlockExitKind::RetAdjusted) {
+                ++stats.ras_pops;
+                if (return_stack_depth_ == 0) {
+                    ++stats.ras_underflows;
+                } else {
+                    const std::uint64_t predicted =
+                        return_stack_[--return_stack_depth_];
+                    if (predicted == observed_next_pc) {
+                        ++stats.ras_hits;
+                    } else {
+                        ++stats.ras_misses;
+                    }
+                }
+            }
+
+            ++stats.blocks_executed;
+            ++stats.steps_taken;
+            seen_pcs.insert(executed_pc);
+            ++step;
+        };
+
     while (step < max_steps) {
         // Halt-before-execute so the caller can configure halt PCs that
         // include the entry.
@@ -94,38 +132,56 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
             std::get<translator::TranslatedBlock>(r);
 
         while (true) {
-            const std::uint64_t next_pc = execute_block(block, state_);
-
-            if (block.exit_kind == translator::BlockExitKind::CallRel
-                || block.exit_kind == translator::BlockExitKind::CallReg) {
-                ++stats.ras_pushes;
-                if (return_stack_depth_ == return_stack_.size()) {
-                    return_stack_[return_stack_.size() - 1] = block.return_guest_pc;
-                    ++stats.ras_overflows;
-                } else {
-                    return_stack_[return_stack_depth_++] = block.return_guest_pc;
-                }
-            } else if (block.exit_kind == translator::BlockExitKind::RetAdjusted) {
-                ++stats.ras_pops;
-                if (return_stack_depth_ == 0) {
-                    ++stats.ras_underflows;
-                } else {
-                    const std::uint64_t predicted =
-                        return_stack_[--return_stack_depth_];
-                    if (predicted == next_pc) {
-                        ++stats.ras_hits;
+            const std::uint64_t source_pc = pc;
+            std::uint64_t patched_target_pc = 0;
+            std::optional<translator::TranslatedBlock> patched_target =
+                translator_.active_direct_patch_target(source_pc);
+            if (patched_target) {
+                patched_target_pc = block.direct_patch.target_guest_pc;
+                bool keep_patch =
+                    (max_steps - step >= 2)
+                    && halt_pcs_.count(patched_target_pc) == 0;
+                if (keep_patch) {
+                    const auto target_bytes = reader_(patched_target_pc);
+                    if (target_bytes.empty()) {
+                        keep_patch = false;
                     } else {
-                        ++stats.ras_misses;
+                        auto verified =
+                            translator_.lookup_cached(patched_target_pc,
+                                                      target_bytes);
+                        keep_patch = verified.has_value()
+                            && verified->code_entry == patched_target->code_entry;
+                        if (keep_patch) {
+                            patched_target = *verified;
+                        }
                     }
+                }
+                if (!keep_patch) {
+                    if (translator_.unpatch_direct_exit(source_pc)
+                        != translator::DirectPatchResult::Ok) {
+                        stats.unique_pcs_seen = seen_pcs.size();
+                        return {DispatchExit::TranslationFailed, source_pc, stats,
+                                "failed to unpatch a direct JIT branch"};
+                    }
+                    patched_target.reset();
                 }
             }
 
-            ++stats.blocks_executed;
-            ++stats.steps_taken;
-            seen_pcs.insert(pc);
-            ++step;
+            const std::uint64_t next_pc = execute_block(block, state_);
 
-            const bool can_thread = direct_thread_candidate(block, next_pc);
+            const translator::TranslatedBlock* threading_block = &block;
+            std::uint64_t threading_pc = source_pc;
+            if (patched_target) {
+                account_executed(source_pc, block, patched_target_pc);
+                account_executed(patched_target_pc, *patched_target, next_pc);
+                threading_block = &*patched_target;
+                threading_pc = patched_target_pc;
+            } else {
+                account_executed(source_pc, block, next_pc);
+            }
+
+            const bool can_thread =
+                direct_thread_candidate(*threading_block, next_pc);
             pc = next_pc;
             state_.guest_pc = pc;
 
@@ -149,16 +205,27 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                     return {DispatchExit::TranslationFailed, pc, stats,
                             "translator rejected the guest region"};
                 }
-                block = std::get<translator::TranslatedBlock>(installed);
-                if (block.from_cache) {
+                auto successor = std::get<translator::TranslatedBlock>(installed);
+                if (successor.from_cache) {
                     ++stats.direct_thread_hits;
                 } else {
                     ++stats.direct_thread_installs;
                 }
+                if (threading_block->direct_patch.available
+                    && threading_block->direct_patch.target_guest_pc == pc
+                    && halt_pcs_.count(pc) == 0) {
+                    (void)translator_.patch_direct_exit(threading_pc, pc);
+                }
+                block = successor;
                 continue;
             }
 
             ++stats.direct_thread_hits;
+            if (threading_block->direct_patch.available
+                && threading_block->direct_patch.target_guest_pc == pc
+                && halt_pcs_.count(pc) == 0) {
+                (void)translator_.patch_direct_exit(threading_pc, pc);
+            }
             block = *cached;
         }
     }
