@@ -580,13 +580,17 @@ std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     // architectural accumulator writeback for the failure path.
     d.stmts.push_back({ref_new_rax, ir::Select{ir::CondCode::Eq, ref_rax_full, ref_dst, ir::OpSize::I64}});
 
+    // Accumulator writeback FIRST: when the r/m operand aliases RAX
+    // (cmpxchg rax, rcx) the compare always succeeds and the dst
+    // write must win — SDM order is accumulator-then-DEST (Codex
+    // review finding).
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
     if (m.mod == 0b11u) {
         d.stmts.push_back(
             {std::nullopt, ir::StoreReg{m.base, ref_new_dst, size}});
     } else {
         d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_new_dst, size}});
     }
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
     d.bytes_consumed = cursor;
     return d;
 }
@@ -679,6 +683,14 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
 // the 16B form this uses one 64-bit TSO load/store, so the data
 // access has the same atomicity story as every other I64 access.
 // On success EDX:EAX are not written (upper RAX/RDX preserved).
+//
+// KNOWN LIMITATION (whole atomics family, queued): the load/Select/
+// store split is not a true CAS — a concurrent guest writer between
+// the load and the store can be lost/reverted. Today's guests are
+// single-threaded; the real-atomic lowering (LSE casal, which the
+// emitter already exposes) needs a first-class Cas IR op and is the
+// Pillar-3 era work item. Flags: only ZF is architecturally defined;
+// CmpFlags also rewrites C/N/V (documented divergence).
 std::variant<Decoded, DecodeError> decode_cmpxchg8b_m64(
     std::span<const Byte> bytes,
     std::size_t& cursor,
@@ -785,20 +797,23 @@ std::variant<Decoded, DecodeError> decode_xadd_rm_r(
     d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), size}});
 
     const ir::Ref ref_dst = next_ref++;
+    // SDM order: SRC ← DEST first, DEST ← TEMP last, so the DEST
+    // write wins when both operands alias the same register
+    // (xadd rax, rax must double RAX).
     if (m.mod == 0b11u) {
         d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
         const ir::Ref ref_sum = next_ref++;
         d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
-        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_sum, size}});
         d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_sum, size}});
     } else {
         const ir::Ref ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
         d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, size}});
         const ir::Ref ref_sum = next_ref++;
         d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
-        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_sum, size}});
         d.stmts.push_back(
             {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_sum, size}});
     }
     d.bytes_consumed = cursor;
     return d;
@@ -7112,10 +7127,14 @@ std::variant<Decoded, DecodeError> decode_one(
                 d.stmts.push_back({r_res, ir::Tzcnt{r_src, size}});
             }
             if (subop == 0xB8u) {
+                // Compare the RESULT against zero: same ZF as the
+                // architectural src==0 rule, and N = sign(count) = 0
+                // matches the SDM clearing SF (Codex review finding —
+                // comparing src left N = sign(src)).
                 const ir::Ref r_zero = next_ref++;
                 d.stmts.push_back({r_zero, ir::Constant{0u, size}});
                 d.stmts.push_back({std::nullopt,
-                    ir::CmpFlags{r_src, r_zero, size}});
+                    ir::CmpFlags{r_res, r_zero, size}});
             }
             d.stmts.push_back({std::nullopt,
                 ir::StoreReg{dst_gpr, r_res, size}});

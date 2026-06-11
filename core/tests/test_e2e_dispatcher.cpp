@@ -3551,6 +3551,30 @@ TEST_CASE("e2e: CMPXCHG8B success and failure paths + ZF direction") {
     }
 }
 
+TEST_CASE("e2e: CMPXCHG with rm aliasing RAX takes the dst write") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    // cmpxchg rax, rcx (48 0F B1 C8): rm = rax → compare always
+    // succeeds and RAX must end up = RCX (Codex review finding: the
+    // unconditional accumulator writeback used to win).
+    static const std::vector<std::uint8_t> body{0x48, 0x0F, 0xB1, 0xC8,
+                                                0xC3};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rax] = 0x1234u;
+    disp.state()[ir::Gpr::Rcx] = 0x5678u;
+    auto r = disp.run(0x4000, 4);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 0x5678u);
+}
+
 TEST_CASE("e2e: BSF/BSR real results + src==0 preserves dst") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     auto run_scan = [](std::vector<std::uint8_t> body, std::uint64_t rax,

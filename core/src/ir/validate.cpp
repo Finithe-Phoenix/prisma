@@ -209,7 +209,11 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecFpFma>
             || std::is_same_v<T, VecFpScalarFma>
             || std::is_same_v<T, X87Load>
-            || std::is_same_v<T, X87Pop>;
+            || std::is_same_v<T, X87Pop>
+            // Result-bearing but NOT optimizable-pure: the time
+            // source must keep its result slot (DCE/CSE handle it
+            // separately by never listing it).
+            || std::is_same_v<T, Rdtsc>;
     }, op);
 }
 

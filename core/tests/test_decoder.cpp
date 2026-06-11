@@ -1621,8 +1621,9 @@ TEST_CASE("decode CMPXCHG rbx, rcx via 48 0F B1 CB as compare-exchange sequence"
             ir::Op{ir::Select{ir::CondCode::Eq, 2u, 3u, ir::OpSize::I64}});
     REQUIRE(d.stmts[6].op ==
             ir::Op{ir::Select{ir::CondCode::Eq, 1u, 3u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 4u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[8].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 5u, ir::OpSize::I64}});
+    // Accumulator first, dst last (rm-aliases-RAX correctness).
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 4u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode CMPXCHG [rbx + 0x10], rcx via 48 0F B1 4B 10") {
@@ -1643,8 +1644,8 @@ TEST_CASE("decode CMPXCHG [rbx + 0x10], rcx via 48 0F B1 4B 10") {
             ir::Op{ir::Select{ir::CondCode::Eq, 2u, 6u, ir::OpSize::I64}});
     REQUIRE(d.stmts[9].op ==
             ir::Op{ir::Select{ir::CondCode::Eq, 1u, 6u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[10].op == ir::Op{ir::StoreMemTSO{5u, 7u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[11].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 8u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[10].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 8u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[11].op == ir::Op{ir::StoreMemTSO{5u, 7u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode CMPXCHG16B [rsi] via 48 0F C7 0E as 128-bit compare-exchange placeholder") {
@@ -1700,8 +1701,9 @@ TEST_CASE("decode XADD rbx, rcx via 48 0F C1 CB as exchange-add sequence") {
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[3].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 2u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+    // SRC ← DEST first, DEST ← TEMP last (same-register aliasing).
+    REQUIRE(d.stmts[3].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 2u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode XADD [rbx + 0x10], rcx via 48 0F C1 4B 10") {
@@ -1720,8 +1722,9 @@ TEST_CASE("decode XADD [rbx + 0x10], rcx via 48 0F C1 4B 10") {
     REQUIRE(d.stmts[4].op == ir::Op{ir::LoadMemTSO{4u, ir::OpSize::I64}});
     REQUIRE(d.stmts[5].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreMemTSO{4u, 5u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+    // SRC ← DEST first, DEST ← TEMP last.
+    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreMemTSO{4u, 5u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode LOCK CMPXCHG [rbx + 0x10], rcx reuses the same IR") {
