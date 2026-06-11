@@ -13,6 +13,7 @@
 #include "prisma/cfg.hpp"
 #include "prisma/cpu_state.hpp"
 #include "prisma/emitter.hpp"
+#include "prisma/host_features.hpp"
 #include "prisma/ir.hpp"
 #include "prisma/jit_buffer_pool.hpp"
 #include "prisma/lowering.hpp"
@@ -293,7 +294,23 @@ TranslateResult Translator::translate(
     // (Return / JumpRel / JumpReg / CondJumpRel) put the next-PC in x0 but
     // ret yet — the epilogue needs to run between the terminator's
     // "set x0" and the final `ret`.
-    backend::Lowerer lw(em, backend::LowerOptions{/*emit_ret_on_terminator=*/false});
+    backend::LowerOptions lopts{/*emit_ret_on_terminator=*/false};
+    // Guest CPUID values are baked into the generated code at
+    // translation time. Leaf 7 EBX bit 29 (SHA) is advertised only
+    // when the host implements both ARMv8 crypto extensions the
+    // VecSha lowering relies on, so a guest that honours CPUID never
+    // reaches SHA instructions on a crypto-less core.
+    // Fase 2.5 note: baked values make cached blocks host-feature-
+    // dependent; the P2P trust envelope must carry the feature set
+    // alongside the code bytes (RFC 0007 follow-up).
+    lopts.cpuid_max_leaf = 7;
+    {
+        const auto& hf = runtime::host_features();
+        if (hf.feat_sha1 && hf.feat_sha256) {
+            lopts.cpuid_leaf7_ebx |= 1u << 29;  // CPUID.7.0:EBX.SHA
+        }
+    }
+    backend::Lowerer lw(em, lopts);
     auto lr = lw.lower(body);
     if (!lr.success) {
         ++stats_.lower_failures;

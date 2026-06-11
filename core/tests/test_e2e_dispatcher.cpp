@@ -17,6 +17,7 @@
 
 #include "prisma/cpu_state.hpp"
 #include "prisma/dispatcher.hpp"
+#include "prisma/host_features.hpp"
 #include "prisma/translator.hpp"
 
 using namespace prisma;
@@ -3220,6 +3221,87 @@ TEST_CASE("e2e: SHA-1 full-digest KAT via canonical SHA-NI loop "
         for (int i = 0; i < 5; ++i) {
             REQUIRE(jit_digest[i] == kSha1Expected[k][i]);
         }
+    }
+}
+
+namespace {
+
+// RAII so a failing REQUIRE can't leak a host-features override into
+// later tests in the same process.
+struct FeatureOverrideGuard {
+    explicit FeatureOverrideGuard(runtime::HostFeatures f) {
+        runtime::override_host_features_for_test(f);
+    }
+    ~FeatureOverrideGuard() { runtime::clear_host_features_override(); }
+};
+
+// Runs `cpuid; ret` with the given RAX/RCX and returns the final
+// frame. The Translator is constructed after the override is set —
+// CPUID values are baked at translation time.
+runtime::CpuStateFrame run_cpuid(std::uint64_t rax, std::uint64_t rcx) {
+    translator::Translator tx;
+    static const std::vector<std::uint8_t> body{0x0F, 0xA2, 0xC3};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rax] = rax;
+    disp.state()[ir::Gpr::Rcx] = rcx;
+    auto r = disp.run(0x4000, 4);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    return disp.state();
+}
+
+}  // namespace
+
+TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    runtime::HostFeatures sha_host{};
+    sha_host.feat_sha1 = true;
+    sha_host.feat_sha256 = true;
+
+    SECTION("host with SHA crypto advertises CPUID.7.0:EBX bit 29") {
+        FeatureOverrideGuard guard{sha_host};
+        auto s = run_cpuid(7, 0);
+        REQUIRE(s[ir::Gpr::Rbx] == (1ull << 29));
+        REQUIRE(s[ir::Gpr::Rax] == 0u);  // max subleaf
+        REQUIRE(s[ir::Gpr::Rcx] == 0u);
+        REQUIRE(s[ir::Gpr::Rdx] == 0u);
+    }
+    SECTION("host without SHA crypto keeps the bit clear") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        auto s = run_cpuid(7, 0);
+        REQUIRE(s[ir::Gpr::Rbx] == 0u);
+    }
+    SECTION("leaf 0 reports max basic leaf 7, zero vendor") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        // Subleaf is ignored for leaf 0.
+        auto s = run_cpuid(0, 0xDEADu);
+        REQUIRE(s[ir::Gpr::Rax] == 7u);
+        REQUIRE(s[ir::Gpr::Rbx] == 0u);
+        REQUIRE(s[ir::Gpr::Rcx] == 0u);
+        REQUIRE(s[ir::Gpr::Rdx] == 0u);
+    }
+    SECTION("unmodelled leaves and subleaves return zeros") {
+        FeatureOverrideGuard guard{sha_host};
+        auto s1 = run_cpuid(1, 0);
+        REQUIRE(s1[ir::Gpr::Rax] == 0u);
+        REQUIRE(s1[ir::Gpr::Rbx] == 0u);
+        auto s2 = run_cpuid(7, 1);  // leaf 7 subleaf 1
+        REQUIRE(s2[ir::Gpr::Rbx] == 0u);
+    }
+    SECTION("leaf compare reads EAX, not RAX") {
+        FeatureOverrideGuard guard{sha_host};
+        // Garbage in the upper half of RAX must be ignored, exactly
+        // like hardware CPUID.
+        auto s = run_cpuid(0xFFFFFFFF'00000007ull, 0);
+        REQUIRE(s[ir::Gpr::Rbx] == (1ull << 29));
     }
 }
 

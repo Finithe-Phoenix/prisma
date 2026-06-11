@@ -17,9 +17,10 @@ using namespace prisma;
 
 namespace {
 
-std::string lower_to_disasm(std::span<const ir::Stmt> stmts, bool& ok) {
+std::string lower_to_disasm(std::span<const ir::Stmt> stmts, bool& ok,
+                            backend::LowerOptions options = {}) {
     backend::Emitter em;
-    backend::Lowerer lw(em);
+    backend::Lowerer lw(em, options);
     const auto res = lw.lower(stmts);
     ok = res.success;
     if (!res.success) return {};
@@ -285,7 +286,37 @@ TEST_CASE("Lowerer: Fence emits the expected ARM barrier") {
     REQUIRE(d.find("dmb ishst") != std::string::npos);
 }
 
-TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
+TEST_CASE("Lowerer: Cpuid emits the leaf-dispatch without touching NZCV") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Cpuid{}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    backend::LowerOptions opts{};
+    opts.cpuid_max_leaf = 7;
+    opts.cpuid_leaf7_ebx = 1u << 29;
+    const std::string d = lower_to_disasm(stmts, ok, opts);
+    REQUIRE(ok);
+    // All four guest outputs are written on every path.
+    REQUIRE(d.find("x10") != std::string::npos);  // rax
+    REQUIRE(d.find("x11") != std::string::npos);  // rcx
+    REQUIRE(d.find("x12") != std::string::npos);  // rdx
+    REQUIRE(d.find("x13") != std::string::npos);  // rbx
+    // Leaf dispatch is flag-free: cbz/cbnz + eor, never cmp/subs
+    // (SDM: CPUID affects no flags, so a guest cmp surviving across
+    // it must keep NZCV intact).
+    REQUIRE(d.find("cbz")  != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
+    REQUIRE(d.find("eor")  != std::string::npos);
+    REQUIRE(d.find("cmp")  == std::string::npos);
+    REQUIRE(d.find("subs") == std::string::npos);
+    REQUIRE(d.find("ret")  != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Cpuid with default options keeps the all-zero model") {
+    // Standalone Lowerer uses (no Translator) default to max_leaf = 0
+    // and no leaf-7 features — the legacy placeholder behaviour.
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Cpuid{}},
         {std::nullopt, ir::Return{}},
@@ -294,10 +325,8 @@ TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
     bool ok;
     const std::string d = lower_to_disasm(stmts, ok);
     REQUIRE(ok);
-    REQUIRE(d.find("x10") != std::string::npos);  // rax
-    REQUIRE(d.find("x11") != std::string::npos);  // rcx
-    REQUIRE(d.find("x12") != std::string::npos);  // rdx
-    REQUIRE(d.find("x13") != std::string::npos);  // rbx
+    REQUIRE(d.find("x10") != std::string::npos);
+    REQUIRE(d.find("x13") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
