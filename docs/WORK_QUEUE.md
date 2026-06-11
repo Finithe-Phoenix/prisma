@@ -6,13 +6,13 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-10 (VPGATHER family completed).
+Last updated: 2026-06-11 (SHA-NI follow-ups completed).
 
 ## Currently active
 
-Branch: `claude/vpgather-family` (F2-IR-059 completion arc).
-Local validation baseline on `7dbfe0c` (origin/main): Debug 907/907
-(5104 assertions, x86_64 container); 932/932 at arc close.
+Branch: `claude/sha-followups` (F2-IR-060 follow-up arc, stacked on
+`claude/sha-ni` / PR #12). Baseline on `8ed9a54`: Debug 958/958
+(5342 assertions, x86_64 container); 963/963 at arc close.
 
 ## Queue (priority order)
 
@@ -38,6 +38,9 @@ Local validation baseline on `7dbfe0c` (origin/main): Debug 907/907
 | 14c | AESKEYGENASSIST | 1 commit | `4ee4297` | ✅ done | F2-IR-058 landed with `VecAesKeygenAssist`, decoder, ARM64 AESE/TBL lowering, serialization/profiler/DCE plumbing, and tests. |
 | 14d | MOVBE (`0F 38 F0 / F1`) | 1 commit | `4e4828c` | ✅ done | New `Bswap` IR op; REV / REV16 ARM64 mapping. |
 | 14e | CRC32 SSE4.2 (`F2 0F 38 F0 / F1`) | 1 commit | `de95485` | ✅ done | New `Crc32c` IR op; direct ARM64 CRC32C{B/H/W/X}. |
+| 14f | SHA full-digest KATs (FIPS 180-4) | 2 commits | `5f048f5`, `ae97518` | ✅ done | Canonical SHA-NI loops (unrolled, in-test x86 encoder) over empty/"abc"/two-block messages; host-side ref_* mirror asserts on every host, translate() on non-ARM64, JIT half on ARM64 gated on host SHA crypto. |
+| 14g | HostFeatures FEAT_SHA1/SHA256 + guest CPUID SHA bit | 3 commits | `f5b863e`, `1967a92`, `ce6869b` | ✅ done | First real `host_features()` consumer. CPUID leaf model baked at translate time (leaf 0 max-leaf, leaf 7.0 EBX, SDM >max clamp); flag-free dispatch (CPUID affects no flags per SDM); bit 29 gated on FEAT_SHA1 && FEAT_SHA256. Codex+Gemini review in docs/REVIEWS/2026-06-11. |
+| 14h | Lean mirrors: vecGather + vecSha | 1 commit | `2b5407a` | ✅ done | Constructor-only mirrors (repStos precedent): no 128-bit carrier in the Lean model yet, semantics deferred; DCE + ConstProp case-splits stay exhaustive; sorry budget unchanged at 3. |
 | 15 | Direct branch threading | 4-6 commits | `b1e112f` | 🟡 partial | Stage 2 also threads direct CallRel and REP clamp re-entry/fallthrough successors through the same hash-checked dispatcher path. In-JIT patching still queued. |
 | 16a | RFC 0014 — C-ABI FFI boundary core↔shell | 1 commit | `09efbc4` | ✅ done | Contract: pure C ABI, opaque handles, status codes, panic/exception firewall, `PRISMA_CAPI_VERSION`. |
 | 16b | `prisma_core_c` C API (header + impl + tests) | 1-2 commits | `ea37029` | ✅ done | `capi.h` + shared lib target + 8 Catch2 cases (905/905 suite green in container). |
