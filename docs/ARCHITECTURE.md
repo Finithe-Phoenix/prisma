@@ -292,11 +292,15 @@ direct chain without bouncing through the outer dispatch loop.
 For `JumpRel` and `CallRel`, the translator emits a patchable AArch64
 tail slot (`b fallback`) after restoring the block ABI. The dispatcher
 may patch that slot to a translated successor, but only as a one-hop
-chain: before entering a patched source it re-reads and hash-checks the
-target bytes, and it unpatches if the target is stale, a halt PC, or
-would consume more steps than remain. This keeps SMC safety, halt-PC
-checks, return-stack bookkeeping, and step limits visible while still
-cutting the C++ dispatch round trip on hot direct edges.
+chain and only when the source block has no guest-memory writes. Before
+entering a patched source it re-reads and hash-checks the target bytes,
+and it unpatches if the target is stale, a halt PC, or would consume
+more steps than remain. This keeps the current hash-based SMC discipline,
+halt-PC checks, return-stack bookkeeping, and step limits visible while
+still cutting the C++ dispatch round trip on hot direct edges that cannot
+modify guest code before the physical branch. `CallRel` slots stay
+manual-only until SmcGuard/page invalidation is wired into the generic
+dispatcher memory model, because CALL writes the guest stack.
 
 ### Blocker A — REP STOS / MOVSB DoS clamp
 
