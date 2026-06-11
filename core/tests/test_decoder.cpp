@@ -2315,6 +2315,267 @@ TEST_CASE("decode VPGATHERDD rejects register-direct rm — F2-IR-059") {
     REQUIRE(std::holds_alternative<DecodeError>(res));
 }
 
+TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm4*4], xmm3 (C4 E2 61 90 0C A0) — F2-IR-059 VSIB xmm4") {
+    // SIB A0: scale=10 (×4) index=100 base=000 (rax). For GPR
+    // addressing index 100b without REX.X means "no index" (RSP rule);
+    // under VSIB it names xmm4 and must decode as a live index.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x90, 0x0C, 0xA0}, r);
+    bool found = false;
+    bool loads_xmm4 = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecGather>(s.op)) found = true;
+        if (const auto* lv = std::get_if<ir::LoadVecReg>(&s.op)) {
+            if (lv->xmm_index == 4u) loads_xmm4 = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(loads_xmm4);
+}
+
+TEST_CASE("decode VPGATHERDQ xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 90 0C D0) — F2-IR-059 qword elements") {
+    // byte3 0xE1: W=1 (qword elements) vvvv=~0011 (mask xmm3) L=0
+    // pp=01. SIB D0: scale=11 (×8) index=010 (xmm2) base=000 (rax).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x90, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->scale_shift == 3u);
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 0u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VPGATHERQQ xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 91 0C D0) — F2-IR-059 qword indices+elements") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x91, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VPGATHERQD xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 91 0C 90) — F2-IR-059 mixed widths") {
+    // W0 + qword indices: two dword elements; the upper 64 bits of
+    // the destination zero, expressed as an And of prev with a
+    // lo-64-ones constant before the gather.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x91, 0x0C, 0x90}, r);
+    bool found = false, has_and = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+        if (const auto* b = std::get_if<ir::VecBinOp>(&s.op)) {
+            if (b->op == ir::VecBinOpKind::And) has_and = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(has_and);
+}
+
+TEST_CASE("decode VGATHERDPS xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 92 0C 90) — F2-IR-059 FP form") {
+    // Bit-identical to VPGATHERDD: same descriptor, the mask test is
+    // the float sign bit (lane MSB).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x92, 0x0C, 0x90}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 0u);
+            REQUIRE(g->lane_count == 4u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VGATHERDPD xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 92 0C D0) — F2-IR-059 FP qword") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x92, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 0u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VGATHERQPS xmm1, [rax + xmm2*4], xmm3 (C4 E2 61 93 0C 90) — F2-IR-059 FP mixed") {
+    // QD geometry: dword elements from qword indices, dest upper 64
+    // bits zeroed via the And-with-keep-constant idiom.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x61, 0x93, 0x0C, 0x90}, r);
+    bool found = false, has_and = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+        if (const auto* b = std::get_if<ir::VecBinOp>(&s.op)) {
+            if (b->op == ir::VecBinOpKind::And) has_and = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(has_and);
+}
+
+TEST_CASE("decode VGATHERQPD xmm1, [rax + xmm2*8], xmm3 (C4 E2 E1 93 0C D0) — F2-IR-059 FP qword both") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE1, 0x93, 0x0C, 0xD0}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode VPGATHERDD ymm1, [rax + ymm2*4], ymm3 (C4 E2 65 90 0C 90) — F2-IR-059 ymm") {
+    // byte3 0x65: W=0 vvvv=~0011 L=1 pp=01. Two 4-lane half-gathers
+    // against real hi halves of index/mask/prev; dest hi stores the
+    // hi result (not a zero constant).
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x65, 0x90, 0x0C, 0x90}, r);
+    int gathers = 0, loads_hi = 0;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->lane_count == 4u);
+            REQUIRE(g->index_lane_base == 0u);
+            ++gathers;
+        }
+        if (std::holds_alternative<ir::LoadVecRegHi>(s.op)) ++loads_hi;
+    }
+    REQUIRE(gathers == 2);
+    REQUIRE(loads_hi == 3);  // index, mask, prev hi halves
+}
+
+TEST_CASE("decode VPGATHERDQ ymm1, [rax + xmm2*8], ymm3 (C4 E2 E5 90 0C D0) — F2-IR-059 ymm split index") {
+    // Four qword elements driven by ONE xmm of dword indices: the hi
+    // half-gather reads index lanes 2..3 of the same low load.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE5, 0x90, 0x0C, 0xD0}, r);
+    int gathers = 0, loads_hi = 0;
+    bool hi_base2 = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            if (g->index_lane_base == 2u) hi_base2 = true;
+            ++gathers;
+        }
+        if (std::holds_alternative<ir::LoadVecRegHi>(s.op)) ++loads_hi;
+    }
+    REQUIRE(gathers == 2);
+    REQUIRE(hi_base2);
+    REQUIRE(loads_hi == 2);  // mask + prev only — the index is one xmm
+}
+
+TEST_CASE("decode VPGATHERQQ ymm1, [rax + ymm2*8], ymm3 (C4 E2 E5 91 0C D0) — F2-IR-059 ymm qword") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0xE5, 0x91, 0x0C, 0xD0}, r);
+    int gathers = 0, loads_hi = 0;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 1u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            REQUIRE(g->index_lane_base == 0u);
+            ++gathers;
+        }
+        if (std::holds_alternative<ir::LoadVecRegHi>(s.op)) ++loads_hi;
+    }
+    REQUIRE(gathers == 2);
+    REQUIRE(loads_hi == 3);
+}
+
+TEST_CASE("decode VPGATHERQD xmm1, [rax + ymm2*4], xmm3 (C4 E2 65 91 0C 90) — F2-IR-059 ymm index, xmm dest") {
+    // Four dword elements from four qword indices: the hi gather
+    // chains on the lo result and writes dest/mask lanes 2..3.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x65, 0x91, 0x0C, 0x90}, r);
+    int gathers = 0, loads_hi = 0;
+    bool dest_base2 = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->elem_is64 == 0u);
+            REQUIRE(g->index_is64 == 1u);
+            REQUIRE(g->lane_count == 2u);
+            if (g->dest_lane_base == 2u) dest_base2 = true;
+            ++gathers;
+        }
+        if (std::holds_alternative<ir::LoadVecRegHi>(s.op)) ++loads_hi;
+    }
+    REQUIRE(gathers == 2);
+    REQUIRE(dest_base2);
+    REQUIRE(loads_hi == 1);  // only the index has a live hi half
+}
+
+TEST_CASE("decode VGATHERDPS ymm1, [rax + ymm2*4], ymm3 (C4 E2 65 92 0C 90) — F2-IR-059 FP ymm") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE2, 0x65, 0x92, 0x0C, 0x90}, r);
+    int gathers = 0;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecGather>(&s.op)) {
+            REQUIRE(g->lane_count == 4u);
+            REQUIRE(g->elem_is64 == 0u);
+            ++gathers;
+        }
+    }
+    REQUIRE(gathers == 2);
+}
+
+TEST_CASE("decode VPGATHERQQ rejects dest==mask (#UD) — F2-IR-059") {
+    // vvvv=~0001=1110 names xmm1 == dest xmm1 → UnsupportedEncoding.
+    ir::Ref r = 0;
+    auto res = decode_any({0xC4, 0xE2, 0xF1, 0x91, 0x0C, 0xD0}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+    REQUIRE(std::get<DecodeError>(res) == DecodeError::UnsupportedEncoding);
+}
+
+TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm12*4], xmm3 (C4 A2 61 90 0C A0) — F2-IR-059 VSIB xmm12") {
+    // byte2 0xA2: X̄=0 → VEX.X=1, so SIB index 100b names xmm12.
+    // This worked before the vsib-mode fix only by accident of the
+    // GPR index math — pin it so the fix can't regress it.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xA2, 0x61, 0x90, 0x0C, 0xA0}, r);
+    bool found = false;
+    bool loads_xmm12 = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::VecGather>(s.op)) found = true;
+        if (const auto* lv = std::get_if<ir::LoadVecReg>(&s.op)) {
+            if (lv->xmm_index == 12u) loads_xmm12 = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(loads_xmm12);
+}
+
 // F2-IR-053 BMI2 variable-count shifts: SHLX / SARX / SHRX. All three
 // share `sub3 == 0xF7`, with the legacy prefix encoded in VEX.pp.
 TEST_CASE("decode SHLX r32a, r/m32, r32b (C4 E2 69 F7 C1) — F2-IR-053") {

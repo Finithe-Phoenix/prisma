@@ -71,7 +71,8 @@ std::variant<ModRmOperand, DecodeError> parse_modrm(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
-    bool address_size_override);
+    bool address_size_override,
+    bool vsib = false);
 ir::Ref emit_address(
     std::vector<ir::Stmt>& stmts,
     const ModRmOperand& op,
@@ -862,7 +863,8 @@ std::variant<ModRmOperand, DecodeError> parse_modrm(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
-    bool address_size_override) {
+    bool address_size_override,
+    bool vsib) {
     auto modrm_byte = consume_le<1>(bytes, cursor);
     if (std::holds_alternative<DecodeError>(modrm_byte)) {
         return std::get<DecodeError>(modrm_byte);
@@ -900,7 +902,10 @@ std::variant<ModRmOperand, DecodeError> parse_modrm(
         const unsigned index_lo = (sib >> 3) & 0x7u;
         const unsigned base_lo = sib & 0x7u;
 
-        if (!(index_lo == 0b100u && !rex.x)) {
+        // SIB index 100b without (V)REX.X means "no index" only for
+        // GPR addressing (RSP cannot be an index). Under VSIB the
+        // field is a plain vector-register number, so xmm4 is real.
+        if (vsib || !(index_lo == 0b100u && !rex.x)) {
             m.has_index = true;
             m.index = gpr_from_index(index_lo | (rex.x ? 0x8u : 0u));
         }
@@ -2753,6 +2758,10 @@ std::variant<Decoded, DecodeError> decode_one(
                 // VPERMD ymm (66 0F 38 36). F2-IR-052.
                 const bool avx_permd =
                     vex.mmmmm == 2 && vex.pp == 1 && avx256_op == 0x36u;
+                // VPGATHER/VGATHER ymm (66 0F 38 90..93). F2-IR-059.
+                const bool avx_gather =
+                    vex.mmmmm == 2 && vex.pp == 1 &&
+                    (avx256_op >= 0x90u && avx256_op <= 0x93u);
                 // VPSHUFB ymm (66 0F 38 00) and VPABS B/W/D ymm
                 // (66 0F 38 1C/1D/1E).
                 const bool avx_pshufb_pabs =
@@ -2819,7 +2828,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_palignr || avx_round || avx_int_simd_38 ||
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
                       avx_ptest || avx_blend_vex || avx_permq ||
-                      avx_permd ||
+                      avx_permd || avx_gather ||
                       fma3_ymm || fma3_addsub_ymm)) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -4509,31 +4518,39 @@ std::variant<Decoded, DecodeError> decode_one(
                 return d;
             }
 
-            // F2-IR-059 — VPGATHERDD xmm1, vm32x, xmm2
-            // (VEX.128.66.0F38.W0 90 /r). VSIB addressing: the SIB
-            // index field names an XMM register holding four signed
-            // dword indices; vex.vvvv names the mask register. For
-            // each dword lane whose mask MSB is set, a dword loads
-            // from base + (sx64(index[i]) << scale) into that dest
-            // lane; other lanes keep their previous contents, and
-            // masked-off lanes never touch memory. The mask register
-            // zeroes on completion. dest/index/mask must be pairwise
-            // distinct (#UD otherwise). ymm forms and the other
-            // element widths stage in later.
-            if (vex.present && !vex.L && sub3 == 0x90u) {
-                if (rex.w) return DecodeError::UnsupportedEncoding;
+            // F2-IR-059 — VPGATHER/VGATHER family (VEX.66.0F38
+            // 90-93 /r). VSIB addressing: the SIB index field names
+            // an XMM register of signed indices; vex.vvvv names the
+            // mask register. For each elem-width lane whose mask MSB
+            // is set, a load from base + (sx64(index[i]) << scale)
+            // replaces that dest lane; other lanes keep their
+            // previous contents, and masked-off lanes never touch
+            // memory. The mask register zeroes on completion.
+            // dest/index/mask must be pairwise distinct (#UD).
+            //   90 W0: VPGATHERDD   90 W1: VPGATHERDQ
+            //   91 W0: VPGATHERQD   91 W1: VPGATHERQQ
+            //   92 W0: VGATHERDPS   92 W1: VGATHERDPD
+            //   93 W0: VGATHERQPS   93 W1: VGATHERQPD
+            // FP forms are bit-identical loads — the mask test is the
+            // lane MSB (the FP sign bit) in every form — so they
+            // share the integer decode path. ymm forms emit two
+            // half-gathers following the established lo/hi idiom.
+            if (vex.present && sub3 >= 0x90u && sub3 <= 0x93u) {
+                const bool idx64  = (sub3 & 1u) != 0u;
+                const bool elem64 = rex.w;  // VEX.W via the C4 payload
                 if (has_address_size_override) {
                     return DecodeError::UnsupportedEncoding;
                 }
-                auto modrm = parse_modrm(bytes, cursor, rex, false);
+                auto modrm = parse_modrm(bytes, cursor, rex, false,
+                                         /*vsib=*/true);
                 if (std::holds_alternative<DecodeError>(modrm)) {
                     return std::get<DecodeError>(modrm);
                 }
                 const auto& m = std::get<ModRmOperand>(modrm);
-                // VSIB requires a memory operand with a SIB index. An
-                // absent index means the encoding named xmm4/xmm12
-                // (SIB index 100b), which parse_modrm cannot express
-                // yet — reject rather than mis-decode.
+                // VSIB requires a memory operand with a SIB byte; in
+                // vsib mode parse_modrm always reports the index (even
+                // 100b = xmm4), so !has_index means the encoding had
+                // no SIB byte at all.
                 if (m.mod == 0b11 || !m.has_index || m.rip_relative) {
                     return DecodeError::UnsupportedEncoding;
                 }
@@ -4575,29 +4592,136 @@ std::variant<Decoded, DecodeError> decode_one(
                             static_cast<std::int64_t>(m.disp)),
                             ir::OpSize::I64}});
                 }
-                const ir::Ref r_index = next_ref++;
-                const ir::Ref r_mask  = next_ref++;
-                const ir::Ref r_prev  = next_ref++;
-                d.stmts.push_back({r_index, ir::LoadVecReg{idx_xmm}});
-                d.stmts.push_back({r_mask,  ir::LoadVecReg{mask_xmm}});
-                d.stmts.push_back({r_prev,  ir::LoadVecReg{dst_xmm}});
-                const ir::Ref r_dst = next_ref++;
-                d.stmts.push_back({r_dst,
-                    ir::VecGather{r_base, r_index, r_mask, r_prev,
-                        static_cast<std::uint8_t>(m.scale_shift)}});
-                const ir::Ref r_zero = next_ref++;
-                d.stmts.push_back({r_zero, ir::VecConstant{0ULL, 0ULL}});
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecReg{dst_xmm, r_dst}});
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecRegHi{dst_xmm, r_zero}});
-                // Architectural completion state: the mask register
-                // reads as all zeroes afterwards (and the VEX.128
-                // write clears its upper lane too).
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecReg{mask_xmm, r_zero}});
-                d.stmts.push_back({std::nullopt,
-                    ir::StoreVecRegHi{mask_xmm, r_zero}});
+                const std::uint8_t scale =
+                    static_cast<std::uint8_t>(m.scale_shift);
+                const std::uint8_t e64u  = elem64 ? 1u : 0u;
+                const std::uint8_t i64u  = idx64 ? 1u : 0u;
+                const std::uint8_t lanes = (elem64 || idx64) ? 2u : 4u;
+                if (!vex.L) {
+                    const ir::Ref r_index = next_ref++;
+                    const ir::Ref r_mask  = next_ref++;
+                    d.stmts.push_back({r_index, ir::LoadVecReg{idx_xmm}});
+                    d.stmts.push_back({r_mask,  ir::LoadVecReg{mask_xmm}});
+                    ir::Ref r_prev = next_ref++;
+                    d.stmts.push_back({r_prev,  ir::LoadVecReg{dst_xmm}});
+                    // Mixed-width QD form: only dest lanes 0..1 are
+                    // real elements — the upper 64 bits of the
+                    // destination read as zero afterwards, so zero
+                    // them in prev before the gather passes it
+                    // through.
+                    if (idx64 && !elem64) {
+                        const ir::Ref r_keep = next_ref++;
+                        const ir::Ref r_pm   = next_ref++;
+                        d.stmts.push_back({r_keep,
+                            ir::VecConstant{~0ULL, 0ULL}});
+                        d.stmts.push_back({r_pm,
+                            ir::VecBinOp{ir::VecBinOpKind::And, r_prev,
+                                         r_keep, ir::VecLane::S4}});
+                        r_prev = r_pm;
+                    }
+                    const ir::Ref r_dst = next_ref++;
+                    d.stmts.push_back({r_dst,
+                        ir::VecGather{r_base, r_index, r_mask, r_prev,
+                            scale, e64u, i64u, lanes, 0u, 0u}});
+                    const ir::Ref r_zero = next_ref++;
+                    d.stmts.push_back({r_zero,
+                        ir::VecConstant{0ULL, 0ULL}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{dst_xmm, r_dst}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_zero}});
+                    // Architectural completion state: the mask
+                    // register reads as all zeroes afterwards (and
+                    // the VEX.128 write clears its upper lane too).
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{mask_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{mask_xmm, r_zero}});
+                } else if (idx64 && !elem64) {
+                    // QD/QPS ymm: xmm dest (4 dword elements) fed by
+                    // a ymm index (4 qwords). The hi gather chains on
+                    // the lo result and writes dest/mask lanes 2..3;
+                    // dest bits 255:128 zero per VEX.
+                    const ir::Ref r_index_lo = next_ref++;
+                    const ir::Ref r_index_hi = next_ref++;
+                    const ir::Ref r_mask     = next_ref++;
+                    const ir::Ref r_prev     = next_ref++;
+                    d.stmts.push_back({r_index_lo,
+                        ir::LoadVecReg{idx_xmm}});
+                    d.stmts.push_back({r_index_hi,
+                        ir::LoadVecRegHi{idx_xmm}});
+                    d.stmts.push_back({r_mask, ir::LoadVecReg{mask_xmm}});
+                    d.stmts.push_back({r_prev, ir::LoadVecReg{dst_xmm}});
+                    const ir::Ref r_lo = next_ref++;
+                    d.stmts.push_back({r_lo,
+                        ir::VecGather{r_base, r_index_lo, r_mask,
+                            r_prev, scale, 0u, 1u, 2u, 0u, 0u}});
+                    const ir::Ref r_hi = next_ref++;
+                    d.stmts.push_back({r_hi,
+                        ir::VecGather{r_base, r_index_hi, r_mask,
+                            r_lo, scale, 0u, 1u, 2u, 2u, 0u}});
+                    const ir::Ref r_zero = next_ref++;
+                    d.stmts.push_back({r_zero,
+                        ir::VecConstant{0ULL, 0ULL}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{dst_xmm, r_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{mask_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{mask_xmm, r_zero}});
+                } else {
+                    // ymm-dest forms (DD/DPS, DQ/DPD, QQ/QPD): two
+                    // half-gathers against the ymm mask/prev halves.
+                    // DQ/DPD's index register is a single xmm whose
+                    // dword lanes 2..3 feed the hi half; the other
+                    // forms read a real hi index half.
+                    const bool idx_in_lo = elem64 && !idx64;
+                    const ir::Ref r_index_lo = next_ref++;
+                    d.stmts.push_back({r_index_lo,
+                        ir::LoadVecReg{idx_xmm}});
+                    ir::Ref r_index_hi = r_index_lo;
+                    if (!idx_in_lo) {
+                        r_index_hi = next_ref++;
+                        d.stmts.push_back({r_index_hi,
+                            ir::LoadVecRegHi{idx_xmm}});
+                    }
+                    const std::uint8_t ib_hi = idx_in_lo ? 2u : 0u;
+                    const ir::Ref r_mask_lo = next_ref++;
+                    const ir::Ref r_mask_hi = next_ref++;
+                    const ir::Ref r_prev_lo = next_ref++;
+                    const ir::Ref r_prev_hi = next_ref++;
+                    d.stmts.push_back({r_mask_lo,
+                        ir::LoadVecReg{mask_xmm}});
+                    d.stmts.push_back({r_mask_hi,
+                        ir::LoadVecRegHi{mask_xmm}});
+                    d.stmts.push_back({r_prev_lo,
+                        ir::LoadVecReg{dst_xmm}});
+                    d.stmts.push_back({r_prev_hi,
+                        ir::LoadVecRegHi{dst_xmm}});
+                    const ir::Ref r_lo = next_ref++;
+                    d.stmts.push_back({r_lo,
+                        ir::VecGather{r_base, r_index_lo, r_mask_lo,
+                            r_prev_lo, scale, e64u, i64u, lanes,
+                            0u, 0u}});
+                    const ir::Ref r_hi = next_ref++;
+                    d.stmts.push_back({r_hi,
+                        ir::VecGather{r_base, r_index_hi, r_mask_hi,
+                            r_prev_hi, scale, e64u, i64u, lanes,
+                            0u, ib_hi}});
+                    const ir::Ref r_zero = next_ref++;
+                    d.stmts.push_back({r_zero,
+                        ir::VecConstant{0ULL, 0ULL}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{dst_xmm, r_lo}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{dst_xmm, r_hi}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{mask_xmm, r_zero}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecRegHi{mask_xmm, r_zero}});
+                }
                 d.bytes_consumed = cursor;
                 return d;
             }

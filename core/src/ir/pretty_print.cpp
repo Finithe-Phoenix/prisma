@@ -401,7 +401,16 @@ std::string pretty_print(const Op& op) {
             print_ref(os, x.crc); os << ", ";
             print_ref(os, x.data);
         } else if constexpr (std::is_same_v<T, VecGather>) {
-            os << "vgather.s4 base=";
+            os << "vgather." << (x.elem_is64 ? 'd' : 's')
+               << static_cast<unsigned>(x.lane_count)
+               << ".idx" << (x.index_is64 ? 'd' : 's');
+            if (x.dest_lane_base != 0) {
+                os << ".db" << static_cast<unsigned>(x.dest_lane_base);
+            }
+            if (x.index_lane_base != 0) {
+                os << ".ib" << static_cast<unsigned>(x.index_lane_base);
+            }
+            os << " base=";
             print_ref(os, x.base); os << ", idx=";
             print_ref(os, x.index); os << ", mask=";
             print_ref(os, x.mask); os << ", prev=";

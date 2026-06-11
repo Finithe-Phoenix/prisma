@@ -1793,6 +1793,60 @@ TEST_CASE("Lowerer: VecGather emits per-lane mask test + guarded load") {
     REQUIRE(d.find("ldr w")   != std::string::npos);
 }
 
+TEST_CASE("Lowerer: VecGather qword elements, dword indices (DQ shape)") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadVecReg{2u}},   // indices (dwords)
+        {2u, ir::LoadVecReg{3u}},   // mask (qword lanes)
+        {3u, ir::LoadVecReg{1u}},   // previous dst
+        {4u, ir::VecGather{0u, 1u, 2u, 3u, /*scale_shift=*/3u,
+                           /*elem_is64=*/1u, /*index_is64=*/0u,
+                           /*lane_count=*/2u, /*dest_lane_base=*/0u,
+                           /*index_lane_base=*/0u}},
+        {std::nullopt, ir::StoreVecReg{1u, 4u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Qword mask/dest lanes (.d[], lsr #63, ldr x) driven by dword
+    // indices (.s[] extract + sxtw), scale x8.
+    REQUIRE(d.find(".d[")     != std::string::npos);
+    REQUIRE(d.find("#63")     != std::string::npos);
+    REQUIRE(d.find(".s[")     != std::string::npos);
+    REQUIRE(d.find("sxtw")    != std::string::npos);
+    REQUIRE(d.find("lsl #3")  != std::string::npos);
+    REQUIRE(d.find("ldr x")   != std::string::npos);
+    REQUIRE(d.find("cbz")     != std::string::npos);
+}
+
+TEST_CASE("Lowerer: VecGather dword elements, qword indices (QD hi shape)") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::LoadVecReg{2u}},   // indices (qwords)
+        {2u, ir::LoadVecReg{3u}},   // mask (dword lanes)
+        {3u, ir::LoadVecReg{1u}},   // previous dst
+        {4u, ir::VecGather{0u, 1u, 2u, 3u, /*scale_shift=*/2u,
+                           /*elem_is64=*/0u, /*index_is64=*/1u,
+                           /*lane_count=*/2u, /*dest_lane_base=*/2u,
+                           /*index_lane_base=*/0u}},
+        {std::nullopt, ir::StoreVecReg{1u, 4u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // Dword mask/dest lanes at base 2 (.s[2]/.s[3], lsr #31, ldr w)
+    // driven by qword indices (.d[] extract, NO sxtw — already 64-bit).
+    REQUIRE(d.find(".s[2]")   != std::string::npos);
+    REQUIRE(d.find(".s[3]")   != std::string::npos);
+    REQUIRE(d.find(".d[")     != std::string::npos);
+    REQUIRE(d.find("#31")     != std::string::npos);
+    REQUIRE(d.find("lsl #2")  != std::string::npos);
+    REQUIRE(d.find("ldr w")   != std::string::npos);
+    REQUIRE(d.find("sxtw")    == std::string::npos);
+}
+
 TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {
     constexpr std::uint64_t kPcRep   = 0x5000ull;
     constexpr std::uint64_t kPcAfter = 0x5003ull;  // 3-byte F3 48 A5

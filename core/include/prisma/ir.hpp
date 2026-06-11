@@ -800,24 +800,32 @@ struct Crc32c {
     OpSize data_size;
 };
 
-// F2-IR-059 — VPGATHERDD xmm (VEX.128.66.0F38.W0 90 /r) gather.
-//   For each dword lane i (0..3):
-//     if (mask[i].MSB)  dst[i] = mem32[base + (sx64(index[i]) << scale_shift)]
-//     else              dst[i] = prev[i]
+// F2-IR-059 — VPGATHER/VGATHER family gather, one 128-bit half.
+//   For each lane i (0..lane_count-1), with
+//     d = dest_lane_base + i   (elem-width lanes; mask uses the same)
+//     x = index_lane_base + i  (index-width lanes):
+//     if (mask[d].MSB)  dst[d] = mem[base + (sx64(index[x]) << scale_shift)]
+//     else              dst[d] = prev[d]
+//   Lanes outside the dest window keep prev unchanged.
 // Lanes whose mask MSB is clear MUST NOT touch memory — their address
 // may be invalid by design — so lowering branches around each load.
 // Architecturally the mask register is zeroed on completion; the
 // decoder emits an explicit VecConstant{0} + StoreVecReg for that, so
 // the op itself is a single-result gather with per-lane memory reads.
-// Wider forms (ymm, qword data/indices) extend this struct with a
-// lane descriptor when they land; today only the dword/dword xmm
-// shape exists.
+// ymm forms decode as two of these (lo/hi half); the lane bases
+// express the split-width cases (VPGATHERDQ ymm's hi half reads index
+// lanes 2..3, VPGATHERQD ymm's hi half writes dest/mask lanes 2..3).
 struct VecGather {
-    Ref          base;         // 64-bit base address (disp folded in)
-    Ref          index;        // 128-bit vector of signed dword indices
-    Ref          mask;         // 128-bit mask vector
-    Ref          prev;         // previous dst; non-gathered lanes keep it
-    std::uint8_t scale_shift;  // 0..3, scale = 1 << scale_shift
+    Ref          base;             // 64-bit base address (disp folded in)
+    Ref          index;            // 128-bit vector of signed indices
+    Ref          mask;             // 128-bit mask vector
+    Ref          prev;             // previous dst; non-gathered lanes keep it
+    std::uint8_t scale_shift;      // 0..3, scale = 1 << scale_shift
+    std::uint8_t elem_is64   = 0;  // 0: dword elements, 1: qword
+    std::uint8_t index_is64  = 0;  // 0: dword indices,  1: qword
+    std::uint8_t lane_count  = 4;  // gathered elements per op: 2 or 4
+    std::uint8_t dest_lane_base  = 0;  // first dest+mask lane
+    std::uint8_t index_lane_base = 0;  // first index lane
 };
 
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.

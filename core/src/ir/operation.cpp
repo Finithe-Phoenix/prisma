@@ -294,7 +294,11 @@ bool operator==(const Crc32c& a, const Crc32c& b) noexcept {
 }
 bool operator==(const VecGather& a, const VecGather& b) noexcept {
     return a.base == b.base && a.index == b.index && a.mask == b.mask
-        && a.prev == b.prev && a.scale_shift == b.scale_shift;
+        && a.prev == b.prev && a.scale_shift == b.scale_shift
+        && a.elem_is64 == b.elem_is64 && a.index_is64 == b.index_is64
+        && a.lane_count == b.lane_count
+        && a.dest_lane_base == b.dest_lane_base
+        && a.index_lane_base == b.index_lane_base;
 }
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept {

@@ -748,6 +748,11 @@ void write_payload(std::vector<std::uint8_t>& out, const VecGather& x) {
     put_u32(out, x.mask);
     put_u32(out, x.prev);
     put_u8(out, x.scale_shift);
+    put_u8(out, x.elem_is64);
+    put_u8(out, x.index_is64);
+    put_u8(out, x.lane_count);
+    put_u8(out, x.dest_lane_base);
+    put_u8(out, x.index_lane_base);
 }
 
 void write_stmt(std::vector<std::uint8_t>& out, const Stmt& s) {
@@ -1315,14 +1320,26 @@ DeserializeError read_payload_crc32c(Cursor& c, Stmt& s) {
 }
 
 DeserializeError read_payload_vec_gather(Cursor& c, Stmt& s) {
-    if (!c.remaining(4 + 4 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    if (!c.remaining(4 + 4 + 4 + 4 + 1 + 5)) {
+        return DeserializeError::Truncated;
+    }
     const std::uint32_t base  = c.take_u32();
     const std::uint32_t index = c.take_u32();
     const std::uint32_t mask  = c.take_u32();
     const std::uint32_t prev  = c.take_u32();
     const std::uint8_t  scale = c.take_u8();
-    if (scale > 3u) return DeserializeError::BadSize;
-    s.op = VecGather{base, index, mask, prev, scale};
+    const std::uint8_t  e64   = c.take_u8();
+    const std::uint8_t  i64   = c.take_u8();
+    const std::uint8_t  lanes = c.take_u8();
+    const std::uint8_t  dbase = c.take_u8();
+    const std::uint8_t  ibase = c.take_u8();
+    if (scale > 3u || e64 > 1u || i64 > 1u) return DeserializeError::BadSize;
+    if (lanes != 2u && lanes != 4u) return DeserializeError::BadSize;
+    // Lane windows must fit the 128-bit half at their own widths.
+    if (dbase + lanes > (e64 ? 2u : 4u)) return DeserializeError::BadSize;
+    if (ibase + lanes > (i64 ? 2u : 4u)) return DeserializeError::BadSize;
+    s.op = VecGather{base, index, mask, prev, scale,
+                     e64, i64, lanes, dbase, ibase};
     return DeserializeError::Ok;
 }
 
