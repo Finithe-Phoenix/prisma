@@ -4037,6 +4037,57 @@ std::variant<Decoded, DecodeError> decode_one(
             return DecodeError::UnsupportedEncoding;
         }
 
+        // F2-IR-060 — SHA1RNDS4 xmm1, xmm2/m128, imm8
+        // (NP 0F 3A CC /r ib). Four SHA-1 rounds; imm8[1:0] selects
+        // the round function + K constant, upper bits are ignored by
+        // hardware. Legacy-SSE only: no VEX form exists, and a
+        // 66/F2/F3 mandatory prefix selects a different encoding.
+        if (subop == 0x3Au && !vex.present
+            && !has_operand_size_override && !has_lock
+            && !has_f2 && !has_f3
+            && cursor < bytes.size() && bytes[cursor] == 0xCCu) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            // imm8 consumes BEFORE emit_address so the RIP-relative
+            // base resolves against the true end of the instruction.
+            auto imm = consume_le<1>(bytes, cursor);
+            if (std::holds_alternative<DecodeError>(imm)) {
+                return std::get<DecodeError>(imm);
+            }
+            const std::uint8_t f_sel = static_cast<std::uint8_t>(
+                std::get<std::uint64_t>(imm) & 0x3u);
+            Decoded d;
+            const std::uint8_t dst_xmm =
+                static_cast<std::uint8_t>(m.reg);
+            const ir::Ref r_a = next_ref++;
+            d.stmts.push_back({r_a, ir::LoadVecReg{dst_xmm}});
+            ir::Ref r_b;
+            if (m.mod == 0b11) {
+                r_b = next_ref++;
+                d.stmts.push_back({r_b, ir::LoadVecReg{
+                    static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(
+                    d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                r_b = next_ref++;
+                d.stmts.push_back({r_b, ir::LoadVec{r_addr}});
+            }
+            const ir::Ref r_dst = next_ref++;
+            d.stmts.push_back({r_dst,
+                ir::VecSha{ir::VecShaKind::Sha1Rnds4, r_a, r_b, r_b,
+                           f_sel}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{dst_xmm, r_dst}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-057 — CRC32 (F2 0F 38 F0 / F1). SSE4.2's CRC32C
         // accumulator. Both x86 and ARM64 compute the Castagnoli
         // polynomial; the mapping is direct.
@@ -4143,6 +4194,66 @@ std::variant<Decoded, DecodeError> decode_one(
                 d.stmts.push_back({std::nullopt,
                     ir::StoreMem{r_addr, r_rev, size}});
             }
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // F2-IR-060 — SHA-NI two-operand forms (NP 0F 38 C8..CD).
+        //   C8 SHA1NEXTE    C9 SHA1MSG1    CA SHA1MSG2
+        //   CB SHA256RNDS2  CC SHA256MSG1  CD SHA256MSG2
+        // Legacy-SSE only (no VEX forms); 66/F2/F3 select different
+        // encodings so the gate requires their absence. SHA256RNDS2
+        // additionally reads the implicit XMM0 {WK0, WK1} (its upper
+        // lanes are ignored by the lowering).
+        if (subop == 0x38u && !vex.present
+            && !has_operand_size_override && !has_lock
+            && !has_f2 && !has_f3
+            && cursor < bytes.size()
+            && bytes[cursor] >= 0xC8u && bytes[cursor] <= 0xCDu) {
+            const Byte sub3sha = bytes[cursor];
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            Decoded d;
+            const std::uint8_t dst_xmm =
+                static_cast<std::uint8_t>(m.reg);
+            const ir::Ref r_a = next_ref++;
+            d.stmts.push_back({r_a, ir::LoadVecReg{dst_xmm}});
+            ir::Ref r_b;
+            if (m.mod == 0b11) {
+                r_b = next_ref++;
+                d.stmts.push_back({r_b, ir::LoadVecReg{
+                    static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref r_addr = emit_address(
+                    d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                r_b = next_ref++;
+                d.stmts.push_back({r_b, ir::LoadVec{r_addr}});
+            }
+            ir::VecShaKind kind = ir::VecShaKind::Sha256Msg2;
+            switch (sub3sha) {
+                case 0xC8u: kind = ir::VecShaKind::Sha1Nexte;   break;
+                case 0xC9u: kind = ir::VecShaKind::Sha1Msg1;    break;
+                case 0xCAu: kind = ir::VecShaKind::Sha1Msg2;    break;
+                case 0xCBu: kind = ir::VecShaKind::Sha256Rnds2; break;
+                case 0xCCu: kind = ir::VecShaKind::Sha256Msg1;  break;
+                default: break;
+            }
+            ir::Ref r_wk = r_b;
+            if (kind == ir::VecShaKind::Sha256Rnds2) {
+                r_wk = next_ref++;
+                d.stmts.push_back({r_wk, ir::LoadVecReg{0u}});  // implicit XMM0
+            }
+            const ir::Ref r_dst = next_ref++;
+            d.stmts.push_back({r_dst,
+                ir::VecSha{kind, r_a, r_b, r_wk, 0u}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{dst_xmm, r_dst}});
             d.bytes_consumed = cursor;
             return d;
         }

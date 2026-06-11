@@ -2576,6 +2576,86 @@ TEST_CASE("decode VPGATHERDD xmm1, [rax + xmm12*4], xmm3 (C4 A2 61 90 0C A0) —
     REQUIRE(loads_xmm12);
 }
 
+// F2-IR-060 SHA-NI: NP 0F 38 C8..CD two-operand forms plus
+// NP 0F 3A CC ib (SHA1RNDS4).
+TEST_CASE("decode SHA-NI 0F38 family maps each opcode to its kind — F2-IR-060") {
+    const std::pair<std::uint8_t, ir::VecShaKind> forms[] = {
+        {0xC8u, ir::VecShaKind::Sha1Nexte},
+        {0xC9u, ir::VecShaKind::Sha1Msg1},
+        {0xCAu, ir::VecShaKind::Sha1Msg2},
+        {0xCBu, ir::VecShaKind::Sha256Rnds2},
+        {0xCCu, ir::VecShaKind::Sha256Msg1},
+        {0xCDu, ir::VecShaKind::Sha256Msg2},
+    };
+    for (const auto& [op, kind] : forms) {
+        // ModRM CA: mod=11 reg=001 (xmm1) rm=010 (xmm2).
+        ir::Ref r = 0;
+        auto d = decode_ok({0x0F, 0x38, op, 0xCA}, r);
+        bool found = false;
+        for (const auto& s : d.stmts) {
+            if (const auto* g = std::get_if<ir::VecSha>(&s.op)) {
+                REQUIRE(g->kind == kind);
+                REQUIRE(g->imm == 0u);
+                found = true;
+            }
+        }
+        REQUIRE(found);
+    }
+}
+
+TEST_CASE("decode SHA256RNDS2 reads the implicit XMM0 — F2-IR-060") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x38, 0xCB, 0xCA}, r);
+    bool loads_xmm0 = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* lv = std::get_if<ir::LoadVecReg>(&s.op)) {
+            if (lv->xmm_index == 0u) loads_xmm0 = true;
+        }
+    }
+    REQUIRE(loads_xmm0);
+}
+
+TEST_CASE("decode SHA256MSG1 xmm1, [rax] memory form — F2-IR-060") {
+    // ModRM 08: mod=00 reg=001 (xmm1) rm=000 ([rax]).
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x38, 0xCC, 0x08}, r);
+    bool has_loadvec = false, found = false;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::LoadVec>(s.op)) has_loadvec = true;
+        if (std::holds_alternative<ir::VecSha>(s.op))  found = true;
+    }
+    REQUIRE(found);
+    REQUIRE(has_loadvec);
+}
+
+TEST_CASE("decode SHA1RNDS4 keeps imm8 low bits only — F2-IR-060") {
+    // 0F 3A CC /r ib; imm8=0xE6 → selector 2 (upper bits ignored).
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x3A, 0xCC, 0xCA, 0xE6}, r);
+    bool found = false;
+    for (const auto& s : d.stmts) {
+        if (const auto* g = std::get_if<ir::VecSha>(&s.op)) {
+            REQUIRE(g->kind == ir::VecShaKind::Sha1Rnds4);
+            REQUIRE(g->imm == 2u);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("decode SHA-NI rejects a 66 prefix — F2-IR-060") {
+    // 66 0F 38 C8 is NOT SHA1NEXTE (NP-only encoding).
+    ir::Ref r = 0;
+    auto res = decode_any({0x66, 0x0F, 0x38, 0xC8, 0xCA}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+}
+
+TEST_CASE("decode SHA1RNDS4 truncated imm8 is rejected — F2-IR-060") {
+    ir::Ref r = 0;
+    auto res = decode_any({0x0F, 0x3A, 0xCC, 0xCA}, r);
+    REQUIRE(std::holds_alternative<DecodeError>(res));
+}
+
 // F2-IR-053 BMI2 variable-count shifts: SHLX / SARX / SHRX. All three
 // share `sub3 == 0xF7`, with the legacy prefix encoded in VEX.pp.
 TEST_CASE("decode SHLX r32a, r/m32, r32b (C4 E2 69 F7 C1) — F2-IR-053") {
