@@ -3159,7 +3159,18 @@ TEST_CASE("e2e: SHA-256 full-digest KAT via canonical SHA-NI loop "
             REQUIRE(host_digest[i] == kSha256Expected[k][i]);
         }
 
-        if constexpr (!is_arm64) continue;
+        if constexpr (!is_arm64) {
+            // Execution needs the host arch, but decode + lowering are
+            // host-independent: the program must at least translate
+            // (catches decoder gaps and scratch-pool exhaustion on
+            // x86_64 CI too).
+            Bytes body = gen_sha256(blocks);
+            body.push_back(0xC3);
+            translator::Translator tx;
+            auto tr = tx.translate(0x4000, body);
+            REQUIRE(std::holds_alternative<translator::TranslatedBlock>(tr));
+            continue;
+        }
 
         // JIT half: schedule words and K live in host memory the
         // guest addresses through rdx / rcx; rbx points at the
@@ -3199,7 +3210,14 @@ TEST_CASE("e2e: SHA-1 full-digest KAT via canonical SHA-NI loop "
             REQUIRE(host_digest[i] == kSha1Expected[k][i]);
         }
 
-        if constexpr (!is_arm64) continue;
+        if constexpr (!is_arm64) {
+            Bytes body = gen_sha1(blocks);
+            body.push_back(0xC3);
+            translator::Translator tx;
+            auto tr = tx.translate(0x4000, body);
+            REQUIRE(std::holds_alternative<translator::TranslatedBlock>(tr));
+            continue;
+        }
 
         // SHA-1 message registers carry W0 in lane 3, so the guest
         // buffer stores each 4-word group reversed.
