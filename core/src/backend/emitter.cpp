@@ -1726,15 +1726,19 @@ void Emitter::vsha256_rnds2(FpReg dst, FpReg a, FpReg b, FpReg wk) {
 
 void Emitter::vsha256_msg1(FpReg dst, FpReg a, FpReg b) {
     // SHA256SU0 is an exact match: both ISAs are ascending here and
-    // both take W4 from the second operand's low dword.
+    // both take W4 from the second operand's low dword. Stage the
+    // accumulator through V31 so a dst == b caller cannot clobber
+    // the W4 source before SHA256SU0 reads it.
+    constexpr int kAccV = kInternalFpScratchV;  // V31
+    const vixl_aa::VRegister v_acc16(kAccV, vixl_aa::kFormat16B);
+    const vixl_aa::VRegister v_acc4s(kAccV, vixl_aa::kFormat4S);
     const vixl_aa::VRegister v_a16(static_cast<int>(a), vixl_aa::kFormat16B);
     const vixl_aa::VRegister v_b4s(static_cast<int>(b), vixl_aa::kFormat4S);
     const vixl_aa::VRegister v_dst16(static_cast<int>(dst),
                                      vixl_aa::kFormat16B);
-    const vixl_aa::VRegister v_dst4s(static_cast<int>(dst),
-                                     vixl_aa::kFormat4S);
-    impl_->masm.Mov(v_dst16, v_a16);
-    impl_->masm.Sha256su0(v_dst4s, v_b4s);
+    impl_->masm.Mov(v_acc16, v_a16);
+    impl_->masm.Sha256su0(v_acc4s, v_b4s);
+    impl_->masm.Mov(v_dst16, v_acc16);
 }
 
 void Emitter::vsha256_msg2(FpReg dst, FpReg a, FpReg b) {
