@@ -6,13 +6,15 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-11 (decoder gap sweep completed).
+Last updated: 2026-06-11 (JIT branch patch primitive landed).
 
 ## Currently active
 
 Branch: `claude/decoder-gap-sweep` (stacked on
 `claude/guest-feature-discovery` / PR #14). Baseline 973/973;
 988/988 at arc close (Debug + ASan/UBSan, x86_64 container).
+Latest local validation: 992/992 (`~signal_handler*`) on the mounted
+`prisma-build-env` container after `194fcca`.
 
 ## Queue (priority order)
 
@@ -43,7 +45,7 @@ Branch: `claude/decoder-gap-sweep` (stacked on
 | 14i | Guest feature discovery: XGETBV + VZEROUPPER/ALL + CPUID 0/1/7 | 4 commits | `b61b865`, `bc0fe74`, `fbe0c5d`, `2b5a7b2` | ✅ done | FEAT_AES detection + AES e2e gate; Xgetbv IR op (tag 90) with baked XCR0=0x7; VZEROUPPER/ALL synthesized from VecConstant+StoreVecReg(Hi); vendor GenuineIntel + leaf 1 honest bits (FPU/CMOV/SSE/SSE2 + SSE3/SSSE3/FMA/CX16/SSE4.1/MOVBE/OSXSAVE/AVX, AESNI host-gated) + leaf 7 BMI2. Self-review dropped TSC/CX8/POPCNT/SSE4.2 (decoder can't back them); Codex caught VEX scalar vvvv merge bug (CVTSS2SD/MOVSS/ROUNDSS) — fixed + pinned. Queued: 32-bit POPCNT/LZCNT/TZCNT/BSF/BSR forms, PCMPxSTRx, RDTSC via CNTVCT_EL0, CVTSI2SS/SD upper-lane merge, SSE3/SSSE3/SSE4.1 thin spots. |
 | 14j | Decoder gap sweep (atomics widths, BSF/BSR real, RDTSC real, CMPXCHG8B, 16B-ZF fix, CVTSI2 merge, SSE3 completion) | 1 commit | `d4508f4` | ✅ done | Two latent silent-wrong bugs fixed (BSF/BSR stored zero; CMPXCHG16B guest ZF inverted). TSC/CX8/POPCNT re-advertised. ir::Rdtsc (tag 91) via mrs CNTVCT_EL0. Still queued: PCMPxSTRx (re-advertise SSE4.2), LZCNT/TZCNT CF flag, XADD flags, 16-bit atomics, true-atomic CAS lowering (LoadMemTSO/StoreMemTSO split is not a real CAS under guest MT), SSSE3/SSE4.1 thin spots. |
 | 14h | Lean mirrors: vecGather + vecSha | 1 commit | `2b5407a` | ✅ done | Constructor-only mirrors (repStos precedent): no 128-bit carrier in the Lean model yet, semantics deferred; DCE + ConstProp case-splits stay exhaustive; sorry budget unchanged at 3. |
-| 15 | Direct branch threading | 4-6 commits | `b1e112f` | 🟡 partial | Stage 2 also threads direct CallRel and REP clamp re-entry/fallthrough successors through the same hash-checked dispatcher path. In-JIT patching still queued. |
+| 15 | Direct branch threading | 4-6 commits | `b1e112f`, `194fcca` | 🟡 partial | Stage 2 threads direct CallRel and REP clamp re-entry/fallthrough successors through the hash-checked dispatcher path. Stage 3 adds the safe AArch64 branch patch primitive in `JitSlabPool`; exit-slot wiring still queued behind SMC invalidation policy. |
 | 16a | RFC 0014 — C-ABI FFI boundary core↔shell | 1 commit | `09efbc4` | ✅ done | Contract: pure C ABI, opaque handles, status codes, panic/exception firewall, `PRISMA_CAPI_VERSION`. |
 | 16b | `prisma_core_c` C API (header + impl + tests) | 1-2 commits | `ea37029` | ✅ done | `capi.h` + shared lib target + 8 Catch2 cases (905/905 suite green in container). |
 | 16c | Rust bridge crates `core-sys` + `core` | 1-2 commits | `9f68ca6` | ✅ done | Hand-written extern decls + safe RAII wrapper + 9 cross-language integration tests. |
@@ -97,6 +99,7 @@ Branch: `claude/decoder-gap-sweep` (stacked on
 | 22 | feat(runtime,backend): F2-BK-010 call/ret return-stack | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; first-class call/ret terminators + dispatcher RAS hit/miss counters. |
 | 23 | feat(core): x87 reduced-F64 bridge + stack forwarding | `d9f12b5` | 848/848 verde Debug + ASan/UBSan + Zydis; RFC 0013 documents precision scope. |
 | 24 | feat(runtime): dispatcher direct-thread cache | `5a4fb7e` | Direct branch successors can run from the executable cache without another translate() call; SMC hash checks preserved. |
+| 24b | runtime: add JIT branch patch primitive | `194fcca` | Adds `JitSlabPool::patch_aarch64_branch()` with ownership/alignment/range checks, W^X-aware write, icache invalidation, and focused unit coverage. 992/992 (`~signal_handler*`) green in mounted container. |
 | 25 | feat(ir,decoder,backend): F2-IR-058 - AESKEYGENASSIST | `4ee4297` | 897/897 Debug + ASan/UBSan (`~signal_handler*`) + Zydis 897/897. Gemini review caught the RIP-relative test gap; fixed before commit. |
 | 26 | feat(ir,decoder,backend): F2-IR-059 complete - VPGATHER/VGATHER family | `a3c39e6` `185cef3` `b061255` `f287af7` `ae3b82e` | 932/932 (5227 assertions) Debug + ASan/UBSan in container. VSIB xmm4 fix, VecGather lane descriptor, Q widths, FP forms, ymm lo/hi (incl. index_lane_base=2 split-index and QD chained-halves geometries). 9 ARM64 e2e gathers with poisoned-masked-index proofs. Codex + Gemini external review (see docs/REVIEWS/). |
 
