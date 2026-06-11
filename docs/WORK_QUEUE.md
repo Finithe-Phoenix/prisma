@@ -6,15 +6,15 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-11 (direct JIT patches gated on guest writes).
+Last updated: 2026-06-11 (direct JIT patch metrics exposed).
 
 ## Currently active
 
 Branch: `claude/decoder-gap-sweep` (stacked on
 `claude/guest-feature-discovery` / PR #14). Baseline 973/973;
 988/988 at arc close (Debug + ASan/UBSan, x86_64 container).
-Latest local validation: 1001/1001 (`~signal_handler*`) on the mounted
-`prisma-build-env` container after `6e3a541`.
+Latest local validation: 1003/1003 (`~signal_handler*`) on the mounted
+`prisma-build-env` container after `a25bbbc`.
 
 ## Queue (priority order)
 
@@ -45,7 +45,7 @@ Latest local validation: 1001/1001 (`~signal_handler*`) on the mounted
 | 14i | Guest feature discovery: XGETBV + VZEROUPPER/ALL + CPUID 0/1/7 | 4 commits | `b61b865`, `bc0fe74`, `fbe0c5d`, `2b5a7b2` | ✅ done | FEAT_AES detection + AES e2e gate; Xgetbv IR op (tag 90) with baked XCR0=0x7; VZEROUPPER/ALL synthesized from VecConstant+StoreVecReg(Hi); vendor GenuineIntel + leaf 1 honest bits (FPU/CMOV/SSE/SSE2 + SSE3/SSSE3/FMA/CX16/SSE4.1/MOVBE/OSXSAVE/AVX, AESNI host-gated) + leaf 7 BMI2. Self-review dropped TSC/CX8/POPCNT/SSE4.2 (decoder can't back them); Codex caught VEX scalar vvvv merge bug (CVTSS2SD/MOVSS/ROUNDSS) — fixed + pinned. Queued: 32-bit POPCNT/LZCNT/TZCNT/BSF/BSR forms, PCMPxSTRx, RDTSC via CNTVCT_EL0, CVTSI2SS/SD upper-lane merge, SSE3/SSSE3/SSE4.1 thin spots. |
 | 14j | Decoder gap sweep (atomics widths, BSF/BSR real, RDTSC real, CMPXCHG8B, 16B-ZF fix, CVTSI2 merge, SSE3 completion) | 1 commit | `d4508f4` | ✅ done | Two latent silent-wrong bugs fixed (BSF/BSR stored zero; CMPXCHG16B guest ZF inverted). TSC/CX8/POPCNT re-advertised. ir::Rdtsc (tag 91) via mrs CNTVCT_EL0. Still queued: PCMPxSTRx (re-advertise SSE4.2), LZCNT/TZCNT CF flag, XADD flags, 16-bit atomics, true-atomic CAS lowering (LoadMemTSO/StoreMemTSO split is not a real CAS under guest MT), SSSE3/SSE4.1 thin spots. |
 | 14h | Lean mirrors: vecGather + vecSha | 1 commit | `2b5407a` | ✅ done | Constructor-only mirrors (repStos precedent): no 128-bit carrier in the Lean model yet, semantics deferred; DCE + ConstProp case-splits stay exhaustive; sorry budget unchanged at 3. |
-| 15 | Direct branch threading | 4-6 commits | `b1e112f`, `194fcca`, `b7e4cfd`, `2ad2e26`, `9a84fba`, `6e3a541` | 🟡 partial | Stage 2 threads direct CallRel and REP clamp re-entry/fallthrough successors through the hash-checked dispatcher path. Stage 3 adds the safe AArch64 branch patch primitive in `JitSlabPool`; Stage 4 emits patchable tail slots + Translator metadata for JumpRel/CallRel; Stage 5 adds Translator patch/unpatch lifecycle + stale incoming unpatch on SMC retranslation; Stage 6 enables one-hop dispatcher patches with target hash-check, halt/max-step guards, and chain rejection; Stage 6b gates auto-patching to sources with no guest-memory writes. Multi-hop and CallRel auto-patching remain queued behind SmcGuard/page invalidation. |
+| 15 | Direct branch threading | 4-7 commits | `b1e112f`, `194fcca`, `b7e4cfd`, `2ad2e26`, `9a84fba`, `6e3a541`, `a25bbbc` | 🟡 partial | Stage 2 threads direct CallRel and REP clamp re-entry/fallthrough successors through the hash-checked dispatcher path. Stage 3 adds the safe AArch64 branch patch primitive in `JitSlabPool`; Stage 4 emits patchable tail slots + Translator metadata for JumpRel/CallRel; Stage 5 adds Translator patch/unpatch lifecycle + stale incoming unpatch on SMC retranslation; Stage 6 enables one-hop dispatcher patches with target hash-check, halt/max-step guards, and chain rejection; Stage 6b gates auto-patching to sources with no guest-memory writes; Stage 6c exposes direct JIT patch attempt/apply/reject/unpatch/execute counters through runtime stats plus C/Rust ABI v2. Multi-hop and CallRel auto-patching remain queued behind SmcGuard/page invalidation. |
 | 16a | RFC 0014 — C-ABI FFI boundary core↔shell | 1 commit | `09efbc4` | ✅ done | Contract: pure C ABI, opaque handles, status codes, panic/exception firewall, `PRISMA_CAPI_VERSION`. |
 | 16b | `prisma_core_c` C API (header + impl + tests) | 1-2 commits | `ea37029` | ✅ done | `capi.h` + shared lib target + 8 Catch2 cases (905/905 suite green in container). |
 | 16c | Rust bridge crates `core-sys` + `core` | 1-2 commits | `9f68ca6` | ✅ done | Hand-written extern decls + safe RAII wrapper + 9 cross-language integration tests. |
@@ -104,6 +104,7 @@ Latest local validation: 1001/1001 (`~signal_handler*`) on the mounted
 | 24d | translator: add direct-exit patch lifecycle | `2ad2e26` | Translator now keeps the owning `JitBlock`, can patch/unpatch direct-exit slots to already-translated targets, rejects invalid/self targets, and unpatches stale incoming edges on SMC retranslation. 997/997 (`~signal_handler*`) green in mounted container. |
 | 24e | runtime: enable one-hop direct JIT patches | `9a84fba` | Dispatcher now patches JumpRel/CallRel tail slots after hash-checked successor install/lookup, verifies patched targets before entry, unpatches on stale/halt/budget conflicts, and accounts both source and target blocks. Multi-hop chains are rejected. 999/999 (`~signal_handler*`) green in mounted container. |
 | 24f | runtime: gate direct JIT patches on guest writes | `6e3a541` | Auto-patching now requires `DirectPatchSite::auto_patch_safe`, false for CallRel and any source with guest-memory writes/InlineAsm/REP. Fixes halt-PC priority at exact max_steps. 1001/1001 (`~signal_handler*`) green in mounted container. |
+| 24g | runtime: expose direct JIT patch stats | `a25bbbc` | Adds attempt/apply/reject/unpatch/execute counters to `DispatchStats`, appends them to `prisma_dispatch_stats` with `PRISMA_CAPI_VERSION=2`, updates Rust bindings/wrapper structs, and pins stale-target unpatch accounting. 1003/1003 (`~signal_handler*`) green in mounted container. |
 | 25 | feat(ir,decoder,backend): F2-IR-058 - AESKEYGENASSIST | `4ee4297` | 897/897 Debug + ASan/UBSan (`~signal_handler*`) + Zydis 897/897. Gemini review caught the RIP-relative test gap; fixed before commit. |
 | 26 | feat(ir,decoder,backend): F2-IR-059 complete - VPGATHER/VGATHER family | `a3c39e6` `185cef3` `b061255` `f287af7` `ae3b82e` | 932/932 (5227 assertions) Debug + ASan/UBSan in container. VSIB xmm4 fix, VecGather lane descriptor, Q widths, FP forms, ymm lo/hi (incl. index_lane_base=2 split-index and QD chained-halves geometries). 9 ARM64 e2e gathers with poisoned-masked-index proofs. Codex + Gemini external review (see docs/REVIEWS/). |
 

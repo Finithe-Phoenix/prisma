@@ -301,6 +301,10 @@ still cutting the C++ dispatch round trip on hot direct edges that cannot
 modify guest code before the physical branch. `CallRel` slots stay
 manual-only until SmcGuard/page invalidation is wired into the generic
 dispatcher memory model, because CALL writes the guest stack.
+Dispatcher stats, the C ABI, and the Rust wrapper expose direct JIT
+patch attempts, applied patches, rejections, forced unpatches, and
+patched-source executions so performance work can distinguish expected
+chain rejections from real patch misses.
 
 ### Blocker A — REP STOS / MOVSB DoS clamp
 

@@ -344,9 +344,23 @@ Useful counters:
 - `direct_thread_hits`: successor was already cached and executed.
 - `direct_thread_misses`: cached lookup missed for a direct successor.
 - `direct_thread_installs`: direct successor was translated in-place.
+- `direct_jit_patch_attempts`: dispatcher asked the translator to patch
+  a one-hop tail branch after a hash-checked successor was available.
+- `direct_jit_patch_applied`: the request changed an unpatched source
+  into an active JIT branch.
+- `direct_jit_patch_rejected`: the translator refused the request
+  (for example, because it would create a chain).
+- `direct_jit_patch_unpatches`: dispatcher removed an active branch
+  before entry because the target was stale, halted, or over budget.
+- `direct_jit_patch_executes`: dispatcher entered a source whose
+  physical branch executed the one-hop target before returning.
 
 In-JIT direct-exit patching must stay behind the same SMC hash
 discipline: no branch may jump to stale code after guest bytes change.
+The patch counters are exposed through both C++ `DispatchStats` and the
+C/Rust ABI (`prisma_dispatch_stats`, `PRISMA_CAPI_VERSION` 2). If that
+public struct grows again, bump the version and update `shell/core-sys`
+plus the safe `shell/core` wrapper in the same code commit.
 Do not permit multi-hop JIT chains until the dispatcher can account an
 arbitrary chain while preserving halt-PC, max-step, and RAS visibility.
 Do not auto-patch `CallRel` or any source containing `StoreMem*`,
