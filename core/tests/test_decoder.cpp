@@ -2651,6 +2651,51 @@ TEST_CASE("decode VZEROALL zeroes low and high lanes of all 16 regs") {
     REQUIRE(d.bytes_consumed == 3);
 }
 
+namespace {
+// Collects the xmm indices read via LoadVecReg, in order.
+std::vector<unsigned> loaded_xmm_indices(const decoder::Decoded& d) {
+    std::vector<unsigned> out;
+    for (const auto& s : d.stmts) {
+        if (const auto* lv = std::get_if<ir::LoadVecReg>(&s.op)) {
+            out.push_back(lv->xmm_index);
+        }
+    }
+    return out;
+}
+}  // namespace
+
+TEST_CASE("decode VCVTSS2SD merges the upper lanes from vvvv") {
+    // VEX.LIG.F3.0F.WIG 5A: C5 EA = vvvv=xmm2 L=0 pp=F3; ModRM CB =
+    // dst xmm1, src xmm3. Codex review 2026-06-11: the legacy handler
+    // used dst's prior value as the merge source for VEX forms too.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC5, 0xEA, 0x5A, 0xCB}, r);
+    const auto loads = loaded_xmm_indices(d);
+    REQUIRE(loads.size() == 2);
+    REQUIRE(loads[0] == 2u);  // merge = vvvv (xmm2), NOT dst (xmm1)
+    REQUIRE(loads[1] == 3u);  // conversion source
+}
+
+TEST_CASE("decode VMOVSS reg-reg merges the upper lanes from vvvv") {
+    // VEX.LIG.F3.0F.WIG 10: VMOVSS xmm1, xmm2, xmm3.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC5, 0xEA, 0x10, 0xCB}, r);
+    const auto loads = loaded_xmm_indices(d);
+    REQUIRE(loads.size() == 2);
+    REQUIRE(loads[0] == 2u);
+    REQUIRE(loads[1] == 3u);
+}
+
+TEST_CASE("decode VROUNDSS merges the upper lanes from vvvv") {
+    // VEX.LIG.66.0F3A.WIG 0A /r ib: VROUNDSS xmm1, xmm2, xmm3, 9.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC4, 0xE3, 0x69, 0x0A, 0xCB, 0x09}, r);
+    const auto loads = loaded_xmm_indices(d);
+    REQUIRE(loads.size() == 2);
+    REQUIRE(loads[0] == 2u);
+    REQUIRE(loads[1] == 3u);
+}
+
 TEST_CASE("decode VZERO* rejects a non-zero vvvv") {
     // vvvv=1110 (wire) -> decoded vvvv=1, #UD per the SDM.
     ir::Ref r = 0;

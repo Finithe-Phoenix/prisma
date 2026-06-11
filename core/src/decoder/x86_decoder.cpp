@@ -3894,8 +3894,14 @@ std::variant<Decoded, DecodeError> decode_one(
                 const ir::Ref r_lhs = next_ref++;
                 const ir::Ref r_src = next_ref++;
                 const ir::Ref r_res = next_ref++;
-                d.stmts.push_back({r_lhs,
-                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                // Scalar VROUNDSS/SD merge the upper lanes from vvvv;
+                // packed forms and legacy ROUND* read dst's prior
+                // value (only the scalar result lane differs anyway).
+                const std::uint8_t round_lhs_xmm =
+                    (vex.present && !is_packed)
+                        ? vex.vvvv
+                        : static_cast<std::uint8_t>(m.reg);
+                d.stmts.push_back({r_lhs, ir::LoadVecReg{round_lhs_xmm}});
                 if (m.mod == 0b11) {
                     d.stmts.push_back({r_src,
                         ir::LoadVecReg{static_cast<std::uint8_t>(
@@ -6663,8 +6669,12 @@ std::variant<Decoded, DecodeError> decode_one(
             const ir::Ref r_lhs = next_ref++;
             const ir::Ref r_src = next_ref++;
             const ir::Ref r_res = next_ref++;
-            d.stmts.push_back({r_lhs,
-                ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+            // VEX form (VCVTSS2SD dst, vvvv, src): the upper lanes
+            // merge from vvvv, not from dst's prior value.
+            const std::uint8_t merge_xmm = vex.present
+                ? vex.vvvv
+                : static_cast<std::uint8_t>(m.reg);
+            d.stmts.push_back({r_lhs, ir::LoadVecReg{merge_xmm}});
             d.stmts.push_back({r_src,
                 ir::LoadVecReg{static_cast<std::uint8_t>(
                     static_cast<unsigned>(m.base))}});
@@ -6764,7 +6774,9 @@ std::variant<Decoded, DecodeError> decode_one(
             Decoded d;
             if (m.mod == 0b11) {
                 // reg-reg: keep upper bits of dst. Same encoding either
-                // way (load and store collapse at reg-reg).
+                // way (load and store collapse at reg-reg). VEX form
+                // (VMOVSS dst, vvvv, src) merges the upper bits from
+                // vvvv instead.
                 const ir::Ref r_lhs = next_ref++;
                 const ir::Ref r_src = next_ref++;
                 const ir::Ref r_res = next_ref++;
@@ -6772,8 +6784,10 @@ std::variant<Decoded, DecodeError> decode_one(
                                                   : static_cast<unsigned>(m.base);
                 const unsigned src_xmm = is_load ? static_cast<unsigned>(m.base)
                                                   : m.reg;
-                d.stmts.push_back({r_lhs,
-                    ir::LoadVecReg{static_cast<std::uint8_t>(dst_xmm)}});
+                const std::uint8_t merge_xmm = vex.present
+                    ? vex.vvvv
+                    : static_cast<std::uint8_t>(dst_xmm);
+                d.stmts.push_back({r_lhs, ir::LoadVecReg{merge_xmm}});
                 d.stmts.push_back({r_src,
                     ir::LoadVecReg{static_cast<std::uint8_t>(src_xmm)}});
                 d.stmts.push_back({r_res,
