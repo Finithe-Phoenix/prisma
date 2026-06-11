@@ -86,6 +86,7 @@ TEST_CASE("is_terminator: all expected ops are terminators") {
     REQUIRE(is_terminator(Op{RetAdjusted{0u}}));
     REQUIRE(is_terminator(Op{Trap{TrapKind::Sigtrap}}));
     REQUIRE(is_terminator(Op{Cpuid{}}));
+    REQUIRE(is_terminator(Op{Xgetbv{}}));
     REQUIRE(is_terminator(Op{Syscall{}}));
     REQUIRE(is_terminator(Op{InlineAsm{{}}}));
     REQUIRE(is_terminator(Op{CondJumpFlags{0u, CondCode::Eq, 1u, 2u}}));

@@ -220,6 +220,13 @@ struct RetAdjusted {
 struct Cpuid   {};
 struct Syscall {};
 
+// XGETBV (NP 0F 01 D0) — reads the extended control register selected
+// by ECX into EDX:EAX. The lowering bakes XCR0 at translation time
+// (LowerOptions::xgetbv_xcr0); ECX != 0 returns zeros as a placeholder
+// (hardware raises #GP). Together with CPUID.1:ECX.OSXSAVE this is
+// the canonical guest gate for AVX/FMA usage.
+struct Xgetbv  {};
+
 // ---- Width adjustment -------------------------------------------------
 //
 // Extend{value, from_size, to_size, signed} grows a narrower SSA value
@@ -1037,7 +1044,8 @@ using Op = std::variant<
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs,
-    X87Load, X87Store, X87Push, X87Pop
+    X87Load, X87Store, X87Push, X87Pop,
+    Xgetbv
 >;
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1118,7 @@ bool operator==(const CallRel& a, const CallRel& b) noexcept;
 bool operator==(const CallReg& a, const CallReg& b) noexcept;
 bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
 bool operator==(const Cpuid&, const Cpuid&) noexcept;
+bool operator==(const Xgetbv&, const Xgetbv&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
 bool operator==(const Extend& a, const Extend& b) noexcept;

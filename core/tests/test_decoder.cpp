@@ -2615,6 +2615,50 @@ TEST_CASE("decode SHA256RNDS2 reads the implicit XMM0 — F2-IR-060") {
     REQUIRE(loads_xmm0);
 }
 
+TEST_CASE("decode XGETBV (0F 01 D0) to the Xgetbv op") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x0F, 0x01, 0xD0}, r);
+    REQUIRE(d.stmts.size() == 1);
+    REQUIRE(std::holds_alternative<ir::Xgetbv>(d.stmts[0].op));
+    REQUIRE(d.bytes_consumed == 3);
+}
+
+TEST_CASE("decode VZEROUPPER zeroes the 16 high lanes only") {
+    // VEX.128.0F.WIG 77: C5 byte2 = R=1 vvvv=1111 L=0 pp=00 -> F8.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC5, 0xF8, 0x77}, r);
+    int hi = 0, lo = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::StoreVecRegHi>(s.op)) ++hi;
+        if (std::holds_alternative<ir::StoreVecReg>(s.op)) ++lo;
+    }
+    REQUIRE(hi == 16);
+    REQUIRE(lo == 0);
+    REQUIRE(d.bytes_consumed == 3);
+}
+
+TEST_CASE("decode VZEROALL zeroes low and high lanes of all 16 regs") {
+    // VEX.256.0F.WIG 77: C5 byte2 = R=1 vvvv=1111 L=1 pp=00 -> FC.
+    ir::Ref r = 0;
+    auto d = decode_ok({0xC5, 0xFC, 0x77}, r);
+    int hi = 0, lo = 0;
+    for (const auto& s : d.stmts) {
+        if (std::holds_alternative<ir::StoreVecRegHi>(s.op)) ++hi;
+        if (std::holds_alternative<ir::StoreVecReg>(s.op)) ++lo;
+    }
+    REQUIRE(hi == 16);
+    REQUIRE(lo == 16);
+    REQUIRE(d.bytes_consumed == 3);
+}
+
+TEST_CASE("decode VZERO* rejects a non-zero vvvv") {
+    // vvvv=1110 (wire) -> decoded vvvv=1, #UD per the SDM.
+    ir::Ref r = 0;
+    auto res = decoder::decode_one(
+        std::vector<std::uint8_t>{0xC5, 0x70, 0x77}, r);
+    REQUIRE(std::holds_alternative<decoder::DecodeError>(res));
+}
+
 TEST_CASE("decode SHA256MSG1 xmm1, [rax] memory form — F2-IR-060") {
     // ModRM 08: mod=00 reg=001 (xmm1) rm=000 ([rax]).
     ir::Ref r = 0;

@@ -80,19 +80,28 @@ struct LowerResult {
 //   spill_slot_base_offset      — byte offset of slot 0 from sp.
 // The caller (Translator) owns reserving the stack space; the Lowerer
 // only emits str/ldr referencing the pre-agreed offsets.
-// `cpuid_max_leaf` + `cpuid_leaf7_ebx`: the guest CPUID model
-// (F2-IR-060 follow-up). Values are baked into the generated code at
-// translation time; the Translator fills them from
-// `runtime::host_features()`. Leaf 0 reports `cpuid_max_leaf` in EAX;
-// leaf 7 subleaf 0 reports `cpuid_leaf7_ebx` in EBX; every other
-// (leaf, subleaf) pair reports zeros. The zero defaults keep
+// `cpuid_*` + `xgetbv_xcr0`: the guest CPUID / XGETBV model (F2-IR-060
+// follow-up). Values are baked into the generated code at translation
+// time; the Translator fills them from `runtime::host_features()`.
+// Modelled leaves: 0 (max basic leaf + vendor string), 1 (signature +
+// feature bits), 7 subleaf 0 (EBX feature bits, >max basic leaves
+// clamp here per the SDM). Everything else reports zeros. XGETBV with
+// ECX=0 reports `xgetbv_xcr0` in EDX:EAX. The zero defaults keep
 // standalone Lowerer uses on the legacy all-zero behaviour.
 struct LowerOptions {
     bool          emit_ret_on_terminator{true};
     unsigned      spill_slots{0};
     std::int32_t  spill_slot_base_offset{0};
     std::uint32_t cpuid_max_leaf{0};
+    std::uint32_t cpuid_vendor_ebx{0};
+    std::uint32_t cpuid_vendor_ecx{0};
+    std::uint32_t cpuid_vendor_edx{0};
+    std::uint32_t cpuid_leaf1_eax{0};
+    std::uint32_t cpuid_leaf1_ebx{0};
+    std::uint32_t cpuid_leaf1_ecx{0};
+    std::uint32_t cpuid_leaf1_edx{0};
     std::uint32_t cpuid_leaf7_ebx{0};
+    std::uint64_t xgetbv_xcr0{0};
 };
 
 class Lowerer {

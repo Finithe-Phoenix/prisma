@@ -73,6 +73,7 @@ prisma_decode_length(std::span<const std::uint8_t> bytes) {
 std::string prisma_mnemonic_for(const ir::Op& op) {
     if (std::holds_alternative<ir::Return>(op))      return "ret";
     if (std::holds_alternative<ir::Cpuid>(op))       return "cpuid";
+    if (std::holds_alternative<ir::Xgetbv>(op))      return "xgetbv";
     if (std::holds_alternative<ir::Syscall>(op))     return "syscall";
     if (std::holds_alternative<ir::Trap>(op)) {
         const auto& t = std::get<ir::Trap>(op);
@@ -226,6 +227,21 @@ TEST_CASE("zydis-diff: CPUID (0F A2) mnemonic = cpuid",
     check_one({0x0F, 0xA2}, "cpuid");
 }
 
+TEST_CASE("zydis-diff: XGETBV (0F 01 D0) length agreement",
+          "[zydis][differential]") {
+    check_one({0x0F, 0x01, 0xD0});
+}
+
+TEST_CASE("zydis-diff: VZEROUPPER (C5 F8 77) length agreement",
+          "[zydis][differential]") {
+    check_one({0xC5, 0xF8, 0x77});
+}
+
+TEST_CASE("zydis-diff: VZEROALL (C5 FC 77) length agreement",
+          "[zydis][differential]") {
+    check_one({0xC5, 0xFC, 0x77});
+}
+
 TEST_CASE("zydis-diff: SYSCALL (0F 05) mnemonic = syscall",
           "[zydis][differential][mnemonic]") {
     check_one({0x0F, 0x05}, "syscall");
@@ -250,6 +266,7 @@ TEST_CASE("zydis-diff: prisma_mnemonic_for sanity") {
     using namespace prisma::ir;
     REQUIRE(prisma_mnemonic_for(Op{Return{}}) == "ret");
     REQUIRE(prisma_mnemonic_for(Op{Cpuid{}}) == "cpuid");
+    REQUIRE(prisma_mnemonic_for(Op{Xgetbv{}}) == "xgetbv");
     REQUIRE(prisma_mnemonic_for(Op{Syscall{}}) == "syscall");
     REQUIRE(prisma_mnemonic_for(Op{Trap{TrapKind::Sigtrap}}) == "int3");
     REQUIRE(prisma_mnemonic_for(Op{Trap{TrapKind::Sigill}}).empty());

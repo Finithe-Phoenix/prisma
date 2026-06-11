@@ -75,6 +75,7 @@ public:
         VecAesKeygenAssist,
         VecGather,
         VecSha,
+        Xgetbv,
         kCount  // sentinel
     };
 

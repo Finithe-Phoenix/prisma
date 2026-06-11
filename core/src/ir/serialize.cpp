@@ -123,12 +123,13 @@ enum class OpKind : std::uint8_t {
     kVecAesKeygenAssist = 87,
     kVecGather          = 88,
     kVecSha             = 89,
+    kXgetbv             = 90,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
 constexpr std::uint8_t kMaxOpKind =
-    static_cast<std::uint8_t>(OpKind::kVecSha);
+    static_cast<std::uint8_t>(OpKind::kXgetbv);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -328,6 +329,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecAes>)        return OpKind::kVecAes;
         else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) return OpKind::kVecAesKeygenAssist;
         else if constexpr (std::is_same_v<T, VecSha>)        return OpKind::kVecSha;
+        else if constexpr (std::is_same_v<T, Xgetbv>)        return OpKind::kXgetbv;
         else if constexpr (std::is_same_v<T, Bswap>)         return OpKind::kBswap;
         else if constexpr (std::is_same_v<T, Crc32c>)        return OpKind::kCrc32c;
         else if constexpr (std::is_same_v<T, VecGather>)     return OpKind::kVecGather;
@@ -431,6 +433,9 @@ void write_payload(std::vector<std::uint8_t>& out, const RetAdjusted& x) {
     put_u64(out, x.pop_bytes);
 }
 void write_payload(std::vector<std::uint8_t>& /*out*/, const Cpuid&) {
+    // empty payload
+}
+void write_payload(std::vector<std::uint8_t>& /*out*/, const Xgetbv&) {
     // empty payload
 }
 void write_payload(std::vector<std::uint8_t>& /*out*/, const Syscall&) {
@@ -969,6 +974,11 @@ DeserializeError read_payload_ret_adjusted(Cursor& c, Stmt& s) {
 
 DeserializeError read_payload_cpuid(Cursor& /*c*/, Stmt& s) {
     s.op = Cpuid{};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_xgetbv(Cursor& /*c*/, Stmt& s) {
+    s.op = Xgetbv{};
     return DeserializeError::Ok;
 }
 
@@ -1752,6 +1762,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kBswap:       return read_payload_bswap(c, s);
         case OpKind::kCrc32c:      return read_payload_crc32c(c, s);
         case OpKind::kVecGather:   return read_payload_vec_gather(c, s);
+        case OpKind::kXgetbv:      return read_payload_xgetbv(c, s);
         case OpKind::kX87Load:     return read_payload_x87_load(c, s);
         case OpKind::kX87Store:    return read_payload_x87_store(c, s);
         case OpKind::kX87Push:     return read_payload_x87_push(c, s);

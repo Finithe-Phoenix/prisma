@@ -2669,6 +2669,11 @@ inline bool host_has_sha_crypto() {
     return hf.feat_sha1 && hf.feat_sha256;
 }
 
+// Same SIGILL caveat for the VecAes lowering (AESE/AESD/AESMC/AESIMC).
+inline bool host_has_aes_crypto() {
+    return runtime::host_features().feat_aes;
+}
+
 struct Result {
     Xmm xmm1;
     Xmm xmm2;
@@ -3333,7 +3338,7 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
     SECTION("host with SHA crypto advertises CPUID.7.0:EBX bit 29") {
         FeatureOverrideGuard guard{sha_host};
         auto s = run_cpuid(7, 0);
-        REQUIRE(s[ir::Gpr::Rbx] == (1ull << 29));
+        REQUIRE((s[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
         REQUIRE(s[ir::Gpr::Rax] == 0u);  // max subleaf
         REQUIRE(s[ir::Gpr::Rcx] == 0u);
         REQUIRE(s[ir::Gpr::Rdx] == 0u);
@@ -3341,20 +3346,55 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
     SECTION("host without SHA crypto keeps the bit clear") {
         FeatureOverrideGuard guard{runtime::HostFeatures{}};
         auto s = run_cpuid(7, 0);
-        REQUIRE(s[ir::Gpr::Rbx] == 0u);
+        REQUIRE((s[ir::Gpr::Rbx] & (1ull << 29)) == 0u);
     }
-    SECTION("leaf 0 reports max basic leaf 7, zero vendor") {
+    SECTION("leaf 0 reports max basic leaf 7 + GenuineIntel vendor") {
         FeatureOverrideGuard guard{runtime::HostFeatures{}};
         // Subleaf is ignored for leaf 0.
         auto s = run_cpuid(0, 0xDEADu);
         REQUIRE(s[ir::Gpr::Rax] == 7u);
-        REQUIRE(s[ir::Gpr::Rbx] == 0u);
-        REQUIRE(s[ir::Gpr::Rcx] == 0u);
-        REQUIRE(s[ir::Gpr::Rdx] == 0u);
+        REQUIRE(s[ir::Gpr::Rbx] == 0x756E6547u);  // "Genu"
+        REQUIRE(s[ir::Gpr::Rdx] == 0x49656E69u);  // "ineI"
+        REQUIRE(s[ir::Gpr::Rcx] == 0x6C65746Eu);  // "ntel"
+    }
+    SECTION("leaf 1 reports signature + honest feature bits") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        auto s = run_cpuid(1, 0);
+        REQUIRE(s[ir::Gpr::Rax] == 0x000206A7u);
+        // EDX: FPU, TSC, CX8, CMOV, SSE, SSE2 — nothing else.
+        REQUIRE(s[ir::Gpr::Rdx] ==
+                ((1u << 0) | (1u << 4) | (1u << 8) | (1u << 15) |
+                 (1u << 25) | (1u << 26)));
+        const std::uint64_t ecx = s[ir::Gpr::Rcx];
+        REQUIRE((ecx & (1u << 0)) != 0u);    // SSE3
+        REQUIRE((ecx & (1u << 9)) != 0u);    // SSSE3
+        REQUIRE((ecx & (1u << 12)) != 0u);   // FMA
+        REQUIRE((ecx & (1u << 19)) != 0u);   // SSE4.1
+        REQUIRE((ecx & (1u << 20)) != 0u);   // SSE4.2
+        REQUIRE((ecx & (1u << 23)) != 0u);   // POPCNT
+        REQUIRE((ecx & (1u << 27)) != 0u);   // OSXSAVE
+        REQUIRE((ecx & (1u << 28)) != 0u);   // AVX
+        REQUIRE((ecx & (1u << 25)) == 0u);   // AESNI off: no host AES
+        REQUIRE((ecx & (1u << 26)) == 0u);   // XSAVE deliberately off
+        REQUIRE((ecx & (1u << 1)) == 0u);    // PCLMULQDQ not decoded
+    }
+    SECTION("AESNI bit follows host AES crypto") {
+        runtime::HostFeatures aes_host{};
+        aes_host.feat_aes = true;
+        FeatureOverrideGuard guard{aes_host};
+        auto s = run_cpuid(1, 0);
+        REQUIRE((s[ir::Gpr::Rcx] & (1u << 25)) != 0u);
+    }
+    SECTION("leaf 7 EBX always carries BMI2") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        auto s = run_cpuid(7, 0);
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 8)) != 0u);   // BMI2
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 3)) == 0u);   // BMI1 off
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 5)) == 0u);   // AVX2 off
     }
     SECTION("unmodelled leaves and subleaves return zeros") {
         FeatureOverrideGuard guard{sha_host};
-        auto s1 = run_cpuid(1, 0);
+        auto s1 = run_cpuid(2, 0);
         REQUIRE(s1[ir::Gpr::Rax] == 0u);
         REQUIRE(s1[ir::Gpr::Rbx] == 0u);
         auto s2 = run_cpuid(7, 1);  // leaf 7 subleaf 1
@@ -3363,9 +3403,9 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
     SECTION("basic leaves above the max clamp to leaf 7 per the SDM") {
         FeatureOverrideGuard guard{sha_host};
         auto s1 = run_cpuid(8, 0);
-        REQUIRE(s1[ir::Gpr::Rbx] == (1ull << 29));
+        REQUIRE((s1[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
         auto s2 = run_cpuid(0x12345u, 0);
-        REQUIRE(s2[ir::Gpr::Rbx] == (1ull << 29));
+        REQUIRE((s2[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
         // ... but the clamped view keeps subleaf semantics ...
         auto s3 = run_cpuid(8, 1);
         REQUIRE(s3[ir::Gpr::Rbx] == 0u);
@@ -3379,7 +3419,93 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         // Garbage in the upper half of RAX must be ignored, exactly
         // like hardware CPUID.
         auto s = run_cpuid(0xFFFFFFFF'00000007ull, 0);
-        REQUIRE(s[ir::Gpr::Rbx] == (1ull << 29));
+        REQUIRE((s[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
+    }
+}
+
+TEST_CASE("e2e: XGETBV reports XCR0 = x87|SSE|AVX — guest AVX gate") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    static const std::vector<std::uint8_t> body{0x0F, 0x01, 0xD0, 0xC3};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+
+    SECTION("ECX=0 returns the baked XCR0 in EDX:EAX") {
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rcx] = 0;
+        disp.state()[ir::Gpr::Rax] = 0xDEADBEEFull;   // overwritten
+        disp.state()[ir::Gpr::Rbx] = 0x1234'5678ull;  // must survive
+        disp.state()[ir::Gpr::Rdx] = 0xFFFFull;       // overwritten
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        REQUIRE(disp.state()[ir::Gpr::Rax] == 0x7u);
+        REQUIRE(disp.state()[ir::Gpr::Rdx] == 0u);
+        REQUIRE(disp.state()[ir::Gpr::Rbx] == 0x1234'5678ull);
+        REQUIRE(disp.state()[ir::Gpr::Rcx] == 0u);  // input preserved
+    }
+    SECTION("ECX!=0 returns zeros (placeholder for #GP)") {
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rcx] = 1;
+        disp.state()[ir::Gpr::Rax] = 0xDEADBEEFull;
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        REQUIRE(disp.state()[ir::Gpr::Rax] == 0u);
+        REQUIRE(disp.state()[ir::Gpr::Rdx] == 0u);
+    }
+}
+
+TEST_CASE("e2e: VZEROUPPER / VZEROALL — F2 AVX transition hygiene") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto run_vzero = [](std::uint8_t vex_byte2) {
+        translator::Translator tx;
+        std::vector<std::uint8_t> body{0xC5, vex_byte2, 0x77, 0xC3};
+        auto reader =
+            [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+            if (pc < 0x4000ull) return {};
+            const std::size_t off =
+                static_cast<std::size_t>(pc - 0x4000ull);
+            if (off >= body.size()) return {};
+            return std::span<const std::uint8_t>(body.data() + off,
+                                                 body.size() - off);
+        };
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        for (std::size_t i = 0; i < 16; ++i) {
+            disp.state().xmm[i].lo = 0x1111'0000ull + i;
+            disp.state().xmm[i].hi = 0x2222'0000ull + i;
+            disp.state().ymm_hi[i].lo = 0x3333'0000ull + i;
+            disp.state().ymm_hi[i].hi = 0x4444'0000ull + i;
+        }
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        runtime::CpuStateFrame out = disp.state();
+        return out;
+    };
+
+    SECTION("VZEROUPPER clears ymm_hi, preserves xmm") {
+        auto s = run_vzero(0xF8);  // L=0
+        for (std::size_t i = 0; i < 16; ++i) {
+            REQUIRE(s.ymm_hi[i].lo == 0u);
+            REQUIRE(s.ymm_hi[i].hi == 0u);
+            REQUIRE(s.xmm[i].lo == 0x1111'0000ull + i);
+            REQUIRE(s.xmm[i].hi == 0x2222'0000ull + i);
+        }
+    }
+    SECTION("VZEROALL clears the full ymm file") {
+        auto s = run_vzero(0xFC);  // L=1
+        for (std::size_t i = 0; i < 16; ++i) {
+            REQUIRE(s.ymm_hi[i].lo == 0u);
+            REQUIRE(s.ymm_hi[i].hi == 0u);
+            REQUIRE(s.xmm[i].lo == 0u);
+            REQUIRE(s.xmm[i].hi == 0u);
+        }
     }
 }
 
@@ -4103,6 +4229,10 @@ TEST_CASE("e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul"
 
 TEST_CASE("e2e: AESKEYGENASSIST xmm0, xmm1, 0x1b — F2-IR-058") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_aes_crypto()) {
+        SUCCEED("ARM64 host lacks AES crypto extensions");
+        return;
+    }
     translator::Translator tx;
     std::vector<std::uint8_t> code{
         0x66, 0x0F, 0x3A, 0xDF, 0xC1, 0x1B,  // aeskeygenassist xmm0, xmm1, 0x1b

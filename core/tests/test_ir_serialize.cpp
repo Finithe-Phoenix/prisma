@@ -125,6 +125,7 @@ TEST_CASE("ir_serialize: CallRel / CallReg / RetAdjusted round-trip", "[ir_seria
 
 TEST_CASE("ir_serialize: Cpuid / Syscall / Trap round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{Cpuid{}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{Xgetbv{}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{Syscall{}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt,
         Op{Trap{TrapKind::Sigill}}});

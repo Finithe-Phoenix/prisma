@@ -703,16 +703,15 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // Guest CPUID with translation-time-baked values (the
             // Translator derives them from runtime::host_features()).
             // Modelled leaves:
-            //   EAX=0                -> EAX = cpuid_max_leaf, EBX/ECX/
-            //                           EDX = 0 (vendor deliberately
-            //                           zero);
+            //   EAX=0                -> max basic leaf + vendor string;
+            //   EAX=1                -> signature + feature bits;
             //   EAX=7 or EAX>7 basic -> leaf-7 view: EBX =
             //                           cpuid_leaf7_ebx when ECX=0,
             //                           zeros otherwise. The >max
             //                           clamp matches the SDM ("data
             //                           for the highest basic
             //                           information leaf").
-            //   EAX=1..6             -> all zeros (placeholder until
+            //   EAX=2..6             -> all zeros (placeholder until
             //                           those leaves are modelled);
             //   EAX bit 31 set       -> all zeros (extended range
             //                           unmodelled).
@@ -731,11 +730,15 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                         "Cpuid temporaries"};
             }
             Emitter::Label leaf0 = emitter_.create_label();
+            Emitter::Label leaf1 = emitter_.create_label();
             Emitter::Label leaf7 = emitter_.create_label();
             Emitter::Label other = emitter_.create_label();
             Emitter::Label done  = emitter_.create_label();
             emitter_.orr_w(t0, rax, rax);   // t0 = EAX, zero-extended
             emitter_.cbz(t0, leaf0);
+            emitter_.mov_imm64(t1, 1);
+            emitter_.eor_w(t1, t0, t1);     // t1 = EAX ^ 1
+            emitter_.cbz(t1, leaf1);
             emitter_.mov_imm64(t1, 7);
             emitter_.eor_w(t1, t0, t1);     // t1 = EAX ^ 7
             emitter_.cbz(t1, leaf7);
@@ -743,28 +746,61 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.cbnz(t1, other);
             emitter_.lsr_imm(t1, t0, 3);    // EAX >= 8: clamp to max
             emitter_.cbnz(t1, leaf7);       // basic leaf (7) per SDM
-            emitter_.branch(other);         // EAX in 1..6: unmodelled
+            emitter_.branch(other);         // EAX in 2..6: unmodelled
             emitter_.bind(leaf7);
             emitter_.orr_w(t0, rcx, rcx);   // t0 = ECX (subleaf)
             emitter_.cbnz(t0, other);
             // CPUID.(EAX=7, ECX=0): EAX = max subleaf (0), EBX = the
-            // baked feature bits (bit 29 = SHA when the host has the
-            // ARMv8 crypto extensions the VecSha lowering emits).
+            // baked feature bits (SHA / BMI2, host-gated where the
+            // lowering needs host crypto).
             emitter_.mov_imm64(rax, 0);
             emitter_.mov_imm64(rbx, options_.cpuid_leaf7_ebx);
             emitter_.mov_imm64(rcx, 0);
             emitter_.mov_imm64(rdx, 0);
             emitter_.branch(done);
+            emitter_.bind(leaf1);
+            emitter_.mov_imm64(rax, options_.cpuid_leaf1_eax);
+            emitter_.mov_imm64(rbx, options_.cpuid_leaf1_ebx);
+            emitter_.mov_imm64(rcx, options_.cpuid_leaf1_ecx);
+            emitter_.mov_imm64(rdx, options_.cpuid_leaf1_edx);
+            emitter_.branch(done);
             emitter_.bind(leaf0);
             emitter_.mov_imm64(rax, options_.cpuid_max_leaf);
-            emitter_.mov_imm64(rbx, 0);
-            emitter_.mov_imm64(rcx, 0);
-            emitter_.mov_imm64(rdx, 0);
+            emitter_.mov_imm64(rbx, options_.cpuid_vendor_ebx);
+            emitter_.mov_imm64(rcx, options_.cpuid_vendor_ecx);
+            emitter_.mov_imm64(rdx, options_.cpuid_vendor_edx);
             emitter_.branch(done);
             emitter_.bind(other);
             emitter_.mov_imm64(rax, 0);
             emitter_.mov_imm64(rbx, 0);
             emitter_.mov_imm64(rcx, 0);
+            emitter_.mov_imm64(rdx, 0);
+            emitter_.bind(done);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Xgetbv>) {
+            // XGETBV with a translation-time-baked XCR0. ECX selects
+            // the XCR; only XCR0 (ECX=0) is modelled — other indices
+            // raise #GP on hardware, placeholder returns zeros. Writes
+            // EDX:EAX only (EBX/ECX untouched, like hardware). Flag-
+            // free for the same reason as Cpuid.
+            const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdx = arm64::host_reg_for(ir::Gpr::Rdx);
+            arm64::Reg t0;
+            if (!allocate_temporary(t0)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "Xgetbv temporary"};
+            }
+            Emitter::Label other = emitter_.create_label();
+            Emitter::Label done  = emitter_.create_label();
+            emitter_.orr_w(t0, rcx, rcx);   // t0 = ECX, zero-extended
+            emitter_.cbnz(t0, other);
+            emitter_.mov_imm64(rax, options_.xgetbv_xcr0 & 0xFFFFFFFFu);
+            emitter_.mov_imm64(rdx, options_.xgetbv_xcr0 >> 32);
+            emitter_.branch(done);
+            emitter_.bind(other);
+            emitter_.mov_imm64(rax, 0);
             emitter_.mov_imm64(rdx, 0);
             emitter_.bind(done);
             return {};

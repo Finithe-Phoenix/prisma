@@ -295,21 +295,60 @@ TranslateResult Translator::translate(
     // ret yet — the epilogue needs to run between the terminator's
     // "set x0" and the final `ret`.
     backend::LowerOptions lopts{/*emit_ret_on_terminator=*/false};
-    // Guest CPUID values are baked into the generated code at
-    // translation time. Leaf 7 EBX bit 29 (SHA) is advertised only
-    // when the host implements both ARMv8 crypto extensions the
-    // VecSha lowering relies on, so a guest that honours CPUID never
-    // reaches SHA instructions on a crypto-less core.
+    // Guest CPUID / XGETBV values are baked into the generated code at
+    // translation time. Crypto bits are advertised only when the host
+    // implements the ARMv8 extensions the lowering relies on, so a
+    // guest that honours CPUID never reaches those instructions on a
+    // crypto-less core. Everything else advertised below is lowered
+    // unconditionally on any ARM64 host.
     // Fase 2.5 note: baked values make cached blocks host-feature-
     // dependent; the P2P trust envelope must carry the feature set
     // alongside the code bytes (RFC 0007 follow-up).
     lopts.cpuid_max_leaf = 7;
+    // Vendor "GenuineIntel" (EBX,EDX,ECX order, ASCII little-endian) —
+    // the Rosetta 2 precedent: runtime dispatchers take their tuned
+    // x86 paths instead of generic fallbacks. Feature BITS, not the
+    // vendor/signature, are the compatibility contract.
+    lopts.cpuid_vendor_ebx = 0x756E6547u;  // "Genu"
+    lopts.cpuid_vendor_edx = 0x49656E69u;  // "ineI"
+    lopts.cpuid_vendor_ecx = 0x6C65746Eu;  // "ntel"
+    // Family 6 model 42 stepping 7 (Sandy-Bridge-era signature: AVX
+    // without AVX2 matches our surface best). EBX: CLFLUSH line size
+    // field = 8 chunks (64 bytes) so alignment probes read sane data.
+    lopts.cpuid_leaf1_eax = 0x000206A7u;
+    lopts.cpuid_leaf1_ebx = 0x00000800u;
+    // Leaf 1 EDX: FPU, TSC, CX8, CMOV, SSE, SSE2 — all decoded and
+    // lowered today. MMX/FXSR deliberately clear (not decoded).
+    lopts.cpuid_leaf1_edx = (1u << 0) | (1u << 4) | (1u << 8) |
+                            (1u << 15) | (1u << 25) | (1u << 26);
+    // Leaf 1 ECX: SSE3, SSSE3, FMA, CMPXCHG16B, SSE4.1, SSE4.2,
+    // MOVBE, POPCNT, OSXSAVE, AVX. XSAVE (bit 26) stays deliberately
+    // clear: the XSAVE/XRSTOR instructions and CPUID leaf 0xD are not
+    // modelled, and the canonical AVX gate (Intel's own sequence,
+    // MSVC's __isa_available, glibc) checks OSXSAVE + XGETBV only.
+    // PCLMULQDQ / F16C / RDRAND clear (not decoded).
+    lopts.cpuid_leaf1_ecx = (1u << 0) | (1u << 9) | (1u << 12) |
+                            (1u << 13) | (1u << 19) | (1u << 20) |
+                            (1u << 22) | (1u << 23) | (1u << 27) |
+                            (1u << 28);
+    // Leaf 7 EBX: BMI2 (bit 8) — SHLX/SARX/SHRX, RORX, MULX, BZHI,
+    // PDEP, PEXT are all decoded; that is the complete BMI2 set. BMI1
+    // deliberately clear (ANDN/BEXTR/BLSI/BLSMSK/BLSR not decoded);
+    // AVX2 deliberately clear (VPBROADCAST*/VINSERTI128/variable
+    // shifts missing).
+    lopts.cpuid_leaf7_ebx = 1u << 8;
     {
         const auto& hf = runtime::host_features();
         if (hf.feat_sha1 && hf.feat_sha256) {
             lopts.cpuid_leaf7_ebx |= 1u << 29;  // CPUID.7.0:EBX.SHA
         }
+        if (hf.feat_aes) {
+            lopts.cpuid_leaf1_ecx |= 1u << 25;  // CPUID.1:ECX.AESNI
+        }
     }
+    // XCR0: x87 + SSE + AVX state enabled — what XGETBV(0) reports,
+    // matching the OSXSAVE + AVX bits above.
+    lopts.xgetbv_xcr0 = 0x7u;
     backend::Lowerer lw(em, lopts);
     auto lr = lw.lower(body);
     if (!lr.success) {

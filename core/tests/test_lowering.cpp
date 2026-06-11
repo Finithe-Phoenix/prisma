@@ -315,6 +315,25 @@ TEST_CASE("Lowerer: Cpuid emits the leaf-dispatch without touching NZCV") {
     REQUIRE(d.find("ret")  != std::string::npos);
 }
 
+TEST_CASE("Lowerer: Xgetbv reports the baked XCR0 for ECX=0, flag-free") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Xgetbv{}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    backend::LowerOptions opts{};
+    opts.xgetbv_xcr0 = 0x7;
+    const std::string d = lower_to_disasm(stmts, ok, opts);
+    REQUIRE(ok);
+    REQUIRE(d.find("x10") != std::string::npos);   // rax (EDX:EAX out)
+    REQUIRE(d.find("x12") != std::string::npos);   // rdx
+    REQUIRE(d.find("x13") == std::string::npos);   // rbx untouched
+    REQUIRE(d.find("cbnz") != std::string::npos);  // ECX != 0 path
+    REQUIRE(d.find("cmp")  == std::string::npos);  // flag-free
+    REQUIRE(d.find("subs") == std::string::npos);
+}
+
 TEST_CASE("Lowerer: Cpuid with default options keeps the all-zero model") {
     // Standalone Lowerer uses (no Translator) default to max_leaf = 0
     // and no leaf-7 features — the legacy placeholder behaviour.

@@ -1609,6 +1609,14 @@ std::variant<Decoded, DecodeError> decode_cpuid_placeholder(
     return d;
 }
 
+std::variant<Decoded, DecodeError> decode_xgetbv(
+    std::size_t bytes_consumed) {
+    Decoded d;
+    d.stmts.push_back({std::nullopt, ir::Xgetbv{}});
+    d.bytes_consumed = bytes_consumed;
+    return d;
+}
+
 std::variant<Decoded, DecodeError> decode_syscall_placeholder(
     std::size_t bytes_consumed) {
     Decoded d;
@@ -2216,6 +2224,9 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
             if (static_cast<Byte>(std::get<std::uint64_t>(third)) == 0xF9u) {
                 return DispatchDecodeResult{decode_rdtsc_placeholder(cursor, next_ref, true)};
             }
+            if (static_cast<Byte>(std::get<std::uint64_t>(third)) == 0xD0u) {
+                return DispatchDecodeResult{decode_xgetbv(cursor)};
+            }
             return DispatchDecodeResult{DecodeError::UnknownOpcode};
         }
     }
@@ -2816,6 +2827,9 @@ std::variant<Decoded, DecodeError> decode_one(
                     (avx256_op == 0x96u || avx256_op == 0x97u ||
                      avx256_op == 0xA6u || avx256_op == 0xA7u ||
                      avx256_op == 0xB6u || avx256_op == 0xB7u);
+                // VZEROALL (VEX.256.0F.WIG 77, no ModRM).
+                const bool vzeroall =
+                    vex.mmmmm == 1 && vex.pp == 0 && avx256_op == 0x77u;
                 if (!(packed_fp_ps_pd || fp_bitwise ||
                       int_simd_addsub_bitwise ||
                       int_cmp || fp_unpck || int_unpck ||
@@ -2829,7 +2843,7 @@ std::variant<Decoded, DecodeError> decode_one(
                       avx_pshufb_pabs || avx_pmov_zx_sx ||
                       avx_ptest || avx_blend_vex || avx_permq ||
                       avx_permd || avx_gather ||
-                      fma3_ymm || fma3_addsub_ymm)) {
+                      fma3_ymm || fma3_addsub_ymm || vzeroall)) {
                     return DecodeError::UnsupportedEncoding;
                 }
             }
@@ -3387,6 +3401,33 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(sub);
             }
             subop = static_cast<Byte>(std::get<std::uint64_t>(sub));
+        }
+
+        // VZEROUPPER (VEX.128.0F.WIG 77) / VZEROALL (VEX.256.0F.WIG
+        // 77) — no ModRM. Compilers emit VZEROUPPER around every
+        // AVX<->SSE transition, so this must decode before AVX can be
+        // advertised via CPUID. Synthesised from existing IR: one zero
+        // VecConstant + per-register high-lane (and, for VZEROALL,
+        // also low-lane) stores. Non-VEX 0F 77 is EMMS (MMX) — still
+        // unsupported.
+        if (subop == 0x77u && vex.present) {
+            if (vex.mmmmm != 1 || vex.pp != 0 || vex.vvvv != 0 ||
+                has_lock) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            Decoded d;
+            const ir::Ref zero = next_ref++;
+            d.stmts.push_back({zero, ir::VecConstant{0, 0}});
+            for (std::uint8_t i = 0; i < 16; ++i) {
+                if (vex.L) {
+                    d.stmts.push_back(
+                        {std::nullopt, ir::StoreVecReg{i, zero}});
+                }
+                d.stmts.push_back(
+                    {std::nullopt, ir::StoreVecRegHi{i, zero}});
+            }
+            d.bytes_consumed = cursor;
+            return d;
         }
 
         // F2-IR-053 — BMI2 RORX (0F 3A F0): rotate-right with imm8

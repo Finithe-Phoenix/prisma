@@ -72,6 +72,9 @@ bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept {
 bool operator==(const Cpuid&, const Cpuid&) noexcept {
     return true;
 }
+bool operator==(const Xgetbv&, const Xgetbv&) noexcept {
+    return true;
+}
 bool operator==(const Syscall&, const Syscall&) noexcept {
     return true;
 }

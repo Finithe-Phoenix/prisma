@@ -144,6 +144,8 @@ std::string pretty_print(const Op& op) {
             os << "ret pop=" << std::dec << x.pop_bytes;
         } else if constexpr (std::is_same_v<T, Cpuid>) {
             os << "cpuid";
+        } else if constexpr (std::is_same_v<T, Xgetbv>) {
+            os << "xgetbv";
         } else if constexpr (std::is_same_v<T, Syscall>) {
             os << "syscall";
         } else if constexpr (std::is_same_v<T, Trap>) {
