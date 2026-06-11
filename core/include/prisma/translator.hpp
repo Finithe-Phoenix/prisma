@@ -31,16 +31,14 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
 #include "prisma/decoder.hpp"
+#include "prisma/jit_buffer_pool.hpp"
 #include "prisma/passes.hpp"
 #include "prisma/translation_cache.hpp"
-
-namespace prisma::runtime {
-class JitSlabPool;
-}
 
 namespace prisma::translator {
 
@@ -96,6 +94,16 @@ struct TranslatedBlock {
 
 using TranslateResult = std::variant<TranslatedBlock, TranslateError>;
 
+enum class DirectPatchResult {
+    Ok,
+    SourceMissing,
+    TargetMissing,
+    SourceNotPatchable,
+    TargetMismatch,
+    SelfTarget,
+    PatchFailed,
+};
+
 class Translator {
 public:
     Translator();
@@ -124,6 +132,18 @@ public:
     [[nodiscard]] std::optional<TranslatedBlock> lookup_cached(
         std::uint64_t guest_addr,
         std::span<const std::uint8_t> guest_bytes) const;
+
+    // Patch/unpatch a Translator-owned direct-exit tail slot. The caller
+    // must still decide whether executing through the patch preserves the
+    // dispatcher's step/halt/RAS policy. These methods only enforce local
+    // ownership, target identity, and stale-target cleanup.
+    [[nodiscard]] DirectPatchResult patch_direct_exit(
+        std::uint64_t source_guest_pc,
+        std::uint64_t target_guest_pc);
+    [[nodiscard]] DirectPatchResult unpatch_direct_exit(
+        std::uint64_t source_guest_pc);
+    [[nodiscard]] bool direct_exit_is_patched(
+        std::uint64_t source_guest_pc) const;
 
     // Override the pass pipeline. Defaults to passes::default_pipeline().
     void set_pipeline(passes::PassManager pm);
@@ -165,6 +185,7 @@ private:
     // valid for the lifetime of the Translator.
     struct Record {
         const std::uint8_t* entry{nullptr};
+        runtime::JitBlock jit_block{};
         std::size_t code_size{0};
         std::size_t guest_size{0};
         std::uint64_t content_hash{0};
@@ -173,7 +194,10 @@ private:
         std::uint64_t fallthrough_guest_pc{0};
         std::uint64_t return_guest_pc{0};
         TranslatedBlock::DirectPatchSite direct_patch{};
+        bool direct_patch_applied{false};
     };
+
+    void unpatch_incoming_to(std::uint64_t target_guest_pc);
 
     passes::PassManager           pipeline_;
     passes::FunctionPassManager   function_pipeline_;
@@ -192,6 +216,8 @@ private:
     // is updated in parallel so future Fase 2.5 P2P distribution sees
     // entries.
     std::unordered_map<std::uint64_t, Record> by_addr_;
+    std::unordered_map<std::uint64_t, std::unordered_set<std::uint64_t>>
+        direct_patch_incoming_;
     Stats stats_;
 };
 

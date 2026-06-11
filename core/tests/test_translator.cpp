@@ -33,6 +33,13 @@ std::uint32_t read_u32(const std::uint8_t* p) {
     return v;
 }
 
+std::uint32_t expected_b_imm26(const std::uint8_t* site,
+                               const std::uint8_t* target) {
+    const auto delta = reinterpret_cast<std::intptr_t>(target)
+                     - reinterpret_cast<std::intptr_t>(site);
+    return static_cast<std::uint32_t>(delta / 4) & 0x03FF'FFFFu;
+}
+
 }  // namespace
 
 TEST_CASE("Translator: translate() on empty input returns EmptyInput") {
@@ -166,6 +173,92 @@ TEST_CASE("Translator: conditional direct exits are not single-slot patchable ye
     REQUIRE(block.target_guest_pc == 0x8004u);
     REQUIRE(block.fallthrough_guest_pc == 0x8002u);
     REQUIRE_FALSE(block.direct_patch.available);
+}
+
+TEST_CASE("Translator: direct-exit patch API patches and restores the tail slot") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> jump = {0xEB, 0x02};  // jmp -> 0x9004
+    const std::vector<std::uint8_t> target = {0xC3};
+
+    auto source_result = t.translate(0x9000, jump);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(source_result));
+    const auto source = std::get<translator::TranslatedBlock>(source_result);
+    REQUIRE(source.direct_patch.available);
+
+    auto target_result = t.translate(0x9004, target);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(target_result));
+    const auto target_block = std::get<translator::TranslatedBlock>(target_result);
+
+    const auto* site = source.code_entry + source.direct_patch.branch_offset;
+    REQUIRE((read_u32(site) & 0x03FF'FFFFu) == 1u);
+
+    REQUIRE(t.patch_direct_exit(0x9000, 0x9004) ==
+            translator::DirectPatchResult::Ok);
+    REQUIRE(t.direct_exit_is_patched(0x9000));
+    REQUIRE(read_u32(site) ==
+            (0x1400'0000u | expected_b_imm26(site, target_block.code_entry)));
+
+    REQUIRE(t.unpatch_direct_exit(0x9000) ==
+            translator::DirectPatchResult::Ok);
+    REQUIRE_FALSE(t.direct_exit_is_patched(0x9000));
+    REQUIRE(read_u32(site) == 0x1400'0001u);
+}
+
+TEST_CASE("Translator: direct-exit patch API rejects invalid source and target") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> jump = {0xEB, 0x02};  // jmp -> 0xA004
+    REQUIRE(t.patch_direct_exit(0xA000, 0xA004) ==
+            translator::DirectPatchResult::SourceMissing);
+
+    auto source_result = t.translate(0xA000, jump);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(source_result));
+    REQUIRE(t.patch_direct_exit(0xA000, 0xA004) ==
+            translator::DirectPatchResult::TargetMissing);
+
+    const std::vector<std::uint8_t> wrong_target = {0xC3};
+    auto wrong_result = t.translate(0xA006, wrong_target);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(wrong_result));
+    REQUIRE(t.patch_direct_exit(0xA000, 0xA006) ==
+            translator::DirectPatchResult::TargetMismatch);
+
+    const std::vector<std::uint8_t> ret = {0xC3};
+    auto ret_result = t.translate(0xA004, ret);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(ret_result));
+    REQUIRE(t.patch_direct_exit(0xA004, 0xA006) ==
+            translator::DirectPatchResult::SourceNotPatchable);
+
+    const std::vector<std::uint8_t> self_loop = {0xEB, 0xFE};  // jmp -2
+    auto self_result = t.translate(0xA100, self_loop);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(self_result));
+    REQUIRE(t.patch_direct_exit(0xA100, 0xA100) ==
+            translator::DirectPatchResult::SelfTarget);
+}
+
+TEST_CASE("Translator: retranslation unpatches stale incoming direct exits") {
+    translator::Translator t;
+
+    const std::vector<std::uint8_t> jump = {0xEB, 0x02};  // jmp -> 0xB004
+    const std::vector<std::uint8_t> target_v1 = {0xC3};
+    const std::vector<std::uint8_t> target_v2 = {0xEB, 0x00};
+
+    auto source_result = t.translate(0xB000, jump);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(source_result));
+    const auto source = std::get<translator::TranslatedBlock>(source_result);
+    auto target_result = t.translate(0xB004, target_v1);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(target_result));
+
+    const auto* site = source.code_entry + source.direct_patch.branch_offset;
+    REQUIRE(t.patch_direct_exit(0xB000, 0xB004) ==
+            translator::DirectPatchResult::Ok);
+    REQUIRE(t.direct_exit_is_patched(0xB000));
+    REQUIRE((read_u32(site) & 0x03FF'FFFFu) != 1u);
+
+    auto stale_target = t.translate(0xB004, target_v2);
+    REQUIRE(std::holds_alternative<translator::TranslatedBlock>(stale_target));
+    REQUIRE_FALSE(t.direct_exit_is_patched(0xB000));
+    REQUIRE(read_u32(site) == 0x1400'0001u);
 }
 
 TEST_CASE("Translator: modifying guest bytes at same addr triggers re-translation") {

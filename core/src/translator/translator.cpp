@@ -8,6 +8,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "prisma/abi.hpp"
 #include "prisma/cfg.hpp"
@@ -183,6 +184,105 @@ void Translator::set_real_call_ret(bool enabled) noexcept {
     real_call_ret_ = enabled;
 }
 
+DirectPatchResult Translator::patch_direct_exit(
+    std::uint64_t source_guest_pc,
+    std::uint64_t target_guest_pc) {
+    if (source_guest_pc == target_guest_pc) {
+        return DirectPatchResult::SelfTarget;
+    }
+
+    auto source_it = by_addr_.find(source_guest_pc);
+    if (source_it == by_addr_.end()) {
+        return DirectPatchResult::SourceMissing;
+    }
+    auto target_it = by_addr_.find(target_guest_pc);
+    if (target_it == by_addr_.end()) {
+        return DirectPatchResult::TargetMissing;
+    }
+
+    Record& source = source_it->second;
+    const Record& target = target_it->second;
+    if (!source.direct_patch.available) {
+        return DirectPatchResult::SourceNotPatchable;
+    }
+    if (source.direct_patch.target_guest_pc != target_guest_pc) {
+        return DirectPatchResult::TargetMismatch;
+    }
+    if (source.direct_patch_applied) {
+        direct_patch_incoming_[target_guest_pc].insert(source_guest_pc);
+        return DirectPatchResult::Ok;
+    }
+
+    const auto patched = pool_->patch_aarch64_branch(
+        source.jit_block,
+        source.direct_patch.branch_offset,
+        target.entry);
+    if (patched != runtime::JitPatchResult::Patched) {
+        return DirectPatchResult::PatchFailed;
+    }
+
+    source.direct_patch_applied = true;
+    direct_patch_incoming_[target_guest_pc].insert(source_guest_pc);
+    return DirectPatchResult::Ok;
+}
+
+DirectPatchResult Translator::unpatch_direct_exit(
+    std::uint64_t source_guest_pc) {
+    auto source_it = by_addr_.find(source_guest_pc);
+    if (source_it == by_addr_.end()) {
+        return DirectPatchResult::SourceMissing;
+    }
+
+    Record& source = source_it->second;
+    if (!source.direct_patch.available) {
+        return DirectPatchResult::SourceNotPatchable;
+    }
+    if (!source.direct_patch_applied) {
+        return DirectPatchResult::Ok;
+    }
+
+    const auto* fallback = source.entry + source.direct_patch.fallback_offset;
+    const auto patched = pool_->patch_aarch64_branch(
+        source.jit_block,
+        source.direct_patch.branch_offset,
+        fallback);
+    if (patched != runtime::JitPatchResult::Patched) {
+        return DirectPatchResult::PatchFailed;
+    }
+
+    source.direct_patch_applied = false;
+    auto incoming = direct_patch_incoming_.find(source.direct_patch.target_guest_pc);
+    if (incoming != direct_patch_incoming_.end()) {
+        incoming->second.erase(source_guest_pc);
+        if (incoming->second.empty()) {
+            direct_patch_incoming_.erase(incoming);
+        }
+    }
+    return DirectPatchResult::Ok;
+}
+
+bool Translator::direct_exit_is_patched(
+    std::uint64_t source_guest_pc) const {
+    auto it = by_addr_.find(source_guest_pc);
+    return it != by_addr_.end() && it->second.direct_patch_applied;
+}
+
+void Translator::unpatch_incoming_to(std::uint64_t target_guest_pc) {
+    auto incoming = direct_patch_incoming_.find(target_guest_pc);
+    if (incoming == direct_patch_incoming_.end()) {
+        return;
+    }
+
+    std::vector<std::uint64_t> sources;
+    sources.reserve(incoming->second.size());
+    for (std::uint64_t source : incoming->second) {
+        sources.push_back(source);
+    }
+    for (std::uint64_t source : sources) {
+        (void)unpatch_direct_exit(source);
+    }
+}
+
 std::optional<TranslatedBlock> Translator::lookup_cached(
     std::uint64_t guest_addr,
     std::span<const std::uint8_t> guest_bytes) const {
@@ -237,8 +337,11 @@ TranslateResult Translator::translate(
                 rec.return_guest_pc,
                 rec.direct_patch};
         }
-        // SMC: the guest bytes at this address changed. Drop the record,
-        // drop the persistent cache entry, fall through to retranslate.
+        // SMC: the guest bytes at this address changed. Revert any JIT
+        // branch patch that either starts here or jumps here, then drop
+        // the in-process record and fall through to retranslate.
+        (void)unpatch_direct_exit(guest_addr);
+        unpatch_incoming_to(guest_addr);
         by_addr_.erase(it);
     }
 
@@ -416,6 +519,7 @@ TranslateResult Translator::translate(
     // In-process record for the next call.
     by_addr_[guest_addr] = Record{
         entry,
+        blk,
         code_size,
         dec.consumed,
         hash_of_input,
