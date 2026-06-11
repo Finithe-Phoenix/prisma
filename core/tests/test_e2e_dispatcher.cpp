@@ -3523,8 +3523,9 @@ TEST_CASE("e2e: CMPXCHG8B success and failure paths + ZF direction") {
         runtime::Dispatcher disp{tx, reader};
         disp.install_halt_return_stack();
         disp.state()[ir::Gpr::Rsi] = reinterpret_cast<std::uint64_t>(&mem);
-        disp.state()[ir::Gpr::Rax] = 0xAAAA0000ull | eax;  // upper garbage
-        disp.state()[ir::Gpr::Rdx] = 0xBBBB0000ull << 32 | edx;
+        // Garbage above bit 31 only: the compare must read EDX:EAX.
+        disp.state()[ir::Gpr::Rax] = (0xAAAA0000ull << 32) | eax;
+        disp.state()[ir::Gpr::Rdx] = (0xBBBB0000ull << 32) | edx;
         disp.state()[ir::Gpr::Rbx] = 0x11111111u;
         disp.state()[ir::Gpr::Rcx] = 0x22222222u;
         auto r = disp.run(0x4000, 8);

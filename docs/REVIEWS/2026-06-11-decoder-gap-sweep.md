@@ -76,8 +76,8 @@ dropping the CX8/CX16 bits is a 2-line change.
 
 - Debug + ASan/UBSan: 989/989 in the x86_64 container.
 - New ARM64 e2e: RDTSC monotonic+nonzero, CMPXCHG8B success/failure
-  + ZF direction via `jz`, CMPXCHG rax-alias, BSF/BSR values +
-  dst-preserve + 32-bit form, POPCNT 32-bit + ZF.
+  with ZF direction via `jz`, CMPXCHG rax-alias, BSF/BSR values with
+  dst-preserve and the 32-bit form, POPCNT 32-bit with ZF.
 
 ## Queued follow-ups
 
