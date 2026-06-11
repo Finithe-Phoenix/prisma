@@ -9,7 +9,7 @@ use core::ffi::{c_char, c_void};
 
 /// Mirror of `PRISMA_CAPI_VERSION`. Compare against
 /// [`prisma_capi_version`] before any other call.
-pub const PRISMA_CAPI_VERSION: u32 = 1;
+pub const PRISMA_CAPI_VERSION: u32 = 2;
 
 /// `prisma_status` values. The C enum is ABI-`int`; we keep plain
 /// `i32` constants so unknown future values stay representable.
@@ -98,6 +98,11 @@ pub struct PrismaDispatchStats {
     pub direct_thread_hits: u64,
     pub direct_thread_misses: u64,
     pub direct_thread_installs: u64,
+    pub direct_jit_patch_attempts: u64,
+    pub direct_jit_patch_applied: u64,
+    pub direct_jit_patch_rejected: u64,
+    pub direct_jit_patch_unpatches: u64,
+    pub direct_jit_patch_executes: u64,
 }
 
 /// Mirror of `prisma_run_result`.

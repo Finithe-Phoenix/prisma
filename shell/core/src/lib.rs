@@ -174,6 +174,11 @@ pub struct DispatchStats {
     pub direct_thread_hits: u64,
     pub direct_thread_misses: u64,
     pub direct_thread_installs: u64,
+    pub direct_jit_patch_attempts: u64,
+    pub direct_jit_patch_applied: u64,
+    pub direct_jit_patch_rejected: u64,
+    pub direct_jit_patch_unpatches: u64,
+    pub direct_jit_patch_executes: u64,
 }
 
 /// Result of one dispatcher run.
@@ -443,6 +448,11 @@ impl<'t, 'g> Dispatcher<'t, 'g> {
                 direct_thread_hits: out.stats.direct_thread_hits,
                 direct_thread_misses: out.stats.direct_thread_misses,
                 direct_thread_installs: out.stats.direct_thread_installs,
+                direct_jit_patch_attempts: out.stats.direct_jit_patch_attempts,
+                direct_jit_patch_applied: out.stats.direct_jit_patch_applied,
+                direct_jit_patch_rejected: out.stats.direct_jit_patch_rejected,
+                direct_jit_patch_unpatches: out.stats.direct_jit_patch_unpatches,
+                direct_jit_patch_executes: out.stats.direct_jit_patch_executes,
             },
             message,
         })

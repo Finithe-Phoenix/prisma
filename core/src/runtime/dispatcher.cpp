@@ -106,6 +106,22 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
             seen_pcs.insert(executed_pc);
             ++step;
         };
+    auto try_patch_direct_exit =
+        [&](std::uint64_t source_pc, std::uint64_t target_pc) {
+            ++stats.direct_jit_patch_attempts;
+            const bool was_patched =
+                translator_.direct_exit_is_patched(source_pc);
+            const auto result =
+                translator_.patch_direct_exit(source_pc, target_pc);
+            if (result == translator::DirectPatchResult::Ok) {
+                if (!was_patched
+                    && translator_.direct_exit_is_patched(source_pc)) {
+                    ++stats.direct_jit_patch_applied;
+                }
+            } else {
+                ++stats.direct_jit_patch_rejected;
+            }
+        };
 
     while (step < max_steps) {
         // Halt-before-execute so the caller can configure halt PCs that
@@ -163,6 +179,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                         return {DispatchExit::TranslationFailed, source_pc, stats,
                                 "failed to unpatch a direct JIT branch"};
                     }
+                    ++stats.direct_jit_patch_unpatches;
                     patched_target.reset();
                 }
             }
@@ -172,6 +189,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
             const translator::TranslatedBlock* threading_block = &block;
             std::uint64_t threading_pc = source_pc;
             if (patched_target) {
+                ++stats.direct_jit_patch_executes;
                 account_executed(source_pc, block, patched_target_pc);
                 account_executed(patched_target_pc, *patched_target, next_pc);
                 threading_block = &*patched_target;
@@ -215,7 +233,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                     && threading_block->direct_patch.auto_patch_safe
                     && threading_block->direct_patch.target_guest_pc == pc
                     && halt_pcs_.count(pc) == 0) {
-                    (void)translator_.patch_direct_exit(threading_pc, pc);
+                    try_patch_direct_exit(threading_pc, pc);
                 }
                 block = successor;
                 continue;
@@ -226,7 +244,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                 && threading_block->direct_patch.auto_patch_safe
                 && threading_block->direct_patch.target_guest_pc == pc
                 && halt_pcs_.count(pc) == 0) {
-                (void)translator_.patch_direct_exit(threading_pc, pc);
+                try_patch_direct_exit(threading_pc, pc);
             }
             block = *cached;
         }

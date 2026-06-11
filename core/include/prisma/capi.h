@@ -25,7 +25,7 @@ extern "C" {
 
 /* Bump on any ABI-visible change (new function, struct growth, enum
  * value). Consumers compare against prisma_capi_version() at startup. */
-#define PRISMA_CAPI_VERSION 1u
+#define PRISMA_CAPI_VERSION 2u
 
 uint32_t prisma_capi_version(void);
 
@@ -156,6 +156,11 @@ typedef struct prisma_dispatch_stats {
     uint64_t direct_thread_hits;
     uint64_t direct_thread_misses;
     uint64_t direct_thread_installs;
+    uint64_t direct_jit_patch_attempts;
+    uint64_t direct_jit_patch_applied;
+    uint64_t direct_jit_patch_rejected;
+    uint64_t direct_jit_patch_unpatches;
+    uint64_t direct_jit_patch_executes;
 } prisma_dispatch_stats;
 
 typedef struct prisma_run_result {

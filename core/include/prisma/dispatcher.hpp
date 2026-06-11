@@ -68,6 +68,11 @@ struct DispatchStats {
     std::size_t direct_thread_hits{0};
     std::size_t direct_thread_misses{0};
     std::size_t direct_thread_installs{0};
+    std::size_t direct_jit_patch_attempts{0};
+    std::size_t direct_jit_patch_applied{0};
+    std::size_t direct_jit_patch_rejected{0};
+    std::size_t direct_jit_patch_unpatches{0};
+    std::size_t direct_jit_patch_executes{0};
 };
 
 struct DispatchResult {
