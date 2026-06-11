@@ -3361,19 +3361,22 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         FeatureOverrideGuard guard{runtime::HostFeatures{}};
         auto s = run_cpuid(1, 0);
         REQUIRE(s[ir::Gpr::Rax] == 0x000206A7u);
-        // EDX: FPU, TSC, CX8, CMOV, SSE, SSE2 — nothing else.
+        // EDX: FPU, CMOV, SSE, SSE2 — nothing else. TSC stays off
+        // until RDTSC returns a real counter; CX8 until CMPXCHG8B
+        // decodes.
         REQUIRE(s[ir::Gpr::Rdx] ==
-                ((1u << 0) | (1u << 4) | (1u << 8) | (1u << 15) |
-                 (1u << 25) | (1u << 26)));
+                ((1u << 0) | (1u << 15) | (1u << 25) | (1u << 26)));
         const std::uint64_t ecx = s[ir::Gpr::Rcx];
         REQUIRE((ecx & (1u << 0)) != 0u);    // SSE3
         REQUIRE((ecx & (1u << 9)) != 0u);    // SSSE3
         REQUIRE((ecx & (1u << 12)) != 0u);   // FMA
+        REQUIRE((ecx & (1u << 13)) != 0u);   // CMPXCHG16B
         REQUIRE((ecx & (1u << 19)) != 0u);   // SSE4.1
-        REQUIRE((ecx & (1u << 20)) != 0u);   // SSE4.2
-        REQUIRE((ecx & (1u << 23)) != 0u);   // POPCNT
+        REQUIRE((ecx & (1u << 22)) != 0u);   // MOVBE
         REQUIRE((ecx & (1u << 27)) != 0u);   // OSXSAVE
         REQUIRE((ecx & (1u << 28)) != 0u);   // AVX
+        REQUIRE((ecx & (1u << 20)) == 0u);   // SSE4.2 off: PCMPxSTRx
+        REQUIRE((ecx & (1u << 23)) == 0u);   // POPCNT off: 32-bit form
         REQUIRE((ecx & (1u << 25)) == 0u);   // AESNI off: no host AES
         REQUIRE((ecx & (1u << 26)) == 0u);   // XSAVE deliberately off
         REQUIRE((ecx & (1u << 1)) == 0u);    // PCLMULQDQ not decoded
