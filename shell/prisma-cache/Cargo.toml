@@ -1,0 +1,19 @@
+[package]
+name = "prisma-cache"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma translation cache — LRU, FNV-1a keying, zstd compression, async persistence"
+
+[dependencies]
+prisma-ir = { path = "../prisma-ir" }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+zstd = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bincode = "1.3"
+tempfile = "3.10"
+
+[lints]
+workspace = true
