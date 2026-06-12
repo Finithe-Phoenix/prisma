@@ -86,6 +86,7 @@ enum X64Sysno : std::uint64_t {
     kX64ClockGettime = 228,
     kX64Gettimeofday = 96,
     kX64Time         = 201,
+    kX64ArchPrctl    = 158,
 };
 
 }  // namespace prisma::runtime
@@ -146,6 +147,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64ClockGettime: return "clock_gettime";
         case kX64Gettimeofday: return "gettimeofday";
         case kX64Time:        return "time";
+        case kX64ArchPrctl:   return "arch_prctl";
         default:              return "???";
     }
 }
@@ -487,6 +489,48 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             if (result < 0) result = -errno;
             break;
         }
+
+        // -- F2-SY-029: arch_prctl (TLS segment base management) ---------------
+        case kX64ArchPrctl: {
+            // x86_64 Linux arch_prctl codes (from <asm/prctl.h> / <sys/prctl.h>).
+            constexpr std::uint64_t ARCH_SET_GS = 0x1001;
+            constexpr std::uint64_t ARCH_SET_FS = 0x1002;
+            constexpr std::uint64_t ARCH_GET_FS = 0x1003;
+            constexpr std::uint64_t ARCH_GET_GS = 0x1004;
+
+            const std::uint64_t code = a1;
+            const std::uint64_t addr = a2;
+
+            switch (code) {
+                case ARCH_SET_FS:
+                    state->fs_base = addr;
+                    result = 0;
+                    break;
+                case ARCH_SET_GS:
+                    state->gs_base = addr;
+                    result = 0;
+                    break;
+                case ARCH_GET_FS: {
+                    std::uint64_t* user_ptr =
+                        reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(addr));
+                    *user_ptr = state->fs_base;
+                    result = 0;
+                    break;
+                }
+                case ARCH_GET_GS: {
+                    std::uint64_t* user_ptr =
+                        reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(addr));
+                    *user_ptr = state->gs_base;
+                    result = 0;
+                    break;
+                }
+                default:
+                    result = -EINVAL;
+                    break;
+            }
+            break;
+        }
+
         default:
             result = -ENOSYS;
             break;

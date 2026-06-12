@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <variant>
 
+#include "prisma/abi.hpp"
 #include "prisma/cpu_state.hpp"
 
 namespace prisma::backend {
@@ -953,13 +954,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::LoadSegBase>) {
-            // Placeholder lowering: zero the destination. The real
-            // implementation reads from a runtime-supplied segment-base
-            // table, but that table doesn't exist yet (the runtime hook
-            // is part of F1-RT-014 follow-up work). Producing zero
-            // matches the semantics of "TLS not initialised" and is
-            // safe for unit tests that exercise nothing but the IR
-            // shape. See lowerer regression test for the assertion.
+            // F2-SY-029: read segment base from CpuStateFrame.fs_base / gs_base.
+            // The frame pointer (kStatePtrReg = X27) is live throughout every
+            // translated block; the offset is a compile-time constant so this
+            // compiles to a single `ldr xd, [x27, #off]`.
             arm64::Reg rd;
             if (!s.result.has_value()) {
                 return {false, LowerError::DanglingRef,
@@ -968,7 +966,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!allocate_scratch(*s.result, rd)) {
                 return {false, LowerError::OutOfScratchRegs, "LoadSegBase"};
             }
-            emitter_.mov_imm64(rd, 0);
+            const std::int32_t seg_off = (op.seg == ir::SegmentReg::Fs)
+                ? runtime::CpuStateFrame::fs_base_offset()
+                : runtime::CpuStateFrame::gs_base_offset();
+            emitter_.load_offset(rd, abi::kStatePtrReg, seg_off);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Extend>) {
