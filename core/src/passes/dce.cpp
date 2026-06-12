@@ -51,6 +51,7 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::VecTbl2>) return true;
         else if constexpr (std::is_same_v<T, ir::VecAes>) return true;
         else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) return true;
+        else if constexpr (std::is_same_v<T, ir::VecSha>) return true;
         else if constexpr (std::is_same_v<T, ir::Bswap>) return true;
         else if constexpr (std::is_same_v<T, ir::Crc32c>) return true;
         // Dead gathers drop like dead LoadMems: once the result is
@@ -106,6 +107,9 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::Return>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::AluFlags>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
         } else if constexpr (std::is_same_v<T, ir::JumpRel>) {
@@ -189,6 +193,8 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.src); into.insert(x.key);
         } else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
             into.insert(x.src);
+        } else if constexpr (std::is_same_v<T, ir::VecSha>) {
+            into.insert(x.a); into.insert(x.b); into.insert(x.wk);
         } else if constexpr (std::is_same_v<T, ir::Bswap>) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::Crc32c>) {

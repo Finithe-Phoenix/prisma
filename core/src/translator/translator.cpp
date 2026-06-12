@@ -8,14 +8,17 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "prisma/abi.hpp"
 #include "prisma/cfg.hpp"
 #include "prisma/cpu_state.hpp"
 #include "prisma/emitter.hpp"
+#include "prisma/host_features.hpp"
 #include "prisma/ir.hpp"
 #include "prisma/jit_buffer_pool.hpp"
 #include "prisma/lowering.hpp"
+#include "prisma/syscall_handler.hpp"
 
 namespace prisma::translator {
 
@@ -81,6 +84,34 @@ ExitMetadata exit_metadata(const std::vector<ir::Stmt>& body) noexcept {
             return {};
         }
     }, body.back().op);
+}
+
+bool can_use_patchable_tail(BlockExitKind kind) noexcept {
+    return kind == BlockExitKind::JumpRel || kind == BlockExitKind::CallRel;
+}
+
+bool op_may_write_guest_memory(const ir::Op& op) noexcept {
+    return std::visit([](const auto& inner) noexcept {
+        using T = std::decay_t<decltype(inner)>;
+        return std::is_same_v<T, ir::StoreMem>
+            || std::is_same_v<T, ir::StoreMemTSO>
+            || std::is_same_v<T, ir::StoreVec>
+            || std::is_same_v<T, ir::CallRel>
+            || std::is_same_v<T, ir::CallReg>
+            || std::is_same_v<T, ir::RepStos>
+            || std::is_same_v<T, ir::RepMovs>
+            || std::is_same_v<T, ir::InlineAsm>;
+    }, op);
+}
+
+bool body_may_write_guest_memory(
+    const std::vector<ir::Stmt>& body) noexcept {
+    for (const auto& stmt : body) {
+        if (op_may_write_guest_memory(stmt.op)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------
@@ -178,6 +209,149 @@ void Translator::set_real_call_ret(bool enabled) noexcept {
     real_call_ret_ = enabled;
 }
 
+DirectPatchResult Translator::patch_direct_exit(
+    std::uint64_t source_guest_pc,
+    std::uint64_t target_guest_pc) {
+    if (source_guest_pc == target_guest_pc) {
+        return DirectPatchResult::SelfTarget;
+    }
+
+    auto source_it = by_addr_.find(source_guest_pc);
+    if (source_it == by_addr_.end()) {
+        return DirectPatchResult::SourceMissing;
+    }
+    auto target_it = by_addr_.find(target_guest_pc);
+    if (target_it == by_addr_.end()) {
+        return DirectPatchResult::TargetMissing;
+    }
+
+    Record& source = source_it->second;
+    const Record& target = target_it->second;
+    if (!source.direct_patch.available) {
+        return DirectPatchResult::SourceNotPatchable;
+    }
+    if (!source.direct_patch.auto_patch_safe) {
+        return DirectPatchResult::SourceNotPatchable;
+    }
+    if (source.direct_patch.target_guest_pc != target_guest_pc) {
+        return DirectPatchResult::TargetMismatch;
+    }
+    if (source.direct_patch_applied) {
+        direct_patch_incoming_[target_guest_pc].insert(source_guest_pc);
+        return DirectPatchResult::Ok;
+    }
+    if (has_incoming_direct_patch(source_guest_pc)
+        || target.direct_patch_applied) {
+        return DirectPatchResult::WouldCreateChain;
+    }
+
+    const auto patched = pool_->patch_aarch64_branch(
+        source.jit_block,
+        source.direct_patch.branch_offset,
+        target.entry);
+    if (patched != runtime::JitPatchResult::Patched) {
+        return DirectPatchResult::PatchFailed;
+    }
+
+    source.direct_patch_applied = true;
+    direct_patch_incoming_[target_guest_pc].insert(source_guest_pc);
+    return DirectPatchResult::Ok;
+}
+
+DirectPatchResult Translator::unpatch_direct_exit(
+    std::uint64_t source_guest_pc) {
+    auto source_it = by_addr_.find(source_guest_pc);
+    if (source_it == by_addr_.end()) {
+        return DirectPatchResult::SourceMissing;
+    }
+
+    Record& source = source_it->second;
+    if (!source.direct_patch.available) {
+        return DirectPatchResult::SourceNotPatchable;
+    }
+    if (!source.direct_patch_applied) {
+        return DirectPatchResult::Ok;
+    }
+
+    const auto* fallback = source.entry + source.direct_patch.fallback_offset;
+    const auto patched = pool_->patch_aarch64_branch(
+        source.jit_block,
+        source.direct_patch.branch_offset,
+        fallback);
+    if (patched != runtime::JitPatchResult::Patched) {
+        return DirectPatchResult::PatchFailed;
+    }
+
+    source.direct_patch_applied = false;
+    auto incoming = direct_patch_incoming_.find(source.direct_patch.target_guest_pc);
+    if (incoming != direct_patch_incoming_.end()) {
+        incoming->second.erase(source_guest_pc);
+        if (incoming->second.empty()) {
+            direct_patch_incoming_.erase(incoming);
+        }
+    }
+    return DirectPatchResult::Ok;
+}
+
+bool Translator::direct_exit_is_patched(
+    std::uint64_t source_guest_pc) const {
+    auto it = by_addr_.find(source_guest_pc);
+    return it != by_addr_.end() && it->second.direct_patch_applied;
+}
+
+std::optional<TranslatedBlock> Translator::active_direct_patch_target(
+    std::uint64_t source_guest_pc) const {
+    auto source_it = by_addr_.find(source_guest_pc);
+    if (source_it == by_addr_.end()) {
+        return std::nullopt;
+    }
+
+    const Record& source = source_it->second;
+    if (!source.direct_patch_applied) {
+        return std::nullopt;
+    }
+
+    auto target_it = by_addr_.find(source.direct_patch.target_guest_pc);
+    if (target_it == by_addr_.end()) {
+        return std::nullopt;
+    }
+
+    const Record& rec = target_it->second;
+    return TranslatedBlock{
+        rec.entry,
+        rec.code_size,
+        rec.guest_size,
+        /*from_cache=*/true,
+        rec.exit_kind,
+        rec.target_guest_pc,
+        rec.fallthrough_guest_pc,
+        rec.return_guest_pc,
+        rec.direct_patch};
+}
+
+void Translator::unpatch_incoming_to(std::uint64_t target_guest_pc) {
+    auto incoming = direct_patch_incoming_.find(target_guest_pc);
+    if (incoming == direct_patch_incoming_.end()) {
+        return;
+    }
+
+    std::vector<std::uint64_t> sources;
+    sources.reserve(incoming->second.size());
+    for (std::uint64_t source : incoming->second) {
+        sources.push_back(source);
+    }
+    for (std::uint64_t source : sources) {
+        (void)unpatch_direct_exit(source);
+    }
+}
+
+bool Translator::has_incoming_direct_patch(
+    std::uint64_t target_guest_pc) const {
+    auto incoming = direct_patch_incoming_.find(target_guest_pc);
+    return incoming != direct_patch_incoming_.end()
+        && !incoming->second.empty();
+}
+
 std::optional<TranslatedBlock> Translator::lookup_cached(
     std::uint64_t guest_addr,
     std::span<const std::uint8_t> guest_bytes) const {
@@ -195,7 +369,8 @@ std::optional<TranslatedBlock> Translator::lookup_cached(
         rec.exit_kind,
         rec.target_guest_pc,
         rec.fallthrough_guest_pc,
-        rec.return_guest_pc};
+        rec.return_guest_pc,
+        rec.direct_patch};
 }
 
 TranslateResult Translator::translate(
@@ -228,10 +403,14 @@ TranslateResult Translator::translate(
                 rec.exit_kind,
                 rec.target_guest_pc,
                 rec.fallthrough_guest_pc,
-                rec.return_guest_pc};
+                rec.return_guest_pc,
+                rec.direct_patch};
         }
-        // SMC: the guest bytes at this address changed. Drop the record,
-        // drop the persistent cache entry, fall through to retranslate.
+        // SMC: the guest bytes at this address changed. Revert any JIT
+        // branch patch that either starts here or jumps here, then drop
+        // the in-process record and fall through to retranslate.
+        (void)unpatch_direct_exit(guest_addr);
+        unpatch_incoming_to(guest_addr);
         by_addr_.erase(it);
     }
 
@@ -293,7 +472,69 @@ TranslateResult Translator::translate(
     // (Return / JumpRel / JumpReg / CondJumpRel) put the next-PC in x0 but
     // ret yet — the epilogue needs to run between the terminator's
     // "set x0" and the final `ret`.
-    backend::Lowerer lw(em, backend::LowerOptions{/*emit_ret_on_terminator=*/false});
+    backend::LowerOptions lopts{/*emit_ret_on_terminator=*/false};
+    // Guest CPUID / XGETBV values are baked into the generated code at
+    // translation time. Crypto bits are advertised only when the host
+    // implements the ARMv8 extensions the lowering relies on, so a
+    // guest that honours CPUID never reaches those instructions on a
+    // crypto-less core. Everything else advertised below is lowered
+    // unconditionally on any ARM64 host.
+    // Fase 2.5 note: baked values make cached blocks host-feature-
+    // dependent; the P2P trust envelope must carry the feature set
+    // alongside the code bytes (RFC 0007 follow-up).
+    lopts.cpuid_max_leaf = 7;
+    // Vendor "GenuineIntel" (EBX,EDX,ECX order, ASCII little-endian) —
+    // the Rosetta 2 precedent: runtime dispatchers take their tuned
+    // x86 paths instead of generic fallbacks. Feature BITS, not the
+    // vendor/signature, are the compatibility contract.
+    lopts.cpuid_vendor_ebx = 0x756E6547u;  // "Genu"
+    lopts.cpuid_vendor_edx = 0x49656E69u;  // "ineI"
+    lopts.cpuid_vendor_ecx = 0x6C65746Eu;  // "ntel"
+    // Family 6 model 42 stepping 7 (Sandy-Bridge-era signature: AVX
+    // without AVX2 matches our surface best). EBX: CLFLUSH line size
+    // field = 8 chunks (64 bytes) so alignment probes read sane data.
+    lopts.cpuid_leaf1_eax = 0x000206A7u;
+    lopts.cpuid_leaf1_ebx = 0x00000800u;
+    // Leaf 1 EDX: FPU, TSC (RDTSC reads CNTVCT_EL0), CX8 (CMPXCHG8B
+    // decoded), CMOV, SSE, SSE2. MMX / FXSR deliberately clear (not
+    // decoded).
+    lopts.cpuid_leaf1_edx = (1u << 0) | (1u << 4) | (1u << 8) |
+                            (1u << 15) | (1u << 25) | (1u << 26);
+    // Leaf 1 ECX: SSE3 (ADDSUB/HSUB now decoded), SSSE3, FMA (96/96
+    // forms), CMPXCHG16B, SSE4.1, MOVBE, POPCNT (32/64-bit + memory
+    // forms + ZF), OSXSAVE, AVX. Deliberately clear:
+    //   SSE4.2 — its canonical use-case PCMPISTRI/PCMPESTRI (string
+    //            functions) is not decoded; only PCMPGTQ/CRC32 are.
+    //   XSAVE  — instructions + CPUID leaf 0xD unmodelled; the
+    //            canonical AVX gate (Intel's sequence, MSVC's
+    //            __isa_available, glibc) checks OSXSAVE+XGETBV only.
+    //   PCLMULQDQ / F16C / RDRAND — not decoded.
+    // Known thin spots inside advertised families (loud decode
+    // failures by design, queued): SSSE3 PMADDUBSW/PMULHRSW/PSIGN,
+    // SSE4.1 INSERTPS/BLENDPS-imm/DPPS/PACKUSDW.
+    lopts.cpuid_leaf1_ecx = (1u << 0) | (1u << 9) | (1u << 12) |
+                            (1u << 13) | (1u << 19) | (1u << 22) |
+                            (1u << 23) | (1u << 27) | (1u << 28);
+    // Leaf 7 EBX: BMI2 (bit 8) — SHLX/SARX/SHRX, RORX, MULX, BZHI,
+    // PDEP, PEXT are all decoded; that is the complete BMI2 set. BMI1
+    // deliberately clear (ANDN/BEXTR/BLSI/BLSMSK/BLSR not decoded);
+    // AVX2 deliberately clear (VPBROADCAST*/VINSERTI128/variable
+    // shifts missing).
+    lopts.cpuid_leaf7_ebx = 1u << 8;
+    {
+        const auto& hf = runtime::host_features();
+        if (hf.feat_sha1 && hf.feat_sha256) {
+            lopts.cpuid_leaf7_ebx |= 1u << 29;  // CPUID.7.0:EBX.SHA
+        }
+        if (hf.feat_aes) {
+            lopts.cpuid_leaf1_ecx |= 1u << 25;  // CPUID.1:ECX.AESNI
+        }
+    }
+    // XCR0: x87 + SSE + AVX state enabled — what XGETBV(0) reports,
+    // matching the OSXSAVE + AVX bits above.
+    lopts.xgetbv_xcr0 = 0x7u;
+    lopts.syscall_handler = runtime::prisma_syscall_handler;
+    backend::Lowerer lw(em, lopts);
     auto lr = lw.lower(body);
     if (!lr.success) {
         ++stats_.lower_failures;
@@ -306,7 +547,21 @@ TranslateResult Translator::translate(
     }
 
     // Epilogue: store pinned host regs back to state[], then ret.
-    emit_epilogue_and_ret(em);
+    // Direct exits with exactly one static successor use a patchable tail
+    // slot. It still returns normally until the runtime decides SMC policy
+    // allows patching the branch word to a successor entry point.
+    TranslatedBlock::DirectPatchSite direct_patch{};
+    if (body_has_terminator && can_use_patchable_tail(exit.kind)) {
+        const auto patch = backend::abi::emit_block_epilogue_patchable_tail(em);
+        direct_patch = TranslatedBlock::DirectPatchSite{
+            /*available=*/true,
+            /*auto_patch_safe=*/!body_may_write_guest_memory(body),
+            patch.branch_offset,
+            patch.fallback_offset,
+            exit.target_guest_pc};
+    } else {
+        emit_epilogue_and_ret(em);
+    }
     em.finalize();
 
     const auto emitted = em.code_bytes();
@@ -335,13 +590,15 @@ TranslateResult Translator::translate(
     // In-process record for the next call.
     by_addr_[guest_addr] = Record{
         entry,
+        blk,
         code_size,
         dec.consumed,
         hash_of_input,
         exit.kind,
         exit.target_guest_pc,
         exit.fallthrough_guest_pc,
-        exit.return_guest_pc};
+        exit.return_guest_pc,
+        direct_patch};
 
     ++stats_.cache_misses;  // accounted only on success; see comment above.
     return TranslatedBlock{
@@ -352,7 +609,8 @@ TranslateResult Translator::translate(
         exit.kind,
         exit.target_guest_pc,
         exit.fallthrough_guest_pc,
-        exit.return_guest_pc};
+        exit.return_guest_pc,
+        direct_patch};
 }
 
 }  // namespace prisma::translator

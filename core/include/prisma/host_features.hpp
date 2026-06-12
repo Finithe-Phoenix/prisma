@@ -47,6 +47,20 @@ struct HostFeatures {
     // FEAT_CRC32 — hardware CRC32 (common since v8.0 in practice, but
     //             the bit exists to cover minimal cores).
     bool feat_crc32{false};
+
+    // FEAT_SHA1 / FEAT_SHA256 — ARMv8 crypto extensions backing the
+    //             SHA-NI lowering (F2-IR-060). Both are optional even
+    //             on v8.0 cores (e.g. some Raspberry Pi SoCs lack
+    //             them), so the guest CPUID SHA bit is advertised only
+    //             when both are present.
+    bool feat_sha1{false};
+    bool feat_sha256{false};
+
+    // FEAT_AES — ARMv8 crypto extension backing the AES-NI lowering
+    //             (F2-IR-055/058: AESE/AESD/AESMC/AESIMC). Optional on
+    //             v8.0 cores, same caveat as the SHA pair. Gates the
+    //             guest CPUID.1:ECX.AESNI bit.
+    bool feat_aes{false};
 };
 
 // Returns a reference to the process-wide detected feature set. First

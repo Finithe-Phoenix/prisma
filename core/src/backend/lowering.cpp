@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <variant>
 
+#include "prisma/abi.hpp"
 #include "prisma/cpu_state.hpp"
 
 namespace prisma::backend {
@@ -266,6 +267,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) { bump(op.addr, i); bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::StoreReg>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::CmpFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::AluFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
@@ -326,6 +328,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             }
             else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {
                 bump(op.src, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::VecSha>) {
+                bump(op.a, i); bump(op.b, i); bump(op.wk, i);
             }
             else if constexpr (std::is_same_v<T, ir::Bswap>) {
                 bump(op.value, i);
@@ -671,6 +676,37 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.cmp(rl, rr);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::AluFlags>) {
+            // Side-effecting ALU flags for instructions such as XADD:
+            // leave NZCV set for a following CondJumpRel without creating
+            // a flag-typed SSA ref.
+            arm64::Reg rl, rr;
+            if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "AluFlags.lhs"};
+            if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "AluFlags.rhs"};
+            switch (op.op) {
+                case ir::BinOpKind::Sub:
+                    emitter_.cmp(rl, rr);
+                    break;
+                case ir::BinOpKind::Add:
+                case ir::BinOpKind::And: {
+                    arm64::Reg rd_tmp;
+                    if (!allocate_temporary(rd_tmp)) {
+                        return {false, LowerError::OutOfScratchRegs,
+                                "AluFlags(Add/And) needs a temp"};
+                    }
+                    if (op.op == ir::BinOpKind::Add) {
+                        emitter_.adds(rd_tmp, rl, rr);
+                    } else {
+                        emitter_.ands(rd_tmp, rl, rr);
+                    }
+                    break;
+                }
+                default:
+                    return {false, LowerError::UnsupportedOp,
+                            "AluFlags only supports Sub/Add/And today"};
+            }
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::JumpRel>) {
             // Load the absolute guest target into x0. The dispatcher
             // reads it as the next guest PC. Translator-wrapped mode
@@ -697,20 +733,164 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Cpuid>) {
-            // Placeholder lowering for now: zero the architecturally-written
-            // guest outputs (EAX/EBX/ECX/EDX). A real host-query model can
-            // replace this op later without changing decoder surface.
-            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rax), 0);
-            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rbx), 0);
-            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rcx), 0);
-            emitter_.mov_imm64(arm64::host_reg_for(ir::Gpr::Rdx), 0);
+            // Guest CPUID with translation-time-baked values (the
+            // Translator derives them from runtime::host_features()).
+            // Modelled leaves:
+            //   EAX=0                -> max basic leaf + vendor string;
+            //   EAX=1                -> signature + feature bits;
+            //   EAX=7 or EAX>7 basic -> leaf-7 view: EBX =
+            //                           cpuid_leaf7_ebx when ECX=0,
+            //                           zeros otherwise. The >max
+            //                           clamp matches the SDM ("data
+            //                           for the highest basic
+            //                           information leaf").
+            //   EAX=2..6             -> all zeros (placeholder until
+            //                           those leaves are modelled);
+            //   EAX bit 31 set       -> all zeros (extended range
+            //                           unmodelled).
+            // CPUID must not affect guest flags (SDM: "Flags Affected:
+            // None"), so the leaf dispatch uses orr/eor/lsr + cbz/cbnz
+            // instead of cmp — NZCV set by an earlier CmpFlags
+            // survives. The W-forms also give the architectural
+            // EAX/ECX (not RAX/RCX) comparison: upper bits ignored.
+            const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
+            const arm64::Reg rbx = arm64::host_reg_for(ir::Gpr::Rbx);
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdx = arm64::host_reg_for(ir::Gpr::Rdx);
+            arm64::Reg t0, t1;
+            if (!allocate_temporary(t0) || !allocate_temporary(t1)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "Cpuid temporaries"};
+            }
+            Emitter::Label leaf0 = emitter_.create_label();
+            Emitter::Label leaf1 = emitter_.create_label();
+            Emitter::Label leaf7 = emitter_.create_label();
+            Emitter::Label other = emitter_.create_label();
+            Emitter::Label done  = emitter_.create_label();
+            emitter_.orr_w(t0, rax, rax);   // t0 = EAX, zero-extended
+            emitter_.cbz(t0, leaf0);
+            emitter_.mov_imm64(t1, 1);
+            emitter_.eor_w(t1, t0, t1);     // t1 = EAX ^ 1
+            emitter_.cbz(t1, leaf1);
+            emitter_.mov_imm64(t1, 7);
+            emitter_.eor_w(t1, t0, t1);     // t1 = EAX ^ 7
+            emitter_.cbz(t1, leaf7);
+            emitter_.lsr_imm(t1, t0, 31);   // extended range (bit 31)?
+            emitter_.cbnz(t1, other);
+            emitter_.lsr_imm(t1, t0, 3);    // EAX >= 8: clamp to max
+            emitter_.cbnz(t1, leaf7);       // basic leaf (7) per SDM
+            emitter_.branch(other);         // EAX in 2..6: unmodelled
+            emitter_.bind(leaf7);
+            emitter_.orr_w(t0, rcx, rcx);   // t0 = ECX (subleaf)
+            emitter_.cbnz(t0, other);
+            // CPUID.(EAX=7, ECX=0): EAX = max subleaf (0), EBX = the
+            // baked feature bits (SHA / BMI2, host-gated where the
+            // lowering needs host crypto).
+            emitter_.mov_imm64(rax, 0);
+            emitter_.mov_imm64(rbx, options_.cpuid_leaf7_ebx);
+            emitter_.mov_imm64(rcx, 0);
+            emitter_.mov_imm64(rdx, 0);
+            emitter_.branch(done);
+            emitter_.bind(leaf1);
+            emitter_.mov_imm64(rax, options_.cpuid_leaf1_eax);
+            emitter_.mov_imm64(rbx, options_.cpuid_leaf1_ebx);
+            emitter_.mov_imm64(rcx, options_.cpuid_leaf1_ecx);
+            emitter_.mov_imm64(rdx, options_.cpuid_leaf1_edx);
+            emitter_.branch(done);
+            emitter_.bind(leaf0);
+            emitter_.mov_imm64(rax, options_.cpuid_max_leaf);
+            emitter_.mov_imm64(rbx, options_.cpuid_vendor_ebx);
+            emitter_.mov_imm64(rcx, options_.cpuid_vendor_ecx);
+            emitter_.mov_imm64(rdx, options_.cpuid_vendor_edx);
+            emitter_.branch(done);
+            emitter_.bind(other);
+            emitter_.mov_imm64(rax, 0);
+            emitter_.mov_imm64(rbx, 0);
+            emitter_.mov_imm64(rcx, 0);
+            emitter_.mov_imm64(rdx, 0);
+            emitter_.bind(done);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Rdtsc>) {
+            // Guest RDTSC time source: the ARM virtual counter.
+            // Monotonic; frequency is CNTFRQ, not core clock — guests
+            // calibrate ratios, so any monotonic source is sound.
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "Rdtsc without result"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "Rdtsc"};
+            }
+            emitter_.mrs_cntvct(rd);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::Xgetbv>) {
+            // XGETBV with a translation-time-baked XCR0. ECX selects
+            // the XCR; only XCR0 (ECX=0) is modelled — other indices
+            // raise #GP on hardware, placeholder returns zeros. Writes
+            // EDX:EAX only (EBX/ECX untouched, like hardware). Flag-
+            // free for the same reason as Cpuid.
+            const arm64::Reg rax = arm64::host_reg_for(ir::Gpr::Rax);
+            const arm64::Reg rcx = arm64::host_reg_for(ir::Gpr::Rcx);
+            const arm64::Reg rdx = arm64::host_reg_for(ir::Gpr::Rdx);
+            arm64::Reg t0;
+            if (!allocate_temporary(t0)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "Xgetbv temporary"};
+            }
+            Emitter::Label other = emitter_.create_label();
+            Emitter::Label done  = emitter_.create_label();
+            emitter_.orr_w(t0, rcx, rcx);   // t0 = ECX, zero-extended
+            emitter_.cbnz(t0, other);
+            emitter_.mov_imm64(rax, options_.xgetbv_xcr0 & 0xFFFFFFFFu);
+            emitter_.mov_imm64(rdx, options_.xgetbv_xcr0 >> 32);
+            emitter_.branch(done);
+            emitter_.bind(other);
+            emitter_.mov_imm64(rax, 0);
+            emitter_.mov_imm64(rdx, 0);
+            emitter_.bind(done);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Syscall>) {
-            // Conservative placeholder: terminate the current block and
-            // return the halt sentinel until the syscall layer exists.
-            emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
-            if (options_.emit_ret_on_terminator) emitter_.ret();
+            // Save caller-saved pinned guest regs (x10-x17 = guest
+            // rax..rdi) back to the state frame so the C++ handler sees
+            // the current guest register values (args in RDI/RSI/RDX).
+            // The callee-saved regs (x19-x26 = guest r8..r15) are
+            // preserved across the AAPCS64 blr call automatically.
+            // x27 is the state pointer (abi::kStatePtrReg).
+            for (std::size_t i = 0; i < 8; ++i) {
+                const auto g = static_cast<ir::Gpr>(i);
+                const auto host = arm64::host_reg_for(g);
+                const std::int32_t off =
+                    runtime::CpuStateFrame::gpr_offset_bytes(g);
+                emitter_.store_offset(host, arm64::Reg::X27, off);
+            }
+
+            // If a syscall handler has been configured, emit blr to it.
+            // The handler reads guest regs from the state frame, performs
+            // the host operation, and writes results (including RAX / CF)
+            // back to the frame.
+            if (options_.syscall_handler) {
+                const std::uint64_t fn_addr =
+                    reinterpret_cast<std::uint64_t>(options_.syscall_handler);
+                // Use x9 (first scratch reg) as the call target.
+                // All x0-x9 are caller-saved and will be clobbered by
+                // the called function anyway.
+                emitter_.mov_imm64(arm64::Reg::X9, fn_addr);
+                emitter_.blr(arm64::Reg::X9);
+            }
+
+            // Reload caller-saved pinned guest regs from the state frame
+            // so the host registers reflect any changes the handler made
+            // (most importantly RAX = return value).
+            for (std::size_t i = 0; i < 8; ++i) {
+                const auto g = static_cast<ir::Gpr>(i);
+                const auto host = arm64::host_reg_for(g);
+                const std::int32_t off =
+                    runtime::CpuStateFrame::gpr_offset_bytes(g);
+                emitter_.load_offset(host, arm64::Reg::X27, off);
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
@@ -774,13 +954,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::LoadSegBase>) {
-            // Placeholder lowering: zero the destination. The real
-            // implementation reads from a runtime-supplied segment-base
-            // table, but that table doesn't exist yet (the runtime hook
-            // is part of F1-RT-014 follow-up work). Producing zero
-            // matches the semantics of "TLS not initialised" and is
-            // safe for unit tests that exercise nothing but the IR
-            // shape. See lowerer regression test for the assertion.
+            // F2-SY-029: read segment base from CpuStateFrame.fs_base / gs_base.
+            // The frame pointer (kStatePtrReg = X27) is live throughout every
+            // translated block; the offset is a compile-time constant so this
+            // compiles to a single `ldr xd, [x27, #off]`.
             arm64::Reg rd;
             if (!s.result.has_value()) {
                 return {false, LowerError::DanglingRef,
@@ -789,7 +966,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!allocate_scratch(*s.result, rd)) {
                 return {false, LowerError::OutOfScratchRegs, "LoadSegBase"};
             }
-            emitter_.mov_imm64(rd, 0);
+            const std::int32_t seg_off = (op.seg == ir::SegmentReg::Fs)
+                ? runtime::CpuStateFrame::fs_base_offset()
+                : runtime::CpuStateFrame::gs_base_offset();
+            emitter_.load_offset(rd, abi::kStatePtrReg, seg_off);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Extend>) {
@@ -1539,6 +1719,45 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 return {false, LowerError::OutOfScratchRegs, "VecAes"};
             }
             emitter_.vaes(rd, r_src, r_key, op.kind);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecSha>) {
+            // F2-IR-060 SHA-NI: thin dispatch onto the NEON-resident
+            // emitter primitives (V29..V31 internal scratch).
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "VecSha without result"};
+            }
+            Emitter::FpReg r_a, r_b, r_wk;
+            if (!fp_reg_of(op.a,  r_a))  return {false, LowerError::DanglingRef, "VecSha.a"};
+            if (!fp_reg_of(op.b,  r_b))  return {false, LowerError::DanglingRef, "VecSha.b"};
+            if (!fp_reg_of(op.wk, r_wk)) return {false, LowerError::DanglingRef, "VecSha.wk"};
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecSha"};
+            }
+            switch (op.kind) {
+                case ir::VecShaKind::Sha1Rnds4:
+                    emitter_.vsha1_rnds4(rd, r_a, r_b, op.imm);
+                    break;
+                case ir::VecShaKind::Sha1Nexte:
+                    emitter_.vsha1_nexte(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha1Msg1:
+                    emitter_.vsha1_msg1(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha1Msg2:
+                    emitter_.vsha1_msg2(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha256Rnds2:
+                    emitter_.vsha256_rnds2(rd, r_a, r_b, r_wk);
+                    break;
+                case ir::VecShaKind::Sha256Msg1:
+                    emitter_.vsha256_msg1(rd, r_a, r_b);
+                    break;
+                case ir::VecShaKind::Sha256Msg2:
+                    emitter_.vsha256_msg2(rd, r_a, r_b);
+                    break;
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::VecAesKeygenAssist>) {

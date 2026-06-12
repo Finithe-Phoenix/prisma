@@ -61,6 +61,7 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, StoreMemTSO>){ visit(x.addr); visit(x.value); }
         else if constexpr (std::is_same_v<T, StoreReg>)   { visit(x.value); }
         else if constexpr (std::is_same_v<T, CmpFlags>)   { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, AluFlags>)   { visit(x.lhs); visit(x.rhs); }
         else if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); }
         else if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); }
         else if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); }
@@ -115,6 +116,9 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         }
         else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) {
             visit(x.src);
+        }
+        else if constexpr (std::is_same_v<T, VecSha>) {
+            visit(x.a); visit(x.b); visit(x.wk);
         }
         else if constexpr (std::is_same_v<T, Bswap>) {
             visit(x.value);
@@ -198,6 +202,7 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecTbl2>
             || std::is_same_v<T, VecAes>
             || std::is_same_v<T, VecAesKeygenAssist>
+            || std::is_same_v<T, VecSha>
             || std::is_same_v<T, Bswap>
             || std::is_same_v<T, Crc32c>
             || std::is_same_v<T, VecGather>
@@ -205,7 +210,11 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, VecFpFma>
             || std::is_same_v<T, VecFpScalarFma>
             || std::is_same_v<T, X87Load>
-            || std::is_same_v<T, X87Pop>;
+            || std::is_same_v<T, X87Pop>
+            // Result-bearing but NOT optimizable-pure: the time
+            // source must keep its result slot (DCE/CSE handle it
+            // separately by never listing it).
+            || std::is_same_v<T, Rdtsc>;
     }, op);
 }
 
@@ -259,6 +268,8 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
             // to_size; the validator can't pin it without per-op
             // logic. For now skip the check.
             (void)x; (void)r;
+        } else if constexpr (std::is_same_v<T, AluFlags>) {
+            if (r == x.lhs || r == x.rhs) return x.size;
         } else if constexpr (std::is_same_v<T, WriteFlags>) {
             if (r == x.lhs || r == x.rhs) return x.size;
         }

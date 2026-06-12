@@ -480,6 +480,11 @@ public:
     void clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
     void rbit_clz_gpr(arm64::Reg rd, arm64::Reg rn, ir::OpSize sz);
 
+    // mrs Xd, CNTVCT_EL0 — the virtual counter, guest RDTSC's time
+    // source. Raw encoding because vixl's SystemRegister enum does
+    // not name the generic-timer registers.
+    void mrs_cntvct(arm64::Reg rd);
+
     // F2-IR-046. Variable blend by mask MSB per lane. For each lane:
     // result[i] = (mask[i].MSB == 1) ? src[i] : dst[i].
     void vblend(FpReg rd, FpReg rdst, FpReg rsrc, FpReg rmask, VecLane lane);
@@ -532,6 +537,37 @@ public:
     // AES S-box, TBL to select the dword1/dword3 byte pattern required
     // by x86, then XORs the imm8 RCON byte into output bytes 4 and 12.
     void vaes_keygenassist(FpReg dst, FpReg src, std::uint8_t rcon);
+
+    // F2-IR-060 — SHA-NI primitives. All NEON-resident on the
+    // reserved V29..V31 internal scratch trio; no GPRs consumed.
+    // The SHA-1 forms bridge the lane-order gap (x86 keeps A/W0 in
+    // the HIGH dword, ARM crypto ops are ascending) with EXT #8 +
+    // REV64 reversals around the hardware op.
+    //
+    //   vsha1_rnds4:   4 SHA-1 rounds via SHA1C/SHA1P/SHA1M, Sn = 0
+    //                  (x86 pre-adds E into W0 via SHA1NEXTE) and
+    //                  the selector's K constant pre-added to W.
+    //   vsha1_nexte:   rol30(a.lane3) added into b.lane3, lanes 2..0
+    //                  copied from b. Pure NEON, no crypto op.
+    //   vsha1_msg1:    EXT + EOR two-term schedule XOR. SHA1SU0 is
+    //                  deliberately NOT used: it folds a third XOR
+    //                  term that x86 defers to the caller's PXOR.
+    //   vsha1_msg2:    SHA1SU1, exact modulo the lane reversal.
+    //   vsha256_rnds2: SHA256H + SHA256H2 with WK2=WK3=0. The x86
+    //                  2-round results are elements 2..3 of ARM's
+    //                  4-round outputs, which depend only on
+    //                  WK0/WK1 — the garbage rounds never reach them.
+    //   vsha256_msg1:  SHA256SU0, exact (both ISAs ascending here).
+    //   vsha256_msg2:  SHA256SU1 with Vn = 0 and b.lane0 cleared,
+    //                  zeroing ARM's internal W[t-7] addend (x86's
+    //                  caller adds that term with an explicit PADDD).
+    void vsha1_rnds4(FpReg dst, FpReg a, FpReg b, std::uint8_t sel);
+    void vsha1_nexte(FpReg dst, FpReg a, FpReg b);
+    void vsha1_msg1(FpReg dst, FpReg a, FpReg b);
+    void vsha1_msg2(FpReg dst, FpReg a, FpReg b);
+    void vsha256_rnds2(FpReg dst, FpReg a, FpReg b, FpReg wk);
+    void vsha256_msg1(FpReg dst, FpReg a, FpReg b);
+    void vsha256_msg2(FpReg dst, FpReg a, FpReg b);
 
     // F2-IR-056 — byte-reverse the contents of `rn` interpreted at
     // `size` and write to `rd`. Maps to ARM64 REV (I64), REV W
@@ -646,6 +682,13 @@ public:
     // most-recent flag-producing instruction (CmpFlags in our IR).
     void branch_cc(Label label, ir::CondCode cc);
 
+    // Branch with link to register: `blr rn`. Calls the function at the
+    // address in `rn` using AAPCS64 calling convention. x30 (LR) is set
+    // to the return address; callee-saved registers (x19-x29) are
+    // preserved by the callee; caller-saved registers (x0-x17) may be
+    // clobbered and must be saved by the caller as needed.
+    void blr(arm64::Reg rn);
+
     // Compare-and-branch on a 64-bit register without touching NZCV.
     // `cbnz(r, label)` branches when r != 0; `cbz` when r == 0. These
     // are how we lower `CondJump{cond_ref, true, false}` where the
@@ -674,6 +717,11 @@ public:
     void flush_literal_pool();
 
     // --- lifecycle ---
+
+    // Current write cursor in bytes from the start of the code buffer.
+    // Valid before finalize(); used by ABI/JIT patch metadata to point
+    // at a specific instruction word.
+    [[nodiscard]] std::size_t current_offset() const noexcept;
 
     // Finalize the buffer: resolve labels, emit any literal pool, flush
     // internal state. Call exactly once before reading bytes.

@@ -8,6 +8,8 @@
 // vixl is free to pick the encoding (stp pre-indexed vs. add+str).
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,12 @@ unsigned count_occurrences(const std::string& haystack,
         pos += needle.size();
     }
     return n;
+}
+
+std::uint32_t read_u32(const std::uint8_t* p) {
+    std::uint32_t v = 0;
+    std::memcpy(&v, p, sizeof(v));
+    return v;
 }
 
 }  // namespace
@@ -71,6 +79,30 @@ TEST_CASE("backend::abi: epilogue restores all six pairs and ends in ret") {
     REQUIRE(d.find("x27, x28") != std::string::npos);
     REQUIRE(d.find("x29, x30") != std::string::npos);
 
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
+TEST_CASE("backend::abi: patchable tail epilogue keeps a direct branch slot") {
+    backend::Emitter em;
+    const auto patch = backend::abi::emit_block_epilogue_patchable_tail(em);
+    em.finalize();
+
+    const auto bytes = em.code_bytes();
+    REQUIRE(patch.branch_offset % 4 == 0);
+    REQUIRE(patch.branch_offset + 4 <= bytes.size());
+    REQUIRE(patch.fallback_offset == patch.branch_offset + 4);
+    REQUIRE(patch.fallback_offset + 8 <= bytes.size());
+
+    const std::uint32_t branch =
+        read_u32(bytes.data() + patch.branch_offset);
+    REQUIRE((branch & 0xFC00'0000u) == 0x1400'0000u);
+    REQUIRE((branch & 0x03FF'FFFFu) == 1u);
+
+    const std::string d = em.disassemble();
+    REQUIRE(count_occurrences(d, "ldp ") == backend::abi::kCalleeSavedPairCount);
+    REQUIRE(d.find("mov x1, x0") != std::string::npos);
+    REQUIRE(d.find("mov x0, x27") != std::string::npos);
+    REQUIRE(d.find("mov x0, x1") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }
 

@@ -56,6 +56,9 @@ bool operator==(const Return&, const Return&) noexcept {
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept {
     return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const AluFlags& a, const AluFlags& b) noexcept {
+    return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept {
     return a.target_guest_pc == b.target_guest_pc;
 }
@@ -70,6 +73,12 @@ bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept {
     return a.pop_bytes == b.pop_bytes;
 }
 bool operator==(const Cpuid&, const Cpuid&) noexcept {
+    return true;
+}
+bool operator==(const Xgetbv&, const Xgetbv&) noexcept {
+    return true;
+}
+bool operator==(const Rdtsc&, const Rdtsc&) noexcept {
     return true;
 }
 bool operator==(const Syscall&, const Syscall&) noexcept {
@@ -285,6 +294,10 @@ bool operator==(const VecAes& a, const VecAes& b) noexcept {
 }
 bool operator==(const VecAesKeygenAssist& a, const VecAesKeygenAssist& b) noexcept {
     return a.src == b.src && a.rcon == b.rcon;
+}
+bool operator==(const VecSha& a, const VecSha& b) noexcept {
+    return a.kind == b.kind && a.a == b.a && a.b == b.b && a.wk == b.wk
+        && a.imm == b.imm;
 }
 bool operator==(const Bswap& a, const Bswap& b) noexcept {
     return a.value == b.value && a.size == b.size;

@@ -26,6 +26,9 @@ TEST_CASE("host_features: returns a stable result across calls") {
     REQUIRE(a.feat_flagm2  == b.feat_flagm2);
     REQUIRE(a.feat_dotprod == b.feat_dotprod);
     REQUIRE(a.feat_crc32   == b.feat_crc32);
+    REQUIRE(a.feat_sha1    == b.feat_sha1);
+    REQUIRE(a.feat_sha256  == b.feat_sha256);
+    REQUIRE(a.feat_aes     == b.feat_aes);
 }
 
 TEST_CASE("host_features: test override returns the injected struct") {
@@ -52,6 +55,19 @@ TEST_CASE("host_features: apple-silicon hosts should expose FEAT_LSE") {
     clear_host_features_override();
 #if defined(__APPLE__) && defined(__arm64__)
     REQUIRE(host_features().feat_lse);
+#else
+    SUCCEED("not an Apple Silicon host — assertion skipped");
+#endif
+}
+
+TEST_CASE("host_features: apple-silicon hosts should expose SHA crypto") {
+    // Same canary as FEAT_LSE: every M-series core ships the SHA-1 +
+    // SHA-256 crypto extensions the F2-IR-060 lowering relies on.
+    clear_host_features_override();
+#if defined(__APPLE__) && defined(__arm64__)
+    REQUIRE(host_features().feat_sha1);
+    REQUIRE(host_features().feat_sha256);
+    REQUIRE(host_features().feat_aes);
 #else
     SUCCEED("not an Apple Silicon host — assertion skipped");
 #endif

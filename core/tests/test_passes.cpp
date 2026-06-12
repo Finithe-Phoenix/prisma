@@ -238,6 +238,25 @@ TEST_CASE("dce: CmpFlags keeps its LoadReg operands alive") {
     REQUIRE(std::holds_alternative<ir::CmpFlags>(out[6].op));
 }
 
+TEST_CASE("dce: AluFlags keeps its LoadReg operands alive") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{42, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {1u, ir::Constant{1, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I64}},
+        {2u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {3u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 2u, 3u, ir::OpSize::I64}},
+        {std::nullopt, ir::CondJumpRel{ir::CondCode::Eq, 0x1234, 0x5678}},
+    };
+
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 8);
+    REQUIRE(std::get<ir::LoadReg>(out[4].op) == ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64});
+    REQUIRE(std::get<ir::LoadReg>(out[5].op) == ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64});
+    REQUIRE(std::holds_alternative<ir::AluFlags>(out[6].op));
+}
+
 TEST_CASE("dce: JumpReg keeps its target ref alive") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{0x1234'5678ULL, ir::OpSize::I64}},
@@ -304,6 +323,29 @@ TEST_CASE("dce: live AESKEYGENASSIST keeps its source vector") {
     REQUIRE(std::holds_alternative<ir::LoadVecReg>(out[0].op));
     REQUIRE(std::holds_alternative<ir::VecAesKeygenAssist>(out[1].op));
     REQUIRE(std::holds_alternative<ir::StoreVecReg>(out[2].op));
+}
+
+TEST_CASE("dce: unused VecSha is removable") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::VecSha{ir::VecShaKind::Sha256Msg1, 0u, 1u, 1u, 0u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("dce: live VecSha keeps all three operand refs") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::LoadVecReg{0u}},
+        {3u, ir::VecSha{ir::VecShaKind::Sha256Rnds2, 0u, 1u, 2u, 0u}},
+        {std::nullopt, ir::StoreVecReg{3u, 3u}},
+    };
+    auto out = passes::dead_code_eliminate(s);
+    REQUIRE(out.size() == 5);
+    REQUIRE(std::holds_alternative<ir::VecSha>(out[3].op));
 }
 
 TEST_CASE("dce: x87 stack mutations stay but unused x87 loads disappear") {

@@ -191,6 +191,16 @@ prisma_status prisma_dispatcher_run(prisma_dispatcher* d,
         out->stats.direct_thread_hits = r.stats.direct_thread_hits;
         out->stats.direct_thread_misses = r.stats.direct_thread_misses;
         out->stats.direct_thread_installs = r.stats.direct_thread_installs;
+        out->stats.direct_jit_patch_attempts =
+            r.stats.direct_jit_patch_attempts;
+        out->stats.direct_jit_patch_applied =
+            r.stats.direct_jit_patch_applied;
+        out->stats.direct_jit_patch_rejected =
+            r.stats.direct_jit_patch_rejected;
+        out->stats.direct_jit_patch_unpatches =
+            r.stats.direct_jit_patch_unpatches;
+        out->stats.direct_jit_patch_executes =
+            r.stats.direct_jit_patch_executes;
         copy_message(r.message, out->message);
         return PRISMA_OK;
     } catch (...) {

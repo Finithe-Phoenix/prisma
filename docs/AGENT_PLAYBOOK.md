@@ -332,13 +332,37 @@ Direct-threading is being staged deliberately:
    values as the outer loop.
 5. Halt-PC checks and `max_steps` must be evaluated before every
    successor execute. Never bypass them for a faster loop.
+6. `JumpRel` and `CallRel` blocks may also expose a patchable AArch64
+   tail branch. The dispatcher can auto-patch only a single hop and
+   only when the source block has no guest-memory writes. It verifies
+   the patched target with `lookup_cached(target, current_bytes)` before
+   entering the patched source, and unpatches if the target is stale, a
+   halt PC, or would overrun the remaining step budget.
 
 Useful counters:
 
 - `direct_thread_hits`: successor was already cached and executed.
 - `direct_thread_misses`: cached lookup missed for a direct successor.
 - `direct_thread_installs`: direct successor was translated in-place.
+- `direct_jit_patch_attempts`: dispatcher asked the translator to patch
+  a one-hop tail branch after a hash-checked successor was available.
+- `direct_jit_patch_applied`: the request changed an unpatched source
+  into an active JIT branch.
+- `direct_jit_patch_rejected`: the translator refused the request
+  (for example, because it would create a chain).
+- `direct_jit_patch_unpatches`: dispatcher removed an active branch
+  before entry because the target was stale, halted, or over budget.
+- `direct_jit_patch_executes`: dispatcher entered a source whose
+  physical branch executed the one-hop target before returning.
 
-The next stage is in-JIT patching of direct branch exits. Keep it
-behind the same SMC hash discipline: no branch may jump to stale code
-after guest bytes change.
+In-JIT direct-exit patching must stay behind the same SMC hash
+discipline: no branch may jump to stale code after guest bytes change.
+The patch counters are exposed through both C++ `DispatchStats` and the
+C/Rust ABI (`prisma_dispatch_stats`, `PRISMA_CAPI_VERSION` 2). If that
+public struct grows again, bump the version and update `shell/core-sys`
+plus the safe `shell/core` wrapper in the same code commit.
+Do not permit multi-hop JIT chains until the dispatcher can account an
+arbitrary chain while preserving halt-PC, max-step, and RAS visibility.
+Do not auto-patch `CallRel` or any source containing `StoreMem*`,
+`StoreVec`, `Rep*`, or `InlineAsm` until SmcGuard/page invalidation is
+wired into the generic dispatcher memory model.

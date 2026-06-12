@@ -140,6 +140,11 @@ TEST_CASE("capi: dispatcher halt-at-entry runs zero blocks") {
     REQUIRE(r.exit == PRISMA_DISPATCH_HALTED);
     REQUIRE(r.final_pc == 0x1000);
     REQUIRE(r.stats.blocks_executed == 0);
+    REQUIRE(r.stats.direct_jit_patch_attempts == 0);
+    REQUIRE(r.stats.direct_jit_patch_applied == 0);
+    REQUIRE(r.stats.direct_jit_patch_rejected == 0);
+    REQUIRE(r.stats.direct_jit_patch_unpatches == 0);
+    REQUIRE(r.stats.direct_jit_patch_executes == 0);
     REQUIRE(r.message[0] == '\0');
 
     prisma_dispatcher_destroy(d);
@@ -186,6 +191,41 @@ TEST_CASE("capi: gpr and guest_pc accessors validate and round-trip") {
     std::uint64_t pc = 1;
     REQUIRE(prisma_dispatcher_guest_pc(d, &pc) == PRISMA_OK);
     REQUIRE(pc == 0);
+
+    prisma_dispatcher_destroy(d);
+    prisma_translator_destroy(t);
+}
+
+TEST_CASE("capi: direct JIT patch stats are exposed on ARM64") {
+    if (!is_arm64) {
+        SUCCEED("JIT execution requires an ARM64 host; C ABI shape is "
+                "compiled on this host");
+        return;
+    }
+
+    prisma_translator* t = nullptr;
+    REQUIRE(prisma_translator_create(&t) == PRISMA_OK);
+
+    // 0x1000: EB 0E  jmp +14 -> 0x1010
+    // 0x1010: EB EE  jmp -18 -> 0x1000
+    std::vector<std::uint8_t> loop = {
+        0xEB, 0x0E,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0xEB, 0xEE,
+    };
+    GuestImage img{0x1000, loop};
+    prisma_dispatcher* d = nullptr;
+    REQUIRE(prisma_dispatcher_create(t, &image_reader, &img, &d) ==
+            PRISMA_OK);
+
+    prisma_run_result r{};
+    REQUIRE(prisma_dispatcher_run(d, 0x1000, 6, &r) == PRISMA_OK);
+    REQUIRE(r.exit == PRISMA_DISPATCH_STEP_LIMIT);
+    REQUIRE(r.stats.direct_jit_patch_attempts == 3);
+    REQUIRE(r.stats.direct_jit_patch_applied == 1);
+    REQUIRE(r.stats.direct_jit_patch_rejected == 2);
+    REQUIRE(r.stats.direct_jit_patch_executes == 2);
 
     prisma_dispatcher_destroy(d);
     prisma_translator_destroy(t);

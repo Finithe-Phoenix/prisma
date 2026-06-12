@@ -148,12 +148,12 @@ struct Return   {};
 
 // ---- Guest-PC-based control flow (MVP, no basic-block index yet) -------
 //
-// CmpFlags is a side-effecting op: it sets the x86 flags bank implicitly
-// (no SSA result ref). Lowering emits an ARM64 `cmp` that leaves NZCV in
-// a state CondJumpRel can immediately consume. The invariant is that
-// CondJumpRel must follow a CmpFlags (or another flag-setting op in the
-// future) with no flag-clobbering op in between. The Lowerer enforces
-// this; the decoder produces IR that respects it by construction.
+// CmpFlags / AluFlags are side-effecting ops: they set the x86 flags bank
+// implicitly (no SSA result ref). Lowering emits an ARM64 flag-setting
+// instruction that leaves NZCV in a state CondJumpRel can immediately
+// consume. The invariant is that CondJumpRel must follow a flag-setting
+// op with no flag-clobbering op in between. The Lowerer enforces this;
+// the decoder produces IR that respects it by construction.
 //
 // JumpRel / CondJumpRel terminate the current block and cause the block
 // to return `target_guest_pc` (taken) or `fallthrough_guest_pc` (not
@@ -164,6 +164,13 @@ struct CmpFlags {
     Ref   lhs;
     Ref   rhs;
     OpSize size;
+};
+
+struct AluFlags {
+    BinOpKind op;
+    Ref       lhs;
+    Ref       rhs;
+    OpSize    size;
 };
 
 struct JumpReg {
@@ -219,6 +226,22 @@ struct RetAdjusted {
 
 struct Cpuid   {};
 struct Syscall {};
+
+// XGETBV (NP 0F 01 D0) — reads the extended control register selected
+// by ECX into EDX:EAX. The lowering bakes XCR0 at translation time
+// (LowerOptions::xgetbv_xcr0); ECX != 0 returns zeros as a placeholder
+// (hardware raises #GP). Together with CPUID.1:ECX.OSXSAVE this is
+// the canonical guest gate for AVX/FMA usage.
+struct Xgetbv  {};
+
+// RDTSC time source — produces the current 64-bit counter value as an
+// SSA result; the decoder splits it into the architectural EDX:EAX
+// writes. Lowered to ARM's virtual counter (mrs CNTVCT_EL0), which is
+// monotonic but ticks at CNTFRQ rather than core frequency — guest
+// calibration loops measure ratios, so any monotonic source works.
+// NOT pure: two reads must stay two reads (CSE/DCE must never merge
+// or drop it; neither pass lists it as pure).
+struct Rdtsc   {};
 
 // ---- Width adjustment -------------------------------------------------
 //
@@ -780,6 +803,35 @@ struct VecAesKeygenAssist {
     std::uint8_t rcon;
 };
 
+// F2-IR-060 — SHA-NI (NP 0F 38 C8..CD + NP 0F 3A CC ib). One op per
+// x86 instruction; the kind selects the variant. Operand roles:
+//   a  = the destination register's prior value (RMW source 1)
+//   b  = the xmm/m128 operand (source 2)
+//   wk = the implicit XMM0 {WK0, WK1} — Sha256Rnds2 only. Other
+//        kinds must still pass a valid Ref (pass b again); the
+//        operand walkers visit every Ref (the VecAes convention).
+//   imm = Sha1Rnds4's round-function/K selector (imm8 & 3); 0 else.
+// Lane-order note: the SHA-1 kinds keep W0/A in the HIGH dword
+// (lane 3) while the SHA-256 kinds are ascending (W0 in lane 0),
+// matching the Intel SDM exactly.
+enum class VecShaKind : std::uint8_t {
+    Sha1Rnds4 = 0,
+    Sha1Nexte,
+    Sha1Msg1,
+    Sha1Msg2,
+    Sha256Rnds2,
+    Sha256Msg1,
+    Sha256Msg2,
+};
+
+struct VecSha {
+    VecShaKind   kind;
+    Ref          a;
+    Ref          b;
+    Ref          wk;
+    std::uint8_t imm;
+};
+
 // F2-IR-056 — GPR byte-swap (the lowering target for x86 MOVBE).
 // Reverses the byte order of `value` interpreted at `size`. Maps to
 // ARM64 REV / REV (32-bit) / REV16 depending on size.
@@ -964,7 +1016,7 @@ using Op = std::variant<
     LoadMemTSO, StoreMemTSO,
     Jump, CondJump, Return,
     JumpReg,
-    CmpFlags, JumpRel, CondJumpRel,
+    CmpFlags, AluFlags, JumpRel, CondJumpRel,
     CallRel, CallReg, RetAdjusted,
     Cpuid, Syscall, Trap,
     Extend, Truncate, Fence,
@@ -1001,13 +1053,15 @@ using Op = std::variant<
     VecTbl2,
     VecAes,
     VecAesKeygenAssist,
+    VecSha,
     Bswap,
     Crc32c,
     VecGather,
     LoadVecRegHi, StoreVecRegHi,
     VecFpFma, VecFpScalarFma,
     RepStos, RepMovs,
-    X87Load, X87Store, X87Push, X87Pop
+    X87Load, X87Store, X87Push, X87Pop,
+    Xgetbv, Rdtsc
 >;
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1127,7 @@ bool operator==(const JumpReg& a, const JumpReg& b) noexcept;
 bool operator==(const Return&, const Return&) noexcept;
 
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept;
+bool operator==(const AluFlags& a, const AluFlags& b) noexcept;
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept;
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept;
 
@@ -1080,6 +1135,8 @@ bool operator==(const CallRel& a, const CallRel& b) noexcept;
 bool operator==(const CallReg& a, const CallReg& b) noexcept;
 bool operator==(const RetAdjusted& a, const RetAdjusted& b) noexcept;
 bool operator==(const Cpuid&, const Cpuid&) noexcept;
+bool operator==(const Xgetbv&, const Xgetbv&) noexcept;
+bool operator==(const Rdtsc&, const Rdtsc&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
 bool operator==(const Extend& a, const Extend& b) noexcept;
@@ -1135,6 +1192,7 @@ bool operator==(const VecAes& a, const VecAes& b) noexcept;
 bool operator==(const VecAesKeygenAssist& a, const VecAesKeygenAssist& b) noexcept;
 bool operator==(const Bswap& a, const Bswap& b) noexcept;
 bool operator==(const Crc32c& a, const Crc32c& b) noexcept;
+bool operator==(const VecSha& a, const VecSha& b) noexcept;
 bool operator==(const VecGather& a, const VecGather& b) noexcept;
 bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;

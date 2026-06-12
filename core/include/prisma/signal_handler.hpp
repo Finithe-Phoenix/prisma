@@ -22,6 +22,7 @@
 
 #include <csetjmp>
 #include <csignal>
+#include <cstdint>
 
 namespace prisma::runtime {
 
@@ -40,6 +41,23 @@ enum class FaultKind : int {
 // or embedding host changed them. Not thread-safe with respect to other
 // code that installs handlers for the same signals.
 void install_handlers();
+
+// Optional SMC invalidation hook used by the SIGSEGV path after
+// SmcGuard consumes a write fault on a protected guest-code page.
+// The callback receives each cache key registered for the faulting
+// page. Passing nullptr restores the no-op behaviour.
+using SmcInvalidateCallback = void (*)(std::uint64_t cache_key,
+                                       void* ctx) noexcept;
+void set_smc_invalidate_callback(SmcInvalidateCallback callback,
+                                 void* ctx) noexcept;
+void clear_smc_invalidate_callback() noexcept;
+
+// Drains SMC fault bookkeeping queued by the SIGSEGV handler and runs
+// the registered invalidation callback for each affected cache key —
+// in normal context, where allocation and locking are legal. The
+// dispatcher calls this between blocks; tests call it after provoking
+// a fault. Returns the number of pages drained (0 = nothing pending).
+std::size_t drain_smc_invalidations();
 
 // Thread-local "protected scope" state. A call site does:
 //

@@ -17,6 +17,7 @@
 
 #include "prisma/cpu_state.hpp"
 #include "prisma/dispatcher.hpp"
+#include "prisma/host_features.hpp"
 #include "prisma/translator.hpp"
 
 using namespace prisma;
@@ -436,6 +437,28 @@ TEST_CASE("e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1)") {
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
     REQUIRE(disp.state()[ir::Gpr::Rax] == 55u);
     REQUIRE(disp.state()[ir::Gpr::Rbx] == 8u);
+}
+
+TEST_CASE("e2e: XADD sets carry flag for a following JC") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    auto state = run_blob({
+        0x48, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF,
+                    0xFF, 0xFF, 0xFF, 0xFF,  // mov rax, -1
+        0x48, 0xB9, 0x01, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,  // mov rcx, 1
+        0x48, 0x0F, 0xC1, 0xC8,              // xadd rax, rcx
+        0x72, 0x0B,                          // jc +11
+        0x48, 0xBA, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,  // mov rdx, 0
+        0xC3,                                // ret
+        0x48, 0xBA, 0x01, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,  // mov rdx, 1
+        0xC3,                                // ret
+    });
+    REQUIRE(state[ir::Gpr::Rax] == 0u);
+    REQUIRE(state[ir::Gpr::Rcx] == 0xFFFF'FFFF'FFFF'FFFFULL);
+    REQUIRE(state[ir::Gpr::Rdx] == 1u);
 }
 
 TEST_CASE("e2e: POPCNT 0xCAFEBABE counts the bits") {
@@ -2561,6 +2584,1131 @@ TEST_CASE("e2e: VPGATHERQD xmm1, [rax + ymm2*4], xmm3 — F2-IR-059 ymm index, x
     REQUIRE(disp.state().ymm_hi[3].lo == 0u);
 }
 
+// ---- F2-IR-060 SHA-NI e2e: JIT output vs exact SDM references ----
+namespace sha_e2e {
+
+using V4 = std::array<std::uint32_t, 4>;  // lane 0 = bits 31:0
+using Xmm = std::pair<std::uint64_t, std::uint64_t>;
+
+inline Xmm pack(const V4& v) {
+    return {(static_cast<std::uint64_t>(v[1]) << 32) | v[0],
+            (static_cast<std::uint64_t>(v[3]) << 32) | v[2]};
+}
+
+inline std::uint32_t rol(std::uint32_t x, unsigned n) {
+    return (x << n) | (x >> (32u - n));
+}
+inline std::uint32_t ror(std::uint32_t x, unsigned n) {
+    return (x >> n) | (x << (32u - n));
+}
+
+// Intel SDM pseudocode, lane-exact.
+inline V4 ref_sha1rnds4(const V4& s, const V4& m, unsigned imm) {
+    std::uint32_t A = s[3], B = s[2], C = s[1], D = s[0];
+    const std::uint32_t W[4] = {m[3], m[2], m[1], m[0]};  // {W0E,W1,W2,W3}
+    static constexpr std::uint32_t K[4] = {
+        0x5A827999u, 0x6ED9EBA1u, 0x8F1BBCDCu, 0xCA62C1D6u};
+    std::uint32_t E = 0;  // round 0's E lives inside W0E
+    for (int i = 0; i < 4; ++i) {
+        std::uint32_t f = 0;
+        switch (imm & 3u) {
+            case 0:  f = (B & C) ^ (~B & D);          break;
+            case 2:  f = (B & C) ^ (B & D) ^ (C & D); break;
+            default: f = B ^ C ^ D;                   break;
+        }
+        const std::uint32_t t = f + rol(A, 5) + W[i] + E + K[imm & 3u];
+        E = D; D = C; C = rol(B, 30); B = A; A = t;
+    }
+    return {D, C, B, A};
+}
+
+inline V4 ref_sha1nexte(const V4& a, const V4& b) {
+    V4 r = b;
+    r[3] = b[3] + rol(a[3], 30);
+    return r;
+}
+
+inline V4 ref_sha1msg1(const V4& a, const V4& b) {
+    const std::uint32_t W0 = a[3], W1 = a[2], W2 = a[1], W3 = a[0];
+    const std::uint32_t W4 = b[3], W5 = b[2];  // b lanes 1,0 ignored
+    return {W5 ^ W3, W4 ^ W2, W3 ^ W1, W2 ^ W0};
+}
+
+inline V4 ref_sha1msg2(const V4& a, const V4& b) {
+    const std::uint32_t W13 = b[2], W14 = b[1], W15 = b[0];  // b lane3 ignored
+    const std::uint32_t W16 = rol(a[3] ^ W13, 1);
+    const std::uint32_t W17 = rol(a[2] ^ W14, 1);
+    const std::uint32_t W18 = rol(a[1] ^ W15, 1);
+    const std::uint32_t W19 = rol(a[0] ^ W16, 1);  // chained on W16
+    return {W19, W18, W17, W16};
+}
+
+inline V4 ref_sha256rnds2(const V4& cdgh, const V4& abef,
+                          std::uint32_t wk0, std::uint32_t wk1) {
+    std::uint32_t A = abef[3], B = abef[2], E = abef[1], F = abef[0];
+    std::uint32_t C = cdgh[3], D = cdgh[2], G = cdgh[1], H = cdgh[0];
+    const std::uint32_t WK[2] = {wk0, wk1};
+    for (int i = 0; i < 2; ++i) {
+        const std::uint32_t s1 = ror(E, 6) ^ ror(E, 11) ^ ror(E, 25);
+        const std::uint32_t ch = (E & F) ^ (~E & G);
+        const std::uint32_t t1 = H + s1 + ch + WK[i];
+        const std::uint32_t s0 = ror(A, 2) ^ ror(A, 13) ^ ror(A, 22);
+        const std::uint32_t mj = (A & B) ^ (A & C) ^ (B & C);
+        const std::uint32_t t2 = s0 + mj;
+        H = G; G = F; F = E; E = D + t1; D = C; C = B; B = A; A = t1 + t2;
+    }
+    return {F, E, B, A};
+}
+
+inline std::uint32_t sig0(std::uint32_t x) {
+    return ror(x, 7) ^ ror(x, 18) ^ (x >> 3);
+}
+inline std::uint32_t sig1(std::uint32_t x) {
+    return ror(x, 17) ^ ror(x, 19) ^ (x >> 10);
+}
+
+inline V4 ref_sha256msg1(const V4& a, const V4& b) {
+    return {a[0] + sig0(a[1]), a[1] + sig0(a[2]),
+            a[2] + sig0(a[3]), a[3] + sig0(b[0])};  // b lanes 1..3 ignored
+}
+
+inline V4 ref_sha256msg2(const V4& a, const V4& b) {
+    const std::uint32_t W14 = b[2], W15 = b[3];  // b lanes 0,1 ignored
+    const std::uint32_t W16 = a[0] + sig1(W14);
+    const std::uint32_t W17 = a[1] + sig1(W15);
+    const std::uint32_t W18 = a[2] + sig1(W16);  // chained
+    const std::uint32_t W19 = a[3] + sig1(W17);  // chained
+    return {W16, W17, W18, W19};
+}
+
+// The VecSha lowering emits ARMv8 crypto instructions unconditionally;
+// an ARM64 host without the optional SHA extensions would SIGILL with
+// no in-JIT recovery. Execution tests skip there (Codex review
+// 2026-06-11). Honour any test override so CPUID tests can't leak
+// state into these.
+inline bool host_has_sha_crypto() {
+    const auto& hf = runtime::host_features();
+    return hf.feat_sha1 && hf.feat_sha256;
+}
+
+// Same SIGILL caveat for the VecAes lowering (AESE/AESD/AESMC/AESIMC).
+inline bool host_has_aes_crypto() {
+    return runtime::host_features().feat_aes;
+}
+
+struct Result {
+    Xmm xmm1;
+    Xmm xmm2;
+    bool halted;
+};
+
+// Runs `body` + RET at guest 0x4000 with xmm0/1/2 seeded.
+inline Result run(std::vector<std::uint8_t> body,
+                  Xmm x0, Xmm x1, Xmm x2) {
+    translator::Translator tx;
+    body.push_back(0xC3);  // ret
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state().xmm[0].lo = x0.first; disp.state().xmm[0].hi = x0.second;
+    disp.state().xmm[1].lo = x1.first; disp.state().xmm[1].hi = x1.second;
+    disp.state().xmm[2].lo = x2.first; disp.state().xmm[2].hi = x2.second;
+    auto r = disp.run(0x4000, 100);
+    return {{disp.state().xmm[1].lo, disp.state().xmm[1].hi},
+            {disp.state().xmm[2].lo, disp.state().xmm[2].hi},
+            r.exit == runtime::DispatchExit::Halted};
+}
+
+}  // namespace sha_e2e
+
+TEST_CASE("e2e: SHA1RNDS4 all selectors vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    const V4 state = {0x76543210u, 0xFEDCBA98u, 0x89ABCDEFu, 0x01234567u};
+    const V4 msg   = {0x80000001u, 0x7FFFFFFFu, 0xDEADBEEFu, 0xC0FFEE00u};
+    for (unsigned imm = 0; imm < 4; ++imm) {
+        // sha1rnds4 xmm1, xmm2, imm (ModRM CA: reg=xmm1 rm=xmm2).
+        auto r = run({0x0F, 0x3A, 0xCC, 0xCA,
+                      static_cast<std::uint8_t>(imm)},
+                     {0, 0}, pack(state), pack(msg));
+        REQUIRE(r.halted);
+        REQUIRE(r.xmm1 == pack(ref_sha1rnds4(state, msg, imm)));
+    }
+    // imm8 upper bits are ignored: 0xE6 behaves as 2.
+    auto r = run({0x0F, 0x3A, 0xCC, 0xCA, 0xE6},
+                 {0, 0}, pack(state), pack(msg));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1rnds4(state, msg, 2u)));
+}
+
+TEST_CASE("e2e: SHA1NEXTE vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    // Asymmetric lane-3 pattern catches ROL30-vs-ROR30; lower lanes
+    // of the result must come from the SOURCE, not the dest.
+    const V4 a = {0x11111111u, 0x22222222u, 0x33333333u, 0x80000001u};
+    const V4 b = {0xA0A0A0A0u, 0xB0B0B0B0u, 0xC0C0C0C0u, 0x80000000u};
+    auto r = run({0x0F, 0x38, 0xC8, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1nexte(a, b)));
+}
+
+TEST_CASE("e2e: SHA1MSG1 ignores src2 low half — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    const V4 a = {0x00000004u, 0x00000003u, 0x00000002u, 0x00000001u};
+    const V4 b = {0xDEADDEADu, 0xBEEFBEEFu, 0x00000006u, 0x00000005u};
+    auto r = run({0x0F, 0x38, 0xC9, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1msg1(a, b)));
+}
+
+TEST_CASE("e2e: SHA1MSG2 lane chaining + ROL1 carry — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    // Bit-31-set inputs exercise the rotate-across-carry; b lane 3
+    // (W12) is garbage the instruction must ignore.
+    const V4 a = {0x80000000u, 0xC0000001u, 0x9999AAAAu, 0xF0F0F0F0u};
+    const V4 b = {0x80000003u, 0x7FFFFFFEu, 0x12345678u, 0xDEADC0DEu};
+    auto r = run({0x0F, 0x38, 0xCA, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha1msg2(a, b)));
+}
+
+TEST_CASE("e2e: SHA256RNDS2 + ping-pong chaining vs reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    // SHA-256("abc") schedule-0 state: H0..H7 split {CDGH}/{ABEF}.
+    const V4 cdgh = {0x5BE0CD19u, 0x1F83D9ABu, 0xA54FF53Au, 0x3C6EF372u};
+    const V4 abef = {0x9B05688Cu, 0x510E527Fu, 0xBB67AE85u, 0x6A09E667u};
+    const std::uint32_t wk0 = 0x428A2F98u + 0x61626380u;
+    const std::uint32_t wk1 = 0x71374491u;
+    // XMM0 upper lanes are garbage the instruction must ignore.
+    const Xmm x0 = {(static_cast<std::uint64_t>(wk1) << 32) | wk0,
+                    0xDEADBEEF'CAFEF00Dull};
+    // Two chained ops: sha256rnds2 xmm1, xmm2 then xmm2, xmm1 —
+    // the architectural ping-pong (new CDGH = old ABEF source).
+    auto r = run({0x0F, 0x38, 0xCB, 0xCA,    // xmm1 <- rounds(xmm1, xmm2)
+                  0x0F, 0x38, 0xCB, 0xD1},   // xmm2 <- rounds(xmm2, xmm1')
+                 x0, pack(cdgh), pack(abef));
+    REQUIRE(r.halted);
+    const V4 first = ref_sha256rnds2(cdgh, abef, wk0, wk1);
+    REQUIRE(r.xmm1 == pack(first));
+    REQUIRE(r.xmm2 == pack(ref_sha256rnds2(abef, first, wk0, wk1)));
+}
+
+TEST_CASE("e2e: SHA256MSG1 vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    // MSB-set lanes distinguish SHR3 (logical) from a rotate; b lanes
+    // 1..3 are garbage the instruction must ignore.
+    const V4 a = {0x80000000u, 0x61626380u, 0x000002A0u, 0xFEDCBA98u};
+    const V4 b = {0x80000001u, 0xBAADF00Du, 0xDEADBEEFu, 0xCAFEF00Du};
+    auto r = run({0x0F, 0x38, 0xCC, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha256msg1(a, b)));
+}
+
+TEST_CASE("e2e: SHA256MSG2 lane chaining vs SDM reference — F2-IR-060") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_sha_crypto()) {
+        SUCCEED("ARM64 host lacks SHA crypto extensions");
+        return;
+    }
+    using namespace sha_e2e;
+    // Lanes 2,3 depend on the freshly computed lanes 0,1; b lanes
+    // 0,1 (W12,W13) are garbage the instruction must ignore.
+    const V4 a = {0x00010203u, 0x84858687u, 0x08090A0Bu, 0x8C8D8E8Fu};
+    const V4 b = {0xDEADDEADu, 0xBEEFBEEFu, 0x80000400u, 0xC0001000u};
+    auto r = run({0x0F, 0x38, 0xCD, 0xCA}, {0, 0}, pack(a), pack(b));
+    REQUIRE(r.halted);
+    REQUIRE(r.xmm1 == pack(ref_sha256msg2(a, b)));
+}
+
+// ---- F2-IR-060 follow-up: full-digest KATs (FIPS 180-4) ------------
+//
+// The per-instruction tests above pin each SHA-NI op against the SDM
+// in isolation; these run the *canonical* SHA-NI compression loops
+// (the Intel whitepaper register dance, fully unrolled) over real
+// padded messages and compare the final digests against FIPS 180-4
+// known answers. That catches cross-instruction composition bugs —
+// lane-convention mismatches between ops, WK plumbing, schedule
+// chaining — that no single-instruction test can see.
+//
+// Each KAT also evaluates a host-side mirror of the exact same
+// instruction sequence built from the sha_e2e::ref_* SDM models.
+// The mirror is asserted on every host (including x86_64 CI), so a
+// bug in the test's own orchestration is caught everywhere; the JIT
+// half runs under the usual ARM64 guard.
+namespace sha_kat {
+
+using sha_e2e::V4;
+using Bytes = std::vector<std::uint8_t>;
+
+// x86 encodings, registers 0..7 only (no REX needed). Memory operands
+// are always [base + disp32] (mod=10); base must not be rsp/rbp.
+inline std::uint8_t modrm_rr(unsigned reg, unsigned rm) {
+    return static_cast<std::uint8_t>(0xC0u | (reg << 3) | rm);
+}
+inline void emit_mem(Bytes& o, unsigned reg, unsigned base,
+                     std::uint32_t disp) {
+    o.push_back(static_cast<std::uint8_t>(0x80u | (reg << 3) | base));
+    o.push_back(static_cast<std::uint8_t>(disp));
+    o.push_back(static_cast<std::uint8_t>(disp >> 8));
+    o.push_back(static_cast<std::uint8_t>(disp >> 16));
+    o.push_back(static_cast<std::uint8_t>(disp >> 24));
+}
+inline void movdqu_load(Bytes& o, unsigned x, unsigned base,
+                        std::uint32_t d) {
+    o.insert(o.end(), {0xF3, 0x0F, 0x6F}); emit_mem(o, x, base, d);
+}
+inline void movdqa_store(Bytes& o, unsigned x, unsigned base,
+                         std::uint32_t d) {
+    o.insert(o.end(), {0x66, 0x0F, 0x7F}); emit_mem(o, x, base, d);
+}
+inline void movdqa_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x66, 0x0F, 0x6F, modrm_rr(dst, src)});
+}
+inline void paddd_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x66, 0x0F, 0xFE, modrm_rr(dst, src)});
+}
+inline void paddd_mem(Bytes& o, unsigned dst, unsigned base,
+                      std::uint32_t d) {
+    o.insert(o.end(), {0x66, 0x0F, 0xFE}); emit_mem(o, dst, base, d);
+}
+inline void pshufd_rr(Bytes& o, unsigned dst, unsigned src,
+                      std::uint8_t imm) {
+    o.insert(o.end(), {0x66, 0x0F, 0x70, modrm_rr(dst, src), imm});
+}
+inline void palignr_rr(Bytes& o, unsigned dst, unsigned src,
+                       std::uint8_t imm) {
+    o.insert(o.end(), {0x66, 0x0F, 0x3A, 0x0F, modrm_rr(dst, src), imm});
+}
+inline void pxor_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x66, 0x0F, 0xEF, modrm_rr(dst, src)});
+}
+inline void sha256rnds2(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCB, modrm_rr(dst, src)});
+}
+inline void sha256msg1(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCC, modrm_rr(dst, src)});
+}
+inline void sha256msg2(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCD, modrm_rr(dst, src)});
+}
+inline void sha1rnds4(Bytes& o, unsigned dst, unsigned src,
+                      std::uint8_t imm) {
+    o.insert(o.end(), {0x0F, 0x3A, 0xCC, modrm_rr(dst, src), imm});
+}
+inline void sha1nexte_rr(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xC8, modrm_rr(dst, src)});
+}
+inline void sha1nexte_mem(Bytes& o, unsigned dst, unsigned base,
+                          std::uint32_t d) {
+    o.insert(o.end(), {0x0F, 0x38, 0xC8}); emit_mem(o, dst, base, d);
+}
+inline void sha1msg1(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xC9, modrm_rr(dst, src)});
+}
+inline void sha1msg2(Bytes& o, unsigned dst, unsigned src) {
+    o.insert(o.end(), {0x0F, 0x38, 0xCA, modrm_rr(dst, src)});
+}
+
+constexpr unsigned kRcx = 1;  // -> K constant table (SHA-256 only)
+constexpr unsigned kRdx = 2;  // -> schedule words, 16 dwords per block
+constexpr unsigned kRbx = 3;  // -> 32-byte per-block state-save scratch
+
+// FIPS 180-4 §5.1.1 padding (shared by SHA-1 / SHA-256): append 0x80,
+// zero-fill to 56 mod 64, then the 64-bit big-endian bit length.
+// Returns the schedule words W (big-endian dwords re-parsed to native),
+// 16 per block.
+inline std::vector<std::uint32_t> pad_to_words(const char* msg,
+                                               std::size_t len) {
+    std::vector<std::uint8_t> bytes(msg, msg + len);
+    const std::uint64_t bit_len = static_cast<std::uint64_t>(len) * 8u;
+    bytes.push_back(0x80u);
+    while (bytes.size() % 64u != 56u) bytes.push_back(0x00u);
+    for (int i = 7; i >= 0; --i) {
+        bytes.push_back(static_cast<std::uint8_t>(bit_len >> (8 * i)));
+    }
+    std::vector<std::uint32_t> w(bytes.size() / 4u);
+    for (std::size_t i = 0; i < w.size(); ++i) {
+        w[i] = (std::uint32_t{bytes[4 * i]} << 24) |
+               (std::uint32_t{bytes[4 * i + 1]} << 16) |
+               (std::uint32_t{bytes[4 * i + 2]} << 8) |
+               std::uint32_t{bytes[4 * i + 3]};
+    }
+    return w;
+}
+
+inline V4 lane_add(const V4& a, const V4& b) {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]};
+}
+inline V4 lane_xor(const V4& a, const V4& b) {
+    return {a[0] ^ b[0], a[1] ^ b[1], a[2] ^ b[2], a[3] ^ b[3]};
+}
+// PALIGNR dst, src, 4 == lanes {src[1], src[2], src[3], dst[0]}.
+inline V4 alignr4(const V4& dst, const V4& src) {
+    return {src[1], src[2], src[3], dst[0]};
+}
+inline V4 unpack(std::uint64_t lo, std::uint64_t hi) {
+    return {static_cast<std::uint32_t>(lo),
+            static_cast<std::uint32_t>(lo >> 32),
+            static_cast<std::uint32_t>(hi),
+            static_cast<std::uint32_t>(hi >> 32)};
+}
+
+alignas(16) constexpr std::uint32_t kSha256K[64] = {
+    0x428A2F98u, 0x71374491u, 0xB5C0FBCFu, 0xE9B5DBA5u, 0x3956C25Bu,
+    0x59F111F1u, 0x923F82A4u, 0xAB1C5ED5u, 0xD807AA98u, 0x12835B01u,
+    0x243185BEu, 0x550C7DC3u, 0x72BE5D74u, 0x80DEB1FEu, 0x9BDC06A7u,
+    0xC19BF174u, 0xE49B69C1u, 0xEFBE4786u, 0x0FC19DC6u, 0x240CA1CCu,
+    0x2DE92C6Fu, 0x4A7484AAu, 0x5CB0A9DCu, 0x76F988DAu, 0x983E5152u,
+    0xA831C66Du, 0xB00327C8u, 0xBF597FC7u, 0xC6E00BF3u, 0xD5A79147u,
+    0x06CA6351u, 0x14292967u, 0x27B70A85u, 0x2E1B2138u, 0x4D2C6DFCu,
+    0x53380D13u, 0x650A7354u, 0x766A0ABBu, 0x81C2C92Eu, 0x92722C85u,
+    0xA2BFE8A1u, 0xA81A664Bu, 0xC24B8B70u, 0xC76C51A3u, 0xD192E819u,
+    0xD6990624u, 0xF40E3585u, 0x106AA070u, 0x19A4C116u, 0x1E376C08u,
+    0x2748774Cu, 0x34B0BCB5u, 0x391C0CB3u, 0x4ED8AA4Au, 0x5B9CCA4Fu,
+    0x682E6FF3u, 0x748F82EEu, 0x78A5636Fu, 0x84C87814u, 0x8CC70208u,
+    0x90BEFFFAu, 0xA4506CEBu, 0xBEF9A3F7u, 0xC67178F2u};
+
+// Canonical unrolled SHA-NI SHA-256 compression for `blocks` blocks.
+// Register convention (Intel whitepaper): xmm1 = {ABEF} (A in lane 3),
+// xmm2 = {CDGH}, xmm0 = WK, xmm3-6 = schedule, xmm7 = palignr temp.
+// `jmp +0` between blocks keeps each translated block modest.
+inline Bytes gen_sha256(unsigned blocks) {
+    Bytes o;
+    const unsigned M[4] = {3, 4, 5, 6};
+    for (unsigned b = 0; b < blocks; ++b) {
+        if (b != 0) o.insert(o.end(), {0xEB, 0x00});
+        movdqa_store(o, 1, kRbx, 0);
+        movdqa_store(o, 2, kRbx, 16);
+        for (unsigned j = 0; j < 4; ++j) {
+            movdqu_load(o, M[j], kRdx, 64u * b + 16u * j);
+        }
+        for (unsigned g = 0; g < 16; ++g) {
+            movdqa_rr(o, 0, M[g % 4]);
+            paddd_mem(o, 0, kRcx, 16u * g);   // xmm0 = W + K
+            sha256rnds2(o, 2, 1);             // rounds 4g, 4g+1
+            pshufd_rr(o, 0, 0, 0x0E);         // WK2/WK3 into lanes 0,1
+            sha256rnds2(o, 1, 2);             // rounds 4g+2, 4g+3
+            if (g < 12) {                     // W[4(g+4)..4(g+4)+3]
+                movdqa_rr(o, 7, M[(g + 3) % 4]);
+                palignr_rr(o, 7, M[(g + 2) % 4], 4);
+                sha256msg1(o, M[g % 4], M[(g + 1) % 4]);
+                paddd_rr(o, M[g % 4], 7);
+                sha256msg2(o, M[g % 4], M[(g + 3) % 4]);
+            }
+        }
+        paddd_mem(o, 1, kRbx, 0);
+        paddd_mem(o, 2, kRbx, 16);
+    }
+    return o;
+}
+
+// Host-side mirror of gen_sha256 built on the sha_e2e::ref_* models —
+// same register dance, same lane conventions, no JIT.
+inline void host_sha256(const std::uint32_t* w, unsigned blocks,
+                        V4& abef, V4& cdgh) {
+    using sha_e2e::ref_sha256rnds2;
+    using sha_e2e::ref_sha256msg1;
+    using sha_e2e::ref_sha256msg2;
+    for (unsigned b = 0; b < blocks; ++b) {
+        const V4 abef0 = abef, cdgh0 = cdgh;
+        V4 m[4];
+        for (unsigned j = 0; j < 4; ++j) {
+            const std::uint32_t* p = w + 16u * b + 4u * j;
+            m[j] = {p[0], p[1], p[2], p[3]};
+        }
+        for (unsigned g = 0; g < 16; ++g) {
+            const V4 k = {kSha256K[4 * g], kSha256K[4 * g + 1],
+                          kSha256K[4 * g + 2], kSha256K[4 * g + 3]};
+            const V4 wk = lane_add(m[g % 4], k);
+            cdgh = ref_sha256rnds2(cdgh, abef, wk[0], wk[1]);
+            abef = ref_sha256rnds2(abef, cdgh, wk[2], wk[3]);
+            if (g < 12) {
+                const V4 t = alignr4(m[(g + 3) % 4], m[(g + 2) % 4]);
+                m[g % 4] = ref_sha256msg2(
+                    lane_add(ref_sha256msg1(m[g % 4], m[(g + 1) % 4]), t),
+                    m[(g + 3) % 4]);
+            }
+        }
+        abef = lane_add(abef, abef0);
+        cdgh = lane_add(cdgh, cdgh0);
+    }
+}
+
+// Canonical unrolled SHA-NI SHA-1 compression. xmm1 = {ABCD} (A in
+// lane 3); xmm2/xmm3 ping-pong the E+W operand (the sha1nexte chain);
+// xmm4-7 = schedule with W0-in-lane-3 group order. K is implicit in
+// SHA1RNDS4's immediate, so there is no constant table.
+inline Bytes gen_sha1(unsigned blocks) {
+    Bytes o;
+    const unsigned M[4] = {4, 5, 6, 7};
+    for (unsigned b = 0; b < blocks; ++b) {
+        if (b != 0) o.insert(o.end(), {0xEB, 0x00});
+        movdqa_store(o, 1, kRbx, 0);   // {ABCD} save
+        movdqa_store(o, 2, kRbx, 16);  // {0,0,0,E} save
+        for (unsigned j = 0; j < 4; ++j) {
+            movdqu_load(o, M[j], kRdx, 64u * b + 16u * j);
+        }
+        for (unsigned g = 0; g < 20; ++g) {
+            const unsigned e_cur = (g % 2 == 0) ? 2 : 3;
+            const unsigned e_nxt = (g % 2 == 0) ? 3 : 2;
+            if (g == 0) {
+                paddd_rr(o, e_cur, M[0]);  // {0,0,0,E} + {W0..W3}
+            } else {
+                sha1nexte_rr(o, e_cur, M[g % 4]);
+            }
+            movdqa_rr(o, e_nxt, 1);        // ABCD snapshot for group g+1
+            sha1rnds4(o, 1, e_cur, static_cast<std::uint8_t>(g / 5));
+            if (g < 16) {                  // W[4(g+4)..4(g+4)+3]
+                sha1msg1(o, M[g % 4], M[(g + 1) % 4]);
+                pxor_rr(o, M[g % 4], M[(g + 2) % 4]);
+                sha1msg2(o, M[g % 4], M[(g + 3) % 4]);
+            }
+        }
+        // Group 19's snapshot (pre-final-rnds4 ABCD) sits in xmm2;
+        // E' = saved E + rol30(its lane 3) via nexte against the save.
+        sha1nexte_mem(o, 2, kRbx, 16);
+        paddd_mem(o, 1, kRbx, 0);
+    }
+    return o;
+}
+
+// Host-side mirror of gen_sha1 on the sha_e2e::ref_* models.
+inline void host_sha1(const std::uint32_t* w, unsigned blocks,
+                      V4& abcd, V4& e_vec) {
+    using sha_e2e::ref_sha1rnds4;
+    using sha_e2e::ref_sha1nexte;
+    using sha_e2e::ref_sha1msg1;
+    using sha_e2e::ref_sha1msg2;
+    for (unsigned b = 0; b < blocks; ++b) {
+        const V4 abcd0 = abcd, e0_save = e_vec;
+        V4 m[4];
+        for (unsigned j = 0; j < 4; ++j) {
+            const std::uint32_t* p = w + 16u * b + 4u * j;
+            m[j] = {p[3], p[2], p[1], p[0]};  // W0 in lane 3
+        }
+        V4 e[2] = {e_vec, {}};
+        for (unsigned g = 0; g < 20; ++g) {
+            const unsigned cur = g % 2, nxt = 1 - cur;
+            if (g == 0) {
+                e[cur] = lane_add(e[cur], m[0]);
+            } else {
+                e[cur] = ref_sha1nexte(e[cur], m[g % 4]);
+            }
+            e[nxt] = abcd;
+            abcd = ref_sha1rnds4(abcd, e[cur], g / 5);
+            if (g < 16) {
+                m[g % 4] = ref_sha1msg2(
+                    lane_xor(ref_sha1msg1(m[g % 4], m[(g + 1) % 4]),
+                             m[(g + 2) % 4]),
+                    m[(g + 3) % 4]);
+            }
+        }
+        e_vec = ref_sha1nexte(e[0], e0_save);
+        abcd = lane_add(abcd, abcd0);
+    }
+}
+
+struct JitState {
+    V4 xmm1;
+    V4 xmm2;
+    bool halted;
+};
+
+// Runs the generated program + RET with rcx/rdx/rbx and xmm1/xmm2
+// seeded, returning the final state registers.
+inline JitState run_kat(Bytes body, std::uint64_t k_ptr,
+                        std::uint64_t msg_ptr, std::uint64_t scratch_ptr,
+                        sha_e2e::Xmm x1, sha_e2e::Xmm x2) {
+    translator::Translator tx;
+    body.push_back(0xC3);  // ret
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rcx] = k_ptr;
+    disp.state()[ir::Gpr::Rdx] = msg_ptr;
+    disp.state()[ir::Gpr::Rbx] = scratch_ptr;
+    disp.state().xmm[1].lo = x1.first; disp.state().xmm[1].hi = x1.second;
+    disp.state().xmm[2].lo = x2.first; disp.state().xmm[2].hi = x2.second;
+    auto r = disp.run(0x4000, 16);
+    return {unpack(disp.state().xmm[1].lo, disp.state().xmm[1].hi),
+            unpack(disp.state().xmm[2].lo, disp.state().xmm[2].hi),
+            r.exit == runtime::DispatchExit::Halted};
+}
+
+struct Kat {
+    const char* msg;
+    std::size_t len;
+};
+
+// FIPS 180-4 / NIST CAVP known answers: empty, "abc" (one block),
+// and the 448-bit two-block message.
+constexpr const char* kTwoBlockMsg =
+    "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+constexpr Kat kKats[3] = {{"", 0}, {"abc", 3}, {kTwoBlockMsg, 56}};
+
+constexpr std::uint32_t kSha256Expected[3][8] = {
+    {0xE3B0C442u, 0x98FC1C14u, 0x9AFBF4C8u, 0x996FB924u,
+     0x27AE41E4u, 0x649B934Cu, 0xA495991Bu, 0x7852B855u},
+    {0xBA7816BFu, 0x8F01CFEAu, 0x414140DEu, 0x5DAE2223u,
+     0xB00361A3u, 0x96177A9Cu, 0xB410FF61u, 0xF20015ADu},
+    {0x248D6A61u, 0xD20638B8u, 0xE5C02693u, 0x0C3E6039u,
+     0xA33CE459u, 0x64FF2167u, 0xF6ECEDD4u, 0x19DB06C1u}};
+
+constexpr std::uint32_t kSha1Expected[3][5] = {
+    {0xDA39A3EEu, 0x5E6B4B0Du, 0x3255BFEFu, 0x95601890u, 0xAFD80709u},
+    {0xA9993E36u, 0x4706816Au, 0xBA3E2571u, 0x7850C26Cu, 0x9CD0D89Du},
+    {0x84983E44u, 0x1C3BD26Eu, 0xBAAE4AA1u, 0xF95129E5u, 0xE54670F1u}};
+
+}  // namespace sha_kat
+
+TEST_CASE("e2e: SHA-256 full-digest KAT via canonical SHA-NI loop "
+          "— F2-IR-060") {
+    using namespace sha_kat;
+    const V4 iv_abef = {0x9B05688Cu, 0x510E527Fu, 0xBB67AE85u, 0x6A09E667u};
+    const V4 iv_cdgh = {0x5BE0CD19u, 0x1F83D9ABu, 0xA54FF53Au, 0x3C6EF372u};
+    for (std::size_t k = 0; k < 3; ++k) {
+        INFO("message #" << k << " (" << kKats[k].len << " bytes)");
+        const auto w = pad_to_words(kKats[k].msg, kKats[k].len);
+        const unsigned blocks = static_cast<unsigned>(w.size() / 16u);
+
+        // Host-side mirror first: validates the loop orchestration on
+        // every host, ARM64 or not.
+        V4 abef = iv_abef, cdgh = iv_cdgh;
+        host_sha256(w.data(), blocks, abef, cdgh);
+        const std::uint32_t host_digest[8] = {
+            abef[3], abef[2], cdgh[3], cdgh[2],
+            abef[1], abef[0], cdgh[1], cdgh[0]};
+        for (int i = 0; i < 8; ++i) {
+            REQUIRE(host_digest[i] == kSha256Expected[k][i]);
+        }
+
+        if constexpr (!is_arm64) {
+            // Execution needs the host arch, but decode + lowering are
+            // host-independent: the program must at least translate
+            // (catches decoder gaps and scratch-pool exhaustion on
+            // x86_64 CI too).
+            Bytes body = gen_sha256(blocks);
+            body.push_back(0xC3);
+            translator::Translator tx;
+            auto tr = tx.translate(0x4000, body);
+            REQUIRE(std::holds_alternative<translator::TranslatedBlock>(tr));
+            continue;
+        }
+        if (!sha_e2e::host_has_sha_crypto()) {
+            SUCCEED("ARM64 host lacks SHA crypto — JIT half skipped");
+            break;
+        }
+
+        // JIT half: schedule words and K live in host memory the
+        // guest addresses through rdx / rcx; rbx points at the
+        // per-block state-save scratch.
+        alignas(16) std::uint32_t scratch[8] = {};
+        const auto body = gen_sha256(blocks);
+        auto r = run_kat(body,
+                         reinterpret_cast<std::uint64_t>(kSha256K),
+                         reinterpret_cast<std::uint64_t>(w.data()),
+                         reinterpret_cast<std::uint64_t>(scratch),
+                         sha_e2e::pack(iv_abef), sha_e2e::pack(iv_cdgh));
+        REQUIRE(r.halted);
+        const std::uint32_t jit_digest[8] = {
+            r.xmm1[3], r.xmm1[2], r.xmm2[3], r.xmm2[2],
+            r.xmm1[1], r.xmm1[0], r.xmm2[1], r.xmm2[0]};
+        for (int i = 0; i < 8; ++i) {
+            REQUIRE(jit_digest[i] == kSha256Expected[k][i]);
+        }
+    }
+}
+
+TEST_CASE("e2e: SHA-1 full-digest KAT via canonical SHA-NI loop "
+          "— F2-IR-060") {
+    using namespace sha_kat;
+    const V4 iv_abcd = {0x10325476u, 0x98BADCFEu, 0xEFCDAB89u, 0x67452301u};
+    const V4 iv_e = {0u, 0u, 0u, 0xC3D2E1F0u};
+    for (std::size_t k = 0; k < 3; ++k) {
+        INFO("message #" << k << " (" << kKats[k].len << " bytes)");
+        const auto w = pad_to_words(kKats[k].msg, kKats[k].len);
+        const unsigned blocks = static_cast<unsigned>(w.size() / 16u);
+
+        V4 abcd = iv_abcd, e_vec = iv_e;
+        host_sha1(w.data(), blocks, abcd, e_vec);
+        const std::uint32_t host_digest[5] = {
+            abcd[3], abcd[2], abcd[1], abcd[0], e_vec[3]};
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(host_digest[i] == kSha1Expected[k][i]);
+        }
+
+        if constexpr (!is_arm64) {
+            Bytes body = gen_sha1(blocks);
+            body.push_back(0xC3);
+            translator::Translator tx;
+            auto tr = tx.translate(0x4000, body);
+            REQUIRE(std::holds_alternative<translator::TranslatedBlock>(tr));
+            continue;
+        }
+        if (!sha_e2e::host_has_sha_crypto()) {
+            SUCCEED("ARM64 host lacks SHA crypto — JIT half skipped");
+            break;
+        }
+
+        // SHA-1 message registers carry W0 in lane 3, so the guest
+        // buffer stores each 4-word group reversed.
+        std::vector<std::uint32_t> guest_w(w.size());
+        for (std::size_t g = 0; g < w.size() / 4u; ++g) {
+            for (std::size_t j = 0; j < 4u; ++j) {
+                guest_w[4 * g + j] = w[4 * g + (3 - j)];
+            }
+        }
+        alignas(16) std::uint32_t scratch[8] = {};
+        const auto body = gen_sha1(blocks);
+        auto r = run_kat(body, /*k_ptr=*/0,
+                         reinterpret_cast<std::uint64_t>(guest_w.data()),
+                         reinterpret_cast<std::uint64_t>(scratch),
+                         sha_e2e::pack(iv_abcd), sha_e2e::pack(iv_e));
+        REQUIRE(r.halted);
+        const std::uint32_t jit_digest[5] = {
+            r.xmm1[3], r.xmm1[2], r.xmm1[1], r.xmm1[0], r.xmm2[3]};
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(jit_digest[i] == kSha1Expected[k][i]);
+        }
+    }
+}
+
+namespace {
+
+// RAII so a failing REQUIRE can't leak a host-features override into
+// later tests in the same process.
+struct FeatureOverrideGuard {
+    explicit FeatureOverrideGuard(runtime::HostFeatures f) {
+        runtime::override_host_features_for_test(f);
+    }
+    ~FeatureOverrideGuard() { runtime::clear_host_features_override(); }
+};
+
+// Runs `cpuid; ret` with the given RAX/RCX and returns the final
+// frame. The Translator is constructed after the override is set —
+// CPUID values are baked at translation time.
+runtime::CpuStateFrame run_cpuid(std::uint64_t rax, std::uint64_t rcx) {
+    translator::Translator tx;
+    static const std::vector<std::uint8_t> body{0x0F, 0xA2, 0xC3};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rax] = rax;
+    disp.state()[ir::Gpr::Rcx] = rcx;
+    auto r = disp.run(0x4000, 4);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    return disp.state();
+}
+
+}  // namespace
+
+TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+
+    runtime::HostFeatures sha_host{};
+    sha_host.feat_sha1 = true;
+    sha_host.feat_sha256 = true;
+
+    SECTION("host with SHA crypto advertises CPUID.7.0:EBX bit 29") {
+        FeatureOverrideGuard guard{sha_host};
+        auto s = run_cpuid(7, 0);
+        REQUIRE((s[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
+        REQUIRE(s[ir::Gpr::Rax] == 0u);  // max subleaf
+        REQUIRE(s[ir::Gpr::Rcx] == 0u);
+        REQUIRE(s[ir::Gpr::Rdx] == 0u);
+    }
+    SECTION("host without SHA crypto keeps the bit clear") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        auto s = run_cpuid(7, 0);
+        REQUIRE((s[ir::Gpr::Rbx] & (1ull << 29)) == 0u);
+    }
+    SECTION("leaf 0 reports max basic leaf 7 + GenuineIntel vendor") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        // Subleaf is ignored for leaf 0.
+        auto s = run_cpuid(0, 0xDEADu);
+        REQUIRE(s[ir::Gpr::Rax] == 7u);
+        REQUIRE(s[ir::Gpr::Rbx] == 0x756E6547u);  // "Genu"
+        REQUIRE(s[ir::Gpr::Rdx] == 0x49656E69u);  // "ineI"
+        REQUIRE(s[ir::Gpr::Rcx] == 0x6C65746Eu);  // "ntel"
+    }
+    SECTION("leaf 1 reports signature + honest feature bits") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        auto s = run_cpuid(1, 0);
+        REQUIRE(s[ir::Gpr::Rax] == 0x000206A7u);
+        // EDX: FPU, TSC, CX8, CMOV, SSE, SSE2 — nothing else.
+        REQUIRE(s[ir::Gpr::Rdx] ==
+                ((1u << 0) | (1u << 4) | (1u << 8) | (1u << 15) |
+                 (1u << 25) | (1u << 26)));
+        const std::uint64_t ecx = s[ir::Gpr::Rcx];
+        REQUIRE((ecx & (1u << 0)) != 0u);    // SSE3
+        REQUIRE((ecx & (1u << 9)) != 0u);    // SSSE3
+        REQUIRE((ecx & (1u << 12)) != 0u);   // FMA
+        REQUIRE((ecx & (1u << 13)) != 0u);   // CMPXCHG16B
+        REQUIRE((ecx & (1u << 19)) != 0u);   // SSE4.1
+        REQUIRE((ecx & (1u << 22)) != 0u);   // MOVBE
+        REQUIRE((ecx & (1u << 23)) != 0u);   // POPCNT (32/64 + mem)
+        REQUIRE((ecx & (1u << 27)) != 0u);   // OSXSAVE
+        REQUIRE((ecx & (1u << 28)) != 0u);   // AVX
+        REQUIRE((ecx & (1u << 20)) == 0u);   // SSE4.2 off: PCMPxSTRx
+        REQUIRE((ecx & (1u << 25)) == 0u);   // AESNI off: no host AES
+        REQUIRE((ecx & (1u << 26)) == 0u);   // XSAVE deliberately off
+        REQUIRE((ecx & (1u << 1)) == 0u);    // PCLMULQDQ not decoded
+    }
+    SECTION("AESNI bit follows host AES crypto") {
+        runtime::HostFeatures aes_host{};
+        aes_host.feat_aes = true;
+        FeatureOverrideGuard guard{aes_host};
+        auto s = run_cpuid(1, 0);
+        REQUIRE((s[ir::Gpr::Rcx] & (1u << 25)) != 0u);
+    }
+    SECTION("leaf 7 EBX always carries BMI2") {
+        FeatureOverrideGuard guard{runtime::HostFeatures{}};
+        auto s = run_cpuid(7, 0);
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 8)) != 0u);   // BMI2
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 3)) == 0u);   // BMI1 off
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 5)) == 0u);   // AVX2 off
+    }
+    SECTION("unmodelled leaves and subleaves return zeros") {
+        FeatureOverrideGuard guard{sha_host};
+        auto s1 = run_cpuid(2, 0);
+        REQUIRE(s1[ir::Gpr::Rax] == 0u);
+        REQUIRE(s1[ir::Gpr::Rbx] == 0u);
+        auto s2 = run_cpuid(7, 1);  // leaf 7 subleaf 1
+        REQUIRE(s2[ir::Gpr::Rbx] == 0u);
+    }
+    SECTION("basic leaves above the max clamp to leaf 7 per the SDM") {
+        FeatureOverrideGuard guard{sha_host};
+        auto s1 = run_cpuid(8, 0);
+        REQUIRE((s1[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
+        auto s2 = run_cpuid(0x12345u, 0);
+        REQUIRE((s2[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
+        // ... but the clamped view keeps subleaf semantics ...
+        auto s3 = run_cpuid(8, 1);
+        REQUIRE(s3[ir::Gpr::Rbx] == 0u);
+        // ... and the extended range (bit 31) is not clamped into it.
+        auto s4 = run_cpuid(0x80000000u, 0);
+        REQUIRE(s4[ir::Gpr::Rax] == 0u);
+        REQUIRE(s4[ir::Gpr::Rbx] == 0u);
+    }
+    SECTION("leaf compare reads EAX, not RAX") {
+        FeatureOverrideGuard guard{sha_host};
+        // Garbage in the upper half of RAX must be ignored, exactly
+        // like hardware CPUID.
+        auto s = run_cpuid(0xFFFFFFFF'00000007ull, 0);
+        REQUIRE((s[ir::Gpr::Rbx] & (1ull << 29)) != 0u);
+    }
+}
+
+TEST_CASE("e2e: XGETBV reports XCR0 = x87|SSE|AVX — guest AVX gate") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    static const std::vector<std::uint8_t> body{0x0F, 0x01, 0xD0, 0xC3};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+
+    SECTION("ECX=0 returns the baked XCR0 in EDX:EAX") {
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rcx] = 0;
+        disp.state()[ir::Gpr::Rax] = 0xDEADBEEFull;   // overwritten
+        disp.state()[ir::Gpr::Rbx] = 0x1234'5678ull;  // must survive
+        disp.state()[ir::Gpr::Rdx] = 0xFFFFull;       // overwritten
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        REQUIRE(disp.state()[ir::Gpr::Rax] == 0x7u);
+        REQUIRE(disp.state()[ir::Gpr::Rdx] == 0u);
+        REQUIRE(disp.state()[ir::Gpr::Rbx] == 0x1234'5678ull);
+        REQUIRE(disp.state()[ir::Gpr::Rcx] == 0u);  // input preserved
+    }
+    SECTION("ECX!=0 returns zeros (placeholder for #GP)") {
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rcx] = 1;
+        disp.state()[ir::Gpr::Rax] = 0xDEADBEEFull;
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        REQUIRE(disp.state()[ir::Gpr::Rax] == 0u);
+        REQUIRE(disp.state()[ir::Gpr::Rdx] == 0u);
+    }
+}
+
+TEST_CASE("e2e: RDTSC is monotonic and non-zero — decoder gap sweep") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    // rdtsc; mov rbx, rax; rdtsc; ret — second reading in EDX:EAX,
+    // first stashed in RBX (low 32 bits suffice for the comparison
+    // since CNTVCT won't wrap during a test).
+    static const std::vector<std::uint8_t> body{
+        0x0F, 0x31,
+        0x48, 0x89, 0xC3,  // mov rbx, rax
+        0x0F, 0x31,
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    auto r = disp.run(0x4000, 4);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    const std::uint64_t first = disp.state()[ir::Gpr::Rbx];
+    const std::uint64_t second =
+        disp.state()[ir::Gpr::Rax] |
+        (disp.state()[ir::Gpr::Rdx] << 32);
+    REQUIRE(second != 0u);
+    REQUIRE(second >= first);
+}
+
+TEST_CASE("e2e: CMPXCHG8B success and failure paths + ZF direction") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto run_c8b = [](std::uint64_t mem_init, std::uint32_t eax,
+                      std::uint32_t edx) {
+        translator::Translator tx;
+        // lock cmpxchg8b [rsi]; jz +3 (skip mov rdi, 1); ret
+        // RDI = 1 on the ZF=0 (failure) path, 2 on success.
+        static thread_local std::uint64_t mem;
+        mem = mem_init;
+        std::vector<std::uint8_t> body{
+            0xF0, 0x0F, 0xC7, 0x0E,                          // lock cmpxchg8b [rsi]
+            0x74, 0x0B,                                       // jz +11 (to movabs rdi,2)
+            0x48, 0xBF, 0x01, 0, 0, 0, 0, 0, 0, 0,            // movabs rdi, 1
+            0xC3,                                             // ret
+            0x48, 0xBF, 0x02, 0, 0, 0, 0, 0, 0, 0,            // movabs rdi, 2
+            0xC3,                                             // ret
+        };
+        auto reader =
+            [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+            if (pc < 0x4000ull) return {};
+            const std::size_t off =
+                static_cast<std::size_t>(pc - 0x4000ull);
+            if (off >= body.size()) return {};
+            return std::span<const std::uint8_t>(body.data() + off,
+                                                 body.size() - off);
+        };
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rsi] = reinterpret_cast<std::uint64_t>(&mem);
+        // Garbage above bit 31 only: the compare must read EDX:EAX.
+        disp.state()[ir::Gpr::Rax] = (0xAAAA0000ull << 32) | eax;
+        disp.state()[ir::Gpr::Rdx] = (0xBBBB0000ull << 32) | edx;
+        disp.state()[ir::Gpr::Rbx] = 0x11111111u;
+        disp.state()[ir::Gpr::Rcx] = 0x22222222u;
+        auto r = disp.run(0x4000, 8);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        struct Out {
+            std::uint64_t mem, rdi, rax, rdx;
+        };
+        return Out{mem, disp.state()[ir::Gpr::Rdi],
+                   disp.state()[ir::Gpr::Rax],
+                   disp.state()[ir::Gpr::Rdx]};
+    };
+
+    SECTION("match stores ECX:EBX and sets ZF") {
+        auto o = run_c8b(0x00000004'00000003ull, 0x3u, 0x4u);
+        REQUIRE(o.mem == 0x22222222'11111111ull);
+        REQUIRE(o.rdi == 2u);  // jz taken
+    }
+    SECTION("mismatch loads m64 into EDX:EAX, clears ZF") {
+        auto o = run_c8b(0x00000009'00000008ull, 0x3u, 0x4u);
+        REQUIRE(o.mem == 0x00000009'00000008ull);  // unchanged value
+        REQUIRE(o.rdi == 1u);  // jz not taken
+        REQUIRE(o.rax == 0x8u);  // EAX <- m64 lo (zero-extended)
+        REQUIRE(o.rdx == 0x9u);  // EDX <- m64 hi
+    }
+}
+
+TEST_CASE("e2e: CMPXCHG with rm aliasing RAX takes the dst write") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    // cmpxchg rax, rcx (48 0F B1 C8): rm = rax → compare always
+    // succeeds and RAX must end up = RCX (Codex review finding: the
+    // unconditional accumulator writeback used to win).
+    static const std::vector<std::uint8_t> body{0x48, 0x0F, 0xB1, 0xC8,
+                                                0xC3};
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rax] = 0x1234u;
+    disp.state()[ir::Gpr::Rcx] = 0x5678u;
+    auto r = disp.run(0x4000, 4);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 0x5678u);
+}
+
+TEST_CASE("e2e: BSF/BSR real results + src==0 preserves dst") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto run_scan = [](std::vector<std::uint8_t> body, std::uint64_t rax,
+                       std::uint64_t rcx) {
+        translator::Translator tx;
+        body.push_back(0xC3);
+        auto reader =
+            [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+            if (pc < 0x4000ull) return {};
+            const std::size_t off =
+                static_cast<std::size_t>(pc - 0x4000ull);
+            if (off >= body.size()) return {};
+            return std::span<const std::uint8_t>(body.data() + off,
+                                                 body.size() - off);
+        };
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        disp.state()[ir::Gpr::Rax] = rax;
+        disp.state()[ir::Gpr::Rcx] = rcx;
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        return disp.state()[ir::Gpr::Rax];
+    };
+
+    // bsf rax, rcx (48 0F BC C1)
+    REQUIRE(run_scan({0x48, 0x0F, 0xBC, 0xC1}, 0xDEAD, 0x10) == 4u);
+    // bsr rax, rcx (48 0F BD C1)
+    REQUIRE(run_scan({0x48, 0x0F, 0xBD, 0xC1}, 0xDEAD,
+                     0x8000000000000000ull) == 63u);
+    // src == 0 preserves dst (zero-extended low half).
+    REQUIRE(run_scan({0x48, 0x0F, 0xBC, 0xC1}, 0xDEAD, 0) == 0xDEADu);
+    // 32-bit form: bsr eax, ecx (0F BD C1).
+    REQUIRE(run_scan({0x0F, 0xBD, 0xC1}, 0, 0x80000000ull) == 31u);
+}
+
+TEST_CASE("e2e: POPCNT 32-bit form counts and sets ZF") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    translator::Translator tx;
+    // popcnt eax, ecx; jz +N — ECX = 0xF0F0 → 8, ZF clear.
+    static const std::vector<std::uint8_t> body{
+        0xF3, 0x0F, 0xB8, 0xC1,                    // popcnt eax, ecx
+        0x74, 0x0B,                                 // jz +11 (to movabs rdi,2)
+        0x48, 0xBF, 0x01, 0, 0, 0, 0, 0, 0, 0,      // movabs rdi, 1
+        0xC3,
+        0x48, 0xBF, 0x02, 0, 0, 0, 0, 0, 0, 0,      // movabs rdi, 2
+        0xC3,
+    };
+    auto reader = [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+        if (pc < 0x4000ull) return {};
+        const std::size_t off = static_cast<std::size_t>(pc - 0x4000ull);
+        if (off >= body.size()) return {};
+        return std::span<const std::uint8_t>(body.data() + off,
+                                             body.size() - off);
+    };
+    runtime::Dispatcher disp{tx, reader};
+    disp.install_halt_return_stack();
+    disp.state()[ir::Gpr::Rcx] = 0xF0F0u;
+    auto r = disp.run(0x4000, 8);
+    REQUIRE(r.exit == runtime::DispatchExit::Halted);
+    REQUIRE(disp.state()[ir::Gpr::Rax] == 8u);
+    REQUIRE(disp.state()[ir::Gpr::Rdi] == 1u);  // ZF clear: jz not taken
+}
+
+TEST_CASE("e2e: VZEROUPPER / VZEROALL — F2 AVX transition hygiene") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto run_vzero = [](std::uint8_t vex_byte2) {
+        translator::Translator tx;
+        std::vector<std::uint8_t> body{0xC5, vex_byte2, 0x77, 0xC3};
+        auto reader =
+            [&](std::uint64_t pc) -> std::span<const std::uint8_t> {
+            if (pc < 0x4000ull) return {};
+            const std::size_t off =
+                static_cast<std::size_t>(pc - 0x4000ull);
+            if (off >= body.size()) return {};
+            return std::span<const std::uint8_t>(body.data() + off,
+                                                 body.size() - off);
+        };
+        runtime::Dispatcher disp{tx, reader};
+        disp.install_halt_return_stack();
+        for (std::size_t i = 0; i < 16; ++i) {
+            disp.state().xmm[i].lo = 0x1111'0000ull + i;
+            disp.state().xmm[i].hi = 0x2222'0000ull + i;
+            disp.state().ymm_hi[i].lo = 0x3333'0000ull + i;
+            disp.state().ymm_hi[i].hi = 0x4444'0000ull + i;
+        }
+        auto r = disp.run(0x4000, 4);
+        REQUIRE(r.exit == runtime::DispatchExit::Halted);
+        runtime::CpuStateFrame out = disp.state();
+        return out;
+    };
+
+    SECTION("VZEROUPPER clears ymm_hi, preserves xmm") {
+        auto s = run_vzero(0xF8);  // L=0
+        for (std::size_t i = 0; i < 16; ++i) {
+            REQUIRE(s.ymm_hi[i].lo == 0u);
+            REQUIRE(s.ymm_hi[i].hi == 0u);
+            REQUIRE(s.xmm[i].lo == 0x1111'0000ull + i);
+            REQUIRE(s.xmm[i].hi == 0x2222'0000ull + i);
+        }
+    }
+    SECTION("VZEROALL clears the full ymm file") {
+        auto s = run_vzero(0xFC);  // L=1
+        for (std::size_t i = 0; i < 16; ++i) {
+            REQUIRE(s.ymm_hi[i].lo == 0u);
+            REQUIRE(s.ymm_hi[i].hi == 0u);
+            REQUIRE(s.xmm[i].lo == 0u);
+            REQUIRE(s.xmm[i].hi == 0u);
+        }
+    }
+}
+
 TEST_CASE("e2e: VPMOVZXBW ymm0, xmm1 — F2-IR-005 byte→word zero-extend ymm") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
     // VPMOVZXBW: 66 0F 38 30 /r. C4 byte1=0xE2, byte2: W=0 vvvv=1111 L=1 pp=01 → 0x7D.
@@ -3281,6 +4429,10 @@ TEST_CASE("e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul"
 
 TEST_CASE("e2e: AESKEYGENASSIST xmm0, xmm1, 0x1b — F2-IR-058") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    if (!sha_e2e::host_has_aes_crypto()) {
+        SUCCEED("ARM64 host lacks AES crypto extensions");
+        return;
+    }
     translator::Translator tx;
     std::vector<std::uint8_t> code{
         0x66, 0x0F, 0x3A, 0xDF, 0xC1, 0x1B,  // aeskeygenassist xmm0, xmm1, 0x1b

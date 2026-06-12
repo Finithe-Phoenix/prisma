@@ -76,6 +76,14 @@ struct CpuStateFrame {
     // next 8 = top-of-stack, rest reserved).
     std::uint64_t x87_status_control{0};
 
+    // F2-SY-029: TLS segment bases, populated by arch_prctl(ARCH_SET_FS/GS).
+    // Lowering reads these via offset-for-segment helpers below to implement
+    // the LoadSegBase IR op. Zero default = no TLS = safe for early boot.
+    // Placed before mxcsr so the two uint64_t fields pack tightly without
+    // padding after the uint32_t mxcsr.
+    std::uint64_t fs_base{0};
+    std::uint64_t gs_base{0};
+
     // MXCSR (SSE control / status). Default 0x1F80 (mask all
     // exceptions, FZ off, RC = nearest).
     std::uint32_t mxcsr{0x1F80u};
@@ -129,6 +137,15 @@ struct CpuStateFrame {
     // ldrb / strb at this offset, no bitfield gymnastics needed.
     static constexpr std::int32_t kX87StatusControlOffset = 656 + 8 * 16;  // = 784
     static constexpr std::int32_t kX87TosByteOffset       = 784 + 4;       // = 788
+
+    // F2-SY-029: byte offset from `&frame` to `frame.fs_base` / `frame.gs_base`.
+    // Used by the LoadSegBase lowerer. Verified by static_assert below.
+    [[nodiscard]] static constexpr std::int32_t fs_base_offset() noexcept {
+        return 792;
+    }
+    [[nodiscard]] static constexpr std::int32_t gs_base_offset() noexcept {
+        return 800;
+    }
 };
 
 // Guarantees the C++ struct layout matches what the Translator emits
@@ -154,5 +171,9 @@ static_assert(offsetof(CpuStateFrame, x87) == 656,
 static_assert(offsetof(CpuStateFrame, x87_status_control)
               == CpuStateFrame::kX87StatusControlOffset,
               "kX87StatusControlOffset must match offsetof(x87_status_control)");
+static_assert(offsetof(CpuStateFrame, fs_base) == CpuStateFrame::fs_base_offset(),
+              "fs_base_offset must match offsetof(fs_base)");
+static_assert(offsetof(CpuStateFrame, gs_base) == CpuStateFrame::gs_base_offset(),
+              "gs_base_offset must match offsetof(gs_base)");
 
 }  // namespace prisma::runtime

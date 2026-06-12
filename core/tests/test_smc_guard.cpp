@@ -117,7 +117,8 @@ TEST_CASE("smc_guard: handle_fault returns false for an unrelated address") {
     // Address one full page past anything we registered — definitely not
     // in our map.
     void* unrelated = reinterpret_cast<void*>(pages.page1() + kGuestPageSize);
-    REQUIRE_FALSE(g.handle_fault(unrelated, cb));
+    REQUIRE_FALSE(g.handle_fault(unrelated));
+    REQUIRE(g.drain_pending(cb) == 0);
     REQUIRE(callbacks == 0);
     REQUIRE(g.is_tracked(pages.page0()));  // still tracked
 }
@@ -134,7 +135,11 @@ TEST_CASE("smc_guard: handle_fault fires invalidate callback for each cache_key 
     auto cb = [&](std::uint64_t key) { seen.push_back(key); };
 
     void* fault = reinterpret_cast<void*>(pages.page0() + 2);
-    REQUIRE(g.handle_fault(fault, cb));
+    // handle_fault is signal-safe and only tombstones + queues; the
+    // callbacks fire on the normal-context drain.
+    REQUIRE(g.handle_fault(fault));
+    REQUIRE(seen.empty());
+    REQUIRE(g.drain_pending(cb) == 1);
     REQUIRE(seen.size() == 2);
     // Order is implementation-defined; check both keys present.
     bool saw100 = false, saw101 = false;
@@ -185,7 +190,8 @@ TEST_CASE("smc_guard: re-translating the same key on a page does not duplicate i
     int callbacks = 0;
     auto cb = [&](std::uint64_t) { ++callbacks; };
     void* fault = reinterpret_cast<void*>(pages.page0() + 4);
-    REQUIRE(g.handle_fault(fault, cb));
+    REQUIRE(g.handle_fault(fault));
+    REQUIRE(g.drain_pending(cb) == 1);
     REQUIRE(callbacks == 1);
 }
 

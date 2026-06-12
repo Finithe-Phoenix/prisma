@@ -9,7 +9,7 @@
 //   * Block 0 begins at the first statement.
 //   * Every statement after a terminator (Return, JumpRel, JumpReg,
 //     CondJumpRel, CallRel, CallReg, RetAdjusted, Trap, Cpuid,
-//     Syscall, InlineAsm) starts a new block.
+//     InlineAsm) starts a new block.
 //   * Block IDs are assigned in source order; entry = 0.
 //
 // Edges are implicit via the original guest-PC-based control-flow ops

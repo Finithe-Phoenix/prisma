@@ -27,12 +27,15 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, Return>)      return OpCounter::Kind::Return;
         else if constexpr (std::is_same_v<T, JumpReg>)     return OpCounter::Kind::JumpReg;
         else if constexpr (std::is_same_v<T, CmpFlags>)    return OpCounter::Kind::CmpFlags;
+        else if constexpr (std::is_same_v<T, AluFlags>)    return OpCounter::Kind::AluFlags;
         else if constexpr (std::is_same_v<T, JumpRel>)     return OpCounter::Kind::JumpRel;
         else if constexpr (std::is_same_v<T, CondJumpRel>) return OpCounter::Kind::CondJumpRel;
         else if constexpr (std::is_same_v<T, CallRel>)     return OpCounter::Kind::CallRel;
         else if constexpr (std::is_same_v<T, CallReg>)     return OpCounter::Kind::CallReg;
         else if constexpr (std::is_same_v<T, RetAdjusted>) return OpCounter::Kind::RetAdjusted;
         else if constexpr (std::is_same_v<T, Cpuid>)       return OpCounter::Kind::Cpuid;
+        else if constexpr (std::is_same_v<T, Xgetbv>)      return OpCounter::Kind::Xgetbv;
+        else if constexpr (std::is_same_v<T, Rdtsc>)       return OpCounter::Kind::Rdtsc;
         else if constexpr (std::is_same_v<T, Syscall>)     return OpCounter::Kind::Syscall;
         else if constexpr (std::is_same_v<T, Trap>)        return OpCounter::Kind::Trap;
         else if constexpr (std::is_same_v<T, Extend>)      return OpCounter::Kind::Extend;
@@ -99,6 +102,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, X87Push>)       return OpCounter::Kind::X87Push;
         else if constexpr (std::is_same_v<T, X87Pop>)        return OpCounter::Kind::X87Pop;
         else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) return OpCounter::Kind::VecAesKeygenAssist;
+        else if constexpr (std::is_same_v<T, VecSha>)        return OpCounter::Kind::VecSha;
     }, op);
 }
 

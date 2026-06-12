@@ -408,44 +408,44 @@ translator on a reference Linux ARM64 box.
 
 ### F2-SY — Syscall layer
 
-- [ ] F2-SY-001: Design syscall dispatch (guest syscall # → host syscall # or emulation).
-- [ ] F2-SY-002: Implement open, close, read, write (minimal stdio).
-- [ ] F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
-- [ ] F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
-- [ ] F2-SY-005: Implement brk / sbrk.
+- [x] (abbe81c) F2-SY-001: Design syscall dispatch (guest syscall # → host syscall # or emulation).
+- [x] (abbe81c) F2-SY-002: Implement open, close, read, write (minimal stdio).
+- [x] (abbe81c) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
+- [x] (abbe81c) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
+- [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
 - [ ] F2-SY-006: Implement clone (threads).
 - [ ] F2-SY-007: Implement futex (critical for pthread).
-- [ ] F2-SY-008: Implement gettimeofday / clock_gettime.
-- [ ] F2-SY-009: Implement getpid, getuid, geteuid, gettid.
-- [ ] F2-SY-010: Implement exit / exit_group.
+- [x] (abbe81c,9ba0dd9) F2-SY-008: Implement gettimeofday / clock_gettime.
+- [x] (abbe81c,9ba0dd9) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
+- [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
 - [ ] F2-SY-011: Implement execve (cross-ISA — requires translator re-entry).
-- [ ] F2-SY-012: Implement dup / dup2 / dup3 / pipe.
-- [ ] F2-SY-013: Implement fcntl (subset).
-- [ ] F2-SY-014: Implement ioctl (passthrough with struct translation).
+- [x] (abbe81c) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
+- [x] (9ba0dd9) F2-SY-013: Implement fcntl (subset).
+- [x] (9ba0dd9) F2-SY-014: Implement ioctl (passthrough with struct translation).
 - [ ] F2-SY-015: Implement socket / bind / listen / accept / connect.
 - [ ] F2-SY-016: Implement read / write socket families.
 - [ ] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
 - [ ] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
-- [ ] F2-SY-019: Implement getcwd / chdir / fchdir.
-- [ ] F2-SY-020: Implement unlink / rename / mkdir / rmdir.
-- [ ] F2-SY-021: Implement lseek / pread / pwrite.
-- [ ] F2-SY-022: Implement readv / writev.
-- [ ] F2-SY-023: Implement poll / ppoll / select / epoll_wait.
-- [ ] F2-SY-024: Implement epoll_create / epoll_ctl.
-- [ ] F2-SY-025: Implement getdents / getdents64.
-- [ ] F2-SY-026: Implement wait4 / waitid / waitpid.
-- [ ] F2-SY-027: Implement prlimit64 / getrlimit / setrlimit.
-- [ ] F2-SY-028: Implement prctl (subset — no_new_privs, etc.).
-- [ ] F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
-- [ ] F2-SY-030: Implement set_tid_address.
-- [ ] F2-SY-031: Implement mmap2 / old_mmap.
-- [ ] F2-SY-032: Implement robust_futex structure translation.
-- [ ] F2-SY-033: Errno translation table (glibc expects Linux errno numbers).
-- [ ] F2-SY-034: iovec struct translation.
-- [ ] F2-SY-035: timespec / timeval / sigset_t struct translation.
-- [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ).
+- [x] (abbe81c,9ba0dd9) F2-SY-019: Implement getcwd / chdir / fchdir.
+- [x] (9ba0dd9) F2-SY-020: Implement unlink / rename / mkdir / rmdir.
+- [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
+- [x] (9ba0dd9) F2-SY-022: Implement readv / writev.
+- [x] (f9ee56f) F2-SY-023: Implement poll / ppoll / select / epoll_wait.
+- [x] (e04885f) F2-SY-024: Implement epoll_create / epoll_ctl.
+- [x] (cf5f668) F2-SY-025: Implement getdents / getdents64.
+- [x] (51c9a8a) F2-SY-026: Implement wait4 / waitid / waitpid.
+- [x] (51c9a8a) F2-SY-027: Implement prlimit64 / getrlimit / setrlimit.
+- [x] (51c9a8a) F2-SY-028: Implement prctl (subset — no_new_privs, etc.).
+- [x] (6bc6dec) F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
+- [x] (cf5f668) F2-SY-030: Implement set_tid_address.
+- [ ] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
+- [ ] F2-SY-032: Implement robust_futex structure translation. **(deferred — needs thread support)**
+- [ ] F2-SY-033: Errno translation table (glibc expects Linux errno numbers). **(trivially satisfied — ARM64 Linux uses identical errno values)**
+- [ ] F2-SY-034: iovec struct translation. **(trivially satisfied — same LP64 layout on ARM64)**
+- [ ] F2-SY-035: timespec / timeval / sigset_t struct translation. **(trivially satisfied — same layout on ARM64)**
+- [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ). **(trivially satisfied — same layout on ARM64)**
 - [ ] F2-SY-037: Syscall fuzz harness (AFL++ over syscall numbers + args).
-- [ ] F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
+- [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
 ### F2-IR — IR for full x86_64
 

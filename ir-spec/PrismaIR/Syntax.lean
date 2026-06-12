@@ -108,6 +108,15 @@ inductive FlagBit where
   | carry | zero | sign | overflow | parity | aux
   deriving DecidableEq, Repr, BEq
 
+/-- SHA-NI operation selector (F2-IR-060). Mirrors the C++
+    `VecShaKind` enum. Lane conventions (per the Intel SDM): the SHA-1
+    kinds keep W0/A in lane 3 (high dword); the SHA-256 kinds are
+    lane-ascending (W0/A in lane 0). -/
+inductive VecShaKind where
+  | sha1Rnds4 | sha1Nexte | sha1Msg1 | sha1Msg2
+  | sha256Rnds2 | sha256Msg1 | sha256Msg2
+  deriving DecidableEq, Repr, BEq
+
 /-- Core IR operation. An `Op` either produces exactly one value (pure ops,
     loads) or has side-effects (stores, control flow) and produces nothing.
     We model both with a single inductive for now; a future refinement will
@@ -200,6 +209,29 @@ inductive Op where
                  (pcOfRep pcAfterRep : UInt64)                : Op
   | repMovs      (size : OpSize) (reverse : Bool)
                  (pcOfRep pcAfterRep : UInt64)                : Op
+
+  -- F2-IR-059 / F2-IR-060 — first SIMD-domain mirrors. The Lean model
+  -- has no 128-bit value carrier yet (OpSize stops at i64, Env is
+  -- Ref → UInt64), so these are constructor-only mirrors: operand Refs
+  -- and descriptor fields are recorded, semantics deferred to the
+  -- future vector-aware MachineState model; today the C++ runtime +
+  -- the FIPS 180-4 full-digest e2e KATs are the source of truth.
+  -- Mirroring now keeps the pass-soundness case-splits exhaustive
+  -- while the vector story lands.
+  --
+  -- vecGather: per lane i (i < laneCount), with d = destLaneBase + i
+  -- and x = indexLaneBase + i: if mask[d] has its MSB set, dest[d] =
+  -- mem[base + (sext64(index[x]) <<< scaleShift)], else dest[d] =
+  -- prev[d]. Masked-off lanes must not touch memory.
+  | vecGather    (base index mask prev : Ref)
+                 (scaleShift : UInt8) (elemIs64 indexIs64 : Bool)
+                 (laneCount destLaneBase indexLaneBase : UInt8) : Op
+  -- vecSha: `a` is the destination's prior value (RMW source 1), `b`
+  -- the second operand, `wk` the implicit XMM0 pair (sha256Rnds2
+  -- only; other kinds pass `b` again), `imm` the sha1Rnds4 round
+  -- selector (imm8 & 3, zero for every other kind).
+  | vecSha       (kind : VecShaKind) (a b wk : Ref)
+                 (imm : UInt8)                                : Op
 
   deriving Repr
 

@@ -42,6 +42,7 @@ enum class OpTag : std::uint8_t {
     Fence = 27,
     CondJumpRel = 28,
     CondJumpFlags = 29,
+    AluFlags = 30,
 };
 
 constexpr std::uint32_t kMaxDeserializedItems = 1'000'000u;
@@ -200,6 +201,12 @@ private:
                 u32(x.lhs);
                 u32(x.rhs);
                 enum8(x.size);
+            } else if constexpr (std::is_same_v<T, AluFlags>) {
+                enum8(OpTag::AluFlags);
+                enum8(x.op);
+                u32(x.lhs);
+                u32(x.rhs);
+                enum8(x.size);
             } else if constexpr (std::is_same_v<T, JumpRel>) {
                 enum8(OpTag::JumpRel);
                 u64(x.target_guest_pc);
@@ -340,7 +347,7 @@ private:
 
 [[nodiscard]] bool decode_tag(std::uint8_t raw, OpTag& out) {
     if (raw < static_cast<std::uint8_t>(OpTag::Constant)
-        || raw > static_cast<std::uint8_t>(OpTag::CondJumpFlags)) {
+        || raw > static_cast<std::uint8_t>(OpTag::AluFlags)) {
         return false;
     }
     out = static_cast<OpTag>(raw);
@@ -565,6 +572,21 @@ template <typename E, typename Decode>
                 return std::get<IrDeserializeError>(size);
             }
             return Op{CmpFlags{lhs, rhs, std::get<OpSize>(size)}};
+        }
+        case OpTag::AluFlags: {
+            auto op = read_enum<BinOpKind>(reader, decode_binop);
+            if (std::holds_alternative<IrDeserializeError>(op)) {
+                return std::get<IrDeserializeError>(op);
+            }
+            std::uint32_t lhs = 0;
+            std::uint32_t rhs = 0;
+            if (!reader.u32(lhs) || !reader.u32(rhs)) return reader.error();
+            auto size = read_enum<OpSize>(reader, decode_size);
+            if (std::holds_alternative<IrDeserializeError>(size)) {
+                return std::get<IrDeserializeError>(size);
+            }
+            return Op{AluFlags{std::get<BinOpKind>(op), lhs, rhs,
+                               std::get<OpSize>(size)}};
         }
         case OpTag::JumpRel: {
             std::uint64_t target_guest_pc = 0;

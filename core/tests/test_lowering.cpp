@@ -17,9 +17,12 @@ using namespace prisma;
 
 namespace {
 
-std::string lower_to_disasm(std::span<const ir::Stmt> stmts, bool& ok) {
+void test_syscall_handler(runtime::CpuStateFrame*) {}
+
+std::string lower_to_disasm(std::span<const ir::Stmt> stmts, bool& ok,
+                            backend::LowerOptions options = {}) {
     backend::Emitter em;
-    backend::Lowerer lw(em);
+    backend::Lowerer lw(em, options);
     const auto res = lw.lower(stmts);
     ok = res.success;
     if (!res.success) return {};
@@ -285,7 +288,72 @@ TEST_CASE("Lowerer: Fence emits the expected ARM barrier") {
     REQUIRE(d.find("dmb ishst") != std::string::npos);
 }
 
-TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
+TEST_CASE("Lowerer: Cpuid emits the leaf-dispatch without touching NZCV") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Cpuid{}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    backend::LowerOptions opts{};
+    opts.cpuid_max_leaf = 7;
+    opts.cpuid_leaf7_ebx = 1u << 29;
+    const std::string d = lower_to_disasm(stmts, ok, opts);
+    REQUIRE(ok);
+    // All four guest outputs are written on every path.
+    REQUIRE(d.find("x10") != std::string::npos);  // rax
+    REQUIRE(d.find("x11") != std::string::npos);  // rcx
+    REQUIRE(d.find("x12") != std::string::npos);  // rdx
+    REQUIRE(d.find("x13") != std::string::npos);  // rbx
+    // Leaf dispatch is flag-free: cbz/cbnz + eor, never cmp/subs
+    // (SDM: CPUID affects no flags, so a guest cmp surviving across
+    // it must keep NZCV intact).
+    REQUIRE(d.find("cbz")  != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
+    REQUIRE(d.find("eor")  != std::string::npos);
+    REQUIRE(d.find("lsr")  != std::string::npos);  // >max-leaf clamp
+    REQUIRE(d.find("cmp")  == std::string::npos);
+    REQUIRE(d.find("subs") == std::string::npos);
+    REQUIRE(d.find("ret")  != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Xgetbv reports the baked XCR0 for ECX=0, flag-free") {
+    std::vector<ir::Stmt> stmts = {
+        {std::nullopt, ir::Xgetbv{}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    backend::LowerOptions opts{};
+    opts.xgetbv_xcr0 = 0x7;
+    const std::string d = lower_to_disasm(stmts, ok, opts);
+    REQUIRE(ok);
+    REQUIRE(d.find("x10") != std::string::npos);   // rax (EDX:EAX out)
+    REQUIRE(d.find("x12") != std::string::npos);   // rdx
+    REQUIRE(d.find("x13") == std::string::npos);   // rbx untouched
+    REQUIRE(d.find("cbnz") != std::string::npos);  // ECX != 0 path
+    REQUIRE(d.find("cmp")  == std::string::npos);  // flag-free
+    REQUIRE(d.find("subs") == std::string::npos);
+}
+
+TEST_CASE("Lowerer: Rdtsc reads the ARM virtual counter") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Rdtsc{}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    // vixl disassembles the raw encoding as an mrs of S3_3_C14_C0_2
+    // (= CNTVCT_EL0).
+    REQUIRE(d.find("mrs") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: Cpuid with default options keeps the all-zero model") {
+    // Standalone Lowerer uses (no Translator) default to max_leaf = 0
+    // and no leaf-7 features — the legacy placeholder behaviour.
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Cpuid{}},
         {std::nullopt, ir::Return{}},
@@ -294,22 +362,23 @@ TEST_CASE("Lowerer: Cpuid zeroes guest output registers as a placeholder") {
     bool ok;
     const std::string d = lower_to_disasm(stmts, ok);
     REQUIRE(ok);
-    REQUIRE(d.find("x10") != std::string::npos);  // rax
-    REQUIRE(d.find("x11") != std::string::npos);  // rcx
-    REQUIRE(d.find("x12") != std::string::npos);  // rdx
-    REQUIRE(d.find("x13") != std::string::npos);  // rbx
+    REQUIRE(d.find("x10") != std::string::npos);
+    REQUIRE(d.find("x13") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
-TEST_CASE("Lowerer: Syscall returns the halt sentinel as a placeholder terminator") {
+TEST_CASE("Lowerer: Syscall calls the configured handler and continues") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Syscall{}},
+        {std::nullopt, ir::Return{}},
     };
 
     bool ok;
-    const std::string d = lower_to_disasm(stmts, ok);
+    backend::LowerOptions opts{};
+    opts.syscall_handler = &test_syscall_handler;
+    const std::string d = lower_to_disasm(stmts, ok, opts);
     REQUIRE(ok);
-    REQUIRE(d.find("x0") != std::string::npos);
+    REQUIRE(d.find("blr") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
@@ -1845,6 +1914,97 @@ TEST_CASE("Lowerer: VecGather dword elements, qword indices (QD hi shape)") {
     REQUIRE(d.find("lsl #2")  != std::string::npos);
     REQUIRE(d.find("ldr w")   != std::string::npos);
     REQUIRE(d.find("sxtw")    == std::string::npos);
+}
+
+namespace {
+// Shared scaffold for the SHA lowering tests: a/b/wk live in
+// xmm1/xmm2/xmm0, result stores back to xmm1.
+std::string lower_sha(ir::VecShaKind kind, std::uint8_t imm, bool& ok) {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadVecReg{1u}},
+        {1u, ir::LoadVecReg{2u}},
+        {2u, ir::LoadVecReg{0u}},
+        {3u, ir::VecSha{kind, 0u, 1u, 2u, imm}},
+        {std::nullopt, ir::StoreVecReg{1u, 3u}},
+        {std::nullopt, ir::Return{}},
+    };
+    return lower_to_disasm(stmts, ok);
+}
+}  // namespace
+
+TEST_CASE("Lowerer: SHA1RNDS4 selects sha1c/sha1p/sha1m by imm — F2-IR-060") {
+    bool ok;
+    const std::string c = lower_sha(ir::VecShaKind::Sha1Rnds4, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(c.find("sha1c")  != std::string::npos);
+    REQUIRE(c.find("rev64")  != std::string::npos);
+    REQUIRE(c.find("ext")    != std::string::npos);
+    const std::string p = lower_sha(ir::VecShaKind::Sha1Rnds4, 1u, ok);
+    REQUIRE(ok);
+    REQUIRE(p.find("sha1p")  != std::string::npos);
+    const std::string m = lower_sha(ir::VecShaKind::Sha1Rnds4, 2u, ok);
+    REQUIRE(ok);
+    REQUIRE(m.find("sha1m")  != std::string::npos);
+    const std::string p3 = lower_sha(ir::VecShaKind::Sha1Rnds4, 3u, ok);
+    REQUIRE(ok);
+    REQUIRE(p3.find("sha1p") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA1NEXTE is pure NEON rol30 + lane add — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha1Nexte, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("shl")  != std::string::npos);
+    REQUIRE(d.find("ushr") != std::string::npos);
+    REQUIRE(d.find("orr")  != std::string::npos);
+    REQUIRE(d.find(".s[3]") != std::string::npos);
+    REQUIRE(d.find("add")  != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA1MSG1 is EXT+EOR and avoids sha1su0 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha1Msg1, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ext") != std::string::npos);
+    REQUIRE(d.find("eor") != std::string::npos);
+    // SHA1SU0 folds the W[t-8] term x86 defers to the caller — its
+    // presence here would double-apply it.
+    REQUIRE(d.find("sha1su0") == std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA1MSG2 uses sha1su1 with lane reversal — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha1Msg2, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha1su1") != std::string::npos);
+    REQUIRE(d.find("rev64")   != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA256RNDS2 runs sha256h + sha256h2 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha256Rnds2, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha256h")  != std::string::npos);
+    REQUIRE(d.find("sha256h2") != std::string::npos);
+    REQUIRE(d.find("zip1")     != std::string::npos);
+    REQUIRE(d.find("zip2")     != std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA256MSG1 maps directly to sha256su0 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha256Msg1, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha256su0") != std::string::npos);
+    // Ascending lanes on both sides: no reversal emitted.
+    REQUIRE(d.find("rev64") == std::string::npos);
+}
+
+TEST_CASE("Lowerer: SHA256MSG2 uses sha256su1 with cleared lane 0 — F2-IR-060") {
+    bool ok;
+    const std::string d = lower_sha(ir::VecShaKind::Sha256Msg2, 0u, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("sha256su1") != std::string::npos);
+    REQUIRE(d.find(".s[0]") != std::string::npos);  // wzr into lane 0
 }
 
 TEST_CASE("Lowerer: RepMovs clamps RCX and emits PC-conditional epilogue") {

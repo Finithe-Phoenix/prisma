@@ -73,6 +73,11 @@ fn dispatcher_halts_at_entry_without_executing() {
     assert_eq!(outcome.exit, DispatchExit::Halted);
     assert_eq!(outcome.final_pc, BASE);
     assert_eq!(outcome.stats.blocks_executed, 0);
+    assert_eq!(outcome.stats.direct_jit_patch_attempts, 0);
+    assert_eq!(outcome.stats.direct_jit_patch_applied, 0);
+    assert_eq!(outcome.stats.direct_jit_patch_rejected, 0);
+    assert_eq!(outcome.stats.direct_jit_patch_unpatches, 0);
+    assert_eq!(outcome.stats.direct_jit_patch_executes, 0);
     assert!(outcome.message.is_empty());
 }
 
@@ -97,6 +102,31 @@ fn gpr_accessors_round_trip() {
     d.set_gpr(Gpr::Rdi, 0xDEAD_BEEF).expect("set");
     assert_eq!(d.gpr(Gpr::Rdi).expect("get"), 0xDEAD_BEEF);
     assert_eq!(d.guest_pc().expect("pc"), 0);
+}
+
+#[test]
+fn direct_jit_patch_stats_are_exposed_on_arm64() {
+    if !cfg!(target_arch = "aarch64") {
+        return;
+    }
+
+    let mut t = Translator::new().expect("translator");
+    let image = GuestImage::new(
+        BASE,
+        vec![
+            0xEB, 0x0E, // jmp +14 -> BASE + 0x10
+            0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0xEB, 0xEE, // jmp -18 -> BASE
+        ],
+    );
+    let mut d = Dispatcher::new(&mut t, &image).expect("dispatcher");
+
+    let outcome = d.run(BASE, 6).expect("run");
+    assert_eq!(outcome.exit, DispatchExit::StepLimit);
+    assert_eq!(outcome.stats.direct_jit_patch_attempts, 3);
+    assert_eq!(outcome.stats.direct_jit_patch_applied, 1);
+    assert_eq!(outcome.stats.direct_jit_patch_rejected, 2);
+    assert_eq!(outcome.stats.direct_jit_patch_executes, 2);
 }
 
 #[test]

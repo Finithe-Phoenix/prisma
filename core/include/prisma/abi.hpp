@@ -32,6 +32,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include "prisma/arm64_encoding.hpp"
 #include "prisma/emitter.hpp"
 
@@ -53,5 +55,23 @@ void emit_block_prologue(Emitter& em);
 // Emit the full block epilogue: 16 str storing the pinned host regs
 // back to the state frame + 6 ldp pairs (reverse order) + ret.
 void emit_block_epilogue_and_ret(Emitter& em);
+
+// Patchable tail epilogue for direct block chaining.
+//
+// Entry: x0 holds the guest next PC, same as the normal epilogue.
+// Before the patch site, this epilogue stores pinned GPRs, preserves
+// next_pc in x1, moves the CpuStateFrame* back into x0, and restores
+// all callee-saved state. The patch site itself is a single AArch64
+// unconditional `b fallback`. Unpatched execution falls through to
+// `mov x0, x1; ret`, preserving the public block ABI. Once patched,
+// the branch can jump directly to a successor block whose entry ABI is
+// x0 = CpuStateFrame*.
+struct PatchableTailEpilogue {
+    std::size_t branch_offset{0};
+    std::size_t fallback_offset{0};
+};
+
+[[nodiscard]] PatchableTailEpilogue emit_block_epilogue_patchable_tail(
+    Emitter& em);
 
 }  // namespace prisma::backend::abi

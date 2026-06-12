@@ -295,6 +295,24 @@ TEST_CASE("branch_fold: Ne on equal constants takes the fallthrough") {
     }
 }
 
+TEST_CASE("branch_fold: AluFlags clears stale CmpFlags") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{7, ir::OpSize::I64}},
+        {1u, ir::Constant{7, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Ne, 0x100, 0x200}},
+    };
+    auto out = passes::branch_fold(s);
+    bool kept_cond = false;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CondJumpRel>(st.op)) kept_cond = true;
+        REQUIRE_FALSE(std::holds_alternative<ir::JumpRel>(st.op));
+    }
+    REQUIRE(kept_cond);
+}
+
 TEST_CASE("branch_fold: signed Slt respects sign extension") {
     // i32-sized compare of 0xFFFFFFFF (-1 when sign-extended) vs 1:
     //   slt -1, 1 → true, so branch taken.
@@ -412,6 +430,64 @@ TEST_CASE("flag_write_elimination: keeps CmpFlags required by CondJumpRel",
     }
     REQUIRE(kept_cmp == 1);
     REQUIRE(kept_cond == 1);
+}
+
+TEST_CASE("flag_write_elimination: keeps CmpFlags consumed by Select",
+          "[passes][flag_write]") {
+    // Select lowers to csel and reads NZCV — the CMOV / BZHI /
+    // CMPXCHG / BSF decode pattern. Dropping the CmpFlags left csel
+    // reading stale flags on hardware (caught by the gap-sweep
+    // ARM64 e2e: BSF dst-preserve and the CMPXCHG rax-alias test).
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{9, ir::OpSize::I64}},
+        {1u, ir::Constant{7, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {2u, ir::Select{ir::CondCode::Eq, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    int kept_cmp = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CmpFlags>(st.op)) ++kept_cmp;
+    }
+    REQUIRE(kept_cmp == 1);
+}
+
+TEST_CASE("flag_write_elimination: removes unused AluFlags",
+          "[passes][flag_write]") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x42, ir::OpSize::I64}},
+        {1u, ir::Constant{0x43, ir::OpSize::I64}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    REQUIRE(out.size() == 3);
+    for (const auto& st : out) {
+        REQUIRE_FALSE(std::holds_alternative<ir::AluFlags>(st.op));
+    }
+}
+
+TEST_CASE("flag_write_elimination: keeps AluFlags required by CondJumpRel",
+          "[passes][flag_write]") {
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{0x1111, ir::OpSize::I64}},
+        {1u, ir::Constant{0x2222, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt,
+         ir::CondJumpRel{ir::CondCode::Eq, 0x100, 0x200}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    int kept_cmp = 0;
+    int kept_alu = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CmpFlags>(st.op)) ++kept_cmp;
+        if (std::holds_alternative<ir::AluFlags>(st.op)) ++kept_alu;
+    }
+    REQUIRE(kept_cmp == 0);
+    REQUIRE(kept_alu == 1);
 }
 
 TEST_CASE("flag_write_elimination: drops older CmpFlags when a newer one appears first",

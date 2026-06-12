@@ -33,7 +33,7 @@ public:
         BinOp, Compare, Select,
         LoadMem, StoreMem, LoadMemTSO, StoreMemTSO,
         Jump, CondJump, Return,
-        JumpReg, CmpFlags, JumpRel, CondJumpRel,
+        JumpReg, CmpFlags, AluFlags, JumpRel, CondJumpRel,
         CallRel, CallReg, RetAdjusted,
         Cpuid, Syscall, Trap,
         Extend, Truncate, Fence,
@@ -74,6 +74,9 @@ public:
         X87Push, X87Pop,
         VecAesKeygenAssist,
         VecGather,
+        VecSha,
+        Xgetbv,
+        Rdtsc,
         kCount  // sentinel
     };
 

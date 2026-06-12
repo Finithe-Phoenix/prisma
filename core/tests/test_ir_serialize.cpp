@@ -105,6 +105,8 @@ TEST_CASE("ir_serialize: JumpReg / CmpFlags round-trip", "[ir_serialize]") {
         Op{JumpReg{Ref{99u}}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt,
         Op{CmpFlags{Ref{18u}, Ref{19u}, OpSize::I64}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{AluFlags{BinOpKind::Add, Ref{18u}, Ref{19u}, OpSize::I64}}});
 }
 
 TEST_CASE("ir_serialize: JumpRel / CondJumpRel round-trip", "[ir_serialize]") {
@@ -125,6 +127,8 @@ TEST_CASE("ir_serialize: CallRel / CallReg / RetAdjusted round-trip", "[ir_seria
 
 TEST_CASE("ir_serialize: Cpuid / Syscall / Trap round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{Cpuid{}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{Xgetbv{}}});
+    check_single_stmt_roundtrip(Stmt{Ref{3u}, Op{Rdtsc{}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt, Op{Syscall{}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt,
         Op{Trap{TrapKind::Sigill}}});
@@ -266,6 +270,23 @@ TEST_CASE("ir_serialize: x87 stack ops round-trip", "[ir_serialize]") {
 TEST_CASE("ir_serialize: AESKEYGENASSIST round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{9u},
         Op{VecAesKeygenAssist{Ref{3u}, 0x1Bu}}});
+}
+
+TEST_CASE("ir_serialize: VecSha round-trip (every kind)", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{9u},
+        Op{VecSha{VecShaKind::Sha1Rnds4, Ref{1u}, Ref{2u}, Ref{2u}, 3u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{10u},
+        Op{VecSha{VecShaKind::Sha1Nexte, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{11u},
+        Op{VecSha{VecShaKind::Sha1Msg1, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{12u},
+        Op{VecSha{VecShaKind::Sha1Msg2, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{13u},
+        Op{VecSha{VecShaKind::Sha256Rnds2, Ref{1u}, Ref{2u}, Ref{3u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{14u},
+        Op{VecSha{VecShaKind::Sha256Msg1, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{15u},
+        Op{VecSha{VecShaKind::Sha256Msg2, Ref{1u}, Ref{2u}, Ref{2u}, 0u}}});
 }
 
 TEST_CASE("ir_serialize: VecGather round-trip", "[ir_serialize]") {

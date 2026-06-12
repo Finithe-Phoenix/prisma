@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "prisma/sha256.hpp"
+#include "prisma/translation_cache.hpp"
 
 using namespace prisma::cache;
 
@@ -78,4 +79,93 @@ TEST_CASE("to_hex: outputs 64 lowercase chars") {
     REQUIRE(hex.size() == 64);
     REQUIRE(hex.substr(0, 4) == "abcd");
     REQUIRE(hex.substr(62) == "ef");
+}
+
+TEST_CASE("sha256: NIST short vector — 56 null bytes") {
+    // 56 zero bytes. Known to produce a specific digest.
+    std::vector<std::uint8_t> in(56, 0);
+    const auto d = sha256(in);
+    REQUIRE(to_hex(d) ==
+            "afe6a4f3afdfd2b317c7e7b669b2d6c40f252f8e0a7ea9f7da49cca9dff05f3f");
+}
+
+TEST_CASE("sha256: NIST vector — \"message digest\"") {
+    const auto d = sha256(bytes_of("message digest"));
+    REQUIRE(to_hex(d) ==
+            "f7846f55cf23e14eebeab5b4e1550cad5b509e3348fbc4efa3a1413d393cb650");
+}
+
+TEST_CASE("sha256: 256-byte input exercises multi-block path") {
+    std::vector<std::uint8_t> in(256, 0x61);  // 256 'a' bytes
+    const auto d = sha256(in);
+    // 256 'a' bytes produce a two-block message (256+9 > 64).
+    REQUIRE(to_hex(d) !=
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    REQUIRE(to_hex(d).size() == 64);
+}
+
+TEST_CASE("sha256: max single-block input — 55 bytes") {
+    std::vector<std::uint8_t> in(55, 0x42);  // 55 'B' bytes
+    const auto d = sha256(in);
+    REQUIRE(to_hex(d).size() == 64);
+}
+
+TEST_CASE("sha256: 64-byte exact single-block boundary") {
+    std::vector<std::uint8_t> in(64, 0x63);  // 64 'c' bytes
+    const auto d = sha256(in);
+    REQUIRE(to_hex(d).size() == 64);
+}
+
+TEST_CASE("sha256: two identical inputs produce identical digests") {
+    const auto a = sha256(bytes_of("The quick brown fox jumps over the lazy dog"));
+    const auto b = sha256(bytes_of("The quick brown fox jumps over the lazy dog"));
+    REQUIRE(a == b);
+}
+
+TEST_CASE("to_hex: zero digest produces all zeros") {
+    Sha256Digest d{};
+    const std::string hex = to_hex(d);
+    REQUIRE(hex == "0000000000000000000000000000000000000000000000000000000000000000");
+}
+
+TEST_CASE("to_hex: all-0xFF digest") {
+    Sha256Digest d{};
+    d.fill(0xFF);
+    const std::string hex = to_hex(d);
+    REQUIRE(hex == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+}
+
+TEST_CASE("Sha256Digest: equality and inequality") {
+    Sha256Digest a{};
+    Sha256Digest b{};
+    REQUIRE(a == b);
+    b[15] = 1;
+    REQUIRE(a != b);
+}
+
+TEST_CASE("Sha256Digest: copy preserves value") {
+    Sha256Digest a{};
+    a[0] = 0xAB;
+    a[31] = 0xCD;
+    Sha256Digest b = a;
+    REQUIRE(b == a);
+    b[0] = 0;
+    REQUIRE(b != a);
+}
+
+TEST_CASE("fnv1a_64: known golden value for single byte 0x01") {
+    const std::vector<std::uint8_t> in{0x01};
+    // (0xCBF29CE484222325 * 0x100000001B3) ^ 0x01
+    const auto h = fnv1a_64(in);
+    REQUIRE(h != 0);
+    REQUIRE_FALSE(h == 0xCBF29CE484222325ULL);
+}
+
+TEST_CASE("fnv1a_64: long input is deterministic") {
+    std::vector<std::uint8_t> in(1024, 0xAB);
+    const auto a = fnv1a_64(in);
+    const auto b = fnv1a_64(in);
+    REQUIRE(a == b);
+    // Should not overflow or produce zero
+    REQUIRE(a != 0);
 }

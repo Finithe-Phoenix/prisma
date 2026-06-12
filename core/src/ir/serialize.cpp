@@ -122,12 +122,16 @@ enum class OpKind : std::uint8_t {
     kX87Pop             = 86,
     kVecAesKeygenAssist = 87,
     kVecGather          = 88,
+    kVecSha             = 89,
+    kXgetbv             = 90,
+    kRdtsc              = 91,
+    kAluFlags           = 92,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
 constexpr std::uint8_t kMaxOpKind =
-    static_cast<std::uint8_t>(OpKind::kVecGather);
+    static_cast<std::uint8_t>(OpKind::kAluFlags);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -261,6 +265,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Return>)      return OpKind::kReturn;
         else if constexpr (std::is_same_v<T, JumpReg>)     return OpKind::kJumpReg;
         else if constexpr (std::is_same_v<T, CmpFlags>)    return OpKind::kCmpFlags;
+        else if constexpr (std::is_same_v<T, AluFlags>)    return OpKind::kAluFlags;
         else if constexpr (std::is_same_v<T, JumpRel>)     return OpKind::kJumpRel;
         else if constexpr (std::is_same_v<T, CondJumpRel>) return OpKind::kCondJumpRel;
         else if constexpr (std::is_same_v<T, CallRel>)     return OpKind::kCallRel;
@@ -326,6 +331,9 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, VecTbl2>)       return OpKind::kVecTbl2;
         else if constexpr (std::is_same_v<T, VecAes>)        return OpKind::kVecAes;
         else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) return OpKind::kVecAesKeygenAssist;
+        else if constexpr (std::is_same_v<T, VecSha>)        return OpKind::kVecSha;
+        else if constexpr (std::is_same_v<T, Xgetbv>)        return OpKind::kXgetbv;
+        else if constexpr (std::is_same_v<T, Rdtsc>)         return OpKind::kRdtsc;
         else if constexpr (std::is_same_v<T, Bswap>)         return OpKind::kBswap;
         else if constexpr (std::is_same_v<T, Crc32c>)        return OpKind::kCrc32c;
         else if constexpr (std::is_same_v<T, VecGather>)     return OpKind::kVecGather;
@@ -431,6 +439,12 @@ void write_payload(std::vector<std::uint8_t>& out, const RetAdjusted& x) {
 void write_payload(std::vector<std::uint8_t>& /*out*/, const Cpuid&) {
     // empty payload
 }
+void write_payload(std::vector<std::uint8_t>& /*out*/, const Xgetbv&) {
+    // empty payload
+}
+void write_payload(std::vector<std::uint8_t>& /*out*/, const Rdtsc&) {
+    // empty payload
+}
 void write_payload(std::vector<std::uint8_t>& /*out*/, const Syscall&) {
     // empty payload
 }
@@ -468,6 +482,12 @@ void write_payload(std::vector<std::uint8_t>& out, const FpBinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.size));
 }
 void write_payload(std::vector<std::uint8_t>& out, const WriteFlags& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.op));
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const AluFlags& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
@@ -733,6 +753,13 @@ void write_payload(std::vector<std::uint8_t>& out, const VecAesKeygenAssist& x) 
     put_u32(out, x.src);
     put_u8(out, x.rcon);
 }
+void write_payload(std::vector<std::uint8_t>& out, const VecSha& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.kind));
+    put_u32(out, x.a);
+    put_u32(out, x.b);
+    put_u32(out, x.wk);
+    put_u8(out, x.imm);
+}
 void write_payload(std::vector<std::uint8_t>& out, const Bswap& x) {
     put_u32(out, x.value);
     put_u8(out, static_cast<std::uint8_t>(x.size));
@@ -963,6 +990,16 @@ DeserializeError read_payload_cpuid(Cursor& /*c*/, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_xgetbv(Cursor& /*c*/, Stmt& s) {
+    s.op = Xgetbv{};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_rdtsc(Cursor& /*c*/, Stmt& s) {
+    s.op = Rdtsc{};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_syscall(Cursor& /*c*/, Stmt& s) {
     s.op = Syscall{};
     return DeserializeError::Ok;
@@ -1057,6 +1094,19 @@ DeserializeError read_payload_write_flags(Cursor& c, Stmt& s) {
     if (!is_valid_size(sz))  return DeserializeError::BadSize;
     s.op = WriteFlags{static_cast<BinOpKind>(op), lhs, rhs,
                       static_cast<OpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_alu_flags(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  op  = c.take_u8();
+    const std::uint32_t lhs = c.take_u32();
+    const std::uint32_t rhs = c.take_u32();
+    const std::uint8_t  sz  = c.take_u8();
+    if (!is_valid_binop(op)) return DeserializeError::BadSize;
+    if (!is_valid_size(sz))  return DeserializeError::BadSize;
+    s.op = AluFlags{static_cast<BinOpKind>(op), lhs, rhs,
+                    static_cast<OpSize>(sz)};
     return DeserializeError::Ok;
 }
 
@@ -1295,6 +1345,20 @@ DeserializeError read_payload_vec_aes_keygenassist(Cursor& c, Stmt& s) {
     const std::uint32_t src  = c.take_u32();
     const std::uint8_t  rcon = c.take_u8();
     s.op = VecAesKeygenAssist{src, rcon};
+    return DeserializeError::Ok;
+}
+DeserializeError read_payload_vec_sha(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  kind = c.take_u8();
+    const std::uint32_t a    = c.take_u32();
+    const std::uint32_t b    = c.take_u32();
+    const std::uint32_t wk   = c.take_u32();
+    const std::uint8_t  imm  = c.take_u8();
+    if (kind > static_cast<std::uint8_t>(VecShaKind::Sha256Msg2)) {
+        return DeserializeError::BadSize;
+    }
+    if (imm > 3u) return DeserializeError::BadSize;
+    s.op = VecSha{static_cast<VecShaKind>(kind), a, b, wk, imm};
     return DeserializeError::Ok;
 }
 DeserializeError read_payload_bswap(Cursor& c, Stmt& s) {
@@ -1660,6 +1724,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kReturn:      return read_payload_return(c, s);
         case OpKind::kJumpReg:     return read_payload_jump_reg(c, s);
         case OpKind::kCmpFlags:    return read_payload_cmp_flags(c, s);
+        case OpKind::kAluFlags:    return read_payload_alu_flags(c, s);
         case OpKind::kJumpRel:     return read_payload_jump_rel(c, s);
         case OpKind::kCondJumpRel: return read_payload_cond_jump_rel(c, s);
         case OpKind::kCallRel:     return read_payload_call_rel(c, s);
@@ -1725,9 +1790,12 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kVecTbl2:     return read_payload_vec_tbl2(c, s);
         case OpKind::kVecAes:      return read_payload_vec_aes(c, s);
         case OpKind::kVecAesKeygenAssist: return read_payload_vec_aes_keygenassist(c, s);
+        case OpKind::kVecSha:      return read_payload_vec_sha(c, s);
         case OpKind::kBswap:       return read_payload_bswap(c, s);
         case OpKind::kCrc32c:      return read_payload_crc32c(c, s);
         case OpKind::kVecGather:   return read_payload_vec_gather(c, s);
+        case OpKind::kXgetbv:      return read_payload_xgetbv(c, s);
+        case OpKind::kRdtsc:       return read_payload_rdtsc(c, s);
         case OpKind::kX87Load:     return read_payload_x87_load(c, s);
         case OpKind::kX87Store:    return read_payload_x87_store(c, s);
         case OpKind::kX87Push:     return read_payload_x87_push(c, s);
