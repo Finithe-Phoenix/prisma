@@ -657,7 +657,6 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             // write-on-thread-exit is a no-op until we implement threads.
             result = static_cast<std::int64_t>(::gettid());
             break;
-        }
 
         // -- F2-SY-024: epoll --------------------------------------------------
         case kX64EpollCreate1: {
