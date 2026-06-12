@@ -714,6 +714,16 @@ struct Popcnt { Ref value; OpSize size; };
 struct Lzcnt  { Ref value; OpSize size; };
 struct Tzcnt  { Ref value; OpSize size; };
 
+// F2-IR-045 follow-up — LZCNT/TZCNT flag write. x86 sets:
+//   CF = (src == 0)
+//   ZF = (result == 0)
+// The lowerer writes NZCV directly so both flags stay exact.
+struct WriteFlagsCountZero {
+    Ref    src;
+    Ref    result;
+    OpSize size;
+};
+
 // F2-IR-046 — variable blend by implicit XMM0 mask (PBLENDVB / BLENDVPS / BLENDVPD).
 // For each lane i: result[i] = mask[i].MSB ? src[i] : dst[i].
 // Lane B16 / S4 / D2 sets the granularity.
@@ -1047,6 +1057,7 @@ using Op = std::variant<
     VecFpRound,
     Popcnt,
     Lzcnt, Tzcnt,
+    WriteFlagsCountZero,
     VecBlend,
     WriteFlagsPtest,
     WriteFlagsPtestYmm,
@@ -1184,6 +1195,7 @@ bool operator==(const VecFpRound&    a, const VecFpRound&    b) noexcept;
 bool operator==(const Popcnt&        a, const Popcnt&        b) noexcept;
 bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
 bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
+bool operator==(const WriteFlagsCountZero& a, const WriteFlagsCountZero& b) noexcept;
 bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept;

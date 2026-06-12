@@ -2,7 +2,8 @@
 //
 // Drops implicit flag writes whose NZCV is never consumed.
 //
-// Flag writers in our IR are `CmpFlags`, `AluFlags`, and `Compare`.
+// Flag writers in our IR are `CmpFlags`, `AluFlags`, `Compare`, and
+// `WriteFlagsCountZero`.
 // Flag READERS are `CondJumpRel` (branches on NZCV) and `Select`
 // (lowers to csel, which reads the NZCV set by the most recent
 // flag writer — the CMOV / BZHI / CMPXCHG / BSF decode pattern).
@@ -30,14 +31,16 @@ flag_write_elimination(const std::vector<ir::Stmt>& stmts) {
     std::vector<bool> drop(n, false);
 
     // Index of the most recent flag writer, or n if none. We only
-    // ever drop CmpFlags / AluFlags (no result Ref); Compare is always kept.
+    // ever drop CmpFlags / AluFlags / WriteFlagsCountZero (no result
+    // Ref); Compare is always kept.
     std::size_t pending_writer    = n;
     bool        pending_is_droppable = false;
 
     for (std::size_t i = 0; i < n; ++i) {
         const auto& st = stmts[i];
         if (std::holds_alternative<ir::CmpFlags>(st.op)
-            || std::holds_alternative<ir::AluFlags>(st.op)) {
+            || std::holds_alternative<ir::AluFlags>(st.op)
+            || std::holds_alternative<ir::WriteFlagsCountZero>(st.op)) {
             // A new implicit flag write supersedes the previous pending writer.
             // If the previous pending writer was an unread droppable write,
             // mark it for deletion now.

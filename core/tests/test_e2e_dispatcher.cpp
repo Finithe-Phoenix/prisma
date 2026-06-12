@@ -439,6 +439,24 @@ TEST_CASE("e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1)") {
     REQUIRE(disp.state()[ir::Gpr::Rbx] == 8u);
 }
 
+TEST_CASE("e2e: LZCNT sets carry flag for a following JC") {
+    if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
+    auto state = run_blob({
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,  // mov rax, 0
+        0xF3, 0x48, 0x0F, 0xBD, 0xC8,        // lzcnt rcx, rax
+        0x72, 0x0B,                          // jc +11
+        0x48, 0xBA, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,  // mov rdx, 0
+        0xC3,                                // ret
+        0x48, 0xBA, 0x01, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,  // mov rdx, 1
+        0xC3,                                // ret
+    });
+    REQUIRE(state[ir::Gpr::Rcx] == 64u);
+    REQUIRE(state[ir::Gpr::Rdx] == 1u);
+}
+
 TEST_CASE("e2e: XADD sets carry flag for a following JC") {
     if constexpr (!is_arm64) { SUCCEED("skipped on non-ARM64 host"); return; }
 

@@ -388,6 +388,9 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, Tzcnt>) {
             os << "tzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) {
+            os << "wrflags.count0." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+            print_ref(os, x.src); os << ", "; print_ref(os, x.result);
         } else if constexpr (std::is_same_v<T, WriteFlagsPtest>) {
             os << "wrflags.ptest ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
