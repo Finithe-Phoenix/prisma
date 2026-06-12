@@ -23,8 +23,8 @@ assignees: ''
 
 ## Expected vs actual
 
-- **Expected:** 
-- **Actual:** 
+- **Expected:**
+- **Actual:**
 
 ## Environment
 
