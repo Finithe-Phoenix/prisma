@@ -174,3 +174,77 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     REQUIRE(c.total() ==
             static_cast<std::uint64_t>(OpCounter::Kind::kCount));
 }
+
+TEST_CASE("OpCounter: visit with no statements results in zero counts") {
+    OpCounter c;
+    std::vector<Stmt> empty;
+    c.visit(empty);
+    REQUIRE(c.total() == 0);
+}
+
+TEST_CASE("OpCounter: visit a single statement with matching kind increments") {
+    OpCounter c;
+    c.visit(Stmt{0u, Constant{99, OpSize::I64}});
+    REQUIRE(c.count(OpCounter::Kind::Constant) == 1);
+}
+
+TEST_CASE("OpCounter: repeated visits accumulate") {
+    OpCounter c;
+    for (int i = 0; i < 5; ++i) {
+        c.visit(Stmt{0u, Constant{static_cast<std::uint64_t>(i), OpSize::I64}});
+    }
+    REQUIRE(c.count(OpCounter::Kind::Constant) == 5);
+    REQUIRE(c.total() == 5);
+}
+
+TEST_CASE("OpCounter: visit a function with no blocks") {
+    OpCounter c;
+    Function fn;
+    fn.entry = 0;
+    c.visit(fn);
+    REQUIRE(c.total() == 0);
+}
+
+TEST_CASE("OpCounter: multiple calls to reset work correctly") {
+    OpCounter c;
+    c.visit(Stmt{0u, Constant{1, OpSize::I64}});
+    REQUIRE(c.total() == 1);
+    c.reset();
+    REQUIRE(c.total() == 0);
+    c.reset();  // second reset is a no-op
+    REQUIRE(c.total() == 0);
+    c.visit(Stmt{0u, Constant{2, OpSize::I64}});
+    REQUIRE(c.total() == 1);
+}
+
+TEST_CASE("OpCounter: snapshot is unaffected by subsequent reset") {
+    OpCounter c;
+    c.visit(Stmt{0u, Constant{1, OpSize::I64}});
+    c.visit(Stmt{1u, Constant{2, OpSize::I64}});
+    auto snap = c.snapshot();
+    c.reset();
+    REQUIRE(snap[static_cast<std::size_t>(OpCounter::Kind::Constant)] == 2);
+    REQUIRE(c.total() == 0);
+}
+
+TEST_CASE("OpCounter: count for unseen kind returns zero") {
+    OpCounter c;
+    REQUIRE(c.count(OpCounter::Kind::BinOp) == 0);
+    REQUIRE(c.count(OpCounter::Kind::Return) == 0);
+}
+
+TEST_CASE("OpCounter: visit a mixed list of statements") {
+    OpCounter c;
+    std::vector<Stmt> stmts = {
+        {0u, Constant{10, OpSize::I32}},
+        {1u, LoadReg{Gpr::Rax, OpSize::I64}},
+        {2u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}},
+        {std::nullopt, Jump{3u}},
+    };
+    c.visit(stmts);
+    REQUIRE(c.count(OpCounter::Kind::Constant) == 1);
+    REQUIRE(c.count(OpCounter::Kind::LoadReg) == 1);
+    REQUIRE(c.count(OpCounter::Kind::BinOp) == 1);
+    REQUIRE(c.count(OpCounter::Kind::Jump) == 1);
+    REQUIRE(c.total() == 4);
+}

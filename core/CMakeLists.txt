@@ -484,6 +484,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_sha256.cpp
         tests/test_benchmarks.cpp
         tests/test_capi.cpp
+        tests/test_syscall_handler.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
