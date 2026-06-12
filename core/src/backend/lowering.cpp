@@ -339,6 +339,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::Popcnt>)        { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Lzcnt>)         { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Tzcnt>)         { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::WriteFlagsCountZero>) { bump(op.src, i); bump(op.result, i); }
             else if constexpr (std::is_same_v<T, ir::VecBlend>)      { bump(op.dst, i); bump(op.src, i); bump(op.mask, i); }
             else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) {
