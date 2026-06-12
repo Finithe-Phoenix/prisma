@@ -301,6 +301,8 @@ TEST_CASE("cache: load_from_file rejects bad magic") {
 }
 
 TEST_CASE("cache: upsert replaces entry with same address") {
+    // Documented semantics: upsert evicts any entry for the same
+    // guest_addr regardless of hash, then installs the new one.
     TranslationCache cache;
     const auto g_old = make_guest(1);
     const auto g_new = make_guest(2);
@@ -310,11 +312,7 @@ TEST_CASE("cache: upsert replaces entry with same address") {
 
     // Same address but new content
     cache.upsert(Key{0x1000, fnv1a_64(g_new)}, make_entry(g_new));
-    REQUIRE(cache.entry_count() == 2);  // old + new both live until eviction
-
-    // Old content still reachable via its original key
-    auto r_old = cache.lookup(0x1000, g_old);
-    REQUIRE(std::holds_alternative<const Entry*>(r_old));
+    REQUIRE(cache.entry_count() == 1);
 
     // New content reachable via new hash
     auto r_new = cache.lookup(0x1000, g_new);
@@ -322,12 +320,14 @@ TEST_CASE("cache: upsert replaces entry with same address") {
 }
 
 TEST_CASE("cache: compact removes superseded entries") {
+    // SMC flow: a plain insert with a fresh hash leaves the old entry
+    // live (LRU owns it); compact() drops every superseded pair.
     TranslationCache cache;
     const auto g_old = make_guest(1);
     const auto g_new = make_guest(2);
 
     cache.insert(Key{0x1000, fnv1a_64(g_old)}, make_entry(g_old));
-    cache.upsert(Key{0x1000, fnv1a_64(g_new)}, make_entry(g_new));
+    cache.insert(Key{0x1000, fnv1a_64(g_new)}, make_entry(g_new));
     REQUIRE(cache.entry_count() == 2);
 
     const std::size_t evicted = cache.compact();
