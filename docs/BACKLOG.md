@@ -431,19 +431,19 @@ translator on a reference Linux ARM64 box.
 - [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
 - [x] (9ba0dd9) F2-SY-022: Implement readv / writev.
 - [x] (f9ee56f) F2-SY-023: Implement poll / ppoll / select / epoll_wait.
-- [ ] F2-SY-024: Implement epoll_create / epoll_ctl.
+- [x] (e04885f) F2-SY-024: Implement epoll_create / epoll_ctl.
 - [x] (cf5f668) F2-SY-025: Implement getdents / getdents64.
 - [x] (51c9a8a) F2-SY-026: Implement wait4 / waitid / waitpid.
 - [x] (51c9a8a) F2-SY-027: Implement prlimit64 / getrlimit / setrlimit.
 - [x] (51c9a8a) F2-SY-028: Implement prctl (subset — no_new_privs, etc.).
 - [x] (6bc6dec) F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
 - [x] (cf5f668) F2-SY-030: Implement set_tid_address.
-- [ ] F2-SY-031: Implement mmap2 / old_mmap.
-- [ ] F2-SY-032: Implement robust_futex structure translation.
-- [ ] F2-SY-033: Errno translation table (glibc expects Linux errno numbers).
-- [ ] F2-SY-034: iovec struct translation.
-- [ ] F2-SY-035: timespec / timeval / sigset_t struct translation.
-- [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ).
+- [ ] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
+- [ ] F2-SY-032: Implement robust_futex structure translation. **(deferred — needs thread support)**
+- [ ] F2-SY-033: Errno translation table (glibc expects Linux errno numbers). **(trivially satisfied — ARM64 Linux uses identical errno values)**
+- [ ] F2-SY-034: iovec struct translation. **(trivially satisfied — same LP64 layout on ARM64)**
+- [ ] F2-SY-035: timespec / timeval / sigset_t struct translation. **(trivially satisfied — same layout on ARM64)**
+- [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ). **(trivially satisfied — same layout on ARM64)**
 - [ ] F2-SY-037: Syscall fuzz harness (AFL++ over syscall numbers + args).
 - [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
