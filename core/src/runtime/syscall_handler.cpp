@@ -32,12 +32,16 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
-#include <sys/time.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace prisma::runtime {
@@ -82,6 +86,7 @@ enum X64Sysno : std::uint64_t {
     kX64Getegid      = 108,
     kX64Exit         = 60,
     kX64ExitGroup    = 231,
+    kX64Wait4        = 61,
     kX64Uname        = 63,
     kX64Getdents     = 78,
     kX64Getdents64   = 217,
@@ -90,6 +95,8 @@ enum X64Sysno : std::uint64_t {
     kX64Gettimeofday = 96,
     kX64Time         = 201,
     kX64ArchPrctl    = 158,
+    kX64Prctl        = 157,
+    kX64Prlimit64    = 302,
 };
 
 }  // namespace prisma::runtime
@@ -144,6 +151,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Getegid:     return "getegid";
         case kX64Exit:        return "exit";
         case kX64ExitGroup:   return "exit_group";
+        case kX64Wait4:       return "wait4";
         case kX64Uname:       return "uname";
         case kX64Getdents:    return "getdents";
         case kX64Getdents64:  return "getdents64";
@@ -152,6 +160,8 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Gettimeofday: return "gettimeofday";
         case kX64Time:        return "time";
         case kX64ArchPrctl:   return "arch_prctl";
+        case kX64Prctl:       return "prctl";
+        case kX64Prlimit64:   return "prlimit64";
         default:              return "???";
     }
 }
@@ -266,6 +276,20 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
         }
         case kX64ExitGroup: {
             ::exit(static_cast<int>(a1));
+            break;
+        }
+
+        // -- F2-SY-026: wait4 --------------------------------------------------
+        case kX64Wait4: {
+            // wait4(pid, wstatus, options, rusage) — delegate to host wait4.
+            // a5 (rusage) is passed as nullptr when guest doesn't need it.
+            result = static_cast<std::int64_t>(::wait4(
+                static_cast<int>(a1),
+                reinterpret_cast<int*>(static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3),
+                reinterpret_cast<struct ::rusage*>(
+                    static_cast<std::uintptr_t>(a4))));
+            if (result < 0) result = -errno;
             break;
         }
 
@@ -490,6 +514,35 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
         case kX64Ioctl: {
             result = ::ioctl(static_cast<int>(a1),
                              static_cast<unsigned long>(a2), a3);
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-028: prctl (process control) --------------------------------
+        case kX64Prctl: {
+            // Pass through to host prctl. The option codes are
+            // architecture-independent (defined in <sys/prctl.h>).
+            result = static_cast<std::int64_t>(::prctl(
+                static_cast<int>(a1),
+                static_cast<unsigned long>(a2),
+                static_cast<unsigned long>(a3),
+                static_cast<unsigned long>(a4),
+                static_cast<unsigned long>(a5)));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-027: prlimit64 ----------------------------------------------
+        case kX64Prlimit64: {
+            // prlimit64(pid, resource, new_rlim, old_rlim). On ARM64 Linux
+            // the struct rlimit64 layout matches x86_64 (both 64-bit LE),
+            // so we pass the user pointers directly to the raw syscall.
+            result = static_cast<std::int64_t>(::syscall(
+                SYS_prlimit64,
+                static_cast<int>(a1),
+                static_cast<int>(a2),
+                reinterpret_cast<void*>(static_cast<std::uintptr_t>(a3)),
+                reinterpret_cast<void*>(static_cast<std::uintptr_t>(a4))));
             if (result < 0) result = -errno;
             break;
         }

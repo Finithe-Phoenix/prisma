@@ -2,12 +2,15 @@
 //
 // Drops implicit flag writes whose NZCV is never consumed.
 //
-// Flag writers in our IR are `CmpFlags`, `AluFlags`, and `Compare`. The only flag
-// reader exposed today is `CondJumpRel`. The pass walks forward,
-// tracking the most-recent flag writer; on each flag reader it pins
-// the writer as needed; on a fresh flag writer it drops the previous
-// one if no reader pinned it. End-of-stream: a still-pending
-// droppable flag write is dropped (no consumer follows).
+// Flag writers in our IR are `CmpFlags`, `AluFlags`, and `Compare`.
+// Flag READERS are `CondJumpRel` (branches on NZCV) and `Select`
+// (lowers to csel, which reads the NZCV set by the most recent
+// flag writer — the CMOV / BZHI / CMPXCHG / BSF decode pattern).
+// The pass walks forward, tracking the most-recent flag writer; on
+// each flag reader it pins the writer as needed; on a fresh flag
+// writer it drops the previous one if no reader pinned it.
+// End-of-stream: a still-pending droppable flag write is dropped
+// (no consumer follows).
 //
 // Compare writes flags too, but it has a result Ref that other code
 // paths consume — we never drop a Compare. CmpFlags has no result
@@ -52,8 +55,12 @@ flag_write_elimination(const std::vector<ir::Stmt>& stmts) {
             }
             pending_writer      = i;
             pending_is_droppable = false;
-        } else if (std::holds_alternative<ir::CondJumpRel>(st.op)) {
-            // Flag reader: pin the most recent writer.
+        } else if (std::holds_alternative<ir::CondJumpRel>(st.op)
+                   || std::holds_alternative<ir::Select>(st.op)) {
+            // Flag reader: pin the most recent writer. Select lowers
+            // to csel and consumes NZCV exactly like a conditional
+            // branch — dropping its CmpFlags left csel reading stale
+            // flags on hardware (caught by the gap-sweep ARM64 e2e).
             pending_writer      = n;
             pending_is_droppable = false;
         }
