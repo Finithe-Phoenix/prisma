@@ -21,3 +21,7 @@ MD040: false
 # Table pipe spacing is cosmetic (MD060, new in markdownlint v0.40 /
 # cli2 v23). Our tables use a compact, human-readable style.
 MD060: false
+
+# Spaces after list markers is cosmetic and renders identically
+# (MD030 default tightened in cli2 v23).
+MD030: false
