@@ -172,4 +172,125 @@ example : evalBinOp .sMulHi 0x8000000000000000 0x8000000000000000
             = 0x4000000000000000 := by decide                                              -- INT_MIN^2 = 2^126
 example : evalBinOp .sMulHi 0xFFFFFFFFFFFFFFFF 1 = 0xFFFFFFFFFFFFFFFF := by decide          -- (-1)*1=-1
 
+/-! ## F2-PS-ALG — algebraic_simplify pass soundness
+
+Per-rewrite soundness for `core/src/passes/algebraic.cpp::try_simplify`,
+which fires when exactly one operand is a known constant (the two-constant
+case belongs to `constant_propagate`). Each lemma shows the rewrite to a
+`Constant` preserves `evalPure`. Mirrors the F1-LN-010 per-op approach for
+constant folding. -/
+
+-- x - x -> 0 ;  x ^ x -> 0  (same-ref identities)
+theorem algebraic_sub_self_sound (e : Env) (r : Ref) (sz : OpSize) :
+    evalPure e (.binop .sub r r sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp]
+
+theorem algebraic_xor_self_sound (e : Env) (r : Ref) (sz : OpSize) :
+    evalPure e (.binop .xor r r sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp]
+
+-- x * 0 -> 0  and  0 * x -> 0
+theorem algebraic_mul_zero_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 0) :
+    evalPure e (.binop .mul lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+theorem algebraic_mul_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .mul lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+-- x & 0 -> 0  and  0 & x -> 0
+theorem algebraic_and_zero_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 0) :
+    evalPure e (.binop .and lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+theorem algebraic_and_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .and lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+-- high half of x*0 = 0 (unsigned and signed)
+theorem algebraic_umulhi_zero_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 0) :
+    evalPure e (.binop .uMulHi lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+theorem algebraic_smulhi_zero_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 0) :
+    evalPure e (.binop .sMulHi lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, toSignedInt, h]
+
+-- 0 / x -> 0 ; 0 % x -> 0 (signed)
+theorem algebraic_sdiv_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .sDiv lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, ofSignedInt, toSignedInt, h]
+
+-- x % 1 -> 0 (signed)
+theorem algebraic_smod_one_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 1) :
+    evalPure e (.binop .sMod lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, ofSignedInt, toSignedInt, h]
+
+-- high half of 0*x = 0 (unsigned and signed)
+theorem algebraic_umulhi_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .uMulHi lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+theorem algebraic_smulhi_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .sMulHi lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, toSignedInt, h]
+
+-- high half of x*1 = 0 (unsigned only; signed needs a range fact)
+theorem algebraic_umulhi_one_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 1) :
+    evalPure e (.binop .uMulHi lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp only [evalPure, evalBinOp, h]
+  have hb : (e lhs).toNat / 18446744073709551616 = 0 :=
+    Nat.div_eq_of_lt (e lhs).toNat_lt
+  simp [hb]
+
+-- x % 1 -> 0 (unsigned)
+theorem algebraic_umod_one_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = 1) :
+    evalPure e (.binop .uMod lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+-- 0 / x -> 0 ; 0 % x -> 0 (unsigned) ; 0 % x -> 0 (signed)
+theorem algebraic_udiv_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .uDiv lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+theorem algebraic_umod_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .uMod lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, h]
+
+theorem algebraic_smod_zero_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = 0) :
+    evalPure e (.binop .sMod lhs rhs sz) = evalPure e (.constant 0 sz) := by
+  simp [evalPure, evalBinOp, ofSignedInt, toSignedInt, h]
+
+-- x | -1 -> -1  and  -1 | x -> -1, where -1 is the size's all-ones value.
+theorem algebraic_or_allones_r_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e rhs = maskToSize 0xFFFFFFFFFFFFFFFF sz) :
+    evalPure e (.binop .or lhs rhs sz)
+      = evalPure e (.constant 0xFFFFFFFFFFFFFFFF sz) := by
+  cases sz <;>
+    simp only [evalPure, evalBinOp, maskToSize, h, Option.some.injEq] <;>
+    bv_decide
+
+theorem algebraic_or_allones_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
+    (h : e lhs = maskToSize 0xFFFFFFFFFFFFFFFF sz) :
+    evalPure e (.binop .or lhs rhs sz)
+      = evalPure e (.constant 0xFFFFFFFFFFFFFFFF sz) := by
+  cases sz <;>
+    simp only [evalPure, evalBinOp, maskToSize, h, Option.some.injEq] <;>
+    bv_decide
+
 end PrismaIR
