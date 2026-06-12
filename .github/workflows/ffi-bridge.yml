@@ -27,7 +27,7 @@ jobs:
     name: ffi-link
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install C++ toolchain
         run: |
@@ -72,7 +72,7 @@ jobs:
     name: ffi-link-arm64
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install C++ toolchain
         run: |
