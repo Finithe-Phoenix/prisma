@@ -18,7 +18,7 @@ jobs:
     name: core-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Verify core/ scaffolding
         run: |
@@ -46,7 +46,7 @@ jobs:
     name: core-build-arm64
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build and run the full suite (JIT executes here)
         run: |
