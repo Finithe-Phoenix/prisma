@@ -197,7 +197,6 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, Popcnt>
             || std::is_same_v<T, Lzcnt>
             || std::is_same_v<T, Tzcnt>
-            || std::is_same_v<T, WriteFlagsCountZero>
             || std::is_same_v<T, VecBlend>
             || std::is_same_v<T, WriteFlagsPtest>
             || std::is_same_v<T, WriteFlagsPtestYmm>
