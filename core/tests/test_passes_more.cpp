@@ -432,6 +432,28 @@ TEST_CASE("flag_write_elimination: keeps CmpFlags required by CondJumpRel",
     REQUIRE(kept_cond == 1);
 }
 
+TEST_CASE("flag_write_elimination: keeps CmpFlags consumed by Select",
+          "[passes][flag_write]") {
+    // Select lowers to csel and reads NZCV — the CMOV / BZHI /
+    // CMPXCHG / BSF decode pattern. Dropping the CmpFlags left csel
+    // reading stale flags on hardware (caught by the gap-sweep
+    // ARM64 e2e: BSF dst-preserve and the CMPXCHG rax-alias test).
+    std::vector<ir::Stmt> s = {
+        {0u, ir::Constant{9, ir::OpSize::I64}},
+        {1u, ir::Constant{7, ir::OpSize::I64}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I64}},
+        {2u, ir::Select{ir::CondCode::Eq, 0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    auto out = passes::flag_write_elimination(s);
+    int kept_cmp = 0;
+    for (const auto& st : out) {
+        if (std::holds_alternative<ir::CmpFlags>(st.op)) ++kept_cmp;
+    }
+    REQUIRE(kept_cmp == 1);
+}
+
 TEST_CASE("flag_write_elimination: removes unused AluFlags",
           "[passes][flag_write]") {
     std::vector<ir::Stmt> s = {
