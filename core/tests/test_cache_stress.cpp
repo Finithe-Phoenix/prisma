@@ -148,9 +148,11 @@ TEST_CASE("fnv1a_64: one-bit difference flips many bits") {
     const auto a = fnv1a_64(std::vector<std::uint8_t>{0, 0, 0, 0});
     const auto b = fnv1a_64(std::vector<std::uint8_t>{0, 0, 0, 1});
     REQUIRE(a != b);
-    // At least 32 bits must differ (avalanche check — lenient)
+    // FNV-1a is not an avalanche-quality hash: a one-bit change in
+    // the LAST byte only goes through a single multiply, so few bits
+    // flip (measured: 9). Assert a lenient floor.
     const std::uint64_t diff = a ^ b;
-    REQUIRE(std::popcount(diff) >= 32);
+    REQUIRE(std::popcount(diff) >= 4);
 }
 
 TEST_CASE("fnv1a_64: zero prefix changes hash") {
@@ -159,14 +161,16 @@ TEST_CASE("fnv1a_64: zero prefix changes hash") {
     REQUIRE(a != b);  // length encoded in the hash
 }
 
-TEST_CASE("std::hash<Key>: distinct keys produce distinct hashes") {
-    cache::Key k1{0x1000, 0xAAA};
-    cache::Key k2{0x1000, 0xBBB};
-    cache::Key k3{0x2000, 0xAAA};
-    cache::KeyHash h;
-    REQUIRE(h(k1) != h(k2));
-    REQUIRE(h(k1) != h(k3));
-    REQUIRE(h(k2) != h(k3));
+TEST_CASE("cache: keys differing in one component coexist as entries") {
+    // The hasher is an implementation detail (private KeyHash); the
+    // observable property is that keys differing in only guest_addr
+    // or only content_hash do not collide into one entry.
+    TranslationCache c;
+    const auto g = make_guest(7);
+    REQUIRE(c.insert(Key{0x1000, 0xAAA}, make_entry(g)));
+    REQUIRE(c.insert(Key{0x1000, 0xBBB}, make_entry(g)));
+    REQUIRE(c.insert(Key{0x2000, 0xAAA}, make_entry(g)));
+    REQUIRE(c.entry_count() == 3);
 }
 
 TEST_CASE("cache: entries start with zero hit count") {

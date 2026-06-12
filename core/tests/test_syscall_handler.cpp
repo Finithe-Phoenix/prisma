@@ -1,12 +1,12 @@
-#include <catch2/catch_test_macros.hpp>
-#include <catch2/generators.hpp>
-
-#include <cerrno>
-#include <cstdint>
-
 #include "prisma/cpu_state.hpp"
 #include "prisma/ir.hpp"
 #include "prisma/syscall_handler.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+
+#include <cerrno>
+#include <cstdint>
 
 using namespace prisma::ir;
 using namespace prisma::runtime;
@@ -21,8 +21,9 @@ namespace {
 [[maybe_unused]] constexpr std::uint64_t kX64Brk = 12;
 [[maybe_unused]] constexpr std::uint64_t kX64Getcwd = 79;
 
-[[maybe_unused]] constexpr std::uint64_t ARCH_SET_FS = 0x1001;
-[[maybe_unused]] constexpr std::uint64_t ARCH_SET_GS = 0x1002;
+// Linux values: SET_GS is 0x1001 and SET_FS is 0x1002 (asm/prctl.h).
+[[maybe_unused]] constexpr std::uint64_t ARCH_SET_GS = 0x1001;
+[[maybe_unused]] constexpr std::uint64_t ARCH_SET_FS = 0x1002;
 [[maybe_unused]] constexpr std::uint64_t ARCH_GET_FS = 0x1003;
 [[maybe_unused]] constexpr std::uint64_t ARCH_GET_GS = 0x1004;
 
@@ -54,14 +55,14 @@ TEST_CASE("syscall_handler: does not clobber unrelated registers") {
     frame[Gpr::Rbx] = 0xDEAD;
     frame[Gpr::Rcx] = 0xBEEF;
     frame[Gpr::Rsp] = 0xCAFE;
-    frame[Gpr::Rbp] = 0xCODE;
+    frame[Gpr::Rbp] = 0xC0DE;
 
     prisma_syscall_handler(&frame);
 
     REQUIRE(frame[Gpr::Rbx] == 0xDEAD);
     REQUIRE(frame[Gpr::Rcx] == 0xBEEF);
     REQUIRE(frame[Gpr::Rsp] == 0xCAFE);
-    REQUIRE(frame[Gpr::Rbp] == 0xCODE);
+    REQUIRE(frame[Gpr::Rbp] == 0xC0DE);
 }
 
 #ifndef _MSC_VER

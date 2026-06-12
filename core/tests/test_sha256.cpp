@@ -82,11 +82,12 @@ TEST_CASE("to_hex: outputs 64 lowercase chars") {
 }
 
 TEST_CASE("sha256: NIST short vector — 56 null bytes") {
-    // 56 zero bytes. Known to produce a specific digest.
+    // 56 zero bytes — expected digest cross-checked against .NET
+    // SHA256 (the original constant here was wrong; review 2026-06-12).
     std::vector<std::uint8_t> in(56, 0);
     const auto d = sha256(in);
     REQUIRE(to_hex(d) ==
-            "afe6a4f3afdfd2b317c7e7b669b2d6c40f252f8e0a7ea9f7da49cca9dff05f3f");
+            "d4817aa5497628e7c77e6b606107042bbba3130888c5f47a375e6179be789fbb");
 }
 
 TEST_CASE("sha256: NIST vector — \"message digest\"") {
