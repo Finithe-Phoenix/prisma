@@ -1,0 +1,15 @@
+[package]
+name = "prisma-passes"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma IR optimization pipeline — const prop, CSE, DCE, LICM, algebraic simplification, and 12 more passes"
+
+[dependencies]
+prisma-ir = { path = "../prisma-ir" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

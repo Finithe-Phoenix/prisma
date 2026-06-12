@@ -1,45 +1,64 @@
-# shell — Prisma Orchestrator (Rust)
+# shell — Prisma Rust Workspace
 
 **Lenguaje:** Rust 1.82+ (edition 2024 cuando estable).
-**Build:** Cargo workspace.
+**Build:** Cargo workspace multi-crate.
 **Target:** `.so` compilado para Android ARM64, consumido por la app Kotlin vía JNI.
 
-> **FFI bridge (RFC 0014):** el workspace ahora contiene `core-sys`
-> (bindings `extern "C"` crudos a `libprisma_core_c`) y `core`
-> (wrapper seguro RAII). Compila el lado C++ primero y apunta
-> `PRISMA_CORE_LIB_DIR` (y `LD_LIBRARY_PATH` para los test binaries)
-> a `core/build`. `cargo build`/`test` plano cubre solo el
-> orchestrator puro-Rust (`default-members`); los crates del puente
-> corren bajo los jobs `ffi-link` de CI.
+## Workspace crates
+
+| Crate | Estatus | Descripción |
+|-------|---------|-------------|
+| `orchestrator` | ✅ Existente | Container lifecycle, PE loader, config, integrity |
+| `core-sys` | ✅ Existente | Raw FFI bindings a `libprisma_core_c` (C ABI) |
+| `core` | ✅ Existente | Safe Rust wrapper sobre C API |
+| **`prisma-ir`** | ✅ Fase 0 | IR types (Op enum, Stmt, Function, serde) |
+| `prisma-cache` | 🚧 Fase 1 | Translation cache LRU + zstd + SHA-256 |
+| `prisma-passes` | 🚧 Fase 2 | 14 optimization passes pipeline |
+| `prisma-decoder` | 🚧 Fase 3 | x86_64 → IR decoder |
+| `prisma-runtime` | 🚧 Fase 4 | Dispatcher, signals, SMC, syscalls |
+| `prisma-backend` | 🚧 Fase 5 | ARM64 assembler + IR lowering |
+
+**Roadmap completo:** RFC 0015 (`docs/rfc/0015-rust-migration-roadmap.md`)
 
 ## Responsabilidad
 
-Todo lo que NO es DBT y NO es UI:
+Core DBT engine (unsafe — mmap, backpatching, SMC) → plan de migrar
+a Rust incrementalmente (RFC 0015). Shell (networking, containers,
+config, crypto) ya está en Rust.
 
-- **Container lifecycle** — crear, levantar, pausar, eliminar contenedores Wine.
-- **Overlay filesystem** — FUSE-based o custom, base RO + overlay RW por contenedor.
-- **Configuration management** — TOML/YAML por contenedor, validación.
-- **Component downloader + verifier** — descarga Wine/DXVK/VKD3D bundles con sha256 + firma.
-- **Translation cache networking** — cliente del servidor CDN + P2P (Pilar 4).
-- **Bridging a `../core/` (C++ DBT)** — FFI C-ABI.
-- **Bridging a Android (Kotlin)** — vía `jni` crate.
+## Build
 
-## Por qué Rust aquí (y no en el core)
+```bash
+# Solo crates puros (sin FFI)
+cargo build --manifest-path shell/Cargo.toml
 
-Rust brilla en I/O + networking + parsing + verificación criptográfica, todo con garantías de memory safety que NO implican unsafe ubicuo. El core DBT es el opuesto: unsafe por naturaleza (`mmap(W|X)`, backpatching, SMC), así que queda mejor en C++20.
+# Con FFI bridge (requiere PRISMA_CORE_LIB_DIR)
+cmake --build core/build --target prisma_core_c
+PRISMA_CORE_LIB_DIR=$PWD/core/build \
+  cargo test --manifest-path shell/Cargo.toml --workspace
 
-Este split es el mismo modelo que Firefox usa (Servo/Gecko) adaptado a mobile emulation.
+# Un crate específico
+cargo test --manifest-path shell/Cargo.toml --package prisma-ir
+```
 
-## Dependencias principales (futuro)
+## Testing
 
-- `tokio` — async runtime.
-- `reqwest` + `rustls` — HTTPS + verificación de certs.
-- `sha2` + `ed25519-dalek` — integrity checking + cache signature verification.
-- `jni` — bridge a JVM.
-- `serde` + `toml` — config.
-- `libp2p` — P2P translation cache (Pilar 4).
-- `zstd` — compresión de caches.
+- `cargo test` — unit tests + property-based tests
+- `proptest` — fuzzing de decoder y passes
+- Differential tests (C++ vs Rust) — ver `docs/DIFFERENTIAL_TESTING.md`
+- FFI integration — ver `shell/core/tests/integration.rs`
 
-## No existe aún
+## Dependencias principales
 
-Fase 3 (semanas 93-104) arranca el container system. Antes de eso, semana 3-4 de Fase 0 instalará el toolchain Rust pero sin código real.
+- `serde` + `bincode` — serialización del IR y cache
+- `sha2` + `zstd` — integridad + compresión
+- `proptest` — property-based testing
+- `libc` — FFI a syscalls POSIX (Fase 4)
+- `tokio` (futuro) — async para cache I/O y networking
+- `reqwest` + `rustls` (futuro) — HTTPS downloads
+- `libp2p` (futuro) — P2P translation cache
+
+## Convenciones
+
+Ver `docs/RUST_MIGRATION_PLAYBOOK.md` para el protocolo completo
+de trabajo entre CODEX y Claude.

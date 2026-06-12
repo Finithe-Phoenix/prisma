@@ -6,7 +6,7 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-11 (test coverage strengthened; CI green; decoder-gap-sweep merged).
+Last updated: 2026-06-11 (Rust migration roadmap RFC 0015 + Phase 0 prisma-ir landed).
 
 ## Currently active
 
@@ -65,6 +65,7 @@ Test count: 34 new test cases across signal_handler (4→7), host_features
 | – | `ci(clang-format): scope to changed files + advisory` | `ef14fff` | Danny: unblock CI by making clang-format advisory. |
 | – | `test: fix invented expectations in parallel-landed test batch` | `bca6320` | Danny: sha256, ARCH_SET_FS/GS, FNV-1a avalanche fixes. |
 | – | `test: strengthen signal_handler, host_features, property, smc_guard coverage` | `3ed9a38` | Claude: 34 new test cases across 4 files (262 insertions). |
+| – | `rfc(0015): Rust core migration roadmap + prisma-ir crate` | `dac9b6a` | Claude: RFC 0015 (467 lines), Fase 0 IR types (620 lines), 5 crate skeletons, agent playbook, differential testing guide, workspace update. |
 
 ## Completed (this session)
 

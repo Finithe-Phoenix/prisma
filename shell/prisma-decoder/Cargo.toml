@@ -1,0 +1,15 @@
+[package]
+name = "prisma-decoder"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma x86_64 → IR decoder — full SSE/AVX/FMA/BMI/AES/SHA coverage"
+
+[dependencies]
+prisma-ir = { path = "../prisma-ir" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -9,6 +9,11 @@ members = [
     "core-sys",
     "core",
     "prisma-ir",
+    "prisma-cache",
+    "prisma-passes",
+    "prisma-decoder",
+    "prisma-runtime",
+    "prisma-backend",
 ]
 # The bridge crates (core-sys, core) link against the C++ core's
 # prisma_core_c shared library (RFC 0014) and need PRISMA_CORE_LIB_DIR

@@ -1,0 +1,15 @@
+[package]
+name = "prisma-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma ARM64 backend — custom assembler + IR lowering (replaces vixl)"
+
+[dependencies]
+prisma-ir = { path = "../prisma-ir" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
