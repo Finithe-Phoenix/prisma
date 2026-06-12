@@ -65,6 +65,9 @@ ir::Op rewrite(ir::Op op,
         } else if constexpr (std::is_same_v<T, ir::AluFlags>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::WriteFlagsCountZero>) {
+            x.src = resolve(x.src, alias);
+            x.result = resolve(x.result, alias);
         } else if constexpr (std::is_same_v<T, ir::FpBinOp>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);

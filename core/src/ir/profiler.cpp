@@ -83,6 +83,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, Popcnt>)        return OpCounter::Kind::Popcnt;
         else if constexpr (std::is_same_v<T, Lzcnt>)         return OpCounter::Kind::Lzcnt;
         else if constexpr (std::is_same_v<T, Tzcnt>)         return OpCounter::Kind::Tzcnt;
+        else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) return OpCounter::Kind::WriteFlagsCountZero;
         else if constexpr (std::is_same_v<T, VecBlend>)      return OpCounter::Kind::VecBlend;
         else if constexpr (std::is_same_v<T, WriteFlagsPtest>) return OpCounter::Kind::WriteFlagsPtest;
         else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) return OpCounter::Kind::WriteFlagsPtestYmm;

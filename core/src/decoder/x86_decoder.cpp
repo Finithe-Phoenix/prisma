@@ -7096,9 +7096,8 @@ std::variant<Decoded, DecodeError> decode_one(
         // it after counting. Its other flags are architecturally
         // CLEARED; the CmpFlags approximation leaves SF = sign(src),
         // a documented divergence nobody is known to consume.
-        // LZCNT/TZCNT's CF = (src == 0) is not expressible via
-        // CmpFlags and stays a queued gap (BMI1/LZCNT are not
-        // advertised via CPUID).
+        // LZCNT/TZCNT also set CF = (src == 0). We model that with a
+        // dedicated flag write so both CF and ZF stay exact.
         if (has_f3 && !has_lock && !has_f2 && !has_operand_size_override &&
             (subop == 0xB8u || subop == 0xBCu || subop == 0xBDu)) {
             auto modrm = parse_modrm(bytes, cursor, rex,
@@ -7140,6 +7139,10 @@ std::variant<Decoded, DecodeError> decode_one(
             }
             d.stmts.push_back({std::nullopt,
                 ir::StoreReg{dst_gpr, r_res, size}});
+            if (subop != 0xB8u) {
+                d.stmts.push_back({std::nullopt,
+                    ir::WriteFlagsCountZero{r_src, r_res, size}});
+            }
             d.bytes_consumed = cursor;
             return d;
         }

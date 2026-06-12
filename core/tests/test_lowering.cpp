@@ -1468,6 +1468,22 @@ TEST_CASE("Lowerer: WriteFlags(Add) emits adds (flag-setting variant)") {
     REQUIRE(d.find("adds") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: WriteFlagsCountZero emits exact LZCNT/TZCNT flag materialization") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {1u, ir::Lzcnt{0u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rbx, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::WriteFlagsCountZero{0u, 1u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("clz") != std::string::npos);
+    REQUIRE(d.find("cset") != std::string::npos);
+    REQUIRE(d.find("msr nzcv") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: WriteFlags(And) emits ands") {
     std::vector<ir::Stmt> stmts = {
         {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},

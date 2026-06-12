@@ -605,16 +605,20 @@ TEST_CASE("decode LZCNT rax, rax via F3 48 0F BD C0") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x48, 0x0F, 0xBD, 0xC0}, r);
     REQUIRE(d.bytes_consumed == 5);
-    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(d.stmts.size() == 4);
     REQUIRE(std::holds_alternative<ir::Lzcnt>(d.stmts[1].op));
+    REQUIRE(std::holds_alternative<ir::StoreReg>(d.stmts[2].op));
+    REQUIRE(std::holds_alternative<ir::WriteFlagsCountZero>(d.stmts[3].op));
 }
 
 TEST_CASE("decode TZCNT rax, rax via F3 48 0F BC C0 — real TZCNT (F2-IR-045)") {
     ir::Ref r = 0;
     auto d = decode_ok({0xF3, 0x48, 0x0F, 0xBC, 0xC0}, r);
     REQUIRE(d.bytes_consumed == 5);
-    REQUIRE(d.stmts.size() == 3);
+    REQUIRE(d.stmts.size() == 4);
     REQUIRE(std::holds_alternative<ir::Tzcnt>(d.stmts[1].op));
+    REQUIRE(std::holds_alternative<ir::StoreReg>(d.stmts[2].op));
+    REQUIRE(std::holds_alternative<ir::WriteFlagsCountZero>(d.stmts[3].op));
 }
 
 TEST_CASE("decode POPCNT rax, rax via F3 48 0F B8 C0 — real POPCNT (F2-IR-044)") {

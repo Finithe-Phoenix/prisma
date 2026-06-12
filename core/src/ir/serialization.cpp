@@ -43,6 +43,7 @@ enum class OpTag : std::uint8_t {
     CondJumpRel = 28,
     CondJumpFlags = 29,
     AluFlags = 30,
+    WriteFlagsCountZero = 31,
 };
 
 constexpr std::uint32_t kMaxDeserializedItems = 1'000'000u;
@@ -207,6 +208,11 @@ private:
                 u32(x.lhs);
                 u32(x.rhs);
                 enum8(x.size);
+            } else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) {
+                enum8(OpTag::WriteFlagsCountZero);
+                u32(x.src);
+                u32(x.result);
+                enum8(x.size);
             } else if constexpr (std::is_same_v<T, JumpRel>) {
                 enum8(OpTag::JumpRel);
                 u64(x.target_guest_pc);
@@ -347,7 +353,7 @@ private:
 
 [[nodiscard]] bool decode_tag(std::uint8_t raw, OpTag& out) {
     if (raw < static_cast<std::uint8_t>(OpTag::Constant)
-        || raw > static_cast<std::uint8_t>(OpTag::AluFlags)) {
+        || raw > static_cast<std::uint8_t>(OpTag::WriteFlagsCountZero)) {
         return false;
     }
     out = static_cast<OpTag>(raw);
@@ -587,6 +593,16 @@ template <typename E, typename Decode>
             }
             return Op{AluFlags{std::get<BinOpKind>(op), lhs, rhs,
                                std::get<OpSize>(size)}};
+        }
+        case OpTag::WriteFlagsCountZero: {
+            std::uint32_t src = 0;
+            std::uint32_t result = 0;
+            if (!reader.u32(src) || !reader.u32(result)) return reader.error();
+            auto size = read_enum<OpSize>(reader, decode_size);
+            if (std::holds_alternative<IrDeserializeError>(size)) {
+                return std::get<IrDeserializeError>(size);
+            }
+            return Op{WriteFlagsCountZero{src, result, std::get<OpSize>(size)}};
         }
         case OpTag::JumpRel: {
             std::uint64_t target_guest_pc = 0;
