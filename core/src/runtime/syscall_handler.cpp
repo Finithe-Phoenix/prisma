@@ -26,12 +26,14 @@
 #ifndef _MSC_VER
 
 #include <cstring>
+#include <dirent.h>
 #include <pthread.h>
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/time.h>
@@ -83,6 +85,7 @@ enum X64Sysno : std::uint64_t {
     kX64Uname        = 63,
     kX64Getdents     = 78,
     kX64Getdents64   = 217,
+    kX64SetTidAddress = 218,
     kX64ClockGettime = 228,
     kX64Gettimeofday = 96,
     kX64Time         = 201,
@@ -144,6 +147,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Uname:       return "uname";
         case kX64Getdents:    return "getdents";
         case kX64Getdents64:  return "getdents64";
+        case kX64SetTidAddress: return "set_tid_address";
         case kX64ClockGettime: return "clock_gettime";
         case kX64Gettimeofday: return "gettimeofday";
         case kX64Time:        return "time";
@@ -530,6 +534,34 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             }
             break;
         }
+
+        // -- F2-SY-025: getdents64 (directory listing) -------------------------
+        case kX64Getdents64: {
+            // x86_64 linux_dirent64 structure layout on the guest side:
+            //   offset 0: d_ino    (u64)
+            //   offset 8: d_off    (i64)
+            //   offset 16: d_reclen (u16)
+            //   offset 18: d_type   (u8)
+            //   offset 19: d_name[] (null-terminated, padded to 8 bytes)
+            //
+            // We delegate to the host kernel's getdents64 via raw syscall,
+            // which produces the identical binary layout on ARM64 Linux.
+            const int fd = static_cast<int>(a1);
+            void* buf = reinterpret_cast<void*>(static_cast<std::uintptr_t>(a2));
+            const std::uint32_t count = static_cast<std::uint32_t>(a3);
+            result = static_cast<std::int64_t>(
+                ::syscall(SYS_getdents64, fd, buf, count));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-030: set_tid_address ----------------------------------------
+        case kX64SetTidAddress:
+            // glibc calls set_tid_address during startup. For single-threaded
+            // guests the tid (== pid == gettid()) is sufficient; the tidptr
+            // write-on-thread-exit is a no-op until we implement threads.
+            result = static_cast<std::int64_t>(::gettid());
+            break;
 
         default:
             result = -ENOSYS;
