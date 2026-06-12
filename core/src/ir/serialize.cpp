@@ -125,12 +125,13 @@ enum class OpKind : std::uint8_t {
     kVecSha             = 89,
     kXgetbv             = 90,
     kRdtsc              = 91,
+    kAluFlags           = 92,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
 constexpr std::uint8_t kMaxOpKind =
-    static_cast<std::uint8_t>(OpKind::kRdtsc);
+    static_cast<std::uint8_t>(OpKind::kAluFlags);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -264,6 +265,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Return>)      return OpKind::kReturn;
         else if constexpr (std::is_same_v<T, JumpReg>)     return OpKind::kJumpReg;
         else if constexpr (std::is_same_v<T, CmpFlags>)    return OpKind::kCmpFlags;
+        else if constexpr (std::is_same_v<T, AluFlags>)    return OpKind::kAluFlags;
         else if constexpr (std::is_same_v<T, JumpRel>)     return OpKind::kJumpRel;
         else if constexpr (std::is_same_v<T, CondJumpRel>) return OpKind::kCondJumpRel;
         else if constexpr (std::is_same_v<T, CallRel>)     return OpKind::kCallRel;
@@ -480,6 +482,12 @@ void write_payload(std::vector<std::uint8_t>& out, const FpBinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.size));
 }
 void write_payload(std::vector<std::uint8_t>& out, const WriteFlags& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.op));
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const AluFlags& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
@@ -1086,6 +1094,19 @@ DeserializeError read_payload_write_flags(Cursor& c, Stmt& s) {
     if (!is_valid_size(sz))  return DeserializeError::BadSize;
     s.op = WriteFlags{static_cast<BinOpKind>(op), lhs, rhs,
                       static_cast<OpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_alu_flags(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  op  = c.take_u8();
+    const std::uint32_t lhs = c.take_u32();
+    const std::uint32_t rhs = c.take_u32();
+    const std::uint8_t  sz  = c.take_u8();
+    if (!is_valid_binop(op)) return DeserializeError::BadSize;
+    if (!is_valid_size(sz))  return DeserializeError::BadSize;
+    s.op = AluFlags{static_cast<BinOpKind>(op), lhs, rhs,
+                    static_cast<OpSize>(sz)};
     return DeserializeError::Ok;
 }
 
@@ -1703,6 +1724,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kReturn:      return read_payload_return(c, s);
         case OpKind::kJumpReg:     return read_payload_jump_reg(c, s);
         case OpKind::kCmpFlags:    return read_payload_cmp_flags(c, s);
+        case OpKind::kAluFlags:    return read_payload_alu_flags(c, s);
         case OpKind::kJumpRel:     return read_payload_jump_rel(c, s);
         case OpKind::kCondJumpRel: return read_payload_cond_jump_rel(c, s);
         case OpKind::kCallRel:     return read_payload_call_rel(c, s);

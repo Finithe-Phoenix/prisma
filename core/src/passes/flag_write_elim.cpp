@@ -1,13 +1,13 @@
 // core/src/passes/flag_write_elim.cpp — F1-PS-012.
 //
-// Drops `CmpFlags` writes whose implicit NZCV is never consumed.
+// Drops implicit flag writes whose NZCV is never consumed.
 //
-// Flag writers in our IR are `CmpFlags` and `Compare`. The only flag
+// Flag writers in our IR are `CmpFlags`, `AluFlags`, and `Compare`. The only flag
 // reader exposed today is `CondJumpRel`. The pass walks forward,
 // tracking the most-recent flag writer; on each flag reader it pins
 // the writer as needed; on a fresh flag writer it drops the previous
 // one if no reader pinned it. End-of-stream: a still-pending
-// CmpFlags is dropped (no consumer follows).
+// droppable flag write is dropped (no consumer follows).
 //
 // Compare writes flags too, but it has a result Ref that other code
 // paths consume — we never drop a Compare. CmpFlags has no result
@@ -27,38 +27,39 @@ flag_write_elimination(const std::vector<ir::Stmt>& stmts) {
     std::vector<bool> drop(n, false);
 
     // Index of the most recent flag writer, or n if none. We only
-    // ever drop CmpFlags (no result Ref); Compare is always kept.
+    // ever drop CmpFlags / AluFlags (no result Ref); Compare is always kept.
     std::size_t pending_writer    = n;
-    bool        pending_is_cmpflags = false;
+    bool        pending_is_droppable = false;
 
     for (std::size_t i = 0; i < n; ++i) {
         const auto& st = stmts[i];
-        if (std::holds_alternative<ir::CmpFlags>(st.op)) {
-            // A new CmpFlags supersedes the previous pending writer.
-            // If the previous pending writer was an unread CmpFlags,
+        if (std::holds_alternative<ir::CmpFlags>(st.op)
+            || std::holds_alternative<ir::AluFlags>(st.op)) {
+            // A new implicit flag write supersedes the previous pending writer.
+            // If the previous pending writer was an unread droppable write,
             // mark it for deletion now.
-            if (pending_writer != n && pending_is_cmpflags) {
+            if (pending_writer != n && pending_is_droppable) {
                 drop[pending_writer] = true;
             }
             pending_writer      = i;
-            pending_is_cmpflags = true;
+            pending_is_droppable = true;
         } else if (std::holds_alternative<ir::Compare>(st.op)) {
-            // Compare also writes flags. Any pending CmpFlags becomes
+            // Compare also writes flags. Any pending droppable write becomes
             // stale and droppable. Compare itself stays (its result
             // Ref may have other consumers).
-            if (pending_writer != n && pending_is_cmpflags) {
+            if (pending_writer != n && pending_is_droppable) {
                 drop[pending_writer] = true;
             }
             pending_writer      = i;
-            pending_is_cmpflags = false;
+            pending_is_droppable = false;
         } else if (std::holds_alternative<ir::CondJumpRel>(st.op)) {
             // Flag reader: pin the most recent writer.
             pending_writer      = n;
-            pending_is_cmpflags = false;
+            pending_is_droppable = false;
         }
     }
-    // End-of-block: a still-pending CmpFlags has no consumer.
-    if (pending_writer != n && pending_is_cmpflags) {
+    // End-of-block: a still-pending droppable write has no consumer.
+    if (pending_writer != n && pending_is_droppable) {
         drop[pending_writer] = true;
     }
 

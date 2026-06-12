@@ -161,6 +161,26 @@ TEST_CASE("validate: CmpFlags rejects operand size mismatch") {
     REQUIRE(r.error->stmt_index == 2u);
 }
 
+TEST_CASE("validate: AluFlags is impure and rejects operand size mismatch") {
+    std::vector<ir::Stmt> good = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I64}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    REQUIRE(ir::validate(good).ok);
+
+    std::vector<ir::Stmt> bad = {
+        {0u, ir::Constant{1, ir::OpSize::I64}},
+        {1u, ir::Constant{2, ir::OpSize::I32}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}},
+    };
+    auto r = ir::validate(bad);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.error.has_value());
+    REQUIRE(r.error->code == ir::ValidationCode::SizeMismatch);
+    REQUIRE(r.error->stmt_index == 2u);
+}
+
 TEST_CASE("validate: Extend and Truncate read their source ref") {
     std::vector<ir::Stmt> s = {
         {0u, ir::Constant{0xFF, ir::OpSize::I8}},

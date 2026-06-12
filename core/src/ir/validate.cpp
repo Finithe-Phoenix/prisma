@@ -61,6 +61,7 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, StoreMemTSO>){ visit(x.addr); visit(x.value); }
         else if constexpr (std::is_same_v<T, StoreReg>)   { visit(x.value); }
         else if constexpr (std::is_same_v<T, CmpFlags>)   { visit(x.lhs); visit(x.rhs); }
+        else if constexpr (std::is_same_v<T, AluFlags>)   { visit(x.lhs); visit(x.rhs); }
         else if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); }
         else if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); }
         else if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); }
@@ -267,6 +268,8 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
             // to_size; the validator can't pin it without per-op
             // logic. For now skip the check.
             (void)x; (void)r;
+        } else if constexpr (std::is_same_v<T, AluFlags>) {
+            if (r == x.lhs || r == x.rhs) return x.size;
         } else if constexpr (std::is_same_v<T, WriteFlags>) {
             if (r == x.lhs || r == x.rhs) return x.size;
         }

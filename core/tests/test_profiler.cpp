@@ -89,6 +89,7 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{std::nullopt, Return{}});
     c.visit(Stmt{std::nullopt, JumpReg{1u}});
     c.visit(Stmt{std::nullopt, CmpFlags{0u, 1u, OpSize::I64}});
+    c.visit(Stmt{std::nullopt, AluFlags{BinOpKind::Add, 0u, 1u, OpSize::I64}});
     c.visit(Stmt{std::nullopt, JumpRel{0x100ULL}});
     c.visit(Stmt{std::nullopt,
         CondJumpRel{CondCode::Eq, 0x100ULL, 0x200ULL}});

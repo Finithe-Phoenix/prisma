@@ -776,8 +776,6 @@ std::variant<Decoded, DecodeError> decode_cmpxchg8b_m64(
 //   tmp = r/m
 //   r/m = tmp + reg
 //   reg = tmp
-// Flag gap (queued): x86 XADD sets the arithmetic flags from the
-// addition; this decode leaves NZCV untouched.
 std::variant<Decoded, DecodeError> decode_xadd_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor,
@@ -804,6 +802,8 @@ std::variant<Decoded, DecodeError> decode_xadd_rm_r(
         d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
         const ir::Ref ref_sum = next_ref++;
         d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
+        d.stmts.push_back(
+            {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, ref_dst, ref_src, size}});
         d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
         d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_sum, size}});
     } else {
@@ -811,6 +811,8 @@ std::variant<Decoded, DecodeError> decode_xadd_rm_r(
         d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, size}});
         const ir::Ref ref_sum = next_ref++;
         d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
+        d.stmts.push_back(
+            {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, ref_dst, ref_src, size}});
         d.stmts.push_back(
             {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
         d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_sum, size}});

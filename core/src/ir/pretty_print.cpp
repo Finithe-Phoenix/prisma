@@ -128,6 +128,10 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, CmpFlags>) {
             os << "cmpflags." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, AluFlags>) {
+            os << "aluflags." << binop_name(x.op) << "."
+               << size_suffix(x.size) << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, JumpRel>) {
             os << "jmprel 0x" << std::hex << x.target_guest_pc;
         } else if constexpr (std::is_same_v<T, CondJumpRel>) {

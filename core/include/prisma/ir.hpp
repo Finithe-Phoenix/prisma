@@ -148,12 +148,12 @@ struct Return   {};
 
 // ---- Guest-PC-based control flow (MVP, no basic-block index yet) -------
 //
-// CmpFlags is a side-effecting op: it sets the x86 flags bank implicitly
-// (no SSA result ref). Lowering emits an ARM64 `cmp` that leaves NZCV in
-// a state CondJumpRel can immediately consume. The invariant is that
-// CondJumpRel must follow a CmpFlags (or another flag-setting op in the
-// future) with no flag-clobbering op in between. The Lowerer enforces
-// this; the decoder produces IR that respects it by construction.
+// CmpFlags / AluFlags are side-effecting ops: they set the x86 flags bank
+// implicitly (no SSA result ref). Lowering emits an ARM64 flag-setting
+// instruction that leaves NZCV in a state CondJumpRel can immediately
+// consume. The invariant is that CondJumpRel must follow a flag-setting
+// op with no flag-clobbering op in between. The Lowerer enforces this;
+// the decoder produces IR that respects it by construction.
 //
 // JumpRel / CondJumpRel terminate the current block and cause the block
 // to return `target_guest_pc` (taken) or `fallthrough_guest_pc` (not
@@ -164,6 +164,13 @@ struct CmpFlags {
     Ref   lhs;
     Ref   rhs;
     OpSize size;
+};
+
+struct AluFlags {
+    BinOpKind op;
+    Ref       lhs;
+    Ref       rhs;
+    OpSize    size;
 };
 
 struct JumpReg {
@@ -1009,7 +1016,7 @@ using Op = std::variant<
     LoadMemTSO, StoreMemTSO,
     Jump, CondJump, Return,
     JumpReg,
-    CmpFlags, JumpRel, CondJumpRel,
+    CmpFlags, AluFlags, JumpRel, CondJumpRel,
     CallRel, CallReg, RetAdjusted,
     Cpuid, Syscall, Trap,
     Extend, Truncate, Fence,
@@ -1120,6 +1127,7 @@ bool operator==(const JumpReg& a, const JumpReg& b) noexcept;
 bool operator==(const Return&, const Return&) noexcept;
 
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept;
+bool operator==(const AluFlags& a, const AluFlags& b) noexcept;
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept;
 bool operator==(const CondJumpRel& a, const CondJumpRel& b) noexcept;
 

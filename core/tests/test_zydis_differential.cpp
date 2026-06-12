@@ -82,6 +82,7 @@ std::string prisma_mnemonic_for(const ir::Op& op) {
     if (std::holds_alternative<ir::JumpRel>(op))     return "jmp";
     if (std::holds_alternative<ir::CondJumpRel>(op)) return "";  // many Jcc mnemonics
     if (std::holds_alternative<ir::CmpFlags>(op))    return "cmp";
+    if (std::holds_alternative<ir::AluFlags>(op))    return "";
     return "";
 }
 

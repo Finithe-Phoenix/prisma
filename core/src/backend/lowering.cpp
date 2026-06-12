@@ -266,6 +266,7 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) { bump(op.addr, i); bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::StoreReg>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::CmpFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::AluFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
@@ -672,6 +673,37 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "CmpFlags.lhs"};
             if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "CmpFlags.rhs"};
             emitter_.cmp(rl, rr);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::AluFlags>) {
+            // Side-effecting ALU flags for instructions such as XADD:
+            // leave NZCV set for a following CondJumpRel without creating
+            // a flag-typed SSA ref.
+            arm64::Reg rl, rr;
+            if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "AluFlags.lhs"};
+            if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "AluFlags.rhs"};
+            switch (op.op) {
+                case ir::BinOpKind::Sub:
+                    emitter_.cmp(rl, rr);
+                    break;
+                case ir::BinOpKind::Add:
+                case ir::BinOpKind::And: {
+                    arm64::Reg rd_tmp;
+                    if (!allocate_temporary(rd_tmp)) {
+                        return {false, LowerError::OutOfScratchRegs,
+                                "AluFlags(Add/And) needs a temp"};
+                    }
+                    if (op.op == ir::BinOpKind::Add) {
+                        emitter_.adds(rd_tmp, rl, rr);
+                    } else {
+                        emitter_.ands(rd_tmp, rl, rr);
+                    }
+                    break;
+                }
+                default:
+                    return {false, LowerError::UnsupportedOp,
+                            "AluFlags only supports Sub/Add/And today"};
+            }
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::JumpRel>) {

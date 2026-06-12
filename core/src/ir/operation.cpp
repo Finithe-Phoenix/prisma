@@ -56,6 +56,9 @@ bool operator==(const Return&, const Return&) noexcept {
 bool operator==(const CmpFlags& a, const CmpFlags& b) noexcept {
     return a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
 }
+bool operator==(const AluFlags& a, const AluFlags& b) noexcept {
+    return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
 bool operator==(const JumpRel& a, const JumpRel& b) noexcept {
     return a.target_guest_pc == b.target_guest_pc;
 }

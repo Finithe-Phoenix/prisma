@@ -109,6 +109,9 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::AluFlags>) {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
         } else if constexpr (std::is_same_v<T, ir::JumpRel>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {

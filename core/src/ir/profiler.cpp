@@ -27,6 +27,7 @@ OpCounter::Kind kind_for(const Op& op) noexcept {
         else if constexpr (std::is_same_v<T, Return>)      return OpCounter::Kind::Return;
         else if constexpr (std::is_same_v<T, JumpReg>)     return OpCounter::Kind::JumpReg;
         else if constexpr (std::is_same_v<T, CmpFlags>)    return OpCounter::Kind::CmpFlags;
+        else if constexpr (std::is_same_v<T, AluFlags>)    return OpCounter::Kind::AluFlags;
         else if constexpr (std::is_same_v<T, JumpRel>)     return OpCounter::Kind::JumpRel;
         else if constexpr (std::is_same_v<T, CondJumpRel>) return OpCounter::Kind::CondJumpRel;
         else if constexpr (std::is_same_v<T, CallRel>)     return OpCounter::Kind::CallRel;

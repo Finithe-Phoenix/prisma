@@ -1696,14 +1696,16 @@ TEST_CASE("decode XADD rbx, rcx via 48 0F C1 CB as exchange-add sequence") {
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x0F, 0xC1, 0xCB}, r);
     REQUIRE(d.bytes_consumed == 4);
-    REQUIRE(d.stmts.size() == 5);
+    REQUIRE(d.stmts.size() == 6);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
     // SRC ← DEST first, DEST ← TEMP last (same-register aliasing).
-    REQUIRE(d.stmts[3].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 2u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode XADD [rbx + 0x10], rcx via 48 0F C1 4B 10") {
@@ -1713,7 +1715,7 @@ TEST_CASE("decode XADD [rbx + 0x10], rcx via 48 0F C1 4B 10") {
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x0F, 0xC1, 0x4B, 0x10}, r);
     REQUIRE(d.bytes_consumed == 5);
-    REQUIRE(d.stmts.size() == 8);
+    REQUIRE(d.stmts.size() == 9);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op == ir::Op{ir::Constant{0x10u, ir::OpSize::I64}});
@@ -1722,9 +1724,11 @@ TEST_CASE("decode XADD [rbx + 0x10], rcx via 48 0F C1 4B 10") {
     REQUIRE(d.stmts[4].op == ir::Op{ir::LoadMemTSO{4u, ir::OpSize::I64}});
     REQUIRE(d.stmts[5].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[6].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I64}});
     // SRC ← DEST first, DEST ← TEMP last.
-    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
-    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreMemTSO{4u, 5u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[8].op == ir::Op{ir::StoreMemTSO{4u, 5u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode LOCK CMPXCHG [rbx + 0x10], rcx reuses the same IR") {
@@ -2704,14 +2708,21 @@ TEST_CASE("decode XADD accepts the 32-bit form") {
     ir::Ref r = 0;
     auto d = decode_ok({0x0F, 0xC1, 0xCB}, r);
     bool has_add32 = false;
+    bool has_flags32 = false;
     for (const auto& s : d.stmts) {
         if (const auto* b = std::get_if<ir::BinOp>(&s.op)) {
             if (b->op == ir::BinOpKind::Add && b->size == ir::OpSize::I32) {
                 has_add32 = true;
             }
         }
+        if (const auto* f = std::get_if<ir::AluFlags>(&s.op)) {
+            if (f->op == ir::BinOpKind::Add && f->size == ir::OpSize::I32) {
+                has_flags32 = true;
+            }
+        }
     }
     REQUIRE(has_add32);
+    REQUIRE(has_flags32);
 }
 
 TEST_CASE("decode CMPXCHG8B (0F C7 /1 without REX.W)") {

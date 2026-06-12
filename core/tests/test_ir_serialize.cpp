@@ -105,6 +105,8 @@ TEST_CASE("ir_serialize: JumpReg / CmpFlags round-trip", "[ir_serialize]") {
         Op{JumpReg{Ref{99u}}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt,
         Op{CmpFlags{Ref{18u}, Ref{19u}, OpSize::I64}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{AluFlags{BinOpKind::Add, Ref{18u}, Ref{19u}, OpSize::I64}}});
 }
 
 TEST_CASE("ir_serialize: JumpRel / CondJumpRel round-trip", "[ir_serialize]") {
