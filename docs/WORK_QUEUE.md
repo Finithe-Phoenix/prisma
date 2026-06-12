@@ -6,15 +6,15 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-11 (16-bit atomics + LZCNT/TZCNT CF flag closed; direct JIT patch metrics still tracked).
+Last updated: 2026-06-11 (test coverage strengthened; CI green; decoder-gap-sweep merged).
 
 ## Currently active
 
-Branch: `claude/decoder-gap-sweep` (stacked on
-`claude/guest-feature-discovery` / PR #14). Baseline 973/973;
-988/988 at arc close (Debug + ASan/UBSan, x86_64 container).
-Latest local validation: 1003/1003 (`~signal_handler*`) on the mounted
-`prisma-build-env` container after `a25bbbc`.
+Branch: `main`. Decoder-gap-sweep merged (7294673), branches cleaned up.
+CI verde on all workflows (core-build, asan-ubsan, tsan, ir-spec-build,
+markdownlint, check-rfc-frontmatter, shell-check, benchmarks-smoke).
+Test count: 34 new test cases across signal_handler (4→7), host_features
+(4→6), property (5→10), smc_guard (7→11) — commit `3ed9a38`.
 
 ## Queue (priority order)
 
@@ -54,6 +54,17 @@ Latest local validation: 1003/1003 (`~signal_handler*`) on the mounted
 | 16e | CI: `ffi-link` workflow | 1 commit | `bf86cca` | ✅ done | ffi-link (x86_64) + ffi-link-arm64 (real ARM64 JIT execution in CI, public-repo runner). |
 | 17a | CI: full C++ suite on ARM64 runner | 1 commit | `0ff071e` | ✅ done | `core-build-arm64` — the whole e2e JIT corpus now executes in CI, not just on Apple Silicon. |
 | 17b | Proptest decoder fuzzing via bridge | 1 commit | `0e8a1e2` | ✅ done | 3 properties (noise, instruction-shaped, determinism+cache), 1,280+ cases/run; complements AFL++. |
+
+## Completed (current session — CI recovery + test strengthening)
+
+| # | Item | SHA | Note |
+|---|------|-----|------|
+| – | `feat(ir,decoder): model LZCNT TZCNT flags` | `156a664` | Danny's commit: flag write for LZCNT/TZCNT CF+ZF. |
+| – | `fix(lint): remove trailing spaces in bug_report.md` | `9447037` | Claude: markdownlint MD009. |
+| – | `test(cache): align upsert/compact tests with documented semantics` | `78e5d84` | Danny: fixed invented expectations. |
+| – | `ci(clang-format): scope to changed files + advisory` | `ef14fff` | Danny: unblock CI by making clang-format advisory. |
+| – | `test: fix invented expectations in parallel-landed test batch` | `bca6320` | Danny: sha256, ARCH_SET_FS/GS, FNV-1a avalanche fixes. |
+| – | `test: strengthen signal_handler, host_features, property, smc_guard coverage` | `3ed9a38` | Claude: 34 new test cases across 4 files (262 insertions). |
 
 ## Completed (this session)
 
