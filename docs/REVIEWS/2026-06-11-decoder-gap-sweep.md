@@ -90,3 +90,29 @@ dropping the CX8/CX16 bits is a 2-line change.
 - PCMPISTRI/PCMPESTRI → re-advertise SSE4.2 (next decoder arc).
 - SSSE3 PMADDUBSW/PMULHRSW/PSIGN; SSE4.1 INSERTPS/BLENDPS-imm/DPPS/
   PACKUSDW.
+
+## Addendum 2026-06-12 — Gemini syscall-layer review + SMC signal-safety fix
+
+Gemini reviewed the parallel-landed syscall layer. Findings and
+dispositions:
+
+- BLOCKER (confirmed independently by TSan in CI): the SIGSEGV
+  handler invoked cache invalidation callbacks and SmcGuard freed map
+  nodes under a std::mutex inside signal context. FIXED here:
+  SmcGuard::handle_fault is now async-signal-safe (spinlock, no
+  alloc/free — tombstone + fixed ring); callbacks fire via
+  drain_smc_invalidations() which the dispatcher runs between blocks.
+- BLOCKER (queued for the syscall owner): x86_64 guest struct stat
+  and epoll_event layouts differ from the ARM64 host (epoll_event is
+  packed/12B on x86_64, 16B on aarch64) — direct passthrough corrupts
+  guest memory. Needs translation shims.
+- MAJOR (queued): prctl passthrough must be allowlisted
+  (PR_SET_SECCOMP/PTRACER/DUMPABLE reach the HOST process); mmap must
+  reject MAP_FIXED over host/JIT ranges and intercept PROT_EXEC; brk
+  must return the new break, not sbrk's old one; ioctl passthrough is
+  arch-dependent.
+- BLOCKER (queued, patching): direct-patched hot loops never return
+  to the dispatcher, so an SMC write cannot break them — patch
+  invalidation needs an undo path driven by the drain.
+- MINORs recorded: wait4 host-PID reach, open path sanitization
+  (sandbox-era), icache broadcast barrier, strace -errno formatting.
