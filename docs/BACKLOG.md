@@ -432,12 +432,12 @@ translator on a reference Linux ARM64 box.
 - [x] (9ba0dd9) F2-SY-022: Implement readv / writev.
 - [ ] F2-SY-023: Implement poll / ppoll / select / epoll_wait.
 - [ ] F2-SY-024: Implement epoll_create / epoll_ctl.
-- [ ] F2-SY-025: Implement getdents / getdents64.
+- [x] (cf5f668) F2-SY-025: Implement getdents / getdents64.
 - [ ] F2-SY-026: Implement wait4 / waitid / waitpid.
 - [ ] F2-SY-027: Implement prlimit64 / getrlimit / setrlimit.
 - [ ] F2-SY-028: Implement prctl (subset — no_new_privs, etc.).
 - [x] (6bc6dec) F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
-- [ ] F2-SY-030: Implement set_tid_address.
+- [x] (cf5f668) F2-SY-030: Implement set_tid_address.
 - [ ] F2-SY-031: Implement mmap2 / old_mmap.
 - [ ] F2-SY-032: Implement robust_futex structure translation.
 - [ ] F2-SY-033: Errno translation table (glibc expects Linux errno numbers).
