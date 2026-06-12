@@ -241,6 +241,31 @@ bool Lowerer::reg_of(ir::Ref ref, arm64::Reg& out) {
     return true;
 }
 
+LowerResult Lowerer::align_flag_operands(arm64::Reg lhs,
+                                         arm64::Reg rhs,
+                                         ir::OpSize size,
+                                         arm64::Reg& out_lhs,
+                                         arm64::Reg& out_rhs) {
+    if (size == ir::OpSize::I64) {
+        out_lhs = lhs;
+        out_rhs = rhs;
+        return {};
+    }
+
+    arm64::Reg shift;
+    if (!allocate_temporary(out_lhs) ||
+        !allocate_temporary(out_rhs) ||
+        !allocate_temporary(shift)) {
+        return {false, LowerError::OutOfScratchRegs,
+                "align_flag_operands needs three temps"};
+    }
+
+    emitter_.mov_imm64(shift, 64u - ir::bit_width(size));
+    emitter_.lsl(out_lhs, lhs, shift);
+    emitter_.lsl(out_rhs, rhs, shift);
+    return {};
+}
+
 void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
     last_use_.clear();
     auto bump = [&](ir::Ref r, std::size_t i) {
@@ -673,7 +698,10 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             arm64::Reg rl, rr;
             if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "CmpFlags.lhs"};
             if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "CmpFlags.rhs"};
-            emitter_.cmp(rl, rr);
+            arm64::Reg fl, fr;
+            auto aligned = align_flag_operands(rl, rr, op.size, fl, fr);
+            if (!aligned.success) return aligned;
+            emitter_.cmp(fl, fr);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::AluFlags>) {
@@ -683,9 +711,12 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             arm64::Reg rl, rr;
             if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "AluFlags.lhs"};
             if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "AluFlags.rhs"};
+            arm64::Reg fl, fr;
+            auto aligned = align_flag_operands(rl, rr, op.size, fl, fr);
+            if (!aligned.success) return aligned;
             switch (op.op) {
                 case ir::BinOpKind::Sub:
-                    emitter_.cmp(rl, rr);
+                    emitter_.cmp(fl, fr);
                     break;
                 case ir::BinOpKind::Add:
                 case ir::BinOpKind::And: {
@@ -695,9 +726,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                                 "AluFlags(Add/And) needs a temp"};
                     }
                     if (op.op == ir::BinOpKind::Add) {
-                        emitter_.adds(rd_tmp, rl, rr);
+                        emitter_.adds(rd_tmp, fl, fr);
                     } else {
-                        emitter_.ands(rd_tmp, rl, rr);
+                        emitter_.ands(rd_tmp, fl, fr);
                     }
                     break;
                 }
@@ -1221,11 +1252,14 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             arm64::Reg rl, rr;
             if (!reg_of(op.lhs, rl)) return {false, LowerError::DanglingRef, "WriteFlags.lhs"};
             if (!reg_of(op.rhs, rr)) return {false, LowerError::DanglingRef, "WriteFlags.rhs"};
+            arm64::Reg fl, fr;
+            auto aligned = align_flag_operands(rl, rr, op.size, fl, fr);
+            if (!aligned.success) return aligned;
             switch (op.op) {
                 case ir::BinOpKind::Sub:
                     // `cmp` is `subs xzr, lhs, rhs` — sets NZCV without
                     // writing a destination.
-                    emitter_.cmp(rl, rr);
+                    emitter_.cmp(fl, fr);
                     break;
                 case ir::BinOpKind::Add:
                 case ir::BinOpKind::And: {
@@ -1238,9 +1272,9 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                                 "WriteFlags(Add/And) needs a temp"};
                     }
                     if (op.op == ir::BinOpKind::Add) {
-                        emitter_.adds(rd_tmp, rl, rr);
+                        emitter_.adds(rd_tmp, fl, fr);
                     } else {
-                        emitter_.ands(rd_tmp, rl, rr);
+                        emitter_.ands(rd_tmp, fl, fr);
                     }
                     break;
                 }

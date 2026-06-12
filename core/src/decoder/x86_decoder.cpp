@@ -535,9 +535,9 @@ std::variant<Decoded, DecodeError> decode_xchg_r64_rm64(
 // Encodes:
 //   if accumulator == dst: dst = src else accumulator = dst
 //   ZF = (accumulator == dst)
-// On success the accumulator is NOT written (upper RAX bits are
-// preserved), so the writeback selects between the full 64-bit RAX
-// and the zero-extended dst value.
+// On success the accumulator is NOT written. r/m16 failure writes AX
+// only; r/m32 failure writes EAX and zero-extends RAX; r/m64 writes
+// the full accumulator.
 std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor,
@@ -555,8 +555,11 @@ std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     Decoded d;
     const ir::Ref ref_acc = next_ref++;
     d.stmts.push_back({ref_acc, ir::LoadReg{ir::Gpr::Rax, size}});
-    const ir::Ref ref_rax_full = next_ref++;
-    d.stmts.push_back({ref_rax_full, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    ir::Ref ref_rax_full = ir::kInvalidRef;
+    if (size != ir::OpSize::I16) {
+        ref_rax_full = next_ref++;
+        d.stmts.push_back({ref_rax_full, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    }
 
     const ir::Ref ref_src = next_ref++;
     d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), size}});
@@ -576,15 +579,26 @@ std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     const ir::Ref ref_new_dst = next_ref++;
     const ir::Ref ref_new_rax = next_ref++;
     d.stmts.push_back({ref_new_dst, ir::Select{ir::CondCode::Eq, ref_src, ref_dst, size}});
-    // ref_dst is a zero-extended narrow value, which is exactly the
-    // architectural accumulator writeback for the failure path.
-    d.stmts.push_back({ref_new_rax, ir::Select{ir::CondCode::Eq, ref_rax_full, ref_dst, ir::OpSize::I64}});
+    if (size == ir::OpSize::I16) {
+        // r/m16 failure writes AX only. StoreReg(I16) preserves the
+        // rest of RAX while still leaving the success path unchanged.
+        d.stmts.push_back({ref_new_rax,
+            ir::Select{ir::CondCode::Eq, ref_acc, ref_dst, ir::OpSize::I16}});
+    } else {
+        // For r/m32 failure writes EAX and zero-extends RAX; for r/m64
+        // failure writes the full register. Selecting into I64 captures
+        // both while preserving full RAX on success.
+        d.stmts.push_back({ref_new_rax,
+            ir::Select{ir::CondCode::Eq, ref_rax_full, ref_dst, ir::OpSize::I64}});
+    }
 
     // Accumulator writeback FIRST: when the r/m operand aliases RAX
     // (cmpxchg rax, rcx) the compare always succeeds and the dst
     // write must win — SDM order is accumulator-then-DEST (Codex
     // review finding).
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt,
+        ir::StoreReg{ir::Gpr::Rax, ref_new_rax,
+            size == ir::OpSize::I16 ? ir::OpSize::I16 : ir::OpSize::I64}});
     if (m.mod == 0b11u) {
         d.stmts.push_back(
             {std::nullopt, ir::StoreReg{m.base, ref_new_dst, size}});
@@ -2241,20 +2255,19 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
             return DispatchDecodeResult{decode_bt_group_imm8_dispatch(
                 bytes, cursor, rex, has_address_size_override, next_ref)};
         case TwoByteDispatchKind::Cmpxchg:
-            // 16-bit form stays rejected: x86 16-bit register writes
-            // preserve the upper bits and StoreReg-vs-Select handling
-            // for that case is not modelled yet.
-            if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (rex.w && has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             return DispatchDecodeResult{decode_cmpxchg_rm_r(
                 bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref,
-                rex.w ? ir::OpSize::I64 : ir::OpSize::I32)};
+                rex.w ? ir::OpSize::I64
+                      : (has_operand_size_override ? ir::OpSize::I16 : ir::OpSize::I32))};
         case TwoByteDispatchKind::Xadd:
-            if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (rex.w && has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             return DispatchDecodeResult{decode_xadd_rm_r(
                 bytes, cursor, rex, instruction_guest_pc, has_address_size_override, next_ref,
-                rex.w ? ir::OpSize::I64 : ir::OpSize::I32)};
+                rex.w ? ir::OpSize::I64
+                      : (has_operand_size_override ? ir::OpSize::I16 : ir::OpSize::I32))};
         case TwoByteDispatchKind::Cmpxchg16b:
             if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};

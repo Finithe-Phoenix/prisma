@@ -197,6 +197,15 @@ private:
     // itself evict another ref).
     [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out);
 
+    // Shift narrow integer operands up to the ARM64 flag bit position
+    // before using x-sized flag-setting ops. This makes NZCV reflect the
+    // IR operand width for I8/I16/I32 arithmetic and compares.
+    [[nodiscard]] LowerResult align_flag_operands(arm64::Reg lhs,
+                                                  arm64::Reg rhs,
+                                                  ir::OpSize size,
+                                                  arm64::Reg& out_lhs,
+                                                  arm64::Reg& out_rhs);
+
     // Spill one currently-held ref to a stack slot, returning its reg
     // to the free list. Picks the victim with the farthest next-use
     // (Belady). Returns false if spill_slots are exhausted or no ref

@@ -2708,6 +2708,42 @@ TEST_CASE("decode CMPXCHG accepts the 32-bit form") {
     REQUIRE(has_sel);
 }
 
+TEST_CASE("decode CMPXCHG accepts the 16-bit register form") {
+    // 66 0F B1 /r: cmpxchg bx, cx (ModRM CB). Failure writes AX only,
+    // so accumulator writeback must use StoreReg(I16), not StoreReg(I64).
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xB1, 0xCB}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 8);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I16}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I16}});
+    REQUIRE(d.stmts[2].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I16}});
+    REQUIRE(d.stmts[3].op == ir::Op{ir::CmpFlags{0u, 2u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 1u, 2u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[5].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 0u, 2u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 4u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[7].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 3u, ir::OpSize::I16}});
+}
+
+TEST_CASE("decode CMPXCHG accepts the 16-bit memory form") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xB1, 0x4B, 0x10}, r);
+    REQUIRE(d.bytes_consumed == 5);
+    REQUIRE(d.stmts.size() == 11);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I16}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I16}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::LoadMemTSO{4u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[6].op == ir::Op{ir::CmpFlags{0u, 5u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[7].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 1u, 5u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[8].op ==
+            ir::Op{ir::Select{ir::CondCode::Eq, 0u, 5u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[9].op == ir::Op{ir::StoreReg{ir::Gpr::Rax, 7u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[10].op == ir::Op{ir::StoreMemTSO{4u, 6u, ir::OpSize::I16}});
+}
+
 TEST_CASE("decode XADD accepts the 32-bit form") {
     ir::Ref r = 0;
     auto d = decode_ok({0x0F, 0xC1, 0xCB}, r);
@@ -2727,6 +2763,21 @@ TEST_CASE("decode XADD accepts the 32-bit form") {
     }
     REQUIRE(has_add32);
     REQUIRE(has_flags32);
+}
+
+TEST_CASE("decode XADD accepts the 16-bit form") {
+    ir::Ref r = 0;
+    auto d = decode_ok({0x66, 0x0F, 0xC1, 0xCB}, r);
+    REQUIRE(d.bytes_consumed == 4);
+    REQUIRE(d.stmts.size() == 6);
+    REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I16}});
+    REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I16}});
+    REQUIRE(d.stmts[2].op ==
+            ir::Op{ir::BinOp{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[3].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Add, 1u, 0u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[4].op == ir::Op{ir::StoreReg{ir::Gpr::Rcx, 1u, ir::OpSize::I16}});
+    REQUIRE(d.stmts[5].op == ir::Op{ir::StoreReg{ir::Gpr::Rbx, 2u, ir::OpSize::I16}});
 }
 
 TEST_CASE("decode CMPXCHG8B (0F C7 /1 without REX.W)") {
