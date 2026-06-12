@@ -30,10 +30,12 @@
 #include <pthread.h>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -55,12 +57,14 @@ enum X64Sysno : std::uint64_t {
     kX64Stat        = 4,
     kX64Fstat       = 5,
     kX64Lstat       = 6,
+    kX64Poll        = 7,
     kX64Mmap        = 9,
     kX64Mprotect    = 10,
     kX64Munmap      = 11,
     kX64Brk         = 12,
     kX64RtSigaction = 13,
     kX64RtSigprocmask = 14,
+    kX64Select      = 23,
     kX64Ioctl       = 16,
     kX64Readv       = 19,
     kX64Writev      = 20,
@@ -120,6 +124,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Stat:        return "stat";
         case kX64Fstat:       return "fstat";
         case kX64Lstat:       return "lstat";
+        case kX64Poll:        return "poll";
         case kX64Lseek:       return "lseek";
         case kX64Mmap:        return "mmap";
         case kX64Mprotect:    return "mprotect";
@@ -127,6 +132,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Brk:         return "brk";
         case kX64RtSigaction: return "rt_sigaction";
         case kX64RtSigprocmask: return "rt_sigprocmask";
+        case kX64Select:      return "select";
         case kX64Ioctl:       return "ioctl";
         case kX64Readv:       return "readv";
         case kX64Writev:      return "writev";
@@ -450,6 +456,35 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 reinterpret_cast<struct ::timespec*>(
                     static_cast<std::uintptr_t>(a2));
             result = ::nanosleep(req, rem);
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-023: poll ----------------------------------------------------
+        case kX64Poll: {
+            // poll(fds, nfds, timeout) — POSIX, works on any host.
+            result = static_cast<std::int64_t>(::poll(
+                reinterpret_cast<struct ::pollfd*>(
+                    static_cast<std::uintptr_t>(a1)),
+                static_cast<unsigned int>(a2),
+                static_cast<int>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-023: select --------------------------------------------------
+        case kX64Select: {
+            // select(nfds, readfds, writefds, exceptfds, timeout) — POSIX.
+            result = static_cast<std::int64_t>(::select(
+                static_cast<int>(a1),
+                reinterpret_cast<::fd_set*>(
+                    static_cast<std::uintptr_t>(a2)),
+                reinterpret_cast<::fd_set*>(
+                    static_cast<std::uintptr_t>(a3)),
+                reinterpret_cast<::fd_set*>(
+                    static_cast<std::uintptr_t>(a4)),
+                reinterpret_cast<struct ::timeval*>(
+                    static_cast<std::uintptr_t>(a5))));
             if (result < 0) result = -errno;
             break;
         }
