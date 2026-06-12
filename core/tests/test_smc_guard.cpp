@@ -203,3 +203,75 @@ TEST_CASE("smc_guard: global pointer setter / getter round-trip") {
     set_global_smc_guard(nullptr);
     REQUIRE(global_smc_guard() == nullptr);
 }
+
+TEST_CASE("smc_guard: on_translate with zero guest_byte_len") {
+    // Zero-length translation should still register the owning page.
+    TwoPages pages;
+    SmcGuard g;
+
+    g.on_translate(pages.page0(), /*guest_byte_len=*/0, /*cache_key=*/1);
+    REQUIRE(g.tracked_page_count() == 1);
+    REQUIRE(g.is_tracked(pages.page0()));
+
+    g.on_invalidate(/*cache_key=*/1);
+    REQUIRE(g.tracked_page_count() == 0);
+}
+
+TEST_CASE("smc_guard: drain_pending with nothing enqueued returns 0") {
+    TwoPages pages;
+    SmcGuard g;
+
+    g.on_translate(pages.page0(), 8, /*cache_key=*/1);
+    REQUIRE(g.tracked_page_count() == 1);
+    REQUIRE(g.is_tracked(pages.page0()));
+
+    // No fault has occurred — nothing to drain.
+    int callbacks = 0;
+    auto cb = [&](std::uint64_t) { ++callbacks; };
+    REQUIRE(g.drain_pending(cb) == 0);
+    REQUIRE(callbacks == 0);
+}
+
+TEST_CASE("smc_guard: handle_fault on null address returns false") {
+    TwoPages pages;
+    SmcGuard g;
+
+    g.on_translate(pages.page0(), 8, /*cache_key=*/1);
+
+    REQUIRE_FALSE(g.handle_fault(nullptr));
+    REQUIRE(g.is_tracked(pages.page0()));  // still tracked; no harm done.
+
+    // Also verify a zero-address (not null pointer, but address 0).
+    REQUIRE_FALSE(g.handle_fault(reinterpret_cast<void*>(static_cast<std::uintptr_t>(0))));
+    REQUIRE(g.is_tracked(pages.page0()));
+}
+
+TEST_CASE("smc_guard: consecutive faults on two distinct pages drain separately") {
+    TwoPages pages;
+    SmcGuard g;
+
+    g.on_translate(pages.page0(), 4, /*cache_key=*/10);
+    g.on_translate(pages.page1(), 4, /*cache_key=*/20);
+
+    // Fault on page0.
+    void* f0 = reinterpret_cast<void*>(pages.page0());
+    REQUIRE(g.handle_fault(f0));
+    // page1 unaffected.
+    REQUIRE_FALSE(g.is_tracked(pages.page0()));
+    REQUIRE(g.is_tracked(pages.page1()));
+
+    std::vector<std::uint64_t> seen;
+    auto cb = [&](std::uint64_t k) { seen.push_back(k); };
+    REQUIRE(g.drain_pending(cb) == 1);
+    REQUIRE(seen.size() == 1);
+    REQUIRE(seen[0] == 10);
+
+    // Fault on page1, now separate.
+    seen.clear();
+    void* f1 = reinterpret_cast<void*>(pages.page1() + 2);
+    REQUIRE(g.handle_fault(f1));
+    // drain_pending returns page count, not key count.
+    REQUIRE(g.drain_pending(cb) == 1);
+    REQUIRE(seen.size() == 1);
+    REQUIRE(seen[0] == 20);
+}

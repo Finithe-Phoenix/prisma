@@ -176,6 +176,70 @@ TEST_CASE("signal_handler: SIGILL recovery from an illegal ARM64 instruction",
     }
 }
 
+TEST_CASE("signal_handler: SIGBUS recovery via setjmp/longjmp",
+          "[arm64-only]") {
+    if constexpr (!is_arm64) {
+        SUCCEED("skipped on non-ARM64 host");
+        return;
+    }
+
+    runtime::install_handlers();
+
+    // SIGBUS is harder to provoke programmatically than SIGSEGV or SIGILL
+    // on ARM64 Linux. On Apple Silicon, an unaligned access from a
+    // load-pair that crosses a page boundary delivers SIGBUS. We verify
+    // the handler path with the same setjmp pattern that exercises
+    // FaultKind::Bus.
+    std::jmp_buf jb;
+    if (setjmp(jb) == 0) {
+        runtime::ScopedProtected guard(jb);
+        // Dereference a deliberately misaligned address that isn't backed
+        // by a real mapping on most platforms, forcing the kernel to
+        // deliver SIGBUS rather than SIGSEGV.
+        volatile std::uint64_t* p =
+            reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(0x42));
+        (void)*p;
+        FAIL("should have faulted");
+    } else {
+        // On some kernels the unaligned dereference of an unmapped page
+        // may produce SIGSEGV instead of SIGBUS. Accept either — the
+        // important assertion is that we recovered via a SignalKind
+        // fault (not None).
+        REQUIRE(runtime::last_fault_kind() != runtime::FaultKind::None);
+    }
+}
+
+TEST_CASE("signal_handler: multiple sequential fault-recovery cycles") {
+    // A translation block that faults twice should be recoverable each
+    // time. Verifies that the thread-local state resets correctly after
+    // each recovery.
+    runtime::install_handlers();
+
+    for (int i = 0; i < 5; ++i) {
+        std::jmp_buf jb;
+        if (setjmp(jb) == 0) {
+            runtime::ScopedProtected guard(jb);
+            volatile std::uint64_t* p =
+                reinterpret_cast<std::uint64_t*>(
+                    static_cast<std::uintptr_t>(0x100 + i));
+            (void)*p;
+            FAIL("should have faulted at iteration " << i);
+        } else {
+            REQUIRE(runtime::last_fault_kind() == runtime::FaultKind::Segv);
+        }
+    }
+    // The last fault kind is still visible after the loop.
+    REQUIRE(runtime::last_fault_kind() == runtime::FaultKind::Segv);
+}
+
+TEST_CASE("signal_handler: drain_smc_invalidations returns 0 with no guard") {
+    runtime::install_handlers();
+    // No SmcGuard installed at all — drain should return 0 without
+    // crashing or asserting.
+    runtime::clear_smc_invalidate_callback();
+    REQUIRE(runtime::drain_smc_invalidations() == 0);
+}
+
 TEST_CASE("signal_handler: nested ScopedProtected preserves stack on normal exit") {
     // When scopes exit normally (no fault), the RAII destructors run in
     // LIFO order and `tls_current_jb` is correctly restored. We don't

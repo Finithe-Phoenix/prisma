@@ -26,7 +26,10 @@ namespace {
 struct Rng {
     std::mt19937_64 e;
     std::uniform_int_distribution<int> dist_size{0, 3};       // OpSize
-    std::uniform_int_distribution<int> dist_binop{0, 12};     // BinOpKind
+    // BinOpKind spans Add=0 … Pext=20. Keep the full range so the
+    // property tests exercise the complete set, including multiply-high
+    // and divide ops that later passes fold or lower.
+    std::uniform_int_distribution<int> dist_binop{0, 20};     // BinOpKind
     std::uniform_int_distribution<int> dist_cc{0, 9};         // first 10 CondCodes
     std::uniform_int_distribution<int> dist_gpr{0, 15};
     std::uniform_int_distribution<std::uint64_t> dist_imm{0, ~0ULL};
@@ -150,7 +153,8 @@ TEST_CASE("property: random IR programs round-trip through the binary serializer
 
 TEST_CASE("property: random IR programs are accepted by the validator",
           "[property][validate]") {
-    const std::uint64_t seed = GENERATE(0xCAFE'BABEull, 0xDEAD'BEEFull);
+    const std::uint64_t seed = GENERATE(0xCAFE'BABEull, 0xDEAD'BEEFull,
+                                        0x1234'5678ull, 0x55AA'3CC3ull);
     Rng rng{seed};
     const std::size_t n = 100;
     auto program = random_program(rng, n);
@@ -167,7 +171,8 @@ TEST_CASE("property: random IR programs are accepted by the validator",
 
 TEST_CASE("property: default_pipeline is idempotent on random programs",
           "[property][passes]") {
-    const std::uint64_t seed = GENERATE(0xAAAA'5555ull, 0x9876'5432ull);
+    const std::uint64_t seed = GENERATE(0xAAAA'5555ull, 0x9876'5432ull,
+                                        0x1111'2222ull, 0x3333'4444ull);
     Rng rng{seed};
     auto program = random_program(rng, 30);
 
@@ -184,7 +189,8 @@ TEST_CASE("property: default_pipeline is idempotent on random programs",
 
 TEST_CASE("property: default_pipeline never grows the program",
           "[property][passes]") {
-    const std::uint64_t seed = GENERATE(0xF00D'BAADull, 0x1357'9BDFull);
+    const std::uint64_t seed = GENERATE(0xF00D'BAADull, 0x1357'9BDFull,
+                                        0xFACE'B00Cull);
     Rng rng{seed};
     auto program = random_program(rng, 75);
 
@@ -192,6 +198,58 @@ TEST_CASE("property: default_pipeline never grows the program",
     auto pm = passes::default_pipeline();
     auto [out, _stats] = pm.run(program);
     REQUIRE(out.size() <= program.size());
+}
+
+// ---------------------------------------------------------------------
+// Property: empty program round-trips through the binary serializer.
+// ---------------------------------------------------------------------
+
+TEST_CASE("property: empty IR program round-trips through serializer",
+          "[property][serialize]") {
+    std::vector<ir::Stmt> empty;
+    auto bytes = ir::serialize(empty);
+    auto r     = ir::deserialize_stmts(bytes);
+    REQUIRE(r.error == ir::DeserializeError::Ok);
+    REQUIRE(r.stmts.empty());
+}
+
+// ---------------------------------------------------------------------
+// Property: single-instruction program (one Constant) round-trips.
+// ---------------------------------------------------------------------
+
+TEST_CASE("property: single-stmt IR program round-trips through serializer",
+          "[property][serialize]") {
+    std::vector<ir::Stmt> program = {
+        {ir::Ref{0}, ir::Constant{0xDEADBEEFull, ir::OpSize::I32}},
+    };
+    auto bytes = ir::serialize(program);
+    auto r     = ir::deserialize_stmts(bytes);
+    REQUIRE(r.error == ir::DeserializeError::Ok);
+    REQUIRE(r.stmts.size() == 1);
+    REQUIRE(r.stmts[0] == program[0]);
+}
+
+// ---------------------------------------------------------------------
+// Property: single-instruction program (one BinOp) round-trips.
+// ---------------------------------------------------------------------
+
+TEST_CASE("property: single-BinOp program round-trips and validates",
+          "[property][serialize][validate]") {
+    std::vector<ir::Stmt> program = {
+        {ir::Ref{0}, ir::Constant{42u, ir::OpSize::I64}},
+        {ir::Ref{1}, ir::Constant{7u,  ir::OpSize::I64}},
+        {ir::Ref{2}, ir::BinOp{ir::BinOpKind::Add, ir::Ref{0}, ir::Ref{1}, ir::OpSize::I64}},
+    };
+    auto v = ir::validate(program);
+    REQUIRE(v.ok);
+
+    auto bytes = ir::serialize(program);
+    auto r     = ir::deserialize_stmts(bytes);
+    REQUIRE(r.error == ir::DeserializeError::Ok);
+    REQUIRE(r.stmts.size() == program.size());
+    for (std::size_t i = 0; i < program.size(); ++i) {
+        REQUIRE(r.stmts[i] == program[i]);
+    }
 }
 
 // ---------------------------------------------------------------------
