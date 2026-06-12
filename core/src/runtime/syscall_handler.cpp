@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -101,6 +102,9 @@ enum X64Sysno : std::uint64_t {
     kX64ArchPrctl    = 158,
     kX64Prctl        = 157,
     kX64Prlimit64    = 302,
+    kX64EpollCreate1 = 291,
+    kX64EpollCtl     = 233,
+    kX64EpollWait    = 232,
 };
 
 }  // namespace prisma::runtime
@@ -168,6 +172,9 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64ArchPrctl:   return "arch_prctl";
         case kX64Prctl:       return "prctl";
         case kX64Prlimit64:   return "prlimit64";
+        case kX64EpollCreate1: return "epoll_create1";
+        case kX64EpollCtl:    return "epoll_ctl";
+        case kX64EpollWait:   return "epoll_wait";
         default:              return "???";
     }
 }
@@ -650,6 +657,38 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             // write-on-thread-exit is a no-op until we implement threads.
             result = static_cast<std::int64_t>(::gettid());
             break;
+        }
+
+        // -- F2-SY-024: epoll --------------------------------------------------
+        case kX64EpollCreate1: {
+            // epoll_create1(flags) — returns an epoll fd.
+            result = static_cast<std::int64_t>(::epoll_create1(
+                static_cast<int>(a1)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64EpollCtl: {
+            // epoll_ctl(epfd, op, fd, event) — control interface.
+            result = static_cast<std::int64_t>(::epoll_ctl(
+                static_cast<int>(a1),
+                static_cast<int>(a2),
+                static_cast<int>(a3),
+                reinterpret_cast<struct ::epoll_event*>(
+                    static_cast<std::uintptr_t>(a4))));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64EpollWait: {
+            // epoll_wait(epfd, events, maxevents, timeout).
+            result = static_cast<std::int64_t>(::epoll_wait(
+                static_cast<int>(a1),
+                reinterpret_cast<struct ::epoll_event*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3),
+                static_cast<int>(a4)));
+            if (result < 0) result = -errno;
+            break;
+        }
 
         default:
             result = -ENOSYS;

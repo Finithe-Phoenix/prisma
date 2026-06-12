@@ -430,7 +430,7 @@ translator on a reference Linux ARM64 box.
 - [x] (9ba0dd9) F2-SY-020: Implement unlink / rename / mkdir / rmdir.
 - [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
 - [x] (9ba0dd9) F2-SY-022: Implement readv / writev.
-- [ ] F2-SY-023: Implement poll / ppoll / select / epoll_wait.
+- [x] (f9ee56f) F2-SY-023: Implement poll / ppoll / select / epoll_wait.
 - [ ] F2-SY-024: Implement epoll_create / epoll_ctl.
 - [x] (cf5f668) F2-SY-025: Implement getdents / getdents64.
 - [x] (51c9a8a) F2-SY-026: Implement wait4 / waitid / waitpid.
