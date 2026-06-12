@@ -47,7 +47,6 @@ TEST_CASE("build_cfg: every terminator type ends a block") {
         {2u, Constant{2, OpSize::I64}},
         {std::nullopt, CondJumpRel{CondCode::Eq, 0x100ULL, 0x200ULL}},
         {3u, Constant{3, OpSize::I64}},  {std::nullopt, Cpuid{}},
-        {4u, Constant{4, OpSize::I64}},  {std::nullopt, Syscall{}},
         {5u, Constant{5, OpSize::I64}},  {std::nullopt, Trap{TrapKind::Sigtrap}},
         {6u, Constant{6, OpSize::I64}},
         {std::nullopt, CallRel{0x100ULL, 0x105ULL}},
@@ -55,7 +54,7 @@ TEST_CASE("build_cfg: every terminator type ends a block") {
         {8u, Constant{8, OpSize::I64}},  {std::nullopt, InlineAsm{{0xF4u}}},
     };
     auto fn = build_cfg(s);
-    REQUIRE(fn.blocks.size() == 9);
+    REQUIRE(fn.blocks.size() == 8);
     for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
         REQUIRE(fn.blocks[i].id == i);
         REQUIRE(fn.blocks[i].stmts.size() == 2);
@@ -87,7 +86,6 @@ TEST_CASE("is_terminator: all expected ops are terminators") {
     REQUIRE(is_terminator(Op{Trap{TrapKind::Sigtrap}}));
     REQUIRE(is_terminator(Op{Cpuid{}}));
     REQUIRE(is_terminator(Op{Xgetbv{}}));
-    REQUIRE(is_terminator(Op{Syscall{}}));
     REQUIRE(is_terminator(Op{InlineAsm{{}}}));
     REQUIRE(is_terminator(Op{CondJumpFlags{0u, CondCode::Eq, 1u, 2u}}));
 }
@@ -98,6 +96,7 @@ TEST_CASE("is_terminator: pure ops are not terminators") {
     REQUIRE_FALSE(is_terminator(Op{
         BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}}));
     REQUIRE_FALSE(is_terminator(Op{Fence{FenceKind::Mfence}}));
+    REQUIRE_FALSE(is_terminator(Op{Syscall{}}));
     REQUIRE_FALSE(is_terminator(Op{GuestPc{0x1000ULL}}));
     REQUIRE_FALSE(is_terminator(Op{
         Extend{0u, OpSize::I8, OpSize::I64, true}}));

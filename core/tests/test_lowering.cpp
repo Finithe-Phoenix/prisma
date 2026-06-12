@@ -17,6 +17,8 @@ using namespace prisma;
 
 namespace {
 
+void test_syscall_handler(runtime::CpuStateFrame*) {}
+
 std::string lower_to_disasm(std::span<const ir::Stmt> stmts, bool& ok,
                             backend::LowerOptions options = {}) {
     backend::Emitter em;
@@ -365,15 +367,18 @@ TEST_CASE("Lowerer: Cpuid with default options keeps the all-zero model") {
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
-TEST_CASE("Lowerer: Syscall returns the halt sentinel as a placeholder terminator") {
+TEST_CASE("Lowerer: Syscall calls the configured handler and continues") {
     std::vector<ir::Stmt> stmts = {
         {std::nullopt, ir::Syscall{}},
+        {std::nullopt, ir::Return{}},
     };
 
     bool ok;
-    const std::string d = lower_to_disasm(stmts, ok);
+    backend::LowerOptions opts{};
+    opts.syscall_handler = &test_syscall_handler;
+    const std::string d = lower_to_disasm(stmts, ok, opts);
     REQUIRE(ok);
-    REQUIRE(d.find("x0") != std::string::npos);
+    REQUIRE(d.find("blr") != std::string::npos);
     REQUIRE(d.find("ret") != std::string::npos);
 }
 

@@ -152,7 +152,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
 
 extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     using namespace prisma::runtime;
-    using ir::Gpr;
+    using prisma::ir::Gpr;
 
     const std::uint64_t sysno = state->gpr[static_cast<std::size_t>(Gpr::Rax)];
     const std::uint64_t a1 = state->gpr[static_cast<std::size_t>(Gpr::Rdi)];
@@ -243,7 +243,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 result = reinterpret_cast<std::int64_t>(::sbrk(0));
             } else {
                 result = reinterpret_cast<std::int64_t>(::sbrk(
-                    static_cast<std::intptr_t>(addr) -
+                    reinterpret_cast<std::intptr_t>(addr) -
                     reinterpret_cast<std::intptr_t>(::sbrk(0))));
                 if (reinterpret_cast<void*>(static_cast<std::uintptr_t>(result))
                     == reinterpret_cast<void*>(-1)) {
@@ -322,7 +322,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 static_cast<int>(a4),
                 static_cast<int>(a5),
                 static_cast<::off_t>(a6)));
-            if (result == static_cast<std::int64_t>(MAP_FAILED)) {
+            if (result == reinterpret_cast<std::int64_t>(MAP_FAILED)) {
                 result = -errno;
             }
             break;

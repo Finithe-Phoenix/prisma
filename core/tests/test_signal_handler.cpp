@@ -74,7 +74,7 @@ struct SmcCallbackState {
 void record_smc_invalidation(std::uint64_t cache_key, void* ctx) noexcept {
     auto* state = static_cast<SmcCallbackState*>(ctx);
     state->key = static_cast<std::sig_atomic_t>(cache_key);
-    ++state->calls;
+    state->calls = static_cast<std::sig_atomic_t>(state->calls + 1);
 }
 
 class SmcSignalScope {
