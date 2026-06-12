@@ -1,0 +1,22 @@
+[package]
+name = "prisma-ir"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma DBT IR types — SSA intermediate representation for x86_64 → ARM64 translation"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+bincode = "1.3"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
