@@ -361,6 +361,22 @@ void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
     impl_->masm.Cset(to_vixl_x(rd), to_vixl_cond(cc));
 }
 
+void Emitter::count_zero_flags(arm64::Reg result, arm64::Reg src,
+                               arm64::Reg w_tmp) {
+    // Build NZCV from the architectural LZCNT/TZCNT semantics:
+    //   Z = (result == 0)
+    //   C = NOT (src == 0)
+    // Pack as bit30/bit29 and zero the rest.
+    impl_->masm.Cmp(to_vixl_x(result), 0);
+    impl_->masm.Cset(to_vixl_w(w_tmp), vixl_aa::eq);
+    impl_->masm.Cmp(to_vixl_x(src), 0);
+    impl_->masm.Cset(to_vixl_w(result), vixl_aa::ne);
+    impl_->masm.Lsl(to_vixl_w(w_tmp), to_vixl_w(w_tmp), 30);
+    impl_->masm.Orr(to_vixl_w(w_tmp), to_vixl_w(w_tmp),
+                    vixl_aa::Operand(to_vixl_w(result), vixl_aa::LSL, 29));
+    impl_->masm.Msr(vixl_aa::NZCV, vixl_aa::Register(to_vixl_x(w_tmp)));
+}
+
 void Emitter::csel(arm64::Reg rd, arm64::Reg rn_true, arm64::Reg rn_false,
                    ir::CondCode cc) {
     impl_->masm.Csel(to_vixl_x(rd),

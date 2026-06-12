@@ -108,6 +108,7 @@ std::vector<Stmt> all_op_variant_stmts() {
         {std::nullopt, JumpReg{16u}},
         {std::nullopt, CmpFlags{17u, 18u, OpSize::I64}},
         {std::nullopt, AluFlags{BinOpKind::Add, 17u, 18u, OpSize::I64}},
+        {std::nullopt, WriteFlagsCountZero{17u, 18u, OpSize::I64}},
         {std::nullopt, JumpRel{0x402000u}},
         {std::nullopt, CallRel{0x403000u, 0x403005u}},
         {std::nullopt, CallReg{19u, 0x404005u}},

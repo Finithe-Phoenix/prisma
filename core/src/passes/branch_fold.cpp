@@ -110,6 +110,9 @@ branch_fold(const std::vector<ir::Stmt>& stmts) {
         else if (std::holds_alternative<ir::AluFlags>(s.op)) {
             last_cmp.reset();
         }
+        else if (std::holds_alternative<ir::WriteFlagsCountZero>(s.op)) {
+            last_cmp.reset();
+        }
         else if (std::holds_alternative<ir::CondJumpRel>(s.op) && last_cmp) {
             const auto& cj = std::get<ir::CondJumpRel>(s.op);
             const auto it_l = consts.find(last_cmp->lhs);

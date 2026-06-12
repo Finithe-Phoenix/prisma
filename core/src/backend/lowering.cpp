@@ -1951,6 +1951,22 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.popcnt_gpr(rd, rn, op.size);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::WriteFlagsCountZero>) {
+            // F2-IR-045 follow-up. LZCNT/TZCNT exact flag write:
+            //   Z = (result == 0)
+            //   C = NOT (src == 0)
+            // The preceding StoreReg has already materialised the
+            // count result, so we can reuse the same refs here.
+            arm64::Reg rsrc, rres;
+            if (!reg_of(op.src, rsrc)) return {false, LowerError::DanglingRef, "WriteFlagsCountZero.src"};
+            if (!reg_of(op.result, rres)) return {false, LowerError::DanglingRef, "WriteFlagsCountZero.result"};
+            arm64::Reg w_tmp;
+            if (!allocate_temporary(w_tmp)) {
+                return {false, LowerError::OutOfScratchRegs, "WriteFlagsCountZero tmp"};
+            }
+            emitter_.count_zero_flags(rres, rsrc, w_tmp);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::VecFpRound>) {
             // F2-IR-042 SSE4.1 ROUNDPS/PD/SS/SD.
             if (!s.result.has_value()) {

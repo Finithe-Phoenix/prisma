@@ -194,6 +194,13 @@ public:
     void cmp  (arm64::Reg rn, arm64::Reg rm);
     void cset (arm64::Reg rd, ir::CondCode cc);
 
+    // F2-IR-045 follow-up. Build NZCV for LZCNT/TZCNT:
+    //   ARM Z = (result == 0)
+    //   ARM C = NOT (src == 0)
+    // N/V are cleared.
+    void count_zero_flags(arm64::Reg result, arm64::Reg src,
+                          arm64::Reg w_tmp);
+
     // csel xd, xn_true, xn_false, <cc>
     //   xd = flag_true ? xn_true : xn_false
     // Used by CondJumpRel lowering to pick between taken / fallthrough

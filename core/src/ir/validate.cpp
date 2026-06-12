@@ -103,6 +103,7 @@ void for_each_operand_ref(const Op& op, F&& visit) {
         else if constexpr (std::is_same_v<T, Popcnt>)        { visit(x.value); }
         else if constexpr (std::is_same_v<T, Lzcnt>)         { visit(x.value); }
         else if constexpr (std::is_same_v<T, Tzcnt>)         { visit(x.value); }
+        else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) { visit(x.src); visit(x.result); }
         else if constexpr (std::is_same_v<T, VecBlend>)      { visit(x.dst); visit(x.src); visit(x.mask); }
         else if constexpr (std::is_same_v<T, WriteFlagsPtest>) { visit(x.lhs); visit(x.rhs); }
         else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) {
@@ -196,6 +197,7 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, Popcnt>
             || std::is_same_v<T, Lzcnt>
             || std::is_same_v<T, Tzcnt>
+            || std::is_same_v<T, WriteFlagsCountZero>
             || std::is_same_v<T, VecBlend>
             || std::is_same_v<T, WriteFlagsPtest>
             || std::is_same_v<T, WriteFlagsPtestYmm>
@@ -270,6 +272,8 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
             (void)x; (void)r;
         } else if constexpr (std::is_same_v<T, AluFlags>) {
             if (r == x.lhs || r == x.rhs) return x.size;
+        } else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) {
+            if (r == x.src || r == x.result) return x.size;
         } else if constexpr (std::is_same_v<T, WriteFlags>) {
             if (r == x.lhs || r == x.rhs) return x.size;
         }

@@ -58,7 +58,7 @@ public:
         VecFpCompare,
         VecPshufb, VecAbs,
         VecAlignr, VecExtend, VecFpRound,
-        Popcnt, Lzcnt, Tzcnt,
+        Popcnt, Lzcnt, Tzcnt, WriteFlagsCountZero,
         VecBlend,
         WriteFlagsPtest,
         LoadVecRegHi, StoreVecRegHi,
