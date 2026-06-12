@@ -145,4 +145,31 @@ theorem constant_fold_extend_sound
                 toSz) := by
   simp [evalPure, hv]
 
+/-! ## F1-LN-014/015/016 — signed wide-op corner cases
+
+Executable conformance checks pinning the signed `sMulHi` / `sDiv` /
+`sMod` semantics to the ARM64-matching folds in `const_prop.cpp` —
+the exact corner cases that motivated the former `sorry` placeholders:
+divide-by-zero, `INT_MIN / -1`, and truncation toward zero.
+`0x8000000000000000` is `INT64_MIN`; `0xFFFFFFFFFFFFFFFF` is `-1`. -/
+
+-- sDiv: ARM64 sdiv x,0 = 0; INT_MIN/-1 wraps; truncation toward zero.
+example : evalBinOp .sDiv 7 0 = 0 := by decide
+example : evalBinOp .sDiv 0x8000000000000000 0xFFFFFFFFFFFFFFFF
+            = 0x8000000000000000 := by decide
+example : evalBinOp .sDiv 7 0xFFFFFFFFFFFFFFFE = 0xFFFFFFFFFFFFFFFD := by decide  -- 7 / -2 = -3
+example : evalBinOp .sDiv 0xFFFFFFFFFFFFFFF9 2 = 0xFFFFFFFFFFFFFFFD := by decide  -- -7 / 2 = -3
+
+-- sMod: divide-by-zero returns the dividend; INT_MIN%-1 = 0; sign of dividend.
+example : evalBinOp .sMod 7 0 = 7 := by decide
+example : evalBinOp .sMod 0x8000000000000000 0xFFFFFFFFFFFFFFFF = 0 := by decide
+example : evalBinOp .sMod 7 0xFFFFFFFFFFFFFFFE = 1 := by decide                   -- 7 % -2 = 1
+example : evalBinOp .sMod 0xFFFFFFFFFFFFFFF9 2 = 0xFFFFFFFFFFFFFFFF := by decide  -- -7 % 2 = -1
+
+-- sMulHi: upper 64 bits of the signed 128-bit product.
+example : evalBinOp .sMulHi 0xFFFFFFFFFFFFFFFF 0xFFFFFFFFFFFFFFFF = 0 := by decide          -- (-1)*(-1)=1
+example : evalBinOp .sMulHi 0x8000000000000000 0x8000000000000000
+            = 0x4000000000000000 := by decide                                              -- INT_MIN^2 = 2^126
+example : evalBinOp .sMulHi 0xFFFFFFFFFFFFFFFF 1 = 0xFFFFFFFFFFFFFFFF := by decide          -- (-1)*1=-1
+
 end PrismaIR
