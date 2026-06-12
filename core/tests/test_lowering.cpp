@@ -127,6 +127,21 @@ TEST_CASE("Lowerer: byte and word StoreReg preserve upper guest-register bits") 
     REQUIRE(d.find("bfxil x12, x1, #0, #16") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: narrow integer flag writes align operands before NZCV ops") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I16}},
+        {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I16}},
+        {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I16}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("#0x30") != std::string::npos);
+    REQUIRE(d.find("lsl") != std::string::npos);
+    REQUIRE(d.find("adds") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: each BinOpKind emits the right ARM64 mnemonic") {
     auto try_op = [](ir::BinOpKind k) {
         std::vector<ir::Stmt> s = {
