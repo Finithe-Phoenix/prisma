@@ -7,6 +7,8 @@
 #include <utility>
 #include <variant>
 
+#include "prisma/signal_handler.hpp"
+
 namespace prisma::runtime {
 
 namespace {
@@ -124,6 +126,12 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
         };
 
     while (step < max_steps) {
+        // Drain SMC fault bookkeeping queued by the SIGSEGV handler
+        // (the handler itself is async-signal-safe and only
+        // tombstones; the invalidation callbacks run here, in normal
+        // context). Near-free when nothing is pending.
+        (void)drain_smc_invalidations();
+
         // Halt-before-execute so the caller can configure halt PCs that
         // include the entry.
         if (halt_pcs_.count(pc) != 0) {

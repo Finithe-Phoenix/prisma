@@ -62,15 +62,13 @@ void prisma_sig_handler(int sig, siginfo_t* info, void* /*ctx*/) {
     if (sig == SIGSEGV && info != nullptr) {
         SmcGuard* g = global_smc_guard();
         if (g != nullptr) {
-            const auto cb = [](std::uint64_t cache_key) {
-                auto* ctx = g_smc_invalidate_ctx.load(std::memory_order_acquire);
-                auto callback =
-                    g_smc_invalidate_callback.load(std::memory_order_acquire);
-                if (callback != nullptr) {
-                    callback(cache_key, ctx);
-                }
-            };
-            if (g->handle_fault(info->si_addr, cb)) {
+            // Signal-safe: handle_fault only tombstones + queues. The
+            // registered invalidation callback runs later via
+            // drain_smc_invalidations() in normal context — invoking
+            // cache code (allocations, mutexes) inside a signal
+            // handler is undefined behaviour (TSan: signal-unsafe
+            // call inside of a signal).
+            if (g->handle_fault(info->si_addr)) {
                 // The page is now RW; returning from the signal handler
                 // re-runs the faulting instruction.
                 return;
@@ -116,6 +114,20 @@ void set_smc_invalidate_callback(SmcInvalidateCallback callback,
 void clear_smc_invalidate_callback() noexcept {
     g_smc_invalidate_callback.store(nullptr, std::memory_order_release);
     g_smc_invalidate_ctx.store(nullptr, std::memory_order_release);
+}
+
+std::size_t drain_smc_invalidations() {
+    SmcGuard* g = global_smc_guard();
+    if (g == nullptr) {
+        return 0;
+    }
+    auto callback = g_smc_invalidate_callback.load(std::memory_order_acquire);
+    auto* ctx = g_smc_invalidate_ctx.load(std::memory_order_acquire);
+    return g->drain_pending([callback, ctx](std::uint64_t cache_key) {
+        if (callback != nullptr) {
+            callback(cache_key, ctx);
+        }
+    });
 }
 
 void install_handlers() {

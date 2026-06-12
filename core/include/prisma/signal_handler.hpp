@@ -52,6 +52,13 @@ void set_smc_invalidate_callback(SmcInvalidateCallback callback,
                                  void* ctx) noexcept;
 void clear_smc_invalidate_callback() noexcept;
 
+// Drains SMC fault bookkeeping queued by the SIGSEGV handler and runs
+// the registered invalidation callback for each affected cache key —
+// in normal context, where allocation and locking are legal. The
+// dispatcher calls this between blocks; tests call it after provoking
+// a fault. Returns the number of pages drained (0 = nothing pending).
+std::size_t drain_smc_invalidations();
+
 // Thread-local "protected scope" state. A call site does:
 //
 //   jmp_buf jb;

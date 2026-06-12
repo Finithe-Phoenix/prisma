@@ -126,9 +126,14 @@ TEST_CASE("signal_handler: SmcGuard fault invokes the invalidate callback") {
     page.data()[0] = 0x5A;
 
     REQUIRE(page.data()[0] == 0x5A);
+    // The handler only tombstones + queues (a signal handler must not
+    // run cache code); the callback fires on the normal-context drain
+    // the dispatcher performs between blocks.
+    REQUIRE(state.calls == 0);
+    REQUIRE_FALSE(guard.is_tracked(page.addr()));
+    REQUIRE(runtime::drain_smc_invalidations() == 1);
     REQUIRE(state.calls == 1);
     REQUIRE(state.key == static_cast<std::sig_atomic_t>(kCacheKey));
-    REQUIRE_FALSE(guard.is_tracked(page.addr()));
 }
 
 TEST_CASE("signal_handler: SIGILL recovery from an illegal ARM64 instruction",

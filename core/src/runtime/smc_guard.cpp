@@ -4,9 +4,13 @@
 // integration when we do that work; until then `mprotect` is the
 // only platform call we make.
 //
-// Locking: a single mutex around `protected_pages_`. The fault rate
-// is dominated by SMC events (very low for non-self-modifying guests),
-// so contention is not a concern; lock-free is deferred.
+// Locking: a signal-safe spinlock around `protected_pages_` (the
+// SIGSEGV handler participates, and std::mutex is not async-signal-
+// safe). The fault rate is dominated by SMC events (very low for
+// non-self-modifying guests), so contention is not a concern.
+// handle_fault never allocates or frees: it tombstones the page and
+// queues it; drain_pending does the real bookkeeping in normal
+// context.
 //
 // On `mprotect` failure we log via `fprintf(stderr)` and continue
 // without protection on that page. This is documented in the RFC's
@@ -94,14 +98,22 @@ void SmcGuard::on_translate(std::uint64_t guest_pc,
     const std::uint64_t first = page_base(guest_pc);
     const std::uint64_t last  = page_base(guest_pc + guest_byte_len - 1);
 
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<SpinLock> lock(mu_);
     for (std::uint64_t p = first; p <= last; p += kGuestPageSize) {
-        auto& keys = protected_pages_[p];
-        const bool first_key = keys.empty();
+        auto& entry = protected_pages_[p];
+        if (entry.dead) {
+            // Faulted page being re-translated before the drain ran:
+            // the old keys are stale by definition (the page was
+            // written). Start fresh and re-arm.
+            entry.keys.clear();
+            entry.dead = false;
+        }
+        const bool first_key = entry.keys.empty();
         // Skip duplicate entries — re-translation of the same key is a
         // no-op for tracking purposes.
-        if (std::find(keys.begin(), keys.end(), cache_key) == keys.end()) {
-            keys.push_back(cache_key);
+        if (std::find(entry.keys.begin(), entry.keys.end(), cache_key) ==
+            entry.keys.end()) {
+            entry.keys.push_back(cache_key);
         }
         if (first_key) {
             // First translation on this page: arm the protection.
@@ -111,9 +123,14 @@ void SmcGuard::on_translate(std::uint64_t guest_pc,
 }
 
 void SmcGuard::on_invalidate(std::uint64_t cache_key) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<SpinLock> lock(mu_);
     for (auto it = protected_pages_.begin(); it != protected_pages_.end();) {
-        auto& keys = it->second;
+        if (it->second.dead) {
+            // Owned by the pending-drain machinery.
+            ++it;
+            continue;
+        }
+        auto& keys = it->second.keys;
         keys.erase(std::remove(keys.begin(), keys.end(), cache_key), keys.end());
         if (keys.empty()) {
             const std::uint64_t page = it->first;
@@ -125,24 +142,69 @@ void SmcGuard::on_invalidate(std::uint64_t cache_key) {
     }
 }
 
-bool SmcGuard::handle_fault(
-    void* fault_addr,
-    const std::function<void(std::uint64_t)>& invalidate_cb) {
+bool SmcGuard::handle_fault(void* fault_addr) {
+    // Async-signal-safe: spinlock + map find + flag writes + mprotect.
+    // No allocation, no deallocation, no std::mutex.
     const std::uint64_t addr =
         static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(fault_addr));
     const std::uint64_t page = page_base(addr);
 
+    std::lock_guard<SpinLock> lock(mu_);
+    auto it = protected_pages_.find(page);
+    if (it == protected_pages_.end() || it->second.dead) {
+        return false;
+    }
+    it->second.dead = true;
+    if (pending_count_ < kPendingCap) {
+        pending_[pending_count_++] = page;
+    } else {
+        pending_overflow_ = true;
+    }
+    // Flip back to writable so the guest store can retry.
+    (void)protect_page(page, /*writable=*/true);
+    return true;
+}
+
+std::size_t SmcGuard::drain_pending(
+    const std::function<void(std::uint64_t)>& invalidate_cb) {
     std::vector<std::uint64_t> victims;
+    std::size_t drained = 0;
     {
-        std::lock_guard<std::mutex> lock(mu_);
-        auto it = protected_pages_.find(page);
-        if (it == protected_pages_.end()) {
-            return false;
+        std::lock_guard<SpinLock> lock(mu_);
+        if (pending_count_ == 0 && !pending_overflow_) {
+            return 0;
         }
-        victims = std::move(it->second);
-        protected_pages_.erase(it);
-        // Flip back to writable so the guest store can retry.
-        (void)protect_page(page, /*writable=*/true);
+        auto reap = [&](std::uint64_t page) {
+            auto it = protected_pages_.find(page);
+            if (it == protected_pages_.end() || !it->second.dead) {
+                return;
+            }
+            victims.insert(victims.end(),
+                           it->second.keys.begin(), it->second.keys.end());
+            protected_pages_.erase(it);
+            ++drained;
+        };
+        if (pending_overflow_) {
+            // Ring overflowed: sweep every tombstone instead.
+            for (auto it = protected_pages_.begin();
+                 it != protected_pages_.end();) {
+                if (it->second.dead) {
+                    victims.insert(victims.end(),
+                                   it->second.keys.begin(),
+                                   it->second.keys.end());
+                    it = protected_pages_.erase(it);
+                    ++drained;
+                } else {
+                    ++it;
+                }
+            }
+        } else {
+            for (std::size_t i = 0; i < pending_count_; ++i) {
+                reap(pending_[i]);
+            }
+        }
+        pending_count_    = 0;
+        pending_overflow_ = false;
     }
 
     // Run callbacks outside the lock — they may call back into the
@@ -150,17 +212,23 @@ bool SmcGuard::handle_fault(
     for (auto key : victims) {
         invalidate_cb(key);
     }
-    return true;
+    return drained;
 }
 
 std::size_t SmcGuard::tracked_page_count() const {
-    std::lock_guard<std::mutex> lock(mu_);
-    return protected_pages_.size();
+    std::lock_guard<SpinLock> lock(mu_);
+    std::size_t n = 0;
+    for (const auto& [page, entry] : protected_pages_) {
+        (void)page;
+        if (!entry.dead) ++n;
+    }
+    return n;
 }
 
 bool SmcGuard::is_tracked(std::uint64_t addr) const {
-    std::lock_guard<std::mutex> lock(mu_);
-    return protected_pages_.find(page_base(addr)) != protected_pages_.end();
+    std::lock_guard<SpinLock> lock(mu_);
+    auto it = protected_pages_.find(page_base(addr));
+    return it != protected_pages_.end() && !it->second.dead;
 }
 
 }  // namespace prisma::runtime
