@@ -1,0 +1,20 @@
+[package]
+name = "prisma-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma JIT runtime — dispatcher, signal handler, SMC guard, syscall handler, host features"
+
+[dependencies]
+prisma-ir = { path = "../prisma-ir" }
+prisma-cache = { path = "../prisma-cache" }
+thiserror = { workspace = true }
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
