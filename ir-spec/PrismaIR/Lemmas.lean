@@ -293,4 +293,35 @@ theorem algebraic_or_allones_l_sound (e : Env) (lhs rhs : Ref) (sz : OpSize)
     simp only [evalPure, evalBinOp, maskToSize, h, Option.some.injEq] <;>
     bv_decide
 
+/-! ## F2-PS — strength_reduce pass soundness
+
+`core/src/passes/strength_reduce.cpp` rewrites `Mul x, (1<<k) -> Shl x, k`
+for k in 1..63, allocating a fresh shift-count Constant holding `k`.
+Soundness: with the multiplier ref holding `2^k` and the shift-count ref
+holding `k < 64`, the product equals the shift (the `& 0x3F` shift-count
+mask in evalBinOp is a no-op since k < 64). -/
+
+private theorem and_63_of_lt (k : Nat) (h : k < 64) : k &&& 63 = k := by
+  rw [show (63 : Nat) = 2 ^ 6 - 1 from by decide, Nat.and_two_pow_sub_one_eq_mod]
+  omega
+
+theorem mul_pow2_eq_shl (a b c : UInt64) (k : Nat)
+    (hk : k < 64) (hb : b.toNat = 2 ^ k) (hc : c.toNat = k) :
+    a * b = a <<< (c &&& 0x3F) := by
+  apply UInt64.toNat_inj.mp
+  rw [UInt64.toNat_mul, UInt64.toNat_shiftLeft, UInt64.toNat_and, hb, hc,
+      show (0x3F : UInt64).toNat = 63 from by decide, and_63_of_lt k hk,
+      Nat.mod_eq_of_lt hk, Nat.shiftLeft_eq]
+
+theorem strength_reduce_mul_pow2_sound
+    (e : Env) (lhs rhs refk : Ref) (sz : OpSize) (k : Nat)
+    -- `1 ≤ k` mirrors the pass's firing range (k in 1..63); the core
+    -- identity below is sound for k = 0 too, but the pass never fires there.
+    (_hk1 : 1 ≤ k) (hk : k < 64)
+    (hm : (e rhs).toNat = 2 ^ k) (hkc : (e refk).toNat = k) :
+    evalPure e (.binop .mul lhs rhs sz)
+      = evalPure e (.binop .shl lhs refk sz) := by
+  simp only [evalPure, evalBinOp,
+             mul_pow2_eq_shl (e lhs) (e rhs) (e refk) k hk hm hkc]
+
 end PrismaIR
