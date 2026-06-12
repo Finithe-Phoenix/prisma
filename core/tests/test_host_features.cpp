@@ -72,3 +72,67 @@ TEST_CASE("host_features: apple-silicon hosts should expose SHA crypto") {
     SUCCEED("not an Apple Silicon host — assertion skipped");
 #endif
 }
+
+TEST_CASE("host_features: override all fields explicitly and verify readback") {
+    // Set every feature to a known state and confirm `host_features()`
+    // returns the exact struct we injected.
+    HostFeatures custom;
+    custom.feat_lse     = true;
+    custom.feat_lse2    = true;
+    custom.feat_lrcpc   = false;
+    custom.feat_lrcpc2  = true;
+    custom.feat_flagm   = false;
+    custom.feat_flagm2  = true;
+    custom.feat_dotprod = true;
+    custom.feat_crc32   = false;
+    custom.feat_sha1    = true;
+    custom.feat_sha256  = false;
+    custom.feat_aes     = true;
+
+    override_host_features_for_test(custom);
+    const auto& view = host_features();
+    REQUIRE(view.feat_lse);
+    REQUIRE(view.feat_lse2);
+    REQUIRE_FALSE(view.feat_lrcpc);
+    REQUIRE(view.feat_lrcpc2);
+    REQUIRE_FALSE(view.feat_flagm);
+    REQUIRE(view.feat_flagm2);
+    REQUIRE(view.feat_dotprod);
+    REQUIRE_FALSE(view.feat_crc32);
+    REQUIRE(view.feat_sha1);
+    REQUIRE_FALSE(view.feat_sha256);
+    REQUIRE(view.feat_aes);
+
+    clear_host_features_override();
+    // After clearing, the true detected values surface again.
+    (void)host_features();
+}
+
+TEST_CASE("host_features: override-clear-override cycle round-trips cleanly") {
+    clear_host_features_override();
+    const auto& ref = host_features();
+
+    // Override with a narrow synthetic set.
+    HostFeatures narrow;
+    narrow.feat_lse = true;
+    override_host_features_for_test(narrow);
+    REQUIRE(host_features().feat_lse);
+    REQUIRE_FALSE(host_features().feat_sha1);
+
+    // Clear and verify we're back to the detected baseline.
+    clear_host_features_override();
+    const auto& restored = host_features();
+    REQUIRE(restored.feat_lse == ref.feat_lse);
+    REQUIRE(restored.feat_sha1 == ref.feat_sha1);
+
+    // Second override with different values.
+    HostFeatures other;
+    other.feat_crc32 = true;
+    other.feat_aes   = true;
+    override_host_features_for_test(other);
+    REQUIRE(host_features().feat_crc32);
+    REQUIRE(host_features().feat_aes);
+    REQUIRE_FALSE(host_features().feat_lse);
+
+    clear_host_features_override();
+}
