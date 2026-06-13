@@ -1,0 +1,16 @@
+# Lean ARM64 build environment for the Prisma C++ core, used under QEMU
+# emulation (docker --platform linux/arm64) to build AND execute the real
+# x86->ARM64 JIT e2e tests on this x86 host.
+FROM arm64v8/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        cmake \
+        ninja-build \
+        git \
+        ca-certificates \
+        libstdc++-13-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
