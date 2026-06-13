@@ -462,6 +462,23 @@ mod tests {
         assert_eq!(f(), 42, "JIT-executed function must return 42");
     }
 
+    // ARM64 counterpart of the x86-64 execute test. Exercises mmap + the real
+    // dc cvau/ic ivau I-cache maintenance + execution on aarch64 (run the
+    // suite under linux/arm64 to validate the JIT path on Prisma's target).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn jit_and_execute_returns_42_aarch64() {
+        // mov w0, #42 ; ret   ->  0x52800540, 0xD65F03C0 (little-endian)
+        let code: [u8; 8] = [0x40, 0x05, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6];
+        let mut buf = ExecBuffer::alloc(code.len()).expect("alloc");
+        assert!(buf.write(&code));
+        buf.make_executable().expect("rx");
+        // SAFETY: buf holds a valid executable extern "C" fn() -> u32 (AAPCS64
+        // returns u32 in w0) kept alive for the call.
+        let f: extern "C" fn() -> u32 = unsafe { core::mem::transmute(buf.as_ptr()) };
+        assert_eq!(f(), 42, "ARM64 JIT-executed function must return 42");
+    }
+
     #[test]
     fn exec_pool_add_rejects_empty() {
         let mut pool = ExecPool::new(64);
