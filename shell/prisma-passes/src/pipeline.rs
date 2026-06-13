@@ -7,6 +7,15 @@ use crate::{
     strength_reduce::StrengthReduce, x87_stack::X87Stack, Pass,
 };
 use prisma_ir::Function;
+use std::time::{Duration, Instant};
+
+/// Per-pass timing and the total, produced by [`PassPipeline::run_with_stats`].
+/// Mirrors the C++ `PassRunStats` shape (name + elapsed per pass).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PipelineStats {
+    pub pass_times: Vec<(&'static str, Duration)>,
+    pub total_time: Duration,
+}
 
 /// Ordered list of optimization passes.
 #[derive(Default)]
@@ -21,6 +30,20 @@ impl PassPipeline {
             func = pass.run(func);
         }
         func
+    }
+
+    /// Run all passes, recording per-pass and total elapsed time.
+    #[must_use]
+    pub fn run_with_stats(&self, mut func: Function) -> (Function, PipelineStats) {
+        let mut stats = PipelineStats::default();
+        let start = Instant::now();
+        for pass in &self.passes {
+            let t0 = Instant::now();
+            func = pass.run(func);
+            stats.pass_times.push((pass.name(), t0.elapsed()));
+        }
+        stats.total_time = start.elapsed();
+        (func, stats)
     }
 
     /// Number of passes in this pipeline.
@@ -135,6 +158,29 @@ mod tests {
         assert!(folded_8, "expected r2 folded to 8: {stmts:?}");
         assert!(stmts.iter().any(|s| matches!(s.op, Op::StoreReg(_))));
         assert!(stmts.iter().any(|s| matches!(s.op, Op::Return(_))));
+    }
+
+    #[test]
+    fn run_with_stats_records_every_pass() {
+        let func = Function {
+            entry: 0,
+            blocks: vec![BasicBlock {
+                id: 0,
+                stmts: vec![
+                    Stmt::new(Some(0), Op::Constant(Constant { value: 5, size: OpSize::I64 })),
+                    Stmt::new(None, Op::Return(Return)),
+                ],
+            }],
+        };
+        let pipeline = default_pipeline();
+        let (out_stats, stats) = pipeline.run_with_stats(func.clone());
+        let out_plain = pipeline.run(func);
+        // Same result whether or not stats are recorded.
+        assert_eq!(out_stats, out_plain);
+        // One timing entry per pass, names in pipeline order.
+        assert_eq!(stats.pass_times.len(), DEFAULT_PIPELINE_LEN);
+        let names: Vec<&str> = stats.pass_times.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, pipeline.pass_names());
     }
 
     #[test]
