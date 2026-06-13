@@ -4,7 +4,8 @@
 // The Lean spec is authoritative; discrepancies are bugs.
 
 #![deny(unsafe_op_in_unsafe_fn, unused_must_use)]
-#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(clippy::derive_partial_eq_without_eq)]
 
 use serde::{Deserialize, Serialize};
 
@@ -16,10 +17,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum Gpr {
-    Rax = 0, Rcx, Rdx, Rbx,
-    Rsp,     Rbp, Rsi, Rdi,
-    R8,      R9,  R10, R11,
-    R12,     R13, R14, R15,
+    Rax = 0,
+    Rcx,
+    Rdx,
+    Rbx,
+    Rsp,
+    Rbp,
+    Rsi,
+    Rdi,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
 }
 
 pub const GPR_COUNT: usize = 16;
@@ -28,25 +41,27 @@ pub const GPR_COUNT: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum OpSize {
-    I8  = 0,
+    I8 = 0,
     I16 = 1,
     I32 = 2,
     I64 = 3,
 }
 
 impl OpSize {
+    #[must_use]
     pub const fn bit_width(self) -> u32 {
         match self {
-            Self::I8  => 8,
+            Self::I8 => 8,
             Self::I16 => 16,
             Self::I32 => 32,
             Self::I64 => 64,
         }
     }
 
+    #[must_use]
     pub const fn mask(self) -> u64 {
         match self {
-            Self::I8  => 0xFF,
+            Self::I8 => 0xFF,
             Self::I16 => 0xFFFF,
             Self::I32 => 0xFFFF_FFFF,
             Self::I64 => u64::MAX,
@@ -58,41 +73,73 @@ impl OpSize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum BinOpKind {
-    Add = 0, Sub, Mul,
-    And,     Or,  Xor,
-    Shl,     Shr, Sar,
-    Rol,     Ror,
-    Rcl,     Rcr,
-    UMulHi,  SMulHi,
-    UDiv,    SDiv,
-    UMod,    SMod,
-    Pdep,    Pext,
+    Add = 0,
+    Sub,
+    Mul,
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+    Sar,
+    Rol,
+    Ror,
+    Rcl,
+    Rcr,
+    UMulHi,
+    SMulHi,
+    UDiv,
+    SDiv,
+    UMod,
+    SMod,
+    Pdep,
+    Pext,
 }
 
 /// Condition codes for `Compare`, `CondJumpRel`, `Select`, `CondJumpFlags`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum CondCode {
-    Eq = 0, Ne,
-    Ult,    Ule, Ugt, Uge,
-    Slt,    Sle, Sgt, Sge,
-    Cc,    Nc,
-    Ov,   NoOv,
-    Mi,   Pl,
+    Eq = 0,
+    Ne,
+    Ult,
+    Ule,
+    Ugt,
+    Uge,
+    Slt,
+    Sle,
+    Sgt,
+    Sge,
+    Cc,
+    Nc,
+    Ov,
+    NoOv,
+    Mi,
+    Pl,
 }
 
 /// x86 segment registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum SegmentReg {
-    Es = 0, Cs, Ss, Ds, Fs, Gs,
+    Es = 0,
+    Cs,
+    Ss,
+    Ds,
+    Fs,
+    Gs,
 }
 
 /// Flag bits for `ReadFlag`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum FlagBit {
-    Carry = 0, Zero, Sign, Overflow, Parity, Aux,
+    Carry = 0,
+    Zero,
+    Sign,
+    Overflow,
+    Parity,
+    Aux,
 }
 
 /// Memory fence kinds.
@@ -127,25 +174,40 @@ pub enum VecLane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum VecBinOpKind {
-    Add = 0, Sub,
-    And, Or, Xor,
+    Add = 0,
+    Sub,
+    And,
+    Or,
+    Xor,
     Mul,
-    SqAdd, UqAdd,
-    SqSub, UqSub,
-    UMin, UMax,
-    SMin, SMax,
-    SMulHi, UMulHi,
+    SqAdd,
+    UqAdd,
+    SqSub,
+    UqSub,
+    UMin,
+    UMax,
+    SMin,
+    SMax,
+    SMulHi,
+    UMulHi,
     UMul32To64,
     SadBw,
-    PairAddInt, PairSubInt,
+    PairAddInt,
+    PairSubInt,
 }
 
 /// SIMD FP comparison predicates (CMPPS/PD/SS/SD imm8 & 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum VecFpCmpPred {
-    Eq = 0, Lt, Le, Unord,
-    Neq, Nlt, Nle, Ord,
+    Eq = 0,
+    Lt,
+    Le,
+    Unord,
+    Neq,
+    Nlt,
+    Nle,
+    Ord,
 }
 
 /// SIMD vector shift kinds.
@@ -161,8 +223,12 @@ pub enum VecShiftKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum VecFpBinOpKind {
-    Add = 0, Sub, Mul, Div,
-    Min, Max,
+    Add = 0,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
     Sqrt,
     HAdd,
 }
@@ -187,15 +253,20 @@ pub enum FpSize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum FpBinOpKind {
-    Add = 0, Sub, Mul, Div,
+    Add = 0,
+    Sub,
+    Mul,
+    Div,
 }
 
 /// AES operation kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum VecAesKind {
-    Enc = 0, EncLast,
-    Dec,     DecLast,
+    Enc = 0,
+    EncLast,
+    Dec,
+    DecLast,
     Imc,
 }
 
@@ -226,49 +297,121 @@ pub const INVALID_REF: Ref = u32::MAX;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Constant     { pub value: u64,         pub size: OpSize }
+pub struct Constant {
+    pub value: u64,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadReg      { pub reg: Gpr,           pub size: OpSize }
+pub struct LoadReg {
+    pub reg: Gpr,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoreReg     { pub reg: Gpr,           pub value: Ref,   pub size: OpSize }
+pub struct StoreReg {
+    pub reg: Gpr,
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadSegBase  { pub seg: SegmentReg }
+pub struct LoadSegBase {
+    pub seg: SegmentReg,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BinOp        { pub op: BinOpKind,      pub lhs: Ref, pub rhs: Ref, pub size: OpSize }
+pub struct BinOp {
+    pub op: BinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Compare      { pub cc: CondCode,       pub lhs: Ref, pub rhs: Ref, pub size: OpSize }
+pub struct Compare {
+    pub cc: CondCode,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Select       { pub cc: CondCode,   pub true_value: Ref, pub false_value: Ref, pub size: OpSize }
+pub struct Select {
+    pub cc: CondCode,
+    pub true_value: Ref,
+    pub false_value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadMem      { pub addr: Ref,          pub size: OpSize }
+pub struct LoadMem {
+    pub addr: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoreMem     { pub addr: Ref,          pub value: Ref,   pub size: OpSize }
+pub struct StoreMem {
+    pub addr: Ref,
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadMemTSO   { pub addr: Ref,          pub size: OpSize }
+pub struct LoadMemTSO {
+    pub addr: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoreMemTSO  { pub addr: Ref,          pub value: Ref,   pub size: OpSize }
+pub struct StoreMemTSO {
+    pub addr: Ref,
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Jump         { pub target_block: u32 }
+pub struct Jump {
+    pub target_block: u32,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CondJump     { pub cond: Ref, pub if_true: u32, pub if_false: u32 }
+pub struct CondJump {
+    pub cond: Ref,
+    pub if_true: u32,
+    pub if_false: u32,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Return;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CmpFlags     { pub lhs: Ref, pub rhs: Ref, pub size: OpSize }
+pub struct CmpFlags {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AluFlags     { pub op: BinOpKind, pub lhs: Ref, pub rhs: Ref, pub size: OpSize }
+pub struct AluFlags {
+    pub op: BinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JumpReg      { pub target: Ref }
+pub struct JumpReg {
+    pub target: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JumpRel      { pub target_guest_pc: u64 }
+pub struct JumpRel {
+    pub target_guest_pc: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CondJumpRel  { pub cc: CondCode, pub target_guest_pc: u64, pub fallthrough_guest_pc: u64 }
+pub struct CondJumpRel {
+    pub cc: CondCode,
+    pub target_guest_pc: u64,
+    pub fallthrough_guest_pc: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CallRel      { pub target_guest_pc: u64, pub return_guest_pc: u64 }
+pub struct CallRel {
+    pub target_guest_pc: u64,
+    pub return_guest_pc: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CallReg      { pub target: Ref, pub return_guest_pc: u64 }
+pub struct CallReg {
+    pub target: Ref,
+    pub return_guest_pc: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RetAdjusted  { pub pop_bytes: u64 }
+pub struct RetAdjusted {
+    pub pop_bytes: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cpuid;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -278,147 +421,402 @@ pub struct Rdtsc;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Syscall;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Extend       { pub value: Ref, pub from_size: OpSize, pub to_size: OpSize, pub is_signed: bool }
+pub struct Extend {
+    pub value: Ref,
+    pub from_size: OpSize,
+    pub to_size: OpSize,
+    pub is_signed: bool,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Truncate     { pub value: Ref, pub to_size: OpSize }
+pub struct Truncate {
+    pub value: Ref,
+    pub to_size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Fence        { pub kind: FenceKind }
+pub struct Fence {
+    pub kind: FenceKind,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GuestPc      { pub pc: u64 }
+pub struct GuestPc {
+    pub pc: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WriteFlags   { pub op: BinOpKind, pub lhs: Ref, pub rhs: Ref, pub size: OpSize }
+pub struct WriteFlags {
+    pub op: BinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ReadFlag     { pub flags: Ref, pub which: FlagBit }
+pub struct ReadFlag {
+    pub flags: Ref,
+    pub which: FlagBit,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CondJumpFlags { pub flags: Ref, pub cc: CondCode, pub if_true: u32, pub if_false: u32 }
+pub struct CondJumpFlags {
+    pub flags: Ref,
+    pub cc: CondCode,
+    pub if_true: u32,
+    pub if_false: u32,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RspAdjust    { pub delta_bytes: i64 }
+pub struct RspAdjust {
+    pub delta_bytes: i64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecConstant   { pub lo: u64, pub hi: u64 }
+pub struct VecConstant {
+    pub lo: u64,
+    pub hi: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecBinOp      { pub op: VecBinOpKind, pub lhs: Ref, pub rhs: Ref, pub lane: VecLane }
+pub struct VecBinOp {
+    pub op: VecBinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadVecReg   { pub xmm_index: u8 }
+pub struct LoadVecReg {
+    pub xmm_index: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoreVecReg  { pub xmm_index: u8, pub value: Ref }
+pub struct StoreVecReg {
+    pub xmm_index: u8,
+    pub value: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadVec      { pub addr: Ref }
+pub struct LoadVec {
+    pub addr: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoreVec     { pub addr: Ref, pub value: Ref }
+pub struct StoreVec {
+    pub addr: Ref,
+    pub value: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecFpBinOp   { pub op: VecFpBinOpKind, pub lhs: Ref, pub rhs: Ref, pub size: VecFpSize }
+pub struct VecFpBinOp {
+    pub op: VecFpBinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: VecFpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecFpScalarBinOp { pub op: VecFpBinOpKind, pub lhs: Ref, pub rhs: Ref, pub size: FpSize }
+pub struct VecFpScalarBinOp {
+    pub op: VecFpBinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: FpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct XmmFromGpr   { pub value: Ref, pub size: OpSize }
+pub struct XmmFromGpr {
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GprFromXmm   { pub value: Ref, pub size: OpSize }
+pub struct GprFromXmm {
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecCmp       { pub kind: VecCmpKind, pub lhs: Ref, pub rhs: Ref, pub lane: VecLane }
+pub struct VecCmp {
+    pub kind: VecCmpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecShuffle32x4 { pub src: Ref, pub control: u8 }
+pub struct VecShuffle32x4 {
+    pub src: Ref,
+    pub control: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecUnpack    { pub is_high: bool, pub lhs: Ref, pub rhs: Ref, pub lane: VecLane }
+pub struct VecUnpack {
+    pub is_high: bool,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecShiftImm  { pub kind: VecShiftKind, pub src: Ref, pub count: u8, pub lane: VecLane }
+pub struct VecShiftImm {
+    pub kind: VecShiftKind,
+    pub src: Ref,
+    pub count: u8,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecShiftBytes { pub is_left: bool, pub src: Ref, pub count: u8 }
+pub struct VecShiftBytes {
+    pub is_left: bool,
+    pub src: Ref,
+    pub count: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IntToFpScalar { pub value: Ref, pub int_size: OpSize, pub fp_size: FpSize }
+pub struct IntToFpScalar {
+    pub value: Ref,
+    pub int_size: OpSize,
+    pub fp_size: FpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FpToIntScalar { pub value: Ref, pub fp_size: FpSize, pub int_size: OpSize }
+pub struct FpToIntScalar {
+    pub value: Ref,
+    pub fp_size: FpSize,
+    pub int_size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FpCvtScalar  { pub lhs: Ref, pub src: Ref, pub src_size: FpSize, pub dst_size: FpSize }
+pub struct FpCvtScalar {
+    pub lhs: Ref,
+    pub src: Ref,
+    pub src_size: FpSize,
+    pub dst_size: FpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecShuffle2Src { pub is_pd: bool, pub lhs: Ref, pub rhs: Ref, pub control: u8 }
+pub struct VecShuffle2Src {
+    pub is_pd: bool,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub control: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecInsertLane { pub lhs_xmm: Ref, pub value: Ref, pub lane_idx: u8, pub lane: VecLane }
+pub struct VecInsertLane {
+    pub lhs_xmm: Ref,
+    pub value: Ref,
+    pub lane_idx: u8,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecExtractLaneU { pub src_xmm: Ref, pub lane_idx: u8, pub lane: VecLane }
+pub struct VecExtractLaneU {
+    pub src_xmm: Ref,
+    pub lane_idx: u8,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecMaskMsb   { pub src_xmm: Ref }
+pub struct VecMaskMsb {
+    pub src_xmm: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WriteFlagsFp { pub lhs: Ref, pub rhs: Ref, pub size: FpSize }
+pub struct WriteFlagsFp {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: FpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecShuffleH4 { pub is_high: bool, pub src: Ref, pub control: u8 }
+pub struct VecShuffleH4 {
+    pub is_high: bool,
+    pub src: Ref,
+    pub control: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecMaskFp    { pub src_xmm: Ref, pub is_pd: bool }
+pub struct VecMaskFp {
+    pub src_xmm: Ref,
+    pub is_pd: bool,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecFpCompare { pub lhs: Ref, pub rhs: Ref, pub size: FpSize, pub pred: VecFpCmpPred, pub is_packed: bool }
+pub struct VecFpCompare {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: FpSize,
+    pub pred: VecFpCmpPred,
+    pub is_packed: bool,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecPshufb    { pub src: Ref, pub mask: Ref }
+pub struct VecPshufb {
+    pub src: Ref,
+    pub mask: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecAbs       { pub src: Ref, pub lane: VecLane }
+pub struct VecAbs {
+    pub src: Ref,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecAlignr   { pub lhs: Ref, pub rhs: Ref, pub count: u8 }
+pub struct VecAlignr {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub count: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecExtend    { pub src: Ref, pub narrow_lane: VecLane, pub wide_lane: VecLane, pub is_signed: bool }
+pub struct VecExtend {
+    pub src: Ref,
+    pub narrow_lane: VecLane,
+    pub wide_lane: VecLane,
+    pub is_signed: bool,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecFpRound  { pub lhs: Ref, pub src: Ref, pub size: FpSize, pub mode: u8, pub is_packed: bool }
+pub struct VecFpRound {
+    pub lhs: Ref,
+    pub src: Ref,
+    pub size: FpSize,
+    pub mode: u8,
+    pub is_packed: bool,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Popcnt       { pub value: Ref, pub size: OpSize }
+pub struct Popcnt {
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Lzcnt        { pub value: Ref, pub size: OpSize }
+pub struct Lzcnt {
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Tzcnt        { pub value: Ref, pub size: OpSize }
+pub struct Tzcnt {
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WriteFlagsCountZero { pub src: Ref, pub result: Ref, pub size: OpSize }
+pub struct WriteFlagsCountZero {
+    pub src: Ref,
+    pub result: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecBlend     { pub dst: Ref, pub src: Ref, pub mask: Ref, pub lane: VecLane }
+pub struct VecBlend {
+    pub dst: Ref,
+    pub src: Ref,
+    pub mask: Ref,
+    pub lane: VecLane,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WriteFlagsPtest { pub lhs: Ref, pub rhs: Ref }
+pub struct WriteFlagsPtest {
+    pub lhs: Ref,
+    pub rhs: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WriteFlagsPtestYmm { pub lo_lhs: Ref, pub lo_rhs: Ref, pub hi_lhs: Ref, pub hi_rhs: Ref }
+pub struct WriteFlagsPtestYmm {
+    pub lo_lhs: Ref,
+    pub lo_rhs: Ref,
+    pub hi_lhs: Ref,
+    pub hi_rhs: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecTbl2      { pub src_lo: Ref, pub src_hi: Ref, pub idx: Ref }
+pub struct VecTbl2 {
+    pub src_lo: Ref,
+    pub src_hi: Ref,
+    pub idx: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecAes       { pub src: Ref, pub key: Ref, pub kind: VecAesKind }
+pub struct VecAes {
+    pub src: Ref,
+    pub key: Ref,
+    pub kind: VecAesKind,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecAesKeygenAssist { pub src: Ref, pub rcon: u8 }
+pub struct VecAesKeygenAssist {
+    pub src: Ref,
+    pub rcon: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecSha       { pub kind: VecShaKind, pub a: Ref, pub b: Ref, pub wk: Ref, pub imm: u8 }
+pub struct VecSha {
+    pub kind: VecShaKind,
+    pub a: Ref,
+    pub b: Ref,
+    pub wk: Ref,
+    pub imm: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Bswap        { pub value: Ref, pub size: OpSize }
+pub struct Bswap {
+    pub value: Ref,
+    pub size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Crc32c       { pub crc: Ref, pub data: Ref, pub data_size: OpSize }
+pub struct Crc32c {
+    pub crc: Ref,
+    pub data: Ref,
+    pub data_size: OpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecGather    { pub base: Ref, pub index: Ref, pub mask: Ref, pub prev: Ref,
-                          pub scale_shift: u8, pub elem_is64: u8, pub index_is64: u8,
-                          pub lane_count: u8, pub dest_lane_base: u8, pub index_lane_base: u8 }
+pub struct VecGather {
+    pub base: Ref,
+    pub index: Ref,
+    pub mask: Ref,
+    pub prev: Ref,
+    pub scale_shift: u8,
+    pub elem_is64: u8,
+    pub index_is64: u8,
+    pub lane_count: u8,
+    pub dest_lane_base: u8,
+    pub index_lane_base: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LoadVecRegHi  { pub ymm_index: u8 }
+pub struct LoadVecRegHi {
+    pub ymm_index: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoreVecRegHi { pub ymm_index: u8, pub value: Ref }
+pub struct StoreVecRegHi {
+    pub ymm_index: u8,
+    pub value: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecFpFma     { pub a: Ref, pub b: Ref, pub c: Ref, pub neg_addend: bool, pub neg_mul: bool, pub size: VecFpSize }
+pub struct VecFpFma {
+    pub a: Ref,
+    pub b: Ref,
+    pub c: Ref,
+    pub neg_addend: bool,
+    pub neg_mul: bool,
+    pub size: VecFpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VecFpScalarFma { pub a: Ref, pub b: Ref, pub c: Ref, pub scalar_upper: Ref,
-                            pub neg_addend: bool, pub neg_mul: bool, pub size: FpSize }
+pub struct VecFpScalarFma {
+    pub a: Ref,
+    pub b: Ref,
+    pub c: Ref,
+    pub scalar_upper: Ref,
+    pub neg_addend: bool,
+    pub neg_mul: bool,
+    pub size: FpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RepStos      { pub size: OpSize, pub reverse: bool,
-                          pub pc_of_rep: u64, pub pc_after_rep: u64 }
+pub struct RepStos {
+    pub size: OpSize,
+    pub reverse: bool,
+    pub pc_of_rep: u64,
+    pub pc_after_rep: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RepMovs      { pub size: OpSize, pub reverse: bool,
-                          pub pc_of_rep: u64, pub pc_after_rep: u64 }
+pub struct RepMovs {
+    pub size: OpSize,
+    pub reverse: bool,
+    pub pc_of_rep: u64,
+    pub pc_after_rep: u64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct X87Load      { pub st_index: u8 }
+pub struct X87Load {
+    pub st_index: u8,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct X87Store     { pub st_index: u8, pub value: Ref }
+pub struct X87Store {
+    pub st_index: u8,
+    pub value: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct X87Push      { pub value: Ref }
+pub struct X87Push {
+    pub value: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct X87Pop;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InlineAsm    { pub bytes: Vec<u8> }
+pub struct InlineAsm {
+    pub bytes: Vec<u8>,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Trap         { pub kind: TrapKind }
+pub struct Trap {
+    pub kind: TrapKind,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FpConstant   { pub bits: u64, pub size: FpSize }
+pub struct FpConstant {
+    pub bits: u64,
+    pub size: FpSize,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FpBinOp      { pub op: FpBinOpKind, pub lhs: Ref, pub rhs: Ref, pub size: FpSize }
+pub struct FpBinOp {
+    pub op: FpBinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: FpSize,
+}
 
-/// Comparison kinds for VecCmp.
+/// Comparison kinds for `VecCmp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum VecCmpKind {
@@ -533,7 +931,7 @@ pub enum Op {
 // ---------------------------------------------------------------------------
 
 /// A single IR statement. `result` is `None` for side-effect-only ops
-/// (StoreReg, StoreMem, Jump, Return, etc.).
+/// (`StoreReg`, `StoreMem`, `Jump`, `Return`, etc.).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stmt {
     pub result: Option<Ref>,
@@ -541,7 +939,8 @@ pub struct Stmt {
 }
 
 impl Stmt {
-    pub fn new(result: Option<Ref>, op: Op) -> Self {
+    #[must_use]
+    pub const fn new(result: Option<Ref>, op: Op) -> Self {
         Self { result, op }
     }
 }
@@ -565,7 +964,8 @@ pub struct Function {
 // ---------------------------------------------------------------------------
 
 /// Mask a 64-bit value to the width of `size`.
-pub fn mask_to_size(v: u64, size: OpSize) -> u64 {
+#[must_use]
+pub const fn mask_to_size(v: u64, size: OpSize) -> u64 {
     v & size.mask()
 }
 
@@ -602,8 +1002,11 @@ mod tests {
     #[test]
     fn constant_op_round_trip() {
         let stmt = Stmt::new(
-            Some(Ref::from(0)),
-            Op::Constant(Constant { value: 42, size: OpSize::I64 }),
+            Some(0u32),
+            Op::Constant(Constant {
+                value: 42,
+                size: OpSize::I64,
+            }),
         );
         assert_eq!(stmt.result, Some(0));
         match &stmt.op {
@@ -617,7 +1020,10 @@ mod tests {
 
     #[test]
     fn empty_function_serializes() {
-        let fn_ = Function { blocks: vec![], entry: 0 };
+        let fn_ = Function {
+            blocks: vec![],
+            entry: 0,
+        };
         let json = serde_json::to_string(&fn_).unwrap();
         let back: Function = serde_json::from_str(&json).unwrap();
         assert_eq!(fn_, back);
@@ -626,14 +1032,29 @@ mod tests {
     #[test]
     fn binop_round_trip() {
         let stmts = vec![
-            Stmt::new(Some(0), Op::Constant(Constant { value: 10, size: OpSize::I32 })),
-            Stmt::new(Some(1), Op::Constant(Constant { value: 3, size: OpSize::I32 })),
-            Stmt::new(Some(2), Op::BinOp(BinOp {
-                op: BinOpKind::Add,
-                lhs: 0,
-                rhs: 1,
-                size: OpSize::I32,
-            })),
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 10,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I32,
+                }),
+            ),
         ];
         let json = serde_json::to_string(&stmts).unwrap();
         let back: Vec<Stmt> = serde_json::from_str(&json).unwrap();
@@ -659,14 +1080,14 @@ mod tests {
     #[test]
     fn all_op_variants_display() {
         // Quick structural check that every variant constructible.
-        fn check(op: Op) {
+        fn check(op: &Op) {
             let _json = serde_json::to_string(&op).unwrap();
         }
-        check(Op::Return(Return));
-        check(Op::Cpuid(Cpuid));
-        check(Op::Xgetbv(Xgetbv));
-        check(Op::Rdtsc(Rdtsc));
-        check(Op::Syscall(Syscall));
-        check(Op::X87Pop(X87Pop));
+        check(&Op::Return(Return));
+        check(&Op::Cpuid(Cpuid));
+        check(&Op::Xgetbv(Xgetbv));
+        check(&Op::Rdtsc(Rdtsc));
+        check(&Op::Syscall(Syscall));
+        check(&Op::X87Pop(X87Pop));
     }
 }
