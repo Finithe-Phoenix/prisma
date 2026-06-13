@@ -120,8 +120,10 @@ pub struct PipelineStats {
       prisma-passes para no tocar el prisma-ir compartido con codex.
 - [x] Property tests: idempotencia + no-crecimiento por pass (los 13) +
       end-to-end del default_pipeline (orden + fold + cross-block DCE).
-- [ ] Tests differentiales contra C++ (siguiente: FFI comparator pipeline→pipeline)
-- [ ] Pass timing hooks (PipelineStats) — pendiente
+- [ ] Tests differentiales contra C++ (siguiente: FFI comparator pipeline→pipeline,
+      requiere superficie C API nueva — territorio capi compartido con codex)
+- [x] Pass timing hooks — `PassPipeline::run_with_stats` -> `PipelineStats`
+      (per-pass + total Duration), sin romper la firma de `run()`
 - [x] `cargo +1.95.0-x86_64-pc-windows-msvc test -p prisma-passes` verde (40 tests)
 - [x] `cargo +1.95.0-x86_64-pc-windows-msvc clippy -p prisma-passes --all-targets -- -D warnings` limpio
 
