@@ -119,28 +119,73 @@ mod platform {
     }
 
     pub fn free(ptr: *mut u8, size: usize) {
-        // SAFETY: ptr/size came from alloc_rw.
-        unsafe {
-            libc::munmap(ptr.cast(), size);
-        }
+        // SAFETY: ptr/size came from alloc_rw. munmap failure on a valid
+        // mapping is not expected; assert in debug to surface programming
+        // errors without aborting release builds on a best-effort cleanup.
+        let rc = unsafe { libc::munmap(ptr.cast(), size) };
+        debug_assert_eq!(rc, 0, "munmap failed on a JIT mapping");
     }
 
     pub fn flush_icache(ptr: *const u8, size: usize) {
-        // On x86 the I-cache is coherent; on other arches clear it. We keep
-        // this best-effort and arch-agnostic via the compiler builtin where
-        // available. For x86_64/aarch64 under test this is a no-op or a
-        // lightweight clear.
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: clears the cache over a valid mapped range.
-        unsafe {
-            // __clear_cache equivalent: aarch64 needs explicit i-cache sync.
-            core::arch::asm!(
-                "isb",
-                options(nostack, preserves_flags),
-            );
+        // x86 has coherent instruction/data caches; nothing to do.
+        #[cfg(target_arch = "x86_64")]
+        {
             let _ = (ptr, size);
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        // ARM64 caches are NOT coherent w.r.t. JIT writes. We must clean the
+        // D-cache to the Point of Unification, then invalidate the I-cache,
+        // over [ptr, ptr+size), with barriers — the canonical __clear_cache
+        // sequence. Line sizes come from CTR_EL0 (DminLine/IminLine).
+        #[cfg(target_arch = "aarch64")]
+        {
+            use core::arch::asm;
+            if size == 0 {
+                return;
+            }
+            let start = ptr as usize;
+            let end = start + size;
+
+            let ctr: u64;
+            // SAFETY: reading CTR_EL0 is unprivileged and side-effect free.
+            unsafe {
+                asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags));
+            }
+            // DminLine = bits [19:16], IminLine = bits [3:0]; line bytes =
+            // 4 (bytes/word) << field.
+            let d_line = 4usize << ((ctr >> 16) & 0xf);
+            let i_line = 4usize << (ctr & 0xf);
+
+            // Clean D-cache lines to PoU.
+            let mut addr = start & !(d_line - 1);
+            while addr < end {
+                // SAFETY: dc cvau over a mapped, owned range.
+                unsafe {
+                    asm!("dc cvau, {0}", in(reg) addr, options(nostack, preserves_flags));
+                }
+                addr += d_line;
+            }
+            // SAFETY: barrier to order the cleans before the invalidates.
+            unsafe {
+                asm!("dsb ish", options(nostack, preserves_flags));
+            }
+            // Invalidate I-cache lines to PoU.
+            let mut addr = start & !(i_line - 1);
+            while addr < end {
+                // SAFETY: ic ivau over a mapped, owned range.
+                unsafe {
+                    asm!("ic ivau, {0}", in(reg) addr, options(nostack, preserves_flags));
+                }
+                addr += i_line;
+            }
+            // SAFETY: ensure invalidates complete and refetch.
+            unsafe {
+                asm!("dsb ish", options(nostack, preserves_flags));
+                asm!("isb", options(nostack, preserves_flags));
+            }
+        }
+        // Other arches: conservatively do nothing (covered hosts are x86_64
+        // and aarch64). Add explicit handling before targeting a new arch.
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             let _ = (ptr, size);
         }
@@ -160,11 +205,16 @@ impl ExecBuffer {
     /// Allocate at least `min_bytes` of read/write memory (page-rounded).
     ///
     /// # Errors
-    /// Returns an error if the OS allocation fails.
+    /// Returns an error if `min_bytes` is so large the page-rounded size
+    /// overflows `usize`, or if the OS allocation fails.
     pub fn alloc(min_bytes: usize) -> io::Result<Self> {
         let ps = platform::page_size();
         let want = if min_bytes == 0 { 1 } else { min_bytes };
-        let capacity = want.div_ceil(ps) * ps;
+        // Overflow-safe page rounding (guards against absurd min_bytes).
+        let capacity = want
+            .div_ceil(ps)
+            .checked_mul(ps)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "JIT size overflow"))?;
         let base = platform::alloc_rw(capacity);
         if base.is_null() {
             return Err(io::Error::last_os_error());
@@ -208,6 +258,12 @@ impl ExecBuffer {
     }
 
     /// Pointer to the start of the code region.
+    ///
+    /// # Safety contract
+    /// The returned pointer is valid only while `self` is alive. Calling it as
+    /// a function after the `ExecBuffer` (or its owning [`ExecPool`]) is dropped
+    /// is a use-after-free of executable memory. Callers must keep the owner
+    /// alive for the entire duration of any call through this pointer.
     #[must_use]
     pub const fn as_ptr(&self) -> *const u8 {
         self.base.cast_const()
@@ -250,7 +306,9 @@ unsafe impl Send for ExecBuffer {}
 pub struct ExecAllocation {
     /// Index of the owning buffer in the pool.
     pub index: usize,
-    /// Executable entry pointer.
+    /// Executable entry pointer. Valid only while the owning [`ExecPool`] is
+    /// alive — using it after the pool is dropped is a use-after-free of
+    /// executable memory.
     pub entry: *const u8,
     /// Number of code bytes.
     pub code_size: usize,
