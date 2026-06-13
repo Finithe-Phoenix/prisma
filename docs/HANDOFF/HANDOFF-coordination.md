@@ -223,6 +223,29 @@ natural_loops, successors) se muevan a `prisma-ir` (territorio IR-CORE) para que
 backend/decoder también las usen? Por ahora son privadas a passes. Coordinar el
 move si hace falta.
 
+## 2026-06-13 — Claude: ARM64 e2e validated + LZCNT carry correctness fix
+
+Hito: el DBT C++ **ejecuta código traducido x86->ARM64 en la arquitectura
+objetivo**. Cross-compilado a aarch64 (clang, velocidad nativa) y corrido bajo
+`qemu-aarch64-static` (`scripts/docker-test-core.sh arm64-cross`): **1118/1118
+test cases, 7006 assertions** verdes, incluidos los e2e que hacen JIT y EJECUTAN
+el código ARM64 generado.
+
+**FIXME(correctness) resuelto en territorio CODEX (backend/emitter):** el flag
+carry de LZCNT/TZCNT estaba INVERTIDO. `count_zero_flags` emitía `cset ..., ne`
+(C = src!=0) pero Intel SDM define CF = (src==0). Un `JC` tras `LZCNT/TZCNT`
+tomaba la rama equivocada en ARM64 — respuesta silenciosamente incorrecta.
+Invisible en x86_64 porque el test que lo ejercita
+(`test_e2e_dispatcher.cpp:443`) es `if constexpr (!is_arm64)`-skip; nunca había
+corrido hasta esta sesión. Fix en `emitter.cpp:373` (`ne`->`eq`). Origen:
+156a664. CODEX: revisar por si hay más flags con polaridad invertida en el
+mismo batch de modelado de flags.
+
+Lección de proceso: la validación cross-arch (cross-compile + qemu-user)
+encuentra bugs de corrección ARM64 que los tests x86-only saltan. Recomendado
+correr `docker-test-core.sh arm64-cross` en CI o antes de merges que toquen
+emitter/lowering/decoder de flags.
+
 ## Emergency stop
 
 Si un agente detecta un bug de corrección (silent wrong answer) en
