@@ -228,7 +228,17 @@ Bounded runtime slices landed on `claude/rust-passes-pipeline`:
 
 Docker/QEMU: el C++ core compila y pasa los 1118 test cases en Linux/clang-18
 (`scripts/docker-test-core.sh`); arm64 e2e (ejecución real x86->ARM64 JIT) via
-`docker run --platform linux/arm64` con `docker/Dockerfile.arm64-build`.
+`docker run --platform linux/arm64` con `docker/Dockerfile.arm64-build`
+(`-DCMAKE_CXX_SCAN_FOR_MODULES=OFF` porque el cmake del wheel pip activa el
+escaneo de módulos C++20 y falta clang-scan-deps).
+
+VALIDADO en aarch64 (bajo QEMU, imagen `rust:1-slim-bookworm`): el path de
+ejecución JIT ARM64 funciona — mmap RW + write `mov w0,#42; ret`
+(40 05 80 52 / C0 03 5F D6) + mprotect RX + secuencia `dc cvau`/`ic ivau`/
+barreras + transmute a fn + LLAMADA => devuelve 42. Confirma que el fix del
+BLOCKER de I-cache es correcto en hardware ARM64 real (el `jit_and_execute_
+returns_42_aarch64` de jit_memory.rs hace lo mismo via ExecBuffer cuando la
+suite corre en arm64).
 
 Pendiente runtime: signal_handler (POSIX sigaction / Windows VEH — divergente),
 wire ExecPool al dispatcher para ejecutar bloques traducidos reales (necesita
