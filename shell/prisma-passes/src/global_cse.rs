@@ -93,7 +93,10 @@ pub fn global_cse(mut func: Function) -> Function {
             }
         }
 
-        let block = &mut func.blocks[idx[&block_id]];
+        let Some(&block_pos) = idx.get(&block_id) else {
+            continue; // defensive: postorder only yields real blocks, but guard anyway
+        };
+        let block = &mut func.blocks[block_pos];
         for stmt in &mut block.stmts {
             if is_flushing_op(&stmt.op) {
                 seen.clear();
