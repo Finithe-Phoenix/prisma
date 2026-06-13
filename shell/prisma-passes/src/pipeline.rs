@@ -2,8 +2,9 @@
 
 use crate::{
     algebraic::Algebraic, branch_fold::BranchFold, const_prop::ConstantProp, copy_prop::CopyProp,
-    cse::Cse, dce::Dce, dead_store::DeadStore, flag_write_elim::FlagWriteElim, peephole::Peephole,
-    redundant_load::RedundantLoad, strength_reduce::StrengthReduce, x87_stack::X87Stack, Pass,
+    cse::Cse, dce::Dce, dead_store::DeadStore, flag_write_elim::FlagWriteElim,
+    global_cse::GlobalCse, licm::Licm, peephole::Peephole, redundant_load::RedundantLoad,
+    strength_reduce::StrengthReduce, x87_stack::X87Stack, Pass,
 };
 use prisma_ir::Function;
 
@@ -58,6 +59,18 @@ pub fn default_pipeline() -> PassPipeline {
             Box::new(FlagWriteElim::new()),
             Box::new(Dce::new()),
         ],
+    }
+}
+
+/// Return the function-level (CFG-aware) pipeline.
+///
+/// Mirrors C++ `default_function_pipeline()`: `global_cse` collapses
+/// duplicate computations along dominator edges first, then
+/// `loop_invariant_motion` hoists invariants to loop preheaders.
+#[must_use]
+pub fn default_function_pipeline() -> PassPipeline {
+    PassPipeline {
+        passes: vec![Box::new(GlobalCse::new()), Box::new(Licm::new())],
     }
 }
 
