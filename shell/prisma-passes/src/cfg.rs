@@ -45,15 +45,24 @@ pub fn successors(func: &Function, block_id: u32) -> Vec<u32> {
 }
 
 /// Depth-first postorder of the blocks reachable from `func.entry`.
+///
+/// Dangling jump targets (ids with no matching block — possible when the IR is
+/// malformed or only partially built) are ignored, so every id returned is a
+/// real block. Downstream passes can index `func.blocks` by these ids safely.
 #[must_use]
 pub fn postorder(func: &Function) -> Vec<u32> {
+    let valid: HashSet<u32> = func.blocks.iter().map(|b| b.id).collect();
+    let succs_of = |id: u32| -> Vec<u32> {
+        successors(func, id).into_iter().filter(|s| valid.contains(s)).collect()
+    };
+
     let mut order = Vec::new();
     let mut visited: HashSet<u32> = HashSet::new();
     // Iterative DFS with an explicit child-cursor stack.
     let mut stack: Vec<(u32, Vec<u32>, usize)> = Vec::new();
-    if func.blocks.iter().any(|b| b.id == func.entry) {
+    if valid.contains(&func.entry) {
         visited.insert(func.entry);
-        stack.push((func.entry, successors(func, func.entry), 0));
+        stack.push((func.entry, succs_of(func.entry), 0));
     }
     while let Some(frame) = stack.last_mut() {
         let (id, succs, cursor) = frame;
@@ -61,7 +70,7 @@ pub fn postorder(func: &Function) -> Vec<u32> {
             let next = succs[*cursor];
             *cursor += 1;
             if visited.insert(next) {
-                let s = successors(func, next);
+                let s = succs_of(next);
                 stack.push((next, s, 0));
             }
         } else {
@@ -183,7 +192,10 @@ pub fn natural_loops(func: &Function) -> Vec<NaturalLoop> {
         }
     }
 
-    let mut loops: Vec<NaturalLoop> = Vec::new();
+    // Back-edges that share a header describe the same natural loop; merge
+    // their bodies so each header yields exactly one NaturalLoop.
+    let mut bodies: HashMap<u32, HashSet<u32>> = HashMap::new();
+    let mut header_order: Vec<u32> = Vec::new();
     // Deterministic iteration over blocks in function order.
     for block in &func.blocks {
         let u = block.id;
@@ -193,7 +205,10 @@ pub fn natural_loops(func: &Function) -> Vec<NaturalLoop> {
         for v in successors(func, u) {
             // Back edge: header v dominates tail u.
             if reachable.contains(&v) && dominates(&idom, v, u) {
-                let mut body: HashSet<u32> = HashSet::new();
+                let body = bodies.entry(v).or_insert_with(|| {
+                    header_order.push(v);
+                    HashSet::new()
+                });
                 body.insert(v);
                 let mut stack = vec![u];
                 while let Some(n) = stack.pop() {
@@ -205,14 +220,20 @@ pub fn natural_loops(func: &Function) -> Vec<NaturalLoop> {
                         }
                     }
                 }
-                // Stable body order: function block order.
-                let body_vec: Vec<u32> =
-                    func.blocks.iter().map(|b| b.id).filter(|id| body.contains(id)).collect();
-                loops.push(NaturalLoop { header: v, body: body_vec });
             }
         }
     }
-    loops
+
+    header_order
+        .into_iter()
+        .map(|header| {
+            let body = &bodies[&header];
+            // Stable body order: function block order.
+            let body_vec: Vec<u32> =
+                func.blocks.iter().map(|b| b.id).filter(|id| body.contains(id)).collect();
+            NaturalLoop { header, body: body_vec }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -303,6 +324,35 @@ mod tests {
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].header, 1);
         assert_eq!(loops[0].body, vec![1, 2]);
+    }
+
+    #[test]
+    fn two_back_edges_same_header_merge_to_one_loop() {
+        // 0 -> 1 ; 1 -> {2,3} ; 2 -> 1 (back) ; 3 -> {1 (back), 4} ; 4 -> ret
+        // Two back-edges into header 1 must yield ONE loop with merged body.
+        let f = Function {
+            entry: 0,
+            blocks: vec![
+                blk(0, vec![jump(1)]),
+                blk(1, vec![cond(2, 3)]),
+                blk(2, vec![jump(1)]),
+                blk(3, vec![cond(1, 4)]),
+                blk(4, vec![ret()]),
+            ],
+        };
+        let loops = natural_loops(&f);
+        assert_eq!(loops.len(), 1, "back-edges sharing a header merge");
+        assert_eq!(loops[0].header, 1);
+        assert_eq!(loops[0].body, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn dangling_target_does_not_panic() {
+        // Jump to a non-existent block id 99 — must be ignored, not panic.
+        let f = Function { entry: 0, blocks: vec![blk(0, vec![jump(99)])] };
+        assert_eq!(postorder(&f), vec![0]);
+        assert_eq!(dominators(&f).get(&0), Some(&0));
+        assert!(natural_loops(&f).is_empty());
     }
 
     #[test]
