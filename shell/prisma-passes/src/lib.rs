@@ -22,6 +22,7 @@
 
 pub mod algebraic;
 pub mod branch_fold;
+pub mod cfg;
 pub mod const_prop;
 pub mod copy_prop;
 pub mod cse;
