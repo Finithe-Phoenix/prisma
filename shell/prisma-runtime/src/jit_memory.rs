@@ -245,6 +245,74 @@ impl Drop for ExecBuffer {
 // SAFETY: the raw pointer is an exclusively-owned mapping, freed once on Drop.
 unsafe impl Send for ExecBuffer {}
 
+/// A handle to code installed in an [`ExecPool`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecAllocation {
+    /// Index of the owning buffer in the pool.
+    pub index: usize,
+    /// Executable entry pointer.
+    pub entry: *const u8,
+    /// Number of code bytes.
+    pub code_size: usize,
+    /// Page-rounded capacity of the backing buffer.
+    pub capacity: usize,
+}
+
+/// Owns a set of executable buffers, one per installed block. Mirrors C++
+/// `JitBufferPool::add`: each `add` allocates an [`ExecBuffer`], writes the
+/// code, flips it executable, and hands back an [`ExecAllocation`] whose
+/// `entry` is directly callable.
+#[derive(Debug, Default)]
+pub struct ExecPool {
+    buffers: Vec<ExecBuffer>,
+    min_bytes: usize,
+}
+
+impl ExecPool {
+    /// Create a pool whose buffers are at least `min_bytes` each.
+    #[must_use]
+    pub const fn new(min_bytes: usize) -> Self {
+        Self {
+            buffers: Vec::new(),
+            min_bytes,
+        }
+    }
+
+    /// Install `code` as a fresh executable buffer and return its handle.
+    /// Returns `None` for empty input or on allocation/protection failure.
+    pub fn add(&mut self, code: &[u8]) -> Option<ExecAllocation> {
+        if code.is_empty() {
+            return None;
+        }
+        let want = self.min_bytes.max(code.len());
+        let mut buffer = ExecBuffer::alloc(want).ok()?;
+        if !buffer.write(code) {
+            return None;
+        }
+        buffer.make_executable().ok()?;
+        let alloc = ExecAllocation {
+            index: self.buffers.len(),
+            entry: buffer.as_ptr(),
+            code_size: code.len(),
+            capacity: buffer.capacity(),
+        };
+        self.buffers.push(buffer);
+        Some(alloc)
+    }
+
+    /// Number of installed buffers.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// Whether the pool is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buffers.is_empty()
+    }
+}
+
 /// Minimal JIT buffer wrapper.
 #[derive(Debug, Default, Clone)]
 pub struct JitBuffer {
@@ -288,7 +356,7 @@ impl JitBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::ExecBuffer;
+    use super::{ExecBuffer, ExecPool};
 
     #[test]
     fn alloc_rounds_up_to_page() {
@@ -334,5 +402,36 @@ mod tests {
         // duration of the call.
         let f: extern "C" fn() -> u32 = unsafe { core::mem::transmute(buf.as_ptr()) };
         assert_eq!(f(), 42, "JIT-executed function must return 42");
+    }
+
+    #[test]
+    fn exec_pool_add_rejects_empty() {
+        let mut pool = ExecPool::new(64);
+        assert!(pool.add(&[]).is_none());
+        assert!(pool.is_empty());
+    }
+
+    // Install two functions in the pool and call both through their handles.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn exec_pool_installs_and_runs_two_blocks() {
+        let mut pool = ExecPool::new(64);
+        // mov eax, 7 ; ret
+        let a = pool
+            .add(&[0xB8, 0x07, 0x00, 0x00, 0x00, 0xC3])
+            .expect("add a");
+        // mov eax, 100 ; ret
+        let b = pool
+            .add(&[0xB8, 0x64, 0x00, 0x00, 0x00, 0xC3])
+            .expect("add b");
+        assert_eq!(pool.len(), 2);
+        assert_eq!((a.index, b.index), (0, 1));
+
+        // SAFETY: each entry is a valid executable extern "C" fn() -> u32 kept
+        // alive by `pool` for the duration of the calls.
+        let fa: extern "C" fn() -> u32 = unsafe { core::mem::transmute(a.entry) };
+        let fb: extern "C" fn() -> u32 = unsafe { core::mem::transmute(b.entry) };
+        assert_eq!(fa(), 7);
+        assert_eq!(fb(), 100);
     }
 }
