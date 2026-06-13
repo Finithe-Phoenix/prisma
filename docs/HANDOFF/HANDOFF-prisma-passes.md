@@ -113,10 +113,11 @@ pub struct PipelineStats {
 
 - [x] `Pass` trait definido con `name()` y `run()`
 - [x] `PassPipeline` con `run()`, `size()`, `pass_names()`, `default_pipeline()`
-- [~] 16 pases planeados — los **13 del pipeline default** completos en Rust
-      con paridad C++ (incluido peephole, x87_stack_eliminate, flag_write_elim).
-      Faltan los no-default: LICM, GCSE, tail_call (siguen como stubs `// TODO`,
-      pertenecen al function-level pipeline, no al default).
+- [x] **16/16 pases implementados** en Rust con paridad C++. Los 13 del
+      default_pipeline + global_cse, loop_invariant_motion (function-level
+      pipeline) + tail_call_optimise (standalone). Nuevo módulo `cfg.rs`
+      (successors/postorder/dominators CHK/natural_loops) que vive en
+      prisma-passes para no tocar el prisma-ir compartido con codex.
 - [x] Property tests: idempotencia + no-crecimiento por pass (los 13) +
       end-to-end del default_pipeline (orden + fold + cross-block DCE).
 - [ ] Tests differentiales contra C++ (siguiente: FFI comparator pipeline→pipeline)
@@ -181,3 +182,25 @@ Revisión 2026-06-12 (codex + gemini sobre el diff completo):
   Mantener ambos refs vivos es correcto.
 
 Pendiente: comparador diferencial FFI pipeline-vs-pipeline + pass timing hooks.
+
+## SPARK 2026-06-12 (claude) cont.: crate prisma-passes COMPLETO (16/16)
+
+Segundo commit (bb5c385): pases function-level + análisis CFG.
+
+- `cfg.rs` — primer análisis de grafo de control para el IR Rust:
+  `successors` (lee terminadores Jump/CondJump/CondJumpFlags; los terminadores
+  guest-PC como JumpRel/CondJumpRel/Return/JumpReg no aportan sucesores
+  intra-función), `postorder` iterativo, `dominators` (Cooper-Harvey-Kennedy
+  con números de postorden), `natural_loops` (back-edges donde el header
+  domina al tail + reverse-reachability del cuerpo). Vive en prisma-passes,
+  NO en prisma-ir, para no colisionar con codex en el archivo IR compartido.
+  Si codex/Gemini quieren estas primitivas en prisma-ir (territorio IR-CORE),
+  coordinar el move; por ahora son privadas a passes.
+- `global_cse.rs` / `licm.rs` — usan cfg::; paridad con los .cpp. Como anota
+  el C++, son no-ops prácticos en funciones de un solo bloque (el translator
+  actual emite single-block); el plumbing es el entregable.
+- `tail_call.rs` — standalone (no en ningún pipeline default, igual que C++).
+- `default_function_pipeline()` = global_cse -> licm (espejo del C++).
+
+Todos los stubs `// TODO(Fase 2)` de prisma-passes están cerrados. 75 tests,
+clippy --all-targets -D warnings limpio.
