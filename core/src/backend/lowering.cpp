@@ -1989,7 +1989,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
         else if constexpr (std::is_same_v<T, ir::WriteFlagsCountZero>) {
             // F2-IR-045 follow-up. LZCNT/TZCNT exact flag write:
             //   Z = (result == 0)
-            //   C = NOT (src == 0)
+            //   C = (src == 0)   ; CF is SET when the source operand is zero
             // The preceding StoreReg has already materialised the
             // count result, so we can reuse the same refs here.
             arm64::Reg rsrc, rres;

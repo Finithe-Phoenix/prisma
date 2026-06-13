@@ -363,14 +363,14 @@ void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
 
 void Emitter::count_zero_flags(arm64::Reg result, arm64::Reg src,
                                arm64::Reg w_tmp) {
-    // Build NZCV from the architectural LZCNT/TZCNT semantics:
+    // Build NZCV from the architectural LZCNT/TZCNT semantics (Intel SDM):
     //   Z = (result == 0)
-    //   C = NOT (src == 0)
+    //   C = (src == 0)        ; CF is SET when the source operand is zero
     // Pack as bit30/bit29 and zero the rest.
     impl_->masm.Cmp(to_vixl_x(result), 0);
     impl_->masm.Cset(to_vixl_w(w_tmp), vixl_aa::eq);
     impl_->masm.Cmp(to_vixl_x(src), 0);
-    impl_->masm.Cset(to_vixl_w(result), vixl_aa::ne);
+    impl_->masm.Cset(to_vixl_w(result), vixl_aa::eq);
     impl_->masm.Lsl(to_vixl_w(w_tmp), to_vixl_w(w_tmp), 30);
     impl_->masm.Orr(to_vixl_w(w_tmp), to_vixl_w(w_tmp),
                     vixl_aa::Operand(to_vixl_w(result), vixl_aa::LSL, 29));
