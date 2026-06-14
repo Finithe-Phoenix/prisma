@@ -25,6 +25,15 @@ import PrismaIR.Syntax
 
 namespace PrismaIR
 
+/-- Two's-complement reinterpretation of a 64-bit word as a signed integer
+    in `[-2^63, 2^63)`. -/
+def toSignedInt (a : UInt64) : Int :=
+  if a.toNat < 2 ^ 63 then (a.toNat : Int) else (a.toNat : Int) - (2 ^ 64 : Int)
+
+/-- Wrap a signed integer back into a 64-bit word (reduce mod `2^64`). -/
+def ofSignedInt (i : Int) : UInt64 :=
+  (i % (2 ^ 64 : Int)).toNat.toUInt64
+
 /-- Evaluate a pure binary operation on two 64-bit values. Size-specific
     masking is applied afterwards. This ignores flag production for now;
     flags live in the full semantics later. -/
@@ -51,13 +60,13 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
   | .rcr =>
       let n := rhs &&& 0x3F
       if n == 0 then lhs else (lhs >>> n) ||| (lhs <<< (64 - n))
-  -- F2-BK-007 — wide-form ops. Unsigned variants implemented
-  -- concretely via Nat; signed variants left as `sorry` because
-  -- they require careful Int / Int64 corner-case handling that
-  -- diverges from ARM64 native semantics on `INT_MIN / -1` (ARM
-  -- wraps to INT_MIN, x86 traps #DE — see docs/rfc/0012). Each
-  -- `sorry` is tracked by a backlog item (F1-LN-014/015/016) and
-  -- counts against the budget in `.sorry-budget`.
+  -- F2-BK-007 — wide-form ops. Both unsigned (Nat) and signed (Int)
+  -- variants are now concrete. The signed corner cases mirror the
+  -- ARM64-matching folds in `const_prop.cpp` exactly: at this pure
+  -- pre-trap eval level x86's `#DE` does not exist, so divide-by-zero
+  -- and `INT_MIN / -1` follow ARM64 `sdiv`/`msub` (see docs/rfc/0012),
+  -- not x86 trap semantics. Trap injection is a runtime concern layered
+  -- on top of this total function.
   | .uMulHi =>
       let prod : Nat := lhs.toNat * rhs.toNat
       (prod / (2 ^ 64)).toUInt64
@@ -65,9 +74,23 @@ def evalBinOp (op : BinOp) (lhs rhs : UInt64) : UInt64 :=
       if rhs == 0 then 0 else lhs / rhs
   | .uMod =>
       if rhs == 0 then lhs else lhs % rhs
-  | .sMulHi => sorry  -- F1-LN-014
-  | .sDiv   => sorry  -- F1-LN-015
-  | .sMod   => sorry  -- F1-LN-016
+  | .sMulHi =>
+      -- Upper 64 bits of the two's-complement 128-bit signed product.
+      let prod : Int := toSignedInt lhs * toSignedInt rhs
+      let prodU : Nat := (prod % (2 ^ 128 : Int)).toNat
+      (prodU / 2 ^ 64).toUInt64
+  | .sDiv =>
+      let sa : Int := toSignedInt lhs
+      let sb : Int := toSignedInt rhs
+      if sb == 0 then 0                                    -- ARM64 sdiv x, 0 = 0
+      else if sa == -(2 ^ 63 : Int) && sb == -1 then lhs   -- INT_MIN / -1 wraps to INT_MIN
+      else ofSignedInt (Int.tdiv sa sb)                    -- truncate toward zero (C `/`)
+  | .sMod =>
+      let sa : Int := toSignedInt lhs
+      let sb : Int := toSignedInt rhs
+      if sb == 0 then lhs                                  -- ARM msub: a - 0*b = a
+      else if sa == -(2 ^ 63 : Int) && sb == -1 then 0     -- remainder of INT_MIN / -1 is 0
+      else ofSignedInt (Int.tmod sa sb)                    -- truncate toward zero (C `%`)
 
 /-- Mask a 64-bit value down to `size` bits. -/
 def maskToSize (v : UInt64) : OpSize → UInt64
