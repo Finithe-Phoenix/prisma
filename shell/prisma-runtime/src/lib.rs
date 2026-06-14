@@ -10,21 +10,19 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
 pub mod dispatcher;
+pub mod guest_signal;
+pub mod host_features;
+pub mod jit_buffer_pool;
+pub mod jit_memory;
 pub mod signal_handler;
 pub mod smc_guard;
-pub mod jit_memory;
-pub mod jit_buffer_pool;
-pub mod host_features;
 pub mod syscall_handler;
-pub mod guest_signal;
 
 pub use dispatcher::Dispatcher;
+pub use host_features::HostFeatures;
+pub use jit_memory::JitBuffer;
 pub use signal_handler::SignalHandler;
 pub use smc_guard::SmcGuard;
-pub use jit_memory::JitBuffer;
-pub use host_features::HostFeatures;
-
-use prisma_ir::OpSize;
 
 /// Reason a translation block exited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
