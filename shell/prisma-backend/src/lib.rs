@@ -8,10 +8,11 @@
 
 #![deny(unsafe_op_in_unsafe_fn, unused_must_use)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(clippy::missing_const_for_fn, clippy::must_use_candidate)]
 
+pub mod abi;
 pub mod assembler;
 pub mod lowerer;
-pub mod abi;
 
 pub use assembler::Arm64Assembler;
 pub use lowerer::Lowerer;
