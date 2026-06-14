@@ -8,18 +8,29 @@
 
 #![deny(unsafe_op_in_unsafe_fn, unused_must_use)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(
+    dead_code,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::branches_sharing_code,
+    clippy::manual_let_else,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::doc_markdown,
+    clippy::needless_borrow,
+    clippy::needless_pass_by_ref_mut,
+    clippy::ptr_arg,
+    clippy::struct_excessive_bools,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::wildcard_imports
+)]
 
 pub mod decode;
+mod modrm;
+mod prefixes;
 pub mod tables;
-
-use prisma_ir::{Op, Stmt};
-
-/// Result of decoding a single x86 instruction.
-#[derive(Debug, Clone)]
-pub struct Decoded {
-    pub stmts: Vec<Stmt>,
-    pub bytes_consumed: usize,
-}
 
 /// Errors that can occur during decoding.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -38,9 +49,4 @@ pub enum DecodeError {
     InvalidVex,
 }
 
-/// Decode one x86 instruction at the given offset.
-/// Returns the decoded statements and the number of bytes consumed.
-pub fn decode_one(bytes: &[u8], offset: usize) -> Result<Decoded, DecodeError> {
-    // TODO: Phase 3 implementation
-    Err(DecodeError::UnsupportedOpcode(bytes.get(offset).copied().unwrap_or(0)))
-}
+pub use decode::{decode_one, decode_one_at, Decoded};
