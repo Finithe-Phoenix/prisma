@@ -7,6 +7,8 @@ description = "Prisma JIT runtime — dispatcher, signal handler, SMC guard, sys
 [dependencies]
 prisma-ir = { path = "../prisma-ir" }
 prisma-cache = { path = "../prisma-cache" }
+prisma-decoder = { path = "../prisma-decoder" }
+prisma-backend = { path = "../prisma-backend" }
 thiserror = { workspace = true }
 libc = "0.2"
 
@@ -15,6 +17,3 @@ objc = "0.2"
 
 [dev-dependencies]
 proptest = { workspace = true }
-
-[lints]
-workspace = true
