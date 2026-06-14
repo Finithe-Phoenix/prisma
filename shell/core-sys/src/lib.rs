@@ -9,7 +9,7 @@ use core::ffi::{c_char, c_void};
 
 /// Mirror of `PRISMA_CAPI_VERSION`. Compare against
 /// [`prisma_capi_version`] before any other call.
-pub const PRISMA_CAPI_VERSION: u32 = 2;
+pub const PRISMA_CAPI_VERSION: u32 = 3;
 
 /// `prisma_status` values. The C enum is ABI-`int`; we keep plain
 /// `i32` constants so unknown future values stay representable.
@@ -144,6 +144,16 @@ extern "C" {
         bytes: *const u8,
         len: usize,
         out_info: *mut PrismaBlockInfo,
+    ) -> PrismaStatus;
+    pub fn prisma_translator_translate_with_code(
+        t: *mut PrismaTranslator,
+        guest_addr: u64,
+        bytes: *const u8,
+        len: usize,
+        out_info: *mut PrismaBlockInfo,
+        out_code: *mut u8,
+        out_code_cap: usize,
+        out_len: *mut usize,
     ) -> PrismaStatus;
     pub fn prisma_translator_set_real_call_ret(
         t: *mut PrismaTranslator,

@@ -249,6 +249,66 @@ impl Translator {
         })
     }
 
+    /// Translate `bytes` and return emitted host bytes.
+    ///
+    /// # Errors
+    ///
+    /// Decode/lower/allocation failures from the core.
+    pub fn translate_with_code(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+    ) -> Result<(BlockInfo, Vec<u8>), CoreError> {
+        let mut info = sys::PrismaBlockInfo::default();
+        let mut code_len = 0usize;
+        // SAFETY: handle is live; all pointers are valid for this call.
+        check(unsafe {
+            sys::prisma_translator_translate_with_code(
+                self.raw.as_ptr(),
+                guest_addr,
+                bytes.as_ptr(),
+                bytes.len(),
+                &raw mut info,
+                std::ptr::null_mut(),
+                0,
+                &raw mut code_len,
+            )
+        })?;
+
+        let mut code = vec![0u8; code_len];
+        if code_len > 0 {
+            let mut written = 0usize;
+            // SAFETY: second call is idempotent for identical input and this
+            // translator instance; `code` is sized for `code_len`.
+            check(unsafe {
+                sys::prisma_translator_translate_with_code(
+                    self.raw.as_ptr(),
+                    guest_addr,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    &raw mut info,
+                    code.as_mut_ptr(),
+                    code.len(),
+                    &raw mut written,
+                )
+            })?;
+            code.truncate(written);
+        }
+
+        Ok((
+            BlockInfo {
+                code_size: info.code_size,
+                guest_size: info.guest_size,
+                exit_kind: BlockExitKind::from_raw(info.exit_kind),
+                from_cache: info.from_cache != 0,
+                target_guest_pc: info.target_guest_pc,
+                fallthrough_guest_pc: info.fallthrough_guest_pc,
+                return_guest_pc: info.return_guest_pc,
+            },
+            code,
+        ))
+    }
+
     /// Toggle real CALL/RET semantics (on by default, F2-IR-054).
     ///
     /// # Errors
