@@ -1,0 +1,20 @@
+{
+  "name": "differential-test",
+  "description": "Create a differential C++ ↔ Rust test for a migrated component. Use when a new crate reaches feature parity with its C++ counterpart.",
+  "steps": [
+    "1. Identify the C++ function signature you're mirroring in Rust",
+    "2. Add `extern \"C\"` export in Rust for the comparison entry point",
+    "3. Add `extern \"C\"` import in C++ test (or expose via capi.h)",
+    "4. Create test inputs (IR programs, x86 bytes, config) that exercise both paths",
+    "5. Run C++ path → capture output",
+    "6. Run Rust path → capture output",
+    "7. Assert structural equality (not pointer/reference identity)",
+    "8. Add to CI workflow ffi-link so it runs on every PR"
+  ],
+  "template": {
+    "rust_export": "#[no_mangle]\\npub extern \"C\" fn prisma_rust_validate(stmts: *const Stmt, len: u32) -> bool { ... }",
+    "cpp_caller": "extern \"C\" bool prisma_rust_validate(const ir::Stmt* stmts, uint32_t len);",
+    "catch2_test": "TEST_CASE(\"differential: validate matches C++\", \"[differential]\") { ... }"
+  },
+  "reference": "docs/DIFFERENTIAL_TESTING.md"
+}

@@ -6,11 +6,15 @@ FROM arm64v8/ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
-        cmake \
         ninja-build \
         git \
         ca-certificates \
         libstdc++-13-dev \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 24.04 ships CMake 3.28; the core requires >= 3.30. Pull a recent
+# CMake aarch64 wheel (no compile under QEMU).
+RUN pip3 install --no-cache-dir --break-system-packages "cmake>=3.30"
 
 WORKDIR /work

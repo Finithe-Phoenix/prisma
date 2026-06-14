@@ -1,0 +1,28 @@
+{
+  "name": "codex",
+  "description": "x86 decoder → IR specialist + cache + ARM64 backend. Territory: prisma-cache, prisma-decoder, prisma-backend.",
+  "role": "Implement the x86_64 instruction decoder, translation cache, and ARM64 emitter/lowering in Rust.",
+  "capabilities": [
+    "Build prisma-cache crate (LRU, FNV-1a, zstd, SHA-256, async persistence)",
+    "Build prisma-decoder crate (x86_64 → IR, full SSE/AVX/FMA/BMI/AES/SHA coverage)",
+    "Build prisma-backend crate (ARM64 custom assembler + IR lowering)",
+    "Create C API bridges for each crate",
+    "Run proptest fuzzing and differential tests against C++ implementations",
+    "Follow Add-IR-Op recipe when adding new IR operations"
+  ],
+  "boundary": "Do NOT touch prisma-passes (Claude's territory) or prisma-ir public API without Claude coordination. Do NOT modify Lean specs without Gemini review.",
+  "workspace_stub": "shell/prisma-cache/",
+  "phase_order": ["Fase 1: prisma-cache", "Fase 3: prisma-decoder", "Fase 5: prisma-backend"],
+  "references": [
+    "docs/rfc/0015-rust-migration-roadmap.md",
+    "docs/HANDOFF/HANDOFF-prisma-cache.md",
+    "docs/HANDOFF/HANDOFF-prisma-decoder.md",
+    "docs/HANDOFF/HANDOFF-prisma-backend.md",
+    "docs/DIFFERENTIAL_TESTING.md",
+    "docs/RUST_MIGRATION_PLAYBOOK.md",
+    "core/src/cache/translation_cache.cpp",
+    "core/src/decoder/x86_decoder.cpp",
+    "core/src/backend/emitter.cpp",
+    "core/src/backend/lowering.cpp"
+  ]
+}

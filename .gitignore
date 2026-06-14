@@ -3,6 +3,8 @@ build/
 out/
 target/
 dist/
+core/build-*/
+**/target-*/
 *.o
 *.a
 *.so
@@ -77,6 +79,13 @@ npu-models/training/runs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Reviewer CLI scratch output (gemini/codex/rtso transcripts) + CI logs
+.rtso*.txt
+.review_*.txt
+.ci/*.log
+# Ephemeral root work-queue (canonical lives in docs/WORK_QUEUE.md)
+/WORK_QUEUE.md
 
 # Papers (LaTeX)
 papers/**/*.aux

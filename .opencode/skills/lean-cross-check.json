@@ -1,0 +1,15 @@
+{
+  "name": "lean-cross-check",
+  "description": "Verify that the Rust IR types match the Lean formal specification. Use after any change to Op enum or IR data structures.",
+  "steps": [
+    "1. Read ir-spec/PrismaIR/Syntax.lean — extract all Op constructors and field types",
+    "2. Compare against shell/prisma-ir/src/lib.rs — check every variant exists",
+    "3. Verify field types match (Nat → u32, Bool → bool, Option → Option, List → Vec)",
+    "4. Check that serde derives exist (required for binary serialization)",
+    "5. Report discrepancies in docs/REVIEWS/ with exact line numbers",
+    "6. Update docs/REVIEWS/ cross-check tally"
+  ],
+  "known_discrepancies": null,
+  "frequency": "After every IR type change",
+  "reference": "ir-spec/PrismaIR/Syntax.lean"
+}

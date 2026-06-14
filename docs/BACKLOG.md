@@ -552,6 +552,18 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F25-LN-003: Connect runtime assertions to the Lean formal invariants.
 - [ ] F25-LN-004: Paper 3 draft: "Formally Verified IR for x86 DBT".
 
+### F25-RS - Rust core migration (active swarm)
+
+- [~|claude-ir-core] F25-RS-001: Stabilize `shell/prisma-ir` public IR surface against C++ `ir.hpp` and Lean `Syntax.lean`.
+- [~|codex-decoder] F25-RS-002: Expand `shell/prisma-decoder` opcode coverage with unit tests and differential fixtures.
+- [~|codex-cache] F25-RS-003: Restore real translation-cache implementation with SHA-256 envelope and persistence tests.
+- [~|claude-passes] F25-RS-004: Implement `Pass` + `PassPipeline` and migrate const-prop/DCE/CSE skeletons.
+- [~|claude-runtime] F25-RS-005: Build dispatcher/JIT/signal/SMC runtime API in Rust aligned to current C API.
+- [~|codex-backend] F25-RS-006: Build ARM64 assembler/lowerer smoke path and backend ABI shim.
+- [~|codex-integracion] F25-RS-007: Add CI-visible pure-Rust and C++/Rust boundary validation harness; Windows workspace tests and clippy pass locally via `scripts/validate-rust-workspace.ps1`, and `ffi-bridge.yml` now has a Windows/MSVC job for the same gate.
+- [~|codex-integracion] F25-RS-008: Unblock Windows C++ test runner loading (`0xC000007B` Debug loader) before enabling C++/Rust differential CI.
+- [~|codex-integracion] F25-RS-009: Fix Windows CTest/Catch2 Unicode discovery; Windows now uses ASCII smoke tests for CI-visible validation, while full per-case discovery remains mojibake and should be revisited before granular Windows reporting.
+
 ### F25-CA — Distributed translation cache (Pillar 4)
 
 - [ ] F25-CA-001: SHA-256 content hash.

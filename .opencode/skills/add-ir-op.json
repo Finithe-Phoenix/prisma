@@ -1,0 +1,40 @@
+{
+  "name": "add-ir-op",
+  "description": "Recipe for adding a new IR operation type across the entire stack. Use whenever the Op enum gains a new variant.",
+  "files_to_touch": {
+    "C++ core": [
+      "core/include/prisma/ir.hpp — Add struct + Op variant",
+      "core/src/ir/validate.cpp — Validate the new op's invariants",
+      "core/src/ir/serialize.cpp — Binary serialization (tag + fields)",
+      "core/src/ir/profiler.cpp — OpCounter visit",
+      "core/src/ir/cfg.cpp — is_terminator if applicable",
+      "core/src/ir/pretty_print.cpp — Display support",
+      "core/src/backend/lowering.cpp — ARM64 lowering",
+      "core/src/translator/translator.cpp — is_block_terminator if applicable",
+      "core/tests/test_decoder.cpp — Decoder test for the x86 encoding",
+      "core/tests/test_lowering.cpp — Lowering test",
+      "core/tests/test_profiler.cpp — Profiler count test"
+    ],
+    "Rust prisma-ir": [
+      "shell/prisma-ir/src/lib.rs — Add struct + Op enum variant",
+      "shell/prisma-ir/src/lib.rs — Add validate case (or validate.rs)",
+      "shell/prisma-ir/src/lib.rs — Add pretty_print case",
+      "shell/prisma-ir/src/lib.rs — Add serde test for round-trip"
+    ],
+    "Rust downstream (affected)": [
+      "shell/prisma-passes/src/ — Add match arm if op affects DCE/CSE/const_prop",
+      "shell/prisma-decoder/src/ — Add decode case for the x86 opcode",
+      "shell/prisma-backend/src/ — Add lowering case"
+    ],
+    "Spec": [
+      "ir-spec/PrismaIR/Syntax.lean — Add constructor to Op type",
+      "ir-spec/PrismaIR/Semantics.lean — Add denotational semantics"
+    ]
+  },
+  "validation_steps": [
+    "cmake --build core/build && core/build/prisma_core_tests",
+    "cargo test --manifest-path shell/Cargo.toml --package prisma-ir",
+    "cd ir-spec && lake build",
+    "docs/DIFFERENTIAL_TESTING.md harness"
+  ]
+}

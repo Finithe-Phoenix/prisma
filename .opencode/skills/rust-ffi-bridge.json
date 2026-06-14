@@ -1,0 +1,20 @@
+{
+  "name": "rust-ffi-bridge",
+  "description": "Create a C-compatible FFI bridge for a Rust crate so the C++ core can call it. Use when a Rust component needs to be callable from the existing C++ pipeline.",
+  "principles": [
+    "One bridge header per crate (e.g. prisma_cache_c.h)",
+    "Opaque handles (void*) for stateful objects",
+    "Value types for POD structs (repr(C))",
+    "No exceptions — all errors mapped to status codes",
+    "Versioned entry points (PRISMA_CAPI_VERSION pattern)",
+    "Panic firewall: catch_unwind at every entry point"
+  ],
+  "template": {
+    "c_header": "typedef struct prisma_cache_t prisma_cache_t;\\nprisma_status prisma_cache_create(...);\\nvoid prisma_cache_destroy(prisma_cache_t*);",
+    "rust_impl": "#[no_mangle]\\npub unsafe extern \"C\" fn prisma_cache_create(...) -> PrismaStatus {\\n    let result = std::panic::catch_unwind(|| { ... });\\n    match result {\\n        Ok(_) => PrismaStatus::Ok,\\n        Err(_) => PrismaStatus::Internal,\\n    }\\n}"
+  },
+  "reference": [
+    "core/include/prisma/capi.h",
+    "docs/rfc/0014-ffi-boundary-core-shell.md"
+  ]
+}
