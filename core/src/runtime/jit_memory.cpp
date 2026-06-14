@@ -11,8 +11,15 @@
 #include <stdexcept>
 #include <string>
 
-#include <sys/mman.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 #if defined(__APPLE__)
 #  include <libkern/OSCacheControl.h>
@@ -25,8 +32,14 @@ namespace prisma::runtime {
 namespace {
 
 std::size_t page_size() {
+#if defined(_WIN32)
+    SYSTEM_INFO info{};
+    ::GetSystemInfo(&info);
+    return static_cast<std::size_t>(info.dwPageSize);
+#else
     const long ps = ::sysconf(_SC_PAGESIZE);
     return (ps > 0) ? static_cast<std::size_t>(ps) : std::size_t{4096};
+#endif
 }
 
 std::size_t round_up_to_page(std::size_t n, std::size_t ps) {
@@ -39,7 +52,7 @@ std::size_t round_up_to_page(std::size_t n, std::size_t ps) {
 // On Intel macOS MAP_JIT is tolerated but not required. We always use it
 // on Apple targets for consistency.
 constexpr int kMmapFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT;
-#else
+#elif !defined(_WIN32)
 constexpr int kMmapFlags = MAP_PRIVATE | MAP_ANONYMOUS;
 #endif
 
@@ -48,6 +61,8 @@ constexpr int kMmapFlags = MAP_PRIVATE | MAP_ANONYMOUS;
 void invalidate_icache(void* base, std::size_t size) {
 #if defined(__APPLE__)
     sys_icache_invalidate(base, size);
+#elif defined(_WIN32)
+    ::FlushInstructionCache(::GetCurrentProcess(), base, size);
 #else
     // __builtin___clear_cache takes a half-open range [begin, end).
     auto* begin = static_cast<char*>(base);
@@ -62,6 +77,12 @@ JitBuffer::JitBuffer(std::size_t min_bytes) {
     const std::size_t ps = page_size();
     const std::size_t size = round_up_to_page(min_bytes == 0 ? 1 : min_bytes, ps);
 
+#if defined(_WIN32)
+    void* p = ::VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (p == nullptr) {
+        throw std::bad_alloc{};
+    }
+#else
     void* p = ::mmap(nullptr,
                      size,
                      PROT_READ | PROT_WRITE,
@@ -73,6 +94,7 @@ JitBuffer::JitBuffer(std::size_t min_bytes) {
         throw std::bad_alloc{};
         (void)e;
     }
+#endif
 
     base_ = static_cast<std::uint8_t*>(p);
     capacity_ = size;
@@ -91,7 +113,11 @@ JitBuffer::~JitBuffer() {
         // on destruction, to avoid leaking the toggle.
         pthread_jit_write_protect_np(/*write_protect=*/1);
 #endif
+#if defined(_WIN32)
+        ::VirtualFree(base_, 0, MEM_RELEASE);
+#else
         ::munmap(base_, capacity_);
+#endif
     }
 }
 
@@ -113,6 +139,12 @@ void JitBuffer::make_executable() {
     pthread_jit_write_protect_np(/*write_protect=*/1);
 #endif
 
+#if defined(_WIN32)
+    DWORD old_protect = 0;
+    if (::VirtualProtect(base_, capacity_, PAGE_EXECUTE_READ, &old_protect) == 0) {
+        throw std::runtime_error{"JitBuffer::make_executable VirtualProtect failed"};
+    }
+#else
     if (::mprotect(base_, capacity_, PROT_READ | PROT_EXEC) != 0) {
         // Best-effort error handling — JIT failures at this stage are
         // catastrophic; escalate to a runtime exception with errno for
@@ -122,6 +154,7 @@ void JitBuffer::make_executable() {
             std::string{"JitBuffer::make_executable mprotect failed: "} +
             std::strerror(e));
     }
+#endif
 
     invalidate_icache(base_, written_size_);
     executable_ = true;

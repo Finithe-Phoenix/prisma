@@ -139,6 +139,7 @@ enum class OneByteDispatchKind : std::uint8_t {
     PushImm8,
     PushImm32,
     ImulImm8,
+    AluRmImm8,
     ShiftImm8,
     ShiftCl,
     ImulImm32,
@@ -168,6 +169,7 @@ constexpr auto build_one_byte_dispatch_table() noexcept {
     table[0x69u] = {OneByteDispatchKind::ImulImm32};
     table[0x6Au] = {OneByteDispatchKind::PushImm8};
     table[0x6Bu] = {OneByteDispatchKind::ImulImm8};
+    table[0x83u] = {OneByteDispatchKind::AluRmImm8};
     table[0x85u] = {OneByteDispatchKind::TestRmR};
     table[0x87u] = {OneByteDispatchKind::XchgRmR};
     table[0x9Cu] = {OneByteDispatchKind::Pushfq};
@@ -1193,7 +1195,110 @@ std::variant<Decoded, DecodeError> decode_alu_rm_r(
     return d;
 }
 
-// MOV r/m<size>, r<size>  (0x89 /r) — stores REG into R/M.
+// Group 1 ALU r/m, imm8 (83 /digit ib).
+// Supported here:
+//   /0 ADD r/m, imm8
+//   /1 OR r/m, imm8
+//   /2 ADC r/m, imm8 (carry path placeholder: ADD)
+//   /3 SBB r/m, imm8 (borrow path placeholder: SUB)
+//   /4 AND r/m, imm8
+//   /5 SUB r/m, imm8
+//   /6 XOR r/m, imm8
+//   /7 CMP r/m, imm8
+// The imm8 is sign-extended to the selected operand size.
+std::variant<Decoded, DecodeError> decode_alu_rm_imm8(
+    std::span<const Byte> bytes,
+    std::size_t& cursor_in_out,
+    const RexPrefix& rex,
+    bool address_size_override,
+    std::uint64_t instruction_guest_pc,
+    ir::BinOpKind op,
+    ir::Ref& next_ref,
+    ir::OpSize size) {
+    auto modrm = parse_modrm(bytes, cursor_in_out, rex, address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+
+    auto imm = consume_le<1>(bytes, cursor_in_out);
+    if (std::holds_alternative<DecodeError>(imm)) {
+        return std::get<DecodeError>(imm);
+    }
+    const std::int32_t imm_i8 = sign_extend_i32<1>(std::get<std::uint64_t>(imm));
+    const std::uint64_t imm_u64 =
+        static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i8));
+
+    Decoded d;
+    if (m.mod == 0b11u) {
+        const ir::Ref ref_dst = next_ref++;
+        const ir::Ref ref_imm = next_ref++;
+        const ir::Ref ref_res = next_ref++;
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+        d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
+        d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_imm, size}});
+        d.stmts.push_back({std::nullopt,
+                           ir::StoreReg{m.base, ref_res, size}});
+    } else {
+        const ir::Ref ref_addr =
+            emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor_in_out);
+        const ir::Ref ref_dst = next_ref++;
+        const ir::Ref ref_imm = next_ref++;
+        const ir::Ref ref_res = next_ref++;
+        d.stmts.push_back({ref_dst, ir::LoadMem{ref_addr, size}});
+        d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
+        d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_imm, size}});
+        d.stmts.push_back({std::nullopt,
+                           ir::StoreMem{ref_addr, ref_res, size}});
+    }
+    d.bytes_consumed = cursor_in_out;
+    return d;
+}
+
+std::variant<Decoded, DecodeError> decode_cmp_rm_imm8(
+    std::span<const Byte> bytes,
+    std::size_t& cursor_in_out,
+    const RexPrefix& rex,
+    bool address_size_override,
+    std::uint64_t instruction_guest_pc,
+    ir::Ref& next_ref,
+    ir::OpSize size) {
+    auto modrm = parse_modrm(bytes, cursor_in_out, rex, address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+
+    auto imm = consume_le<1>(bytes, cursor_in_out);
+    if (std::holds_alternative<DecodeError>(imm)) {
+        return std::get<DecodeError>(imm);
+    }
+    const std::int32_t imm_i8 = sign_extend_i32<1>(std::get<std::uint64_t>(imm));
+    const std::uint64_t imm_u64 =
+        static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i8));
+
+    Decoded d;
+    ir::Ref ref_lhs;
+    ir::Ref ref_rhs;
+    if (m.mod == 0b11u) {
+        ref_lhs = next_ref++;
+        ref_rhs = next_ref++;
+        d.stmts.push_back({ref_lhs, ir::LoadReg{m.base, size}});
+        d.stmts.push_back({ref_rhs, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
+    } else {
+        const ir::Ref ref_addr =
+            emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor_in_out);
+        ref_lhs = next_ref++;
+        ref_rhs = next_ref++;
+        d.stmts.push_back({ref_lhs, ir::LoadMem{ref_addr, size}});
+        d.stmts.push_back({ref_rhs, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
+    }
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_lhs, ref_rhs, size}});
+    d.bytes_consumed = cursor_in_out;
+    return d;
+}
+
+// MOV r/m<size>, r<size>  (0x89 /r) stores REG into R/M.
 // In register direct (mod=11): just StoreReg(rm, LoadReg(reg)).
 // In memory form: StoreMemTSO(addr(rm), LoadReg(reg)).
 std::variant<Decoded, DecodeError> decode_mov_rm_r(
@@ -2388,6 +2493,53 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
             if (!size) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             return DispatchDecodeResult{decode_imul_r64_rm_imm8(
                 bytes, cursor, rex, has_address_size_override, instruction_guest_pc, next_ref, *size)};
+        }
+        case OneByteDispatchKind::AluRmImm8: {
+            const auto size = checked_operand_size(rex, has_operand_size_override);
+            if (!size) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (cursor >= bytes.size()) return DispatchDecodeResult{DecodeError::TruncatedInput};
+            const unsigned subop = (bytes[cursor] >> 3) & 0x7u;
+            if (subop == 0u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::Add, next_ref, *size)};
+            }
+            if (subop == 1u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::Or, next_ref, *size)};
+            }
+            if (subop == 2u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::Add, next_ref, *size)};
+            }
+            if (subop == 3u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::Sub, next_ref, *size)};
+            }
+            if (subop == 4u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::And, next_ref, *size)};
+            }
+            if (subop == 5u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::Sub, next_ref, *size)};
+            }
+            if (subop == 6u) {
+                return DispatchDecodeResult{decode_alu_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    ir::BinOpKind::Xor, next_ref, *size)};
+            }
+            if (subop == 7u) {
+                return DispatchDecodeResult{decode_cmp_rm_imm8(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    next_ref, *size)};
+            }
+            return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
         }
         case OneByteDispatchKind::ImulImm32: {
             const auto size = checked_operand_size(rex, has_operand_size_override);

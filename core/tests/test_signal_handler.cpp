@@ -21,8 +21,15 @@
 #include "prisma/signal_handler.hpp"
 #include "prisma/smc_guard.hpp"
 
-#include <sys/mman.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 using namespace prisma;
 
@@ -34,25 +41,47 @@ constexpr bool is_arm64 =
     false;
 #endif
 
+constexpr bool has_posix_signal_handlers =
+#if defined(_WIN32)
+    false;
+#else
+    true;
+#endif
+
 std::size_t host_page() {
+#if defined(_WIN32)
+    SYSTEM_INFO info{};
+    ::GetSystemInfo(&info);
+    return static_cast<std::size_t>(info.dwPageSize);
+#else
     long v = ::sysconf(_SC_PAGESIZE);
     return v > 0 ? static_cast<std::size_t>(v) : 4096;
+#endif
 }
 
 class MappedPage {
 public:
     MappedPage() {
         bytes_ = host_page();
+#if defined(_WIN32)
+        void* p = ::VirtualAlloc(nullptr, bytes_, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        REQUIRE(p != nullptr);
+#else
         void* p = ::mmap(nullptr, bytes_,
                          PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS,
                          -1, 0);
         REQUIRE(p != MAP_FAILED);
+#endif
         ptr_ = static_cast<std::uint8_t*>(p);
     }
     ~MappedPage() {
         if (ptr_ != nullptr) {
+#if defined(_WIN32)
+            ::VirtualFree(ptr_, 0, MEM_RELEASE);
+#else
             ::munmap(ptr_, bytes_);
+#endif
         }
     }
 
@@ -92,6 +121,10 @@ public:
 }  // namespace
 
 TEST_CASE("signal_handler: SIGSEGV recovery via setjmp/longjmp") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     runtime::install_handlers();
 
     // Force a deterministic page fault by dereferencing a known-bad
@@ -110,6 +143,10 @@ TEST_CASE("signal_handler: SIGSEGV recovery via setjmp/longjmp") {
 }
 
 TEST_CASE("signal_handler: SmcGuard fault invokes the invalidate callback") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     runtime::install_handlers();
 
     MappedPage page;
@@ -138,6 +175,10 @@ TEST_CASE("signal_handler: SmcGuard fault invokes the invalidate callback") {
 
 TEST_CASE("signal_handler: SIGILL recovery from an illegal ARM64 instruction",
           "[arm64-only]") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     if constexpr (!is_arm64) {
         SUCCEED("skipped on non-ARM64 host");
         return;
@@ -178,6 +219,10 @@ TEST_CASE("signal_handler: SIGILL recovery from an illegal ARM64 instruction",
 
 TEST_CASE("signal_handler: SIGBUS recovery via setjmp/longjmp",
           "[arm64-only]") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     if constexpr (!is_arm64) {
         SUCCEED("skipped on non-ARM64 host");
         return;
@@ -210,6 +255,10 @@ TEST_CASE("signal_handler: SIGBUS recovery via setjmp/longjmp",
 }
 
 TEST_CASE("signal_handler: multiple sequential fault-recovery cycles") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     // A translation block that faults twice should be recoverable each
     // time. Verifies that the thread-local state resets correctly after
     // each recovery.
@@ -233,6 +282,10 @@ TEST_CASE("signal_handler: multiple sequential fault-recovery cycles") {
 }
 
 TEST_CASE("signal_handler: drain_smc_invalidations returns 0 with no guard") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     runtime::install_handlers();
     // No SmcGuard installed at all — drain should return 0 without
     // crashing or asserting.
@@ -241,6 +294,10 @@ TEST_CASE("signal_handler: drain_smc_invalidations returns 0 with no guard") {
 }
 
 TEST_CASE("signal_handler: nested ScopedProtected preserves stack on normal exit") {
+    if constexpr (!has_posix_signal_handlers) {
+        SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
     // When scopes exit normally (no fault), the RAII destructors run in
     // LIFO order and `tls_current_jb` is correctly restored. We don't
     // test re-faulting after a recovery because siglongjmp bypasses

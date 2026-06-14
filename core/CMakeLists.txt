@@ -383,6 +383,10 @@ target_include_directories(prisma_core_c
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_compile_definitions(prisma_core_c
+    PRIVATE PRISMA_CORE_C_BUILD
+)
+
 target_link_libraries(prisma_core_c
     PRIVATE
         prisma_translator
@@ -520,5 +524,30 @@ if(PRISMA_BUILD_TESTS)
         message(STATUS "Prisma: Zydis differential decoder test enabled")
     endif()
 
-    catch_discover_tests(prisma_core_tests)
+    if(WIN32)
+        # Catch2 per-test discovery currently corrupts Unicode test names when
+        # CTest passes them back as filters on Windows/MSVC. Keep Windows CI
+        # useful with ASCII-only smoke filters until F25-RS-009 lands a full
+        # discovery fix.
+        add_test(
+            NAME prisma_core_smoke_smc_guard
+            COMMAND $<TARGET_FILE:prisma_core_tests> "smc_guard:*" --reporter compact
+        )
+        add_test(
+            NAME prisma_core_smoke_capi
+            COMMAND $<TARGET_FILE:prisma_core_tests> "capi:*" --reporter compact
+        )
+        add_test(
+            NAME prisma_core_smoke_jit_buffer
+            COMMAND $<TARGET_FILE:prisma_core_tests> "JitBuffer*" --reporter compact
+        )
+        set_tests_properties(
+            prisma_core_smoke_smc_guard
+            prisma_core_smoke_capi
+            prisma_core_smoke_jit_buffer
+            PROPERTIES TIMEOUT 60
+        )
+    else()
+        catch_discover_tests(prisma_core_tests)
+    endif()
 endif()

@@ -10,6 +10,7 @@
 // we lower to. Skipped on other hosts via the `is_arm64` guard.
 
 #include <catch2/catch_test_macros.hpp>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -499,7 +500,7 @@ TEST_CASE("e2e: POPCNT 0xCAFEBABE counts the bits") {
     disp.state()[ir::Gpr::Rcx] = 0xCAFEBABEDEADBEEFULL;
     auto r = disp.run(0x4000, 100);
     REQUIRE(r.exit == runtime::DispatchExit::Halted);
-    int expected = __builtin_popcountll(0xCAFEBABEDEADBEEFULL);
+    int expected = std::popcount(std::uint64_t{0xCAFEBABEDEADBEEFULL});
     REQUIRE(disp.state()[ir::Gpr::Rax] == static_cast<std::uint64_t>(expected));
 }
 

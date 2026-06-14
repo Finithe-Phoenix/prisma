@@ -2,8 +2,6 @@
 
 #include "prisma/jit_buffer_pool.hpp"
 
-#include <unistd.h>
-
 #include <cerrno>
 #include <cstring>
 #include <limits>
@@ -11,7 +9,15 @@
 #include <stdexcept>
 #include <string>
 
-#include <sys/mman.h>
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 #if defined(__APPLE__)
 #include <pthread.h>
@@ -26,14 +32,20 @@ namespace {
 #if defined(__APPLE__)
 constexpr int kPoolMmapFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT;
 constexpr int kPoolMmapProt = PROT_READ | PROT_WRITE | PROT_EXEC;
-#else
+#elif !defined(_WIN32)
 constexpr int kPoolMmapFlags = MAP_PRIVATE | MAP_ANONYMOUS;
 constexpr int kPoolMmapProt = PROT_READ | PROT_WRITE | PROT_EXEC;
 #endif
 
 std::size_t page_size() {
+#if defined(_WIN32)
+  SYSTEM_INFO info{};
+  ::GetSystemInfo(&info);
+  return static_cast<std::size_t>(info.dwPageSize);
+#else
   static const std::size_t cached = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
   return cached;
+#endif
 }
 
 std::size_t round_up(std::size_t v, std::size_t align) noexcept {
@@ -65,6 +77,8 @@ bool signed_byte_delta(std::uintptr_t from, std::uintptr_t to, std::int64_t& out
 void invalidate_icache(void* base, std::size_t size) {
 #if defined(__APPLE__)
   sys_icache_invalidate(base, size);
+#elif defined(_WIN32)
+  ::FlushInstructionCache(::GetCurrentProcess(), base, size);
 #else
   auto* begin = static_cast<char*>(base);
   auto* end = begin + size;
@@ -86,12 +100,19 @@ JitSlabPool::Slab JitSlabPool::allocate_slab(std::size_t bytes) {
   const std::size_t ps = page_size();
   const std::size_t size = round_up(bytes < kSlabBytes ? kSlabBytes : bytes, ps);
 
+#if defined(_WIN32)
+  void* p = ::VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+  if (p == nullptr) {
+    throw std::bad_alloc{};
+  }
+#else
   void* p = ::mmap(nullptr, size, kPoolMmapProt, kPoolMmapFlags,
                    /*fd=*/-1,
                    /*offset=*/0);
   if (p == MAP_FAILED) {
     throw std::bad_alloc{};
   }
+#endif
 
   Slab s;
   s.base = static_cast<std::uint8_t*>(p);
@@ -102,7 +123,11 @@ JitSlabPool::Slab JitSlabPool::allocate_slab(std::size_t bytes) {
 
 void JitSlabPool::free_slab(Slab& s) noexcept {
   if (s.base != nullptr) {
+#if defined(_WIN32)
+    ::VirtualFree(s.base, 0, MEM_RELEASE);
+#else
     ::munmap(s.base, s.capacity);
+#endif
     s.base = nullptr;
     s.capacity = 0;
     s.cursor = 0;

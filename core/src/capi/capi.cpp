@@ -107,6 +107,44 @@ prisma_status prisma_translator_translate(prisma_translator* t,
     }
 }
 
+prisma_status prisma_translator_translate_with_code(
+    prisma_translator* t,
+    uint64_t guest_addr,
+    const uint8_t* bytes,
+    size_t len,
+    prisma_block_info* out_info,
+    uint8_t* out_code,
+    size_t out_code_cap,
+    size_t* out_len) {
+    if (out_len == nullptr) return PRISMA_STATUS_INVALID_ARGUMENT;
+    if (t == nullptr || (bytes == nullptr && len != 0)) {
+        return PRISMA_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        const auto result =
+            t->impl.translate(guest_addr, std::span<const uint8_t>(bytes, len));
+        if (const auto* err =
+                std::get_if<prisma::translator::TranslateError>(&result)) {
+            return to_status(*err);
+        }
+        const auto& block = std::get<prisma::translator::TranslatedBlock>(result);
+        if (out_info != nullptr) {
+            fill_block_info(block, *out_info);
+        }
+        *out_len = block.code_size;
+        if (out_code == nullptr || out_code_cap == 0) {
+            return PRISMA_OK;
+        }
+        if (out_code_cap < block.code_size) {
+            return PRISMA_STATUS_INVALID_ARGUMENT;
+        }
+        std::memcpy(out_code, block.code_entry, block.code_size);
+        return PRISMA_OK;
+    } catch (...) {
+        return PRISMA_STATUS_INTERNAL;
+    }
+}
+
 prisma_status prisma_translator_set_real_call_ret(prisma_translator* t,
                                                   int enabled) {
     if (t == nullptr) return PRISMA_STATUS_INVALID_ARGUMENT;

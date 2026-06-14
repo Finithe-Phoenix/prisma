@@ -28,8 +28,15 @@
 #include <mutex>
 #include <vector>
 
-#include <sys/mman.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 namespace prisma::runtime {
 
@@ -42,8 +49,14 @@ std::atomic<SmcGuard*> g_smc_guard{nullptr};
 // host; if the guest page is smaller, we round up.
 std::size_t host_page_size() noexcept {
     static const std::size_t cached = []() -> std::size_t {
+#if defined(_WIN32)
+        SYSTEM_INFO info{};
+        ::GetSystemInfo(&info);
+        return static_cast<std::size_t>(info.dwPageSize);
+#else
         long v = ::sysconf(_SC_PAGESIZE);
         return v > 0 ? static_cast<std::size_t>(v) : 4096;
+#endif
     }();
     return cached;
 }
@@ -59,6 +72,24 @@ SmcGuard* global_smc_guard() noexcept {
 }
 
 bool SmcGuard::protect_page(std::uint64_t page_addr, bool writable) noexcept {
+#if defined(_WIN32)
+    const DWORD protect = writable ? PAGE_READWRITE : PAGE_READONLY;
+    const std::size_t hps = host_page_size();
+    const std::uint64_t base = page_addr & ~static_cast<std::uint64_t>(hps - 1);
+    const std::size_t len = (kGuestPageSize + (hps - 1)) & ~(hps - 1);
+    void* addr = reinterpret_cast<void*>(static_cast<std::uintptr_t>(base));
+    DWORD old_protect = 0;
+    if (::VirtualProtect(addr, len, protect, &old_protect) == 0) {
+        std::fprintf(stderr,
+                     "prisma::SmcGuard: VirtualProtect(0x%llx, %zu, 0x%lx) failed; "
+                     "continuing without page protection\n",
+                     static_cast<unsigned long long>(base),
+                     len,
+                     static_cast<unsigned long>(protect));
+        return false;
+    }
+    return true;
+#else
     // We deliberately omit PROT_EXEC. The host CPU never executes the
     // guest bytes directly — the JIT translates them into host code
     // that lives in a separate `JitBuffer`. So PROT_READ is enough to
@@ -87,16 +118,16 @@ bool SmcGuard::protect_page(std::uint64_t page_addr, bool writable) noexcept {
         return false;
     }
     return true;
+#endif
 }
 
 void SmcGuard::on_translate(std::uint64_t guest_pc,
                             std::size_t   guest_byte_len,
                             std::uint64_t cache_key) {
-    if (guest_byte_len == 0) {
-        return;
-    }
     const std::uint64_t first = page_base(guest_pc);
-    const std::uint64_t last  = page_base(guest_pc + guest_byte_len - 1);
+    const std::uint64_t last  = guest_byte_len == 0
+                                    ? first
+                                    : page_base(guest_pc + guest_byte_len - 1);
 
     std::lock_guard<SpinLock> lock(mu_);
     for (std::uint64_t p = first; p <= last; p += kGuestPageSize) {

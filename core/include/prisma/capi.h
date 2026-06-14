@@ -19,15 +19,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(_WIN32)
+#  if defined(PRISMA_CORE_C_BUILD)
+#    define PRISMA_CAPI_API __declspec(dllexport)
+#  else
+#    define PRISMA_CAPI_API __declspec(dllimport)
+#  endif
+#else
+#  define PRISMA_CAPI_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Bump on any ABI-visible change (new function, struct growth, enum
  * value). Consumers compare against prisma_capi_version() at startup. */
-#define PRISMA_CAPI_VERSION 2u
+#define PRISMA_CAPI_VERSION 3u
 
-uint32_t prisma_capi_version(void);
+PRISMA_CAPI_API uint32_t prisma_capi_version(void);
 
 typedef enum prisma_status {
     PRISMA_OK = 0,
@@ -111,23 +121,42 @@ typedef struct prisma_translator_stats {
     uint64_t lower_failures;
 } prisma_translator_stats;
 
-prisma_status prisma_translator_create(prisma_translator** out);
-void prisma_translator_destroy(prisma_translator* t);
+PRISMA_CAPI_API prisma_status prisma_translator_create(prisma_translator** out);
+PRISMA_CAPI_API void prisma_translator_destroy(prisma_translator* t);
 
 /* Translate `len` guest bytes at `guest_addr`. `out_info` may be NULL
  * when the caller only wants the side effect of populating the cache. */
-prisma_status prisma_translator_translate(prisma_translator* t,
-                                          uint64_t guest_addr,
-                                          const uint8_t* bytes,
-                                          size_t len,
-                                          prisma_block_info* out_info);
+PRISMA_CAPI_API prisma_status prisma_translator_translate(
+    prisma_translator* t,
+    uint64_t guest_addr,
+    const uint8_t* bytes,
+    size_t len,
+    prisma_block_info* out_info);
+/* Same as `prisma_translator_translate`, plus an optional host-code
+ * byte dump. `out_code` may be NULL for a size-only query. `out_len`
+ * receives the emitted host code bytes actually written, or the required
+ * buffer size when `out_code == NULL` or the supplied `out_code_cap` is
+ * too small. Returns PRISMA_STATUS_INVALID_ARGUMENT when required output
+ * cannot be represented in `out_code`.
+ */
+PRISMA_CAPI_API prisma_status prisma_translator_translate_with_code(
+    prisma_translator* t,
+    uint64_t guest_addr,
+    const uint8_t* bytes,
+    size_t len,
+    prisma_block_info* out_info,
+    uint8_t* out_code,
+    size_t out_code_cap,
+    size_t* out_len);
 
 /* Real CALL/RET semantics toggle; on by default (F2-IR-054). */
-prisma_status prisma_translator_set_real_call_ret(prisma_translator* t,
-                                                  int enabled);
+PRISMA_CAPI_API prisma_status prisma_translator_set_real_call_ret(
+    prisma_translator* t,
+    int enabled);
 
-prisma_status prisma_translator_get_stats(const prisma_translator* t,
-                                          prisma_translator_stats* out);
+PRISMA_CAPI_API prisma_status prisma_translator_get_stats(
+    const prisma_translator* t,
+    prisma_translator_stats* out);
 
 /* ------------------------------------------------------------------ */
 /* Dispatcher                                                          */
@@ -175,36 +204,44 @@ typedef struct prisma_run_result {
 
 /* The translator must outlive the dispatcher. `reader` + `ctx` must
  * stay valid for the dispatcher's lifetime. */
-prisma_status prisma_dispatcher_create(prisma_translator* t,
-                                       prisma_mem_reader reader,
-                                       void* ctx,
-                                       prisma_dispatcher** out);
-void prisma_dispatcher_destroy(prisma_dispatcher* d);
+PRISMA_CAPI_API prisma_status prisma_dispatcher_create(
+    prisma_translator* t,
+    prisma_mem_reader reader,
+    void* ctx,
+    prisma_dispatcher** out);
+PRISMA_CAPI_API void prisma_dispatcher_destroy(prisma_dispatcher* d);
 
-prisma_status prisma_dispatcher_add_halt_pc(prisma_dispatcher* d,
-                                            uint64_t pc);
+PRISMA_CAPI_API prisma_status prisma_dispatcher_add_halt_pc(
+    prisma_dispatcher* d,
+    uint64_t pc);
 
 /* See runtime::Dispatcher::install_halt_return_stack(). */
-prisma_status prisma_dispatcher_install_halt_return_stack(
+PRISMA_CAPI_API prisma_status prisma_dispatcher_install_halt_return_stack(
     prisma_dispatcher* d);
 
-prisma_status prisma_dispatcher_run(prisma_dispatcher* d,
-                                    uint64_t entry_pc,
-                                    size_t max_steps,
-                                    prisma_run_result* out);
+PRISMA_CAPI_API prisma_status prisma_dispatcher_run(
+    prisma_dispatcher* d,
+    uint64_t entry_pc,
+    size_t max_steps,
+    prisma_run_result* out);
 
 /* Guest CPU state access (between runs). */
-prisma_status prisma_dispatcher_gpr_get(const prisma_dispatcher* d,
-                                        uint32_t gpr_index,
-                                        uint64_t* out);
-prisma_status prisma_dispatcher_gpr_set(prisma_dispatcher* d,
-                                        uint32_t gpr_index,
-                                        uint64_t value);
-prisma_status prisma_dispatcher_guest_pc(const prisma_dispatcher* d,
-                                         uint64_t* out);
+PRISMA_CAPI_API prisma_status prisma_dispatcher_gpr_get(
+    const prisma_dispatcher* d,
+    uint32_t gpr_index,
+    uint64_t* out);
+PRISMA_CAPI_API prisma_status prisma_dispatcher_gpr_set(
+    prisma_dispatcher* d,
+    uint32_t gpr_index,
+    uint64_t value);
+PRISMA_CAPI_API prisma_status prisma_dispatcher_guest_pc(
+    const prisma_dispatcher* d,
+    uint64_t* out);
 
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#undef PRISMA_CAPI_API
 
 #endif /* PRISMA_CAPI_H */
