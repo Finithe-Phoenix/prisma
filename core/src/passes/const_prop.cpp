@@ -55,6 +55,27 @@ std::uint64_t bit_extract(std::uint64_t src, std::uint64_t mask) noexcept {
     return out;
 }
 
+// Portable 64-bit high-half multiply without relying on compiler extensions.
+std::uint64_t mul_high_u64(std::uint64_t a, std::uint64_t b) noexcept {
+    const std::uint64_t a_lo = static_cast<std::uint32_t>(a);
+    const std::uint64_t a_hi = a >> 32;
+    const std::uint64_t b_lo = static_cast<std::uint32_t>(b);
+    const std::uint64_t b_hi = b >> 32;
+
+    const std::uint64_t w0 = a_lo * b_lo;
+    const std::uint64_t t = a_hi * b_lo + (w0 >> 32);
+    const std::uint64_t w1 = a_lo * b_hi + static_cast<std::uint32_t>(t);
+    return a_hi * b_hi + (t >> 32) + (w1 >> 32);
+}
+
+std::uint64_t mul_high_s64(std::int64_t a, std::int64_t b) noexcept {
+    const std::uint64_t a_u = static_cast<std::uint64_t>(a);
+    const std::uint64_t b_u = static_cast<std::uint64_t>(b);
+    const std::uint64_t a_sign = static_cast<std::uint64_t>(a >> 63);
+    const std::uint64_t b_sign = static_cast<std::uint64_t>(b >> 63);
+    return mul_high_u64(a_u, b_u) - (a_sign & b_u) - (b_sign & a_u);
+}
+
 // Exact mirror of the Lean `evalBinOp` definition, with size-masking
 // applied here so the producer of the Constant sees a canonical value.
 std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noexcept {
@@ -94,32 +115,11 @@ std::uint64_t eval_binop(ir::BinOpKind op, std::uint64_t a, std::uint64_t b) noe
             return (a >> n) | (a << (64 - n));
         }
         case ir::BinOpKind::UMulHi: {
-#if defined(__SIZEOF_INT128__)
-            const unsigned __int128 prod =
-                static_cast<unsigned __int128>(a) * static_cast<unsigned __int128>(b);
-            return static_cast<std::uint64_t>(prod >> 64);
-#elif defined(_M_X64)
-            std::uint64_t hi;
-            _umul128(a, b, &hi);
-            return hi;
-#else
-            return 0;
-#endif
+            return mul_high_u64(a, b);
         }
         case ir::BinOpKind::SMulHi: {
-#if defined(__SIZEOF_INT128__)
-            const __int128 prod =
-                static_cast<__int128>(static_cast<std::int64_t>(a)) *
-                static_cast<__int128>(static_cast<std::int64_t>(b));
-            return static_cast<std::uint64_t>(prod >> 64);
-#elif defined(_M_X64)
-            std::int64_t hi;
-            _mul128(static_cast<std::int64_t>(a),
-                    static_cast<std::int64_t>(b), &hi);
-            return static_cast<std::uint64_t>(hi);
-#else
-            return 0;
-#endif
+            return mul_high_s64(static_cast<std::int64_t>(a),
+                               static_cast<std::int64_t>(b));
         }
         case ir::BinOpKind::UDiv: {
             if (b == 0) return 0;  // ARM64 udiv returns 0 on /0.

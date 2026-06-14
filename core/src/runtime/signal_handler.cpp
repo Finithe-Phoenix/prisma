@@ -16,6 +16,72 @@
 
 #include "prisma/signal_handler.hpp"
 
+#if defined(_WIN32)
+
+#include <atomic>
+#include <csetjmp>
+#include <cstddef>
+#include <cstdint>
+
+#include "prisma/smc_guard.hpp"
+
+namespace prisma::runtime {
+
+namespace {
+
+thread_local std::jmp_buf* tls_current_jb = nullptr;
+thread_local FaultKind tls_last_fault = FaultKind::None;
+
+std::atomic<SmcInvalidateCallback> g_smc_invalidate_callback{nullptr};
+std::atomic<void*> g_smc_invalidate_ctx{nullptr};
+
+}  // namespace
+
+void set_smc_invalidate_callback(SmcInvalidateCallback callback,
+                                 void* ctx) noexcept {
+    g_smc_invalidate_ctx.store(ctx, std::memory_order_release);
+    g_smc_invalidate_callback.store(callback, std::memory_order_release);
+}
+
+void clear_smc_invalidate_callback() noexcept {
+    g_smc_invalidate_callback.store(nullptr, std::memory_order_release);
+    g_smc_invalidate_ctx.store(nullptr, std::memory_order_release);
+}
+
+std::size_t drain_smc_invalidations() {
+    SmcGuard* g = global_smc_guard();
+    if (g == nullptr) {
+        return 0;
+    }
+    auto callback = g_smc_invalidate_callback.load(std::memory_order_acquire);
+    auto* ctx = g_smc_invalidate_ctx.load(std::memory_order_acquire);
+    return g->drain_pending([callback, ctx](std::uint64_t cache_key) {
+        if (callback != nullptr) {
+            callback(cache_key, ctx);
+        }
+    });
+}
+
+void install_handlers() {}
+
+ScopedProtected::ScopedProtected(std::jmp_buf& jb) noexcept
+    : prev_(tls_current_jb) {
+    tls_current_jb = &jb;
+    tls_last_fault = FaultKind::None;
+}
+
+ScopedProtected::~ScopedProtected() noexcept {
+    tls_current_jb = prev_;
+}
+
+FaultKind last_fault_kind() noexcept {
+    return tls_last_fault;
+}
+
+}  // namespace prisma::runtime
+
+#else
+
 #include <csetjmp>
 #include <csignal>
 #include <cstdlib>
@@ -151,3 +217,5 @@ FaultKind last_fault_kind() noexcept {
 }
 
 }  // namespace prisma::runtime
+
+#endif

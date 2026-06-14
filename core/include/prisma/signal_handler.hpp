@@ -22,6 +22,7 @@
 
 #include <csetjmp>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 
 namespace prisma::runtime {

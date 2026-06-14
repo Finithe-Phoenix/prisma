@@ -18,8 +18,15 @@
 #include <cstring>
 #include <vector>
 
-#include <sys/mman.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 #include "prisma/smc_guard.hpp"
 
@@ -33,8 +40,14 @@ namespace {
 // distinct *host* pages so the multi-page tests still exercise two
 // independent protected regions.
 std::size_t host_page() {
+#if defined(_WIN32)
+    SYSTEM_INFO info{};
+    ::GetSystemInfo(&info);
+    return static_cast<std::size_t>(info.dwPageSize);
+#else
     long v = ::sysconf(_SC_PAGESIZE);
     return v > 0 ? static_cast<std::size_t>(v) : 4096;
+#endif
 }
 
 // RAII wrapper around two adjacent anonymous host pages. The two
@@ -44,16 +57,25 @@ class TwoPages {
 public:
     TwoPages() {
         bytes_ = 2 * host_page();
+#if defined(_WIN32)
+        void* p = ::VirtualAlloc(nullptr, bytes_, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        REQUIRE(p != nullptr);
+#else
         void* p = ::mmap(nullptr, bytes_,
                          PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS,
                          -1, 0);
         REQUIRE(p != MAP_FAILED);
+#endif
         base_ = reinterpret_cast<std::uint8_t*>(p);
     }
     ~TwoPages() {
         if (base_ != nullptr) {
+#if defined(_WIN32)
+            ::VirtualFree(base_, 0, MEM_RELEASE);
+#else
             ::munmap(base_, bytes_);
+#endif
         }
     }
 
