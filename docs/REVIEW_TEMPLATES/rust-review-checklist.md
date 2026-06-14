@@ -115,14 +115,14 @@
 | Commit Discipline | | | |
 | Security | | | |
 
-### Final verdict:
+### Final verdict
 
 - [ ] **APPROVED** — safe to merge
 - [ ] **APPROVED WITH COMMENTS** — minor issues, fix before next phase
 - [️] **CHANGES REQUESTED** — must fix before merge
 - [ ] **BLOCKED** — fundamental issue, needs discussion
 
-### Detailed findings:
+### Detailed findings
 
 ```
 (Write findings here: what is correct, what needs fixing, what is missing)

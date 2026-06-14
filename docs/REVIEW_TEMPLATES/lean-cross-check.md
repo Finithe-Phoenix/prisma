@@ -35,12 +35,12 @@ Para cada `Op` variant en Rust, verificar presencia en Lean:
 | ... (listar todas las ~80) | | | |
 
 ### Missing in Lean (Rust has, Lean doesn't)
-1. ___________
-2. ___________
+1. (fill in)
+2. (fill in)
 
 ### Missing in Rust (Lean has, Rust doesn't)
-1. ___________
-2. ___________
+1. (fill in)
+2. (fill in)
 
 ### Derived traits check
 
