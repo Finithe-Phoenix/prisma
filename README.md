@@ -3,13 +3,13 @@
   <p><strong>x86/x64 → ARM64 Dynamic Binary Translator</strong><br>
   <em>Rewriting the rules of Windows-on-Android emulation</em></p>
 
-  [![core build](https://github.com/anomalyco/prisma/actions/workflows/core-stub.yml/badge.svg)](https://github.com/anomalyco/prisma/actions/workflows/core-stub.yml)
-  [![sanitizers](https://github.com/anomalyco/prisma/actions/workflows/core-sanitizers.yml/badge.svg)](https://github.com/anomalyco/prisma/actions/workflows/core-sanitizers.yml)
-  [![clang-format](https://github.com/anomalyco/prisma/actions/workflows/clang-format.yml/badge.svg)](https://github.com/anomalyco/prisma/actions/workflows/clang-format.yml)
-  [![codeql](https://github.com/anomalyco/prisma/actions/workflows/codeql.yml/badge.svg)](https://github.com/anomalyco/prisma/actions/workflows/codeql.yml)
-  [![ir-spec](https://github.com/anomalyco/prisma/actions/workflows/ir-spec.yml/badge.svg)](https://github.com/anomalyco/prisma/actions/workflows/ir-spec.yml)
+  [![core build](https://github.com/Finithe-Phoenix/prisma/actions/workflows/core-stub.yml/badge.svg)](https://github.com/Finithe-Phoenix/prisma/actions/workflows/core-stub.yml)
+  [![sanitizers](https://github.com/Finithe-Phoenix/prisma/actions/workflows/core-sanitizers.yml/badge.svg)](https://github.com/Finithe-Phoenix/prisma/actions/workflows/core-sanitizers.yml)
+  [![ffi bridge](https://github.com/Finithe-Phoenix/prisma/actions/workflows/ffi-bridge.yml/badge.svg)](https://github.com/Finithe-Phoenix/prisma/actions/workflows/ffi-bridge.yml)
+  [![codeql](https://github.com/Finithe-Phoenix/prisma/actions/workflows/codeql.yml/badge.svg)](https://github.com/Finithe-Phoenix/prisma/actions/workflows/codeql.yml)
+  [![ir-spec](https://github.com/Finithe-Phoenix/prisma/actions/workflows/ir-spec.yml/badge.svg)](https://github.com/Finithe-Phoenix/prisma/actions/workflows/ir-spec.yml)
 
-  <strong>Phase:</strong> 2 · ~1166 tests · Running on real ARM64 hardware · May 2026
+  <strong>Phase:</strong> 2 · ~1166 tests · C++ core + Rust migration in flight · Running on real ARM64 hardware · June 2026
 </div>
 
 ---
@@ -109,7 +109,9 @@ prisma/
 │   ├── src/runtime/       JIT memory, signals, dispatcher, syscalls
 │   └── tests/             40 files, 1166 TEST_CASEs
 ├── ir-spec/               🟢 Lean 4 — Formal IR specification
-├── shell/                 ⚪ Rust — Orchestrator (scaffolding, Phase 3)
+├── shell/                 🔧 Rust — DBT migration (decoder/cache/backend/
+│                              passes/runtime crates) + C++/Rust differential
+│                              bridge against the C core. See RFC 0015.
 ├── android/               ⚪ Kotlin — App (scaffolding, Phase 3)
 ├── npu-models/            ⚪ Python — ONNX models (research, Phase 2.5)
 ├── server/                ⚪ Rust — P2P cache service (design, Phase 2.5)
@@ -154,32 +156,37 @@ llvm-cov show /tmp/prisma-cov/prisma_core_tests -instr-profile=prisma.profdata
 
 ---
 
-## 🔬 CI: 10 Required Checks Per PR
+## 🔬 CI & Branch Protection
 
-Every Pull Request runs this full battery before merging:
+`main` is protected: PRs only, linear history, no force-push or deletion,
+stale reviews dismissed, and all conversations resolved before merge. The
+following **8 status checks are required** and block the merge:
 
-| Workflow | What it catches | Typical time |
+| Required check | What it catches | Typical time |
 |---|---|---|
-| `core-build` (x86_64) | Compilation errors + test regressions | ~3 min |
-| `core-build` (ARM64) | JIT execution on real hardware | ~4 min |
+| `core-build` | Compilation errors + test regressions | ~3 min |
 | `asan-ubsan` | Memory leaks, buffer overflows, UB | ~5 min |
 | `tsan` | Data races | ~5 min |
-| `clang-format` | C++ style violations | ~30 s |
-| `codeql` | Security vulnerabilities | ~3 min |
 | `ir-spec-build` | Lean 4 formal proof regressions | ~2 min |
 | `markdownlint` | Broken links, doc formatting | ~30 s |
-| `ffi-link` | C++/Rust cross-language gate (x86_64 + ARM64) | ~4 min |
+| `check-rfc-frontmatter` | RFC metadata schema | ~20 s |
+| `shell-check` | Rust workspace scaffolding gate | ~30 s |
 | `benchmarks-smoke` | Benchmarks framework regressions | ~1 min |
+
+These run on **every** PR (no path filters) so they never hang in
+`Expected`. Additional workflows run **advisory** (visible, non-blocking):
+`core-build-arm64` (JIT on real ARM64), `ffi-link`/`ffi-link-arm64`/
+`ffi-link-windows` (C++/Rust bridge), `clang-format`, and `codeql`.
 
 ---
 
 ## 🤖 Multi-Agent Coordination
 
-Prisma is developed by two autonomous AI agents. The protocol lives in [docs/COORDINATION.md](docs/COORDINATION.md):
+Prisma is developed by autonomous AI agents. The protocol lives in [docs/COORDINATION.md](docs/COORDINATION.md):
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   CODEZ (Codex)                      │
+│                   CODEX                             │
 │  decoder · IR variants · dispatcher                  │
 │  Claim → Implement → Commit → Mark done              │
 └─────────────────────────────────────────────────────┘
@@ -190,6 +197,12 @@ Prisma is developed by two autonomous AI agents. The protocol lives in [docs/COO
 │                   CLAUDE                             │
 │  emitter · passes · lowerer · cache · runtime · CI   │
 │  Claim → Implement → Commit → Mark done              │
+└─────────────────────────────────────────────────────┘
+                        ↕
+┌─────────────────────────────────────────────────────┐
+│                   GEMINI                            │
+│  review · Lean spec cross-check · QA                 │
+│  Adversarial review of every substantive diff        │
 └─────────────────────────────────────────────────────┘
 ```
 
