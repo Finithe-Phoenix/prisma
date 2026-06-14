@@ -22,6 +22,9 @@ thiserror       = { workspace = true }
 prisma-core-sys = { path = "../core-sys" }
 # The hybrid e2e (PE loader -> DBT) drives the orchestrator's loader.
 prisma_orchestrator = { path = "../orchestrator" }
+# Differential smoke tests compare the live C++ translator against the
+# Rust decode -> backend smoke translator.
+prisma-runtime = { path = "../prisma-runtime" }
 # Property-based decoder fuzzing through the bridge.
 proptest = { workspace = true }
 
