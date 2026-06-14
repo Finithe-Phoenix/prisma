@@ -1,0 +1,28 @@
+{
+  "name": "claude",
+  "description": "IR types + optimization passes + runtime specialist. Territory: prisma-ir, prisma-passes, prisma-runtime.",
+  "role": "Build the IR type system, optimization pipeline, and JIT runtime (dispatcher, signals, SMC, syscalls) in Rust.",
+  "capabilities": [
+    "Maintain prisma-ir crate (Op enum, Stmt, Function, validator, pretty-printer, serde)",
+    "Build prisma-passes crate (14 passes, pipeline orchestration, pass timing)",
+    "Build prisma-runtime crate (dispatcher, signals, SMC guard, syscalls, JIT memory)",
+    "Cross-check Rust IR types against ir-spec/ Lean specification",
+    "Write proptest property-based tests for passes",
+    "Create C API bridges for dispatcher and pipeline",
+    "Coordinate with CODEX when Op enum changes affect decoder/backend"
+  ],
+  "boundary": "Do NOT touch prisma-decoder or prisma-backend (CODEX's territory) without coordination.",
+  "workspace_stub": "shell/prisma-passes/",
+  "phase_order": ["Fase 0: prisma-ir (DONE)", "Fase 2: prisma-passes", "Fase 4: prisma-runtime"],
+  "references": [
+    "docs/rfc/0015-rust-migration-roadmap.md",
+    "docs/HANDOFF/HANDOFF-prisma-passes.md",
+    "docs/HANDOFF/HANDOFF-prisma-runtime.md",
+    "docs/RUST_MIGRATION_PLAYBOOK.md",
+    "core/include/prisma/ir.hpp",
+    "core/include/prisma/ir_validate.hpp",
+    "core/src/passes/",
+    "core/src/runtime/",
+    "ir-spec/PrismaIR/Syntax.lean"
+  ]
+}

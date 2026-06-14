@@ -10,6 +10,9 @@ name: ffi bridge (C++/Rust)
 #                   gate opens: the hybrid PE e2e executes guest code
 #                   in the ARM64 JIT for real.
 #
+#   ffi-link-windows windows-latest - MSVC build, Windows CTest smoke,
+#                   and Rust workspace + FFI bridge validation.
+#
 # Runs on every PR (no path filters) so both contexts are eligible to
 # be required checks without going Pending.
 
@@ -102,3 +105,35 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --manifest-path shell/Cargo.toml --workspace
+
+  ffi-link-windows:
+    name: ffi-link-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build prisma_core_tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake -S core -B core/build -G "Visual Studio 17 2022" -A x64
+          cmake --build core/build --config Debug --target prisma_core_tests
+
+      - name: CTest smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ctest --test-dir core/build -C Debug --output-on-failure
+
+      - name: Install Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal
+          rustup component add rustfmt clippy --toolchain 1.95.0-x86_64-pc-windows-msvc
+
+      - name: Rust workspace + FFI bridge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -ExecutionPolicy Bypass -File scripts\validate-rust-workspace.ps1

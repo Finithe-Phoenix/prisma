@@ -1,0 +1,40 @@
+{
+  "agents": {
+    "codex": {
+      "description": "Decoder + Cache + Backend specialist",
+      "file": "agents/codex.json"
+    },
+    "claude": {
+      "description": "IR types + Passes + Runtime specialist",
+      "file": "agents/claude.json"
+    },
+    "gemini": {
+      "description": "Review + Lean spec + QA specialist",
+      "file": "agents/gemini.json"
+    }
+  },
+  "coordination": {
+    "protocol": "docs/HANDOFF/HANDOFF-coordination.md",
+    "two_eyes_ledger": "docs/REVIEW_F2_SESSION.md",
+    "backlog": "docs/BACKLOG.md",
+    "work_queue": "docs/WORK_QUEUE.md"
+  },
+  "skills": [
+    {"name": "add-ir-op", "file": "skills/add-ir-op.json"},
+    {"name": "differential-test", "file": "skills/differential-test.json"},
+    {"name": "rust-ffi-bridge", "file": "skills/rust-ffi-bridge.json"},
+    {"name": "lean-cross-check", "file": "skills/lean-cross-check.json"}
+  ],
+  "references": {
+    "rfc_roadmap": "docs/rfc/0015-rust-migration-roadmap.md",
+    "playbook": "docs/RUST_MIGRATION_PLAYBOOK.md",
+    "differential_testing": "docs/DIFFERENTIAL_TESTING.md",
+    "architecture": "docs/ARCHITECTURE.md",
+    "project_plan": "PROYECTO_PLAN_EJECUCION.md"
+  },
+  "permissions": {
+    "allowed_paths": ["shell/", "core/", "docs/", ".opencode/", "ir-spec/"],
+    "disallowed_paths": ["node_modules/", "target/", "build/"],
+    "allowed_commands": ["cargo", "cmake", "git", "rustup", "lake"]
+  }
+}

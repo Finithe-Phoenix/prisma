@@ -9,7 +9,7 @@
 | `ir-spec.yml` | any change in `ir-spec/` | Builds Lean 4 project, verifies proofs type-check. |
 | `lint-docs.yml` | any `.md` change | markdownlint + RFC frontmatter validation. |
 | `shell-stub.yml` | any change in `shell/` | Scaffolding check until `shell/Cargo.toml` exists (Fase 3). |
-| `ffi-bridge.yml` | any PR / push to `main` | C++/Rust cross-language gate (x86_64 + ARM64). |
+| `ffi-bridge.yml` | any PR / push to `main` | C++/Rust cross-language gate (Linux x86_64, Linux ARM64, Windows/MSVC smoke + Rust workspace). |
 | `benchmarks.yml` | any PR / push | Dhrystone smoke-run via `tools/benchmarks`. |
 
 ## Future workflows (not yet created)

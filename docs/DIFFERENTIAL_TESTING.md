@@ -23,6 +23,38 @@ Input (IR program / x86 bytes / config)
                               assert_eq!(c++, rust)
 ```
 
+## Rust Migration Fixtures
+
+`shell/prisma-runtime/tests/smoke_differential.rs` pins the first Rust
+decoder -> Rust backend byte fixtures for NOP, `mov rax, imm64`,
+`mov rax, rcx`, `add/sub/and/or/xor rax, rcx`,
+`add/or/adc/sbb/and/sub/xor/cmp rax, imm8` (`83 /0..7`), plus
+non-`rax` Group 1 probes for `add rbx, imm8` and REX.B
+`cmp r11, imm8`. Memory-form probes now include `add [rbx], imm8`,
+`cmp [rbx], imm8`, `or/and/xor [rbx], imm8`,
+`add [rax + rcx*4 + disp8], imm8`, and `add [rbx + disp32], imm8`,
+and REX.X/B SIB
+`add [r8 + r9*4 + disp8], imm8`, plus RIP-relative
+`add/or/and/xor [rip + disp32], imm8` through
+Rust decoder -> Rust backend and the live C++ FFI smoke path. Those register probes exercise
+`CpuStateFrame::gpr[]` LoadReg/StoreReg offsets beyond slot 0. ADC/SBB are
+currently parity placeholders matching the existing C++ register-register decoder behavior:
+`/2` lowers as Add and `/3` lowers as Sub without carry/borrow
+materialization; `/7` lowers to `CmpFlags`.
+
+`shell/core/tests/smoke_differential.rs` is the live C++ FFI companion: it
+drives `prisma_core::Translator::translate_with_code` for the same one-instruction
+smoke subset and asserts C++ accepts them, consumes the same guest byte count,
+emits matching backend bytes for Rust-pinned fixtures, and caches repeated input.
+The byte-dump API is a versioned C ABI extension now exposed through
+`prisma_translator_translate_with_code` (`PRISMA_CAPI_VERSION = 3`).
+As of 2026-06-12,
+the C++ decoder accepts the immediate ALU fixtures through `83 /0..7` for the
+register-direct `rax` smoke set, RBX/R11 REX.B register probes, base memory
+probes through `[rbx]`, logical `[rbx]`, SIB+disp8, disp32, REX.X/B SIB,
+RIP-relative ADD/OR/AND/XOR smoke probes, RIP-relative CMP decoder coverage,
+SIB CMP, and negative disp8/imm8 sign-extension.
+
 ## Por fase
 
 ### Fase 0 — IR types (prisma-ir)
