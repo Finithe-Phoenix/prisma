@@ -155,9 +155,9 @@ fn decode_cond_jump_rel8(
 ) -> Result<usize, crate::DecodeError> {
     let opcode = *bytes.get(cursor).ok_or(crate::DecodeError::Truncated)?;
     let cc = jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?;
-    let rel = i64::from(
-        i8::from_le_bytes([*bytes.get(cursor + 1).ok_or(crate::DecodeError::Truncated)?]),
-    );
+    let rel = i64::from(i8::from_le_bytes([*bytes
+        .get(cursor + 1)
+        .ok_or(crate::DecodeError::Truncated)?]));
     let fallthrough = add_signed_disp(opcode_guest_pc, 2);
     let target = add_signed_disp(fallthrough, rel);
     stmts.push(Stmt::new(
@@ -183,7 +183,9 @@ fn decode_cond_jump_rel32(
         .get(cursor + 2..cursor + 6)
         .ok_or(crate::DecodeError::Truncated)?;
     let rel = i64::from(i32::from_le_bytes(
-        rel_bytes.try_into().map_err(|_| crate::DecodeError::Truncated)?,
+        rel_bytes
+            .try_into()
+            .map_err(|_| crate::DecodeError::Truncated)?,
     ));
     let fallthrough = add_signed_disp(opcode_guest_pc, 6);
     let target = add_signed_disp(fallthrough, rel);
@@ -1296,8 +1298,8 @@ fn read_imm(bytes: &[u8], offset: usize, n: usize) -> Result<u64, crate::DecodeE
 mod tests {
     use super::*;
     use prisma_ir::{
-        BinOp, BinOpKind, CondCode, CondJumpRel, Constant, Extend, Gpr, LoadMem, LoadReg, Op, OpSize,
-        Popcnt, RspAdjust, Stmt, StoreReg,
+        BinOp, BinOpKind, CondCode, CondJumpRel, Constant, Extend, Gpr, LoadMem, LoadReg, Op,
+        OpSize, Popcnt, RspAdjust, Stmt, StoreReg,
     };
 
     #[test]

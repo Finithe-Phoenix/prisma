@@ -457,8 +457,7 @@ fn lower_cond_jump_rel(
 }
 
 fn block_label(labels: &HashMap<u32, Label>, guest_pc: u64) -> Result<Label, LowerError> {
-    let block_id =
-        u32::try_from(guest_pc).map_err(|_| LowerError::UnsupportedOp("CondJumpRel"))?;
+    let block_id = u32::try_from(guest_pc).map_err(|_| LowerError::UnsupportedOp("CondJumpRel"))?;
     labels
         .get(&block_id)
         .copied()
@@ -532,8 +531,8 @@ mod tests {
     use super::*;
     use crate::assembler::{cmp_x, cset_x, lsl_x, movz_x};
     use prisma_ir::{
-        BasicBlock, BinOp, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags, CondJumpRel, Constant,
-        Jump, LoadMem, LoadReg, Return, Stmt, StoreMem, StoreReg,
+        BasicBlock, BinOp, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags, CondJumpRel,
+        Constant, Jump, LoadMem, LoadReg, Return, Stmt, StoreMem, StoreReg,
     };
 
     fn function(stmts: Vec<Stmt>) -> Function {
@@ -1184,8 +1183,7 @@ mod tests {
         let lhs_reg = value_reg(0);
         let rhs_reg = value_reg(1);
         let result_reg = value_reg(2);
-        let shift = u16::try_from(64 - OpSize::I8.bit_width())
-            .expect("I8 fits in u16 shift");
+        let shift = u16::try_from(64 - OpSize::I8.bit_width()).expect("I8 fits in u16 shift");
         let expected = vec![
             movz_x(lhs_reg, 0x7f, 0),
             movz_x(rhs_reg, 0x7f, 0),
@@ -1227,25 +1225,21 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(
-            Lowerer::new().lower_function(&func).unwrap(),
-            {
-                let lhs_reg = value_reg(0);
-                let rhs_reg = value_reg(1);
-                let result_reg = value_reg(2);
-                let shift = u16::try_from(64 - OpSize::I16.bit_width())
-                    .expect("I16 fits in u16 shift");
-                vec![
-                    movz_x(lhs_reg, 5, 0),
-                    movz_x(rhs_reg, 5, 0),
-                    movz_x(FLAG_ALIGN_SHIFT_REG, shift, 0),
-                    lsl_x(FLAG_ALIGN_LHS_REG, lhs_reg, FLAG_ALIGN_SHIFT_REG),
-                    lsl_x(FLAG_ALIGN_RHS_REG, rhs_reg, FLAG_ALIGN_SHIFT_REG),
-                    cmp_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
-                    cset_x(result_reg, CondCode::Eq),
-                ]
-            }
-        );
+        assert_eq!(Lowerer::new().lower_function(&func).unwrap(), {
+            let lhs_reg = value_reg(0);
+            let rhs_reg = value_reg(1);
+            let result_reg = value_reg(2);
+            let shift = u16::try_from(64 - OpSize::I16.bit_width()).expect("I16 fits in u16 shift");
+            vec![
+                movz_x(lhs_reg, 5, 0),
+                movz_x(rhs_reg, 5, 0),
+                movz_x(FLAG_ALIGN_SHIFT_REG, shift, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, lhs_reg, FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, rhs_reg, FLAG_ALIGN_SHIFT_REG),
+                cmp_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                cset_x(result_reg, CondCode::Eq),
+            ]
+        });
     }
 
     #[test]
@@ -1279,8 +1273,7 @@ mod tests {
         let lhs_reg = value_reg(0);
         let rhs_reg = value_reg(1);
         let result_reg = value_reg(2);
-        let shift = u16::try_from(64 - OpSize::I32.bit_width())
-            .expect("I32 fits in u16 shift");
+        let shift = u16::try_from(64 - OpSize::I32.bit_width()).expect("I32 fits in u16 shift");
         let expected = vec![
             movz_x(lhs_reg, 10, 0),
             movz_x(rhs_reg, 10, 0),

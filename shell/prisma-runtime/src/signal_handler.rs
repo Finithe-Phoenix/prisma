@@ -125,7 +125,10 @@ mod tests {
 
     #[test]
     fn unknown_signal_maps_to_unknown() {
-        assert_eq!(fault_for_signal(9 /* SIGKILL, not handled */), FaultKind::Unknown);
+        assert_eq!(
+            fault_for_signal(9 /* SIGKILL, not handled */),
+            FaultKind::Unknown
+        );
         assert_eq!(fault_for_signal(0), FaultKind::Unknown);
     }
 

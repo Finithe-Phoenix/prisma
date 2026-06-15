@@ -79,8 +79,12 @@ pub fn loop_invariant_motion(mut func: Function) -> Function {
         return func;
     }
 
-    let idx: HashMap<u32, usize> =
-        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let idx: HashMap<u32, usize> = func
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect();
 
     // Predecessor map for preheader detection.
     let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -97,7 +101,11 @@ pub fn loop_invariant_motion(mut func: Function) -> Function {
         let Some(hpreds) = preds.get(&loop_.header) else {
             continue;
         };
-        let outside: Vec<u32> = hpreds.iter().copied().filter(|p| !body_ids.contains(p)).collect();
+        let outside: Vec<u32> = hpreds
+            .iter()
+            .copied()
+            .filter(|p| !body_ids.contains(p))
+            .collect();
         if outside.len() != 1 {
             continue;
         }
@@ -195,8 +203,20 @@ mod tests {
                 BasicBlock {
                     id: 0,
                     stmts: vec![
-                        Stmt::new(Some(0), Op::Constant(Constant { value: 3, size: OpSize::I64 })),
-                        Stmt::new(Some(1), Op::Constant(Constant { value: 4, size: OpSize::I64 })),
+                        Stmt::new(
+                            Some(0),
+                            Op::Constant(Constant {
+                                value: 3,
+                                size: OpSize::I64,
+                            }),
+                        ),
+                        Stmt::new(
+                            Some(1),
+                            Op::Constant(Constant {
+                                value: 4,
+                                size: OpSize::I64,
+                            }),
+                        ),
                         Stmt::new(None, Op::Jump(Jump { target_block: 1 })),
                     ],
                 },
@@ -205,19 +225,37 @@ mod tests {
                     stmts: vec![
                         Stmt::new(
                             Some(2),
-                            Op::BinOp(BinOp { op: BinOpKind::Add, lhs: 0, rhs: 1, size: OpSize::I64 }),
+                            Op::BinOp(BinOp {
+                                op: BinOpKind::Add,
+                                lhs: 0,
+                                rhs: 1,
+                                size: OpSize::I64,
+                            }),
                         ),
-                        Stmt::new(None, Op::CondJump(CondJump { cond: 2, if_true: 1, if_false: 2 })),
+                        Stmt::new(
+                            None,
+                            Op::CondJump(CondJump {
+                                cond: 2,
+                                if_true: 1,
+                                if_false: 2,
+                            }),
+                        ),
                     ],
                 },
-                BasicBlock { id: 2, stmts: vec![Stmt::new(None, Op::Return(Return))] },
+                BasicBlock {
+                    id: 2,
+                    stmts: vec![Stmt::new(None, Op::Return(Return))],
+                },
             ],
         };
         let out = loop_invariant_motion(f);
         // block0 now holds the hoisted add before its Jump terminator.
         let ph = &out.blocks[0].stmts;
         assert_eq!(ph.len(), 4);
-        assert!(matches!(ph[2].op, Op::BinOp(_)), "add hoisted into preheader");
+        assert!(
+            matches!(ph[2].op, Op::BinOp(_)),
+            "add hoisted into preheader"
+        );
         assert!(matches!(ph[3].op, Op::Jump(_)), "terminator stays last");
         // The loop header no longer contains the add (only its terminator).
         assert_eq!(out.blocks[1].stmts.len(), 1);
@@ -230,18 +268,36 @@ mod tests {
         let f = Function {
             entry: 0,
             blocks: vec![
-                BasicBlock { id: 0, stmts: vec![Stmt::new(None, Op::Jump(Jump { target_block: 1 }))] },
+                BasicBlock {
+                    id: 0,
+                    stmts: vec![Stmt::new(None, Op::Jump(Jump { target_block: 1 }))],
+                },
                 BasicBlock {
                     id: 1,
                     stmts: vec![
                         Stmt::new(
                             Some(2),
-                            Op::BinOp(BinOp { op: BinOpKind::Add, lhs: 2, rhs: 2, size: OpSize::I64 }),
+                            Op::BinOp(BinOp {
+                                op: BinOpKind::Add,
+                                lhs: 2,
+                                rhs: 2,
+                                size: OpSize::I64,
+                            }),
                         ),
-                        Stmt::new(None, Op::CondJump(CondJump { cond: 2, if_true: 1, if_false: 2 })),
+                        Stmt::new(
+                            None,
+                            Op::CondJump(CondJump {
+                                cond: 2,
+                                if_true: 1,
+                                if_false: 2,
+                            }),
+                        ),
                     ],
                 },
-                BasicBlock { id: 2, stmts: vec![Stmt::new(None, Op::Return(Return))] },
+                BasicBlock {
+                    id: 2,
+                    stmts: vec![Stmt::new(None, Op::Return(Return))],
+                },
             ],
         };
         let out = loop_invariant_motion(f.clone());

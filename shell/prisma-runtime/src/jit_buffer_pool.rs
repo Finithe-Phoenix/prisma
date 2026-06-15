@@ -164,9 +164,6 @@ mod tests {
         let target = 0u64;
         assert!(encode_aarch64_b(site, target).is_ok());
         // One word further back is out of range.
-        assert_eq!(
-            encode_aarch64_b(site + 4, 0),
-            Err(PatchError::OutOfRange)
-        );
+        assert_eq!(encode_aarch64_b(site + 4, 0), Err(PatchError::OutOfRange));
     }
 }

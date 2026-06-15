@@ -383,7 +383,10 @@ pub fn dead_code_eliminate(func: Function) -> Function {
                     impure || result_is_live
                 })
                 .collect();
-            BasicBlock { id: block.id, stmts }
+            BasicBlock {
+                id: block.id,
+                stmts,
+            }
         })
         .collect();
 
@@ -396,7 +399,7 @@ pub fn dead_code_eliminate(func: Function) -> Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prisma_ir::{BinOp, BinOpKind, Constant, OpSize, StoreReg, Gpr};
+    use prisma_ir::{BinOp, BinOpKind, Constant, Gpr, OpSize, StoreReg};
 
     #[test]
     fn dead_constant_is_dropped() {
@@ -405,7 +408,13 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 7, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 7,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(None, Op::Return(prisma_ir::Return)),
                 ],
             }],
@@ -424,12 +433,30 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 7, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 7,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(
                         Some(1),
-                        Op::BinOp(BinOp { op: BinOpKind::Add, lhs: 0, rhs: 0, size: OpSize::I64 }),
+                        Op::BinOp(BinOp {
+                            op: BinOpKind::Add,
+                            lhs: 0,
+                            rhs: 0,
+                            size: OpSize::I64,
+                        }),
                     ),
-                    Stmt::new(None, Op::StoreReg(StoreReg { reg: Gpr::Rax, value: 1, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            value: 1,
+                            size: OpSize::I64,
+                        }),
+                    ),
                 ],
             }],
         };
@@ -445,9 +472,28 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 1, size: OpSize::I64 })),
-                    Stmt::new(Some(1), Op::Constant(Constant { value: 2, size: OpSize::I64 })),
-                    Stmt::new(None, Op::StoreReg(StoreReg { reg: Gpr::Rax, value: 0, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 1,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        Some(1),
+                        Op::Constant(Constant {
+                            value: 2,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        None,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            value: 0,
+                            size: OpSize::I64,
+                        }),
+                    ),
                 ],
             }],
         };
@@ -464,9 +510,28 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 1, size: OpSize::I64 })),
-                    Stmt::new(Some(1), Op::Constant(Constant { value: 2, size: OpSize::I64 })),
-                    Stmt::new(None, Op::StoreReg(StoreReg { reg: Gpr::Rax, value: 0, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 1,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        Some(1),
+                        Op::Constant(Constant {
+                            value: 2,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        None,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            value: 0,
+                            size: OpSize::I64,
+                        }),
+                    ),
                 ],
             }],
         };
@@ -487,14 +552,21 @@ mod tests {
                     id: 0,
                     stmts: vec![Stmt::new(
                         Some(0),
-                        Op::Constant(Constant { value: 7, size: OpSize::I64 }),
+                        Op::Constant(Constant {
+                            value: 7,
+                            size: OpSize::I64,
+                        }),
                     )],
                 },
                 BasicBlock {
                     id: 1,
                     stmts: vec![Stmt::new(
                         None,
-                        Op::StoreReg(StoreReg { reg: Gpr::Rax, value: 0, size: OpSize::I64 }),
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            value: 0,
+                            size: OpSize::I64,
+                        }),
                     )],
                 },
             ],

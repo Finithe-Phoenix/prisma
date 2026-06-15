@@ -299,7 +299,12 @@ fn rust_smoke_translator_matches_pinned_backend_bytes() {
             .expect("rust translator should emit bytes");
         if expected.is_none() {
             if is_nop {
-                assert_eq!(translated, Vec::new(), "{}: nop should lower to empty code", fixture.name);
+                assert_eq!(
+                    translated,
+                    Vec::new(),
+                    "{}: nop should lower to empty code",
+                    fixture.name
+                );
             } else {
                 assert!(
                     !translated.is_empty(),
@@ -322,4 +327,3 @@ fn words_to_le_bytes(words: &[u32]) -> Vec<u8> {
     }
     bytes
 }
-

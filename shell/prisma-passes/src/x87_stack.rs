@@ -187,14 +187,23 @@ mod tests {
     use prisma_ir::{X87Load, X87Pop, X87Push, X87Store};
 
     fn block(stmts: Vec<Stmt>) -> Function {
-        Function { entry: 0, blocks: vec![BasicBlock { id: 0, stmts }] }
+        Function {
+            entry: 0,
+            blocks: vec![BasicBlock { id: 0, stmts }],
+        }
     }
 
     #[test]
     fn store_then_load_forwards_to_copy() {
         // X87Store ST0 = %9 ; %1 = X87Load ST0  -> %1 = Or %9,%9
         let out = x87_stack_eliminate(block(vec![
-            Stmt::new(None, Op::X87Store(X87Store { st_index: 0, value: 9 })),
+            Stmt::new(
+                None,
+                Op::X87Store(X87Store {
+                    st_index: 0,
+                    value: 9,
+                }),
+            ),
             Stmt::new(Some(1), Op::X87Load(X87Load { st_index: 0 })),
         ]));
         match &out.blocks[0].stmts[1].op {
@@ -220,7 +229,13 @@ mod tests {
     fn push_shifts_stack_and_load_st1_forwards_old_top() {
         // store ST0=%9 ; push %8 (ST0=%8, ST1=%9) ; load ST1 -> copy of %9
         let out = x87_stack_eliminate(block(vec![
-            Stmt::new(None, Op::X87Store(X87Store { st_index: 0, value: 9 })),
+            Stmt::new(
+                None,
+                Op::X87Store(X87Store {
+                    st_index: 0,
+                    value: 9,
+                }),
+            ),
             Stmt::new(None, Op::X87Push(X87Push { value: 8 })),
             Stmt::new(Some(1), Op::X87Load(X87Load { st_index: 1 })),
         ]));
@@ -234,8 +249,20 @@ mod tests {
     fn call_clears_knowledge() {
         use prisma_ir::CallRel;
         let out = x87_stack_eliminate(block(vec![
-            Stmt::new(None, Op::X87Store(X87Store { st_index: 0, value: 9 })),
-            Stmt::new(None, Op::CallRel(CallRel { target_guest_pc: 1, return_guest_pc: 2 })),
+            Stmt::new(
+                None,
+                Op::X87Store(X87Store {
+                    st_index: 0,
+                    value: 9,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::CallRel(CallRel {
+                    target_guest_pc: 1,
+                    return_guest_pc: 2,
+                }),
+            ),
             Stmt::new(Some(1), Op::X87Load(X87Load { st_index: 0 })),
         ]));
         // Load after the call is not forwarded.
@@ -246,7 +273,13 @@ mod tests {
     fn pop_then_load_uses_new_top() {
         // store ST0=%9 ; push %8 ; pop ; load ST0 -> copy of %9
         let out = x87_stack_eliminate(block(vec![
-            Stmt::new(None, Op::X87Store(X87Store { st_index: 0, value: 9 })),
+            Stmt::new(
+                None,
+                Op::X87Store(X87Store {
+                    st_index: 0,
+                    value: 9,
+                }),
+            ),
             Stmt::new(None, Op::X87Push(X87Push { value: 8 })),
             Stmt::new(Some(5), Op::X87Pop(X87Pop)),
             Stmt::new(Some(1), Op::X87Load(X87Load { st_index: 0 })),

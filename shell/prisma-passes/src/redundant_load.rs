@@ -120,7 +120,14 @@ mod tests {
                 id: 0,
                 stmts: vec![
                     load(0, 5, OpSize::I64),
-                    Stmt::new(None, Op::StoreMem(StoreMem { addr: 6, value: 0, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::StoreMem(StoreMem {
+                            addr: 6,
+                            value: 0,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     load(1, 5, OpSize::I64),
                 ],
             }],
@@ -137,7 +144,12 @@ mod tests {
                 id: 0,
                 stmts: vec![
                     load(0, 5, OpSize::I32),
-                    Stmt::new(None, Op::Fence(Fence { kind: FenceKind::Mfence })),
+                    Stmt::new(
+                        None,
+                        Op::Fence(Fence {
+                            kind: FenceKind::Mfence,
+                        }),
+                    ),
                     load(1, 5, OpSize::I32),
                 ],
             }],

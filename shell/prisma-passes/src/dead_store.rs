@@ -63,7 +63,10 @@ pub fn dead_store_eliminate(func: Function) -> Function {
                 .filter_map(|(i, s)| if dead.contains(&i) { None } else { Some(s) })
                 .collect();
 
-            BasicBlock { id: block.id, stmts }
+            BasicBlock {
+                id: block.id,
+                stmts,
+            }
         })
         .collect();
 
@@ -107,7 +110,13 @@ mod tests {
                 id: 0,
                 stmts: vec![
                     store(5, 0, OpSize::I64),
-                    Stmt::new(Some(9), Op::LoadMem(LoadMem { addr: 6, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(9),
+                        Op::LoadMem(LoadMem {
+                            addr: 6,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     store(5, 1, OpSize::I64),
                 ],
             }],
@@ -123,7 +132,14 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(None, Op::StoreMemTSO(StoreMemTSO { addr: 5, value: 0, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::StoreMemTSO(StoreMemTSO {
+                            addr: 5,
+                            value: 0,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     store(5, 1, OpSize::I64),
                 ],
             }],
@@ -153,7 +169,12 @@ mod tests {
                 id: 0,
                 stmts: vec![
                     store(5, 0, OpSize::I64),
-                    Stmt::new(None, Op::Fence(Fence { kind: FenceKind::Sfence })),
+                    Stmt::new(
+                        None,
+                        Op::Fence(Fence {
+                            kind: FenceKind::Sfence,
+                        }),
+                    ),
                     store(5, 1, OpSize::I64),
                 ],
             }],

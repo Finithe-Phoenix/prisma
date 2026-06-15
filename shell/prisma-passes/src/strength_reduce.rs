@@ -83,7 +83,10 @@ pub fn strength_reduce(func: Function) -> Function {
                             consts.insert(ref_k, k);
                             out.push(Stmt::new(
                                 Some(ref_k),
-                                Op::Constant(Constant { value: k, size: b.size }),
+                                Op::Constant(Constant {
+                                    value: k,
+                                    size: b.size,
+                                }),
                             ));
                             out.push(Stmt::new(
                                 Some(result),
@@ -128,10 +131,21 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 8, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 8,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(
                         Some(1),
-                        Op::BinOp(BinOp { op: BinOpKind::Mul, lhs: 9, rhs: 0, size: OpSize::I64 }),
+                        Op::BinOp(BinOp {
+                            op: BinOpKind::Mul,
+                            lhs: 9,
+                            rhs: 0,
+                            size: OpSize::I64,
+                        }),
                     ),
                 ],
             }],
@@ -161,10 +175,21 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 6, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 6,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(
                         Some(1),
-                        Op::BinOp(BinOp { op: BinOpKind::Mul, lhs: 9, rhs: 0, size: OpSize::I64 }),
+                        Op::BinOp(BinOp {
+                            op: BinOpKind::Mul,
+                            lhs: 9,
+                            rhs: 0,
+                            size: OpSize::I64,
+                        }),
                     ),
                 ],
             }],
@@ -180,10 +205,21 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 16, size: OpSize::I32 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 16,
+                            size: OpSize::I32,
+                        }),
+                    ),
                     Stmt::new(
                         Some(1),
-                        Op::BinOp(BinOp { op: BinOpKind::Mul, lhs: 0, rhs: 9, size: OpSize::I32 }),
+                        Op::BinOp(BinOp {
+                            op: BinOpKind::Mul,
+                            lhs: 0,
+                            rhs: 9,
+                            size: OpSize::I32,
+                        }),
                     ),
                 ],
             }],

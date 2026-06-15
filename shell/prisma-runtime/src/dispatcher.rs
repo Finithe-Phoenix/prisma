@@ -186,7 +186,8 @@ impl GuestTranslator for RustSmokeTranslator {
         let mut cursor = 0usize;
         while cursor < guest_bytes.len() {
             let instruction_guest_pc = guest_pc.wrapping_add(cursor as u64);
-            let decoded = prisma_decoder::decode_one_at(guest_bytes, cursor, instruction_guest_pc).ok()?;
+            let decoded =
+                prisma_decoder::decode_one_at(guest_bytes, cursor, instruction_guest_pc).ok()?;
             if decoded.bytes_consumed == 0 {
                 return None;
             }
