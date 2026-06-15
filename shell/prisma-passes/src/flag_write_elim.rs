@@ -85,7 +85,10 @@ pub fn flag_write_elimination(func: Function) -> Function {
                 .filter_map(|(i, s)| if drop[i] { None } else { Some(s) })
                 .collect();
 
-            BasicBlock { id: block.id, stmts }
+            BasicBlock {
+                id: block.id,
+                stmts,
+            }
         })
         .collect();
 
@@ -101,7 +104,14 @@ mod tests {
     use prisma_ir::{CmpFlags, CondCode, CondJumpRel, OpSize, Select, Stmt};
 
     fn cmp(lhs: u32, rhs: u32) -> Stmt {
-        Stmt::new(None, Op::CmpFlags(CmpFlags { lhs, rhs, size: OpSize::I64 }))
+        Stmt::new(
+            None,
+            Op::CmpFlags(CmpFlags {
+                lhs,
+                rhs,
+                size: OpSize::I64,
+            }),
+        )
     }
 
     fn cond_jump() -> Stmt {
@@ -116,7 +126,10 @@ mod tests {
     }
 
     fn block(stmts: Vec<Stmt>) -> Function {
-        Function { entry: 0, blocks: vec![BasicBlock { id: 0, stmts }] }
+        Function {
+            entry: 0,
+            blocks: vec![BasicBlock { id: 0, stmts }],
+        }
     }
 
     #[test]
@@ -148,7 +161,12 @@ mod tests {
             cmp(0, 1),
             Stmt::new(
                 Some(9),
-                Op::Select(Select { cc: CondCode::Eq, true_value: 0, false_value: 1, size: OpSize::I64 }),
+                Op::Select(Select {
+                    cc: CondCode::Eq,
+                    true_value: 0,
+                    false_value: 1,
+                    size: OpSize::I64,
+                }),
             ),
         ]));
         assert_eq!(out.blocks[0].stmts.len(), 2);
@@ -159,7 +177,12 @@ mod tests {
         use prisma_ir::Compare;
         let out = flag_write_elimination(block(vec![Stmt::new(
             Some(2),
-            Op::Compare(Compare { cc: CondCode::Eq, lhs: 0, rhs: 1, size: OpSize::I64 }),
+            Op::Compare(Compare {
+                cc: CondCode::Eq,
+                lhs: 0,
+                rhs: 1,
+                size: OpSize::I64,
+            }),
         )]));
         assert_eq!(out.blocks[0].stmts.len(), 1);
     }

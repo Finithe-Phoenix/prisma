@@ -56,8 +56,12 @@ pub fn global_cse(mut func: Function) -> Function {
     }
 
     // id -> position in func.blocks
-    let idx: HashMap<u32, usize> =
-        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let idx: HashMap<u32, usize> = func
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect();
 
     // Predecessor map from successors().
     let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -132,7 +136,12 @@ mod tests {
     fn binop(result: u32, lhs: u32, rhs: u32) -> Stmt {
         Stmt::new(
             Some(result),
-            Op::BinOp(BinOp { op: BinOpKind::Add, lhs, rhs, size: OpSize::I64 }),
+            Op::BinOp(BinOp {
+                op: BinOpKind::Add,
+                lhs,
+                rhs,
+                size: OpSize::I64,
+            }),
         )
     }
 
@@ -143,8 +152,17 @@ mod tests {
         let f = Function {
             entry: 0,
             blocks: vec![
-                BasicBlock { id: 0, stmts: vec![binop(2, 0, 1), Stmt::new(None, Op::Jump(Jump { target_block: 1 }))] },
-                BasicBlock { id: 1, stmts: vec![binop(3, 0, 1)] },
+                BasicBlock {
+                    id: 0,
+                    stmts: vec![
+                        binop(2, 0, 1),
+                        Stmt::new(None, Op::Jump(Jump { target_block: 1 })),
+                    ],
+                },
+                BasicBlock {
+                    id: 1,
+                    stmts: vec![binop(3, 0, 1)],
+                },
             ],
         };
         let out = global_cse(f);
@@ -168,12 +186,28 @@ mod tests {
                     id: 0,
                     stmts: vec![
                         binop(2, 0, 1),
-                        Stmt::new(None, Op::CondJump(prisma_ir::CondJump { cond: 2, if_true: 1, if_false: 2 })),
+                        Stmt::new(
+                            None,
+                            Op::CondJump(prisma_ir::CondJump {
+                                cond: 2,
+                                if_true: 1,
+                                if_false: 2,
+                            }),
+                        ),
                     ],
                 },
-                BasicBlock { id: 1, stmts: vec![Stmt::new(None, Op::Jump(Jump { target_block: 3 }))] },
-                BasicBlock { id: 2, stmts: vec![Stmt::new(None, Op::Jump(Jump { target_block: 3 }))] },
-                BasicBlock { id: 3, stmts: vec![binop(5, 0, 1)] },
+                BasicBlock {
+                    id: 1,
+                    stmts: vec![Stmt::new(None, Op::Jump(Jump { target_block: 3 }))],
+                },
+                BasicBlock {
+                    id: 2,
+                    stmts: vec![Stmt::new(None, Op::Jump(Jump { target_block: 3 }))],
+                },
+                BasicBlock {
+                    id: 3,
+                    stmts: vec![binop(5, 0, 1)],
+                },
             ],
         };
         let out = global_cse(f);
@@ -188,7 +222,10 @@ mod tests {
     fn intra_block_dedup_still_works() {
         let f = Function {
             entry: 0,
-            blocks: vec![BasicBlock { id: 0, stmts: vec![binop(2, 0, 1), binop(3, 0, 1)] }],
+            blocks: vec![BasicBlock {
+                id: 0,
+                stmts: vec![binop(2, 0, 1), binop(3, 0, 1)],
+            }],
         };
         let out = global_cse(f);
         match &out.blocks[0].stmts[1].op {
@@ -199,7 +236,10 @@ mod tests {
 
     #[test]
     fn empty_function_unchanged() {
-        let f = Function { entry: 0, blocks: vec![] };
+        let f = Function {
+            entry: 0,
+            blocks: vec![],
+        };
         assert_eq!(global_cse(f.clone()), f);
     }
 }

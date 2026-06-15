@@ -53,7 +53,10 @@ pub fn successors(func: &Function, block_id: u32) -> Vec<u32> {
 pub fn postorder(func: &Function) -> Vec<u32> {
     let valid: HashSet<u32> = func.blocks.iter().map(|b| b.id).collect();
     let succs_of = |id: u32| -> Vec<u32> {
-        successors(func, id).into_iter().filter(|s| valid.contains(s)).collect()
+        successors(func, id)
+            .into_iter()
+            .filter(|s| valid.contains(s))
+            .collect()
     };
 
     let mut order = Vec::new();
@@ -229,9 +232,16 @@ pub fn natural_loops(func: &Function) -> Vec<NaturalLoop> {
         .map(|header| {
             let body = &bodies[&header];
             // Stable body order: function block order.
-            let body_vec: Vec<u32> =
-                func.blocks.iter().map(|b| b.id).filter(|id| body.contains(id)).collect();
-            NaturalLoop { header, body: body_vec }
+            let body_vec: Vec<u32> = func
+                .blocks
+                .iter()
+                .map(|b| b.id)
+                .filter(|id| body.contains(id))
+                .collect();
+            NaturalLoop {
+                header,
+                body: body_vec,
+            }
         })
         .collect()
 }
@@ -242,10 +252,22 @@ mod tests {
     use prisma_ir::{BasicBlock, CondJump, Jump, Return, Stmt};
 
     fn jump(target: u32) -> Stmt {
-        Stmt::new(None, Op::Jump(Jump { target_block: target }))
+        Stmt::new(
+            None,
+            Op::Jump(Jump {
+                target_block: target,
+            }),
+        )
     }
     fn cond(if_true: u32, if_false: u32) -> Stmt {
-        Stmt::new(None, Op::CondJump(CondJump { cond: 0, if_true, if_false }))
+        Stmt::new(
+            None,
+            Op::CondJump(CondJump {
+                cond: 0,
+                if_true,
+                if_false,
+            }),
+        )
     }
     fn ret() -> Stmt {
         Stmt::new(None, Op::Return(Return))
@@ -256,7 +278,10 @@ mod tests {
 
     #[test]
     fn successors_reads_terminators() {
-        let f = Function { entry: 0, blocks: vec![blk(0, vec![cond(1, 2)])] };
+        let f = Function {
+            entry: 0,
+            blocks: vec![blk(0, vec![cond(1, 2)])],
+        };
         assert_eq!(successors(&f, 0), vec![1, 2]);
     }
 
@@ -349,7 +374,10 @@ mod tests {
     #[test]
     fn dangling_target_does_not_panic() {
         // Jump to a non-existent block id 99 — must be ignored, not panic.
-        let f = Function { entry: 0, blocks: vec![blk(0, vec![jump(99)])] };
+        let f = Function {
+            entry: 0,
+            blocks: vec![blk(0, vec![jump(99)])],
+        };
         assert_eq!(postorder(&f), vec![0]);
         assert_eq!(dominators(&f).get(&0), Some(&0));
         assert!(natural_loops(&f).is_empty());

@@ -81,7 +81,9 @@ impl SyscallPolicy {
     /// Creates an allow-by-default policy.
     #[must_use]
     pub const fn allow_by_default() -> Self {
-        Self { deny_unknown: false }
+        Self {
+            deny_unknown: false,
+        }
     }
 
     /// Returns `true` if unknown syscall numbers should be denied.

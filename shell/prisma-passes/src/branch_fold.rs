@@ -96,18 +96,20 @@ pub fn branch_fold(func: Function) -> Function {
                         }
                     }
                     Op::CmpFlags(cf) => {
-                        last_cmp = Some(LastCmp { lhs: cf.lhs, rhs: cf.rhs, size: cf.size });
+                        last_cmp = Some(LastCmp {
+                            lhs: cf.lhs,
+                            rhs: cf.rhs,
+                            size: cf.size,
+                        });
                     }
                     Op::AluFlags(_) | Op::WriteFlagsCountZero(_) => {
                         last_cmp = None;
                     }
                     Op::CondJumpRel(cj) => {
                         if let Some(lc) = last_cmp {
-                            if let (Some(&a), Some(&b)) =
-                                (consts.get(&lc.lhs), consts.get(&lc.rhs))
+                            if let (Some(&a), Some(&b)) = (consts.get(&lc.lhs), consts.get(&lc.rhs))
                             {
-                                let choose_taken =
-                                    eval_cond(cj.cc, a, b, lc.size).unwrap_or(false);
+                                let choose_taken = eval_cond(cj.cc, a, b, lc.size).unwrap_or(false);
                                 let target = if choose_taken {
                                     cj.target_guest_pc
                                 } else {
@@ -115,7 +117,9 @@ pub fn branch_fold(func: Function) -> Function {
                                 };
                                 out.push(Stmt::new(
                                     None,
-                                    Op::JumpRel(JumpRel { target_guest_pc: target }),
+                                    Op::JumpRel(JumpRel {
+                                        target_guest_pc: target,
+                                    }),
                                 ));
                                 last_cmp = None;
                                 continue;
@@ -147,7 +151,13 @@ mod tests {
     use prisma_ir::{CmpFlags, CondJumpRel, Constant};
 
     fn cst(result: u32, value: u64) -> Stmt {
-        Stmt::new(Some(result), Op::Constant(Constant { value, size: OpSize::I64 }))
+        Stmt::new(
+            Some(result),
+            Op::Constant(Constant {
+                value,
+                size: OpSize::I64,
+            }),
+        )
     }
 
     fn build(cc: CondCode, a: u64, b: u64) -> Function {
@@ -158,7 +168,14 @@ mod tests {
                 stmts: vec![
                     cst(0, a),
                     cst(1, b),
-                    Stmt::new(None, Op::CmpFlags(CmpFlags { lhs: 0, rhs: 1, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::CmpFlags(CmpFlags {
+                            lhs: 0,
+                            rhs: 1,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(
                         None,
                         Op::CondJumpRel(CondJumpRel {
@@ -218,7 +235,14 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(None, Op::CmpFlags(CmpFlags { lhs: 7, rhs: 8, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::CmpFlags(CmpFlags {
+                            lhs: 7,
+                            rhs: 8,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(
                         None,
                         Op::CondJumpRel(CondJumpRel {

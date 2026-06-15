@@ -366,7 +366,11 @@ fn live_cpp_translator_accepts_rust_smoke_fixtures() {
             );
         }
         if is_nop {
-            assert!(!cpp_bytes.is_empty(), "{}: C++ translator emitted no code", fixture.name);
+            assert!(
+                !cpp_bytes.is_empty(),
+                "{}: C++ translator emitted no code",
+                fixture.name
+            );
             let cpp_cached = cpp
                 .translate(guest_pc, fixture.guest_bytes)
                 .unwrap_or_else(|err| {
@@ -383,13 +387,16 @@ fn live_cpp_translator_accepts_rust_smoke_fixtures() {
             Some(words) => words_to_le_bytes(words),
             None => rust_translation.clone(),
         };
-        assert!(!cpp_bytes.is_empty(), "{}: C++ emitted no code", fixture.name);
+        assert!(
+            !cpp_bytes.is_empty(),
+            "{}: C++ emitted no code",
+            fixture.name
+        );
         // Rust and C++ byte-for-byte parity is still intentionally deferred for
         // prologue-heavy paths in the C++ backend. Keep functional parity checks
         // (translation success, caching, and Rust fixture stability) as the hard gate.
         assert_eq!(
-            cpp_info.exit_kind,
-            fixture.expected_exit,
+            cpp_info.exit_kind, fixture.expected_exit,
             "{}: smoke fixtures should honor expected exit kind",
             fixture.name
         );
@@ -423,4 +430,3 @@ fn words_to_le_bytes(words: &[u32]) -> Vec<u8> {
     }
     bytes
 }
-

@@ -56,8 +56,15 @@ mod platform {
     /// Reserve+commit `size` bytes as read/write. Returns null on failure.
     pub fn alloc_rw(size: usize) -> *mut u8 {
         // SAFETY: standard VirtualAlloc; null addr lets the OS choose.
-        unsafe { VirtualAlloc(core::ptr::null_mut(), size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }
-            .cast::<u8>()
+        unsafe {
+            VirtualAlloc(
+                core::ptr::null_mut(),
+                size,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        }
+        .cast::<u8>()
     }
 
     /// Flip `[ptr, ptr+size)` to read/execute. Returns false on failure.

@@ -39,7 +39,10 @@ fn match_rule(stmts: &[Stmt], idx: usize) -> Option<Op> {
         // Non-BinOp rules: identity Extend.
         if let Op::Extend(e) = &s.op {
             if e.from_size == e.to_size {
-                return Some(Op::Truncate(Truncate { value: e.value, to_size: e.to_size }));
+                return Some(Op::Truncate(Truncate {
+                    value: e.value,
+                    to_size: e.to_size,
+                }));
             }
         }
         return None;
@@ -47,11 +50,17 @@ fn match_rule(stmts: &[Stmt], idx: usize) -> Option<Op> {
 
     // xor x,x -> 0
     if b.op == K::Xor && b.lhs == b.rhs {
-        return Some(Op::Constant(Constant { value: 0, size: b.size }));
+        return Some(Op::Constant(Constant {
+            value: 0,
+            size: b.size,
+        }));
     }
     // or x,x -> x ; and x,x -> x
     if matches!(b.op, K::Or | K::And) && b.lhs == b.rhs {
-        return Some(Op::Truncate(Truncate { value: b.lhs, to_size: b.size }));
+        return Some(Op::Truncate(Truncate {
+            value: b.lhs,
+            to_size: b.size,
+        }));
     }
     // add: const-0 operand -> other
     if b.op == K::Add {
@@ -63,12 +72,18 @@ fn match_rule(stmts: &[Stmt], idx: usize) -> Option<Op> {
             None
         };
         if let Some(keep) = keep {
-            return Some(Op::Truncate(Truncate { value: keep, to_size: b.size }));
+            return Some(Op::Truncate(Truncate {
+                value: keep,
+                to_size: b.size,
+            }));
         }
     }
     // sub x,0 -> x
     if b.op == K::Sub && try_const(stmts, idx, b.rhs) == Some(0) {
-        return Some(Op::Truncate(Truncate { value: b.lhs, to_size: b.size }));
+        return Some(Op::Truncate(Truncate {
+            value: b.lhs,
+            to_size: b.size,
+        }));
     }
     // mul: const-1 operand -> other
     if b.op == K::Mul {
@@ -80,11 +95,17 @@ fn match_rule(stmts: &[Stmt], idx: usize) -> Option<Op> {
             None
         };
         if let Some(keep) = keep {
-            return Some(Op::Truncate(Truncate { value: keep, to_size: b.size }));
+            return Some(Op::Truncate(Truncate {
+                value: keep,
+                to_size: b.size,
+            }));
         }
         // mul: const-0 operand -> 0
         if try_const(stmts, idx, b.lhs) == Some(0) || try_const(stmts, idx, b.rhs) == Some(0) {
-            return Some(Op::Constant(Constant { value: 0, size: b.size }));
+            return Some(Op::Constant(Constant {
+                value: 0,
+                size: b.size,
+            }));
         }
     }
 
@@ -158,15 +179,32 @@ mod tests {
     use prisma_ir::{BinOp, BinOpKind, Extend};
 
     fn block(stmts: Vec<Stmt>) -> Function {
-        Function { entry: 0, blocks: vec![BasicBlock { id: 0, stmts }] }
+        Function {
+            entry: 0,
+            blocks: vec![BasicBlock { id: 0, stmts }],
+        }
     }
 
     fn binop(result: u32, op: BinOpKind, lhs: u32, rhs: u32) -> Stmt {
-        Stmt::new(Some(result), Op::BinOp(BinOp { op, lhs, rhs, size: OpSize::I64 }))
+        Stmt::new(
+            Some(result),
+            Op::BinOp(BinOp {
+                op,
+                lhs,
+                rhs,
+                size: OpSize::I64,
+            }),
+        )
     }
 
     fn cst(result: u32, value: u64) -> Stmt {
-        Stmt::new(Some(result), Op::Constant(Constant { value, size: OpSize::I64 }))
+        Stmt::new(
+            Some(result),
+            Op::Constant(Constant {
+                value,
+                size: OpSize::I64,
+            }),
+        )
     }
 
     #[test]
@@ -219,7 +257,12 @@ mod tests {
     fn identity_extend_becomes_truncate() {
         let out = peephole_optimise_default(block(vec![Stmt::new(
             Some(0),
-            Op::Extend(Extend { value: 9, from_size: OpSize::I32, to_size: OpSize::I32, is_signed: false }),
+            Op::Extend(Extend {
+                value: 9,
+                from_size: OpSize::I32,
+                to_size: OpSize::I32,
+                is_signed: false,
+            }),
         )]));
         match &out.blocks[0].stmts[0].op {
             Op::Truncate(t) => {
@@ -234,7 +277,12 @@ mod tests {
     fn non_identity_extend_is_untouched() {
         let func = block(vec![Stmt::new(
             Some(0),
-            Op::Extend(Extend { value: 9, from_size: OpSize::I8, to_size: OpSize::I64, is_signed: true }),
+            Op::Extend(Extend {
+                value: 9,
+                from_size: OpSize::I8,
+                to_size: OpSize::I64,
+                is_signed: true,
+            }),
         )]);
         let out = peephole_optimise_default(func.clone());
         assert_eq!(out, func);

@@ -137,13 +137,37 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 5, size: OpSize::I64 })),
-                    Stmt::new(Some(1), Op::Constant(Constant { value: 3, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 5,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        Some(1),
+                        Op::Constant(Constant {
+                            value: 3,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(
                         Some(2),
-                        Op::BinOp(BinOp { op: BinOpKind::Add, lhs: 0, rhs: 1, size: OpSize::I64 }),
+                        Op::BinOp(BinOp {
+                            op: BinOpKind::Add,
+                            lhs: 0,
+                            rhs: 1,
+                            size: OpSize::I64,
+                        }),
                     ),
-                    Stmt::new(None, Op::StoreReg(StoreReg { reg: Gpr::Rax, value: 2, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            value: 2,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(None, Op::Return(Return)),
                 ],
             }],
@@ -151,10 +175,9 @@ mod tests {
         let out = default_pipeline().run(func);
         let stmts = &out.blocks[0].stmts;
         // r2 is now a folded constant 8, dead operands removed.
-        let folded_8 = stmts.iter().any(|s| {
-            s.result == Some(2)
-                && matches!(&s.op, Op::Constant(c) if c.value == 8)
-        });
+        let folded_8 = stmts
+            .iter()
+            .any(|s| s.result == Some(2) && matches!(&s.op, Op::Constant(c) if c.value == 8));
         assert!(folded_8, "expected r2 folded to 8: {stmts:?}");
         assert!(stmts.iter().any(|s| matches!(s.op, Op::StoreReg(_))));
         assert!(stmts.iter().any(|s| matches!(s.op, Op::Return(_))));
@@ -167,7 +190,13 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 5, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 5,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(None, Op::Return(Return)),
                 ],
             }],
@@ -190,8 +219,21 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 5, size: OpSize::I64 })),
-                    Stmt::new(None, Op::StoreReg(StoreReg { reg: Gpr::Rax, value: 0, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 5,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        None,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            value: 0,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     Stmt::new(None, Op::Return(Return)),
                 ],
             }],

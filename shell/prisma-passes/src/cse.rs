@@ -94,7 +94,15 @@ mod tests {
     use prisma_ir::{CmpFlags, Constant};
 
     fn binop(result: u32, op: BinOpKind, lhs: u32, rhs: u32) -> Stmt {
-        Stmt::new(Some(result), Op::BinOp(BinOp { op, lhs, rhs, size: OpSize::I64 }))
+        Stmt::new(
+            Some(result),
+            Op::BinOp(BinOp {
+                op,
+                lhs,
+                rhs,
+                size: OpSize::I64,
+            }),
+        )
     }
 
     #[test]
@@ -128,7 +136,14 @@ mod tests {
                 id: 0,
                 stmts: vec![
                     binop(2, BinOpKind::Add, 0, 1),
-                    Stmt::new(None, Op::CmpFlags(CmpFlags { lhs: 0, rhs: 1, size: OpSize::I64 })),
+                    Stmt::new(
+                        None,
+                        Op::CmpFlags(CmpFlags {
+                            lhs: 0,
+                            rhs: 1,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     binop(3, BinOpKind::Add, 0, 1), // NOT deduped after flush
                 ],
             }],
@@ -143,7 +158,10 @@ mod tests {
             entry: 0,
             blocks: vec![BasicBlock {
                 id: 0,
-                stmts: vec![binop(2, BinOpKind::Add, 0, 1), binop(3, BinOpKind::Add, 0, 4)],
+                stmts: vec![
+                    binop(2, BinOpKind::Add, 0, 1),
+                    binop(3, BinOpKind::Add, 0, 4),
+                ],
             }],
         };
         let out = common_subexpression_eliminate(func.clone());
@@ -157,7 +175,13 @@ mod tests {
             blocks: vec![BasicBlock {
                 id: 0,
                 stmts: vec![
-                    Stmt::new(Some(0), Op::Constant(Constant { value: 1, size: OpSize::I64 })),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 1,
+                            size: OpSize::I64,
+                        }),
+                    ),
                     binop(2, BinOpKind::Add, 0, 0),
                     binop(3, BinOpKind::Add, 0, 0),
                 ],

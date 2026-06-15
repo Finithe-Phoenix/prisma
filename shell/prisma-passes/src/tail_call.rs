@@ -47,7 +47,9 @@ pub fn tail_call_optimise(func: Function) -> Function {
                         if ret.pop_bytes == 0 {
                             out.push(Stmt::new(
                                 None,
-                                Op::JumpRel(JumpRel { target_guest_pc: call.target_guest_pc }),
+                                Op::JumpRel(JumpRel {
+                                    target_guest_pc: call.target_guest_pc,
+                                }),
                             ));
                             i += 2; // consume CallRel + RetAdjusted
                             continue;
@@ -57,7 +59,10 @@ pub fn tail_call_optimise(func: Function) -> Function {
                 out.push(stmts[i].clone());
                 i += 1;
             }
-            BasicBlock { id: block.id, stmts: out }
+            BasicBlock {
+                id: block.id,
+                stmts: out,
+            }
         })
         .collect();
 
@@ -73,13 +78,22 @@ mod tests {
     use prisma_ir::{CallRel, RetAdjusted};
 
     fn block(stmts: Vec<Stmt>) -> Function {
-        Function { entry: 0, blocks: vec![BasicBlock { id: 0, stmts }] }
+        Function {
+            entry: 0,
+            blocks: vec![BasicBlock { id: 0, stmts }],
+        }
     }
 
     #[test]
     fn call_then_ret0_becomes_jump() {
         let out = tail_call_optimise(block(vec![
-            Stmt::new(None, Op::CallRel(CallRel { target_guest_pc: 0x1234, return_guest_pc: 0x5 })),
+            Stmt::new(
+                None,
+                Op::CallRel(CallRel {
+                    target_guest_pc: 0x1234,
+                    return_guest_pc: 0x5,
+                }),
+            ),
             Stmt::new(None, Op::RetAdjusted(RetAdjusted { pop_bytes: 0 })),
         ]));
         assert_eq!(out.blocks[0].stmts.len(), 1);
@@ -92,7 +106,13 @@ mod tests {
     #[test]
     fn nonzero_pop_is_not_folded() {
         let func = block(vec![
-            Stmt::new(None, Op::CallRel(CallRel { target_guest_pc: 0x1234, return_guest_pc: 0x5 })),
+            Stmt::new(
+                None,
+                Op::CallRel(CallRel {
+                    target_guest_pc: 0x1234,
+                    return_guest_pc: 0x5,
+                }),
+            ),
             Stmt::new(None, Op::RetAdjusted(RetAdjusted { pop_bytes: 8 })),
         ]);
         let out = tail_call_optimise(func.clone());
@@ -103,7 +123,10 @@ mod tests {
     fn call_without_following_ret_is_kept() {
         let func = block(vec![Stmt::new(
             None,
-            Op::CallRel(CallRel { target_guest_pc: 0x1234, return_guest_pc: 0x5 }),
+            Op::CallRel(CallRel {
+                target_guest_pc: 0x1234,
+                return_guest_pc: 0x5,
+            }),
         )]);
         let out = tail_call_optimise(func.clone());
         assert_eq!(out, func);
@@ -112,7 +135,13 @@ mod tests {
     #[test]
     fn idempotent() {
         let func = block(vec![
-            Stmt::new(None, Op::CallRel(CallRel { target_guest_pc: 0x1234, return_guest_pc: 0x5 })),
+            Stmt::new(
+                None,
+                Op::CallRel(CallRel {
+                    target_guest_pc: 0x1234,
+                    return_guest_pc: 0x5,
+                }),
+            ),
             Stmt::new(None, Op::RetAdjusted(RetAdjusted { pop_bytes: 0 })),
         ]);
         let once = tail_call_optimise(func);
