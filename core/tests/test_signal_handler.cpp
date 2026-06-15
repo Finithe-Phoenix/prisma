@@ -48,6 +48,24 @@ constexpr bool has_posix_signal_handlers =
     true;
 #endif
 
+// ThreadSanitizer instruments signal delivery and cannot survive a longjmp
+// out of a SIGSEGV handler — it corrupts its shadow stack and aborts. The
+// deliberate fault-recovery tests are covered by the normal and ASan/UBSan
+// builds plus the ARM64 e2e suite, so they skip under TSAN.
+#if defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    define PRISMA_TSAN_ENABLED 1
+#  endif
+#endif
+#if defined(__SANITIZE_THREAD__)
+#  define PRISMA_TSAN_ENABLED 1
+#endif
+#ifndef PRISMA_TSAN_ENABLED
+#  define PRISMA_TSAN_ENABLED 0
+#endif
+
+constexpr bool tsan_enabled = PRISMA_TSAN_ENABLED != 0;
+
 std::size_t host_page() {
 #if defined(_WIN32)
     SYSTEM_INFO info{};
@@ -257,6 +275,11 @@ TEST_CASE("signal_handler: SIGBUS recovery via setjmp/longjmp",
 TEST_CASE("signal_handler: multiple sequential fault-recovery cycles") {
     if constexpr (!has_posix_signal_handlers) {
         SUCCEED("skipped on Windows: POSIX signal recovery is not available");
+        return;
+    }
+    if constexpr (tsan_enabled) {
+        SUCCEED("skipped under ThreadSanitizer: longjmp out of a SIGSEGV "
+                "handler corrupts TSAN shadow state");
         return;
     }
     // A translation block that faults twice should be recoverable each
