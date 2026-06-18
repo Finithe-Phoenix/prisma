@@ -102,7 +102,7 @@ pub fn branch_fold(func: Function) -> Function {
                             size: cf.size,
                         });
                     }
-                    Op::AluFlags(_) | Op::WriteFlagsCountZero(_) => {
+                    Op::AluFlags(_) | Op::WriteFlagsPopcnt(_) | Op::WriteFlagsCountZero(_) => {
                         last_cmp = None;
                     }
                     Op::CondJumpRel(cj) => {

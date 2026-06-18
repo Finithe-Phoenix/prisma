@@ -19,6 +19,7 @@ fn is_flushing_op(op: &Op) -> bool {
             | Op::StoreMemTSO(_)
             | Op::CmpFlags(_)
             | Op::AluFlags(_)
+            | Op::WriteFlagsPopcnt(_)
             | Op::WriteFlagsCountZero(_)
             | Op::Syscall(_)
     )
