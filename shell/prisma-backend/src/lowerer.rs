@@ -22,6 +22,12 @@ const FLAG_ALIGN_SHIFT_REG: u8 = 19;
 
 /// Scratch register used for quotient materialization in modulo lowering.
 const MOD_QUOTIENT_REG: u8 = 20;
+/// Scratch register used for dynamic RSP reads/writes during stack adjustments.
+const RSP_ADJUST_TMP_REG: u8 = 21;
+/// Scratch register used for large RSP immediate materialization.
+const RSP_ADJUST_IMM_REG: u8 = 22;
+/// Scratch register used for flag-writing ALU side-effect operations.
+const ALU_FLAGS_TMP_REG: u8 = 23;
 
 /// Lowering failures surfaced by the Rust backend.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -85,9 +91,12 @@ impl Lowerer {
     ///   non-I64 compares
     /// - `CmpFlags`/`CondJumpFlags` through ARM64 NZCV + `B.cond`
     /// - `CondJumpRel` through ARM64 `B.cond`
+    /// - `Select` via flag-dependent branch sequencing (`B.cond` + `MOV`)
     /// - `LoadMem`/`StoreMem` for `I8`/`I16`/`I32`/`I64` with address/value
     ///   already in registers
-    /// - direct `Jump` and `CondJump` between basic blocks
+    /// - direct `Jump`, `JumpRel`, `CallRel` and `CallReg` between/through
+    ///   registers
+    /// - `RspAdjust` and `RetAdjusted` stack adjustments over `Rsp` state
     /// - `Return`
     ///
     /// This is deliberately small, but it is a real IR-to-backend path with
@@ -190,6 +199,9 @@ fn lower_stmt(
         Op::CmpFlags(cmp) => {
             lower_cmp_flags(stmt, asm, values, flags, cmp)?;
         }
+        Op::AluFlags(alu) => {
+            lower_alu_flags(asm, values, alu)?;
+        }
         Op::StoreMem(store) => {
             let addr = *values
                 .get(&store.addr)
@@ -198,6 +210,146 @@ fn lower_stmt(
                 .get(&store.value)
                 .ok_or(LowerError::MissingValue(store.value))?;
             emit_store_mem(asm, store.size, value, addr);
+        }
+        Op::LoadMemTSO(load) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("LoadMemTSO"))?;
+            let addr = *values
+                .get(&load.addr)
+                .ok_or(LowerError::MissingValue(load.addr))?;
+            let dst = value_reg(result);
+            emit_load_mem(asm, load.size, dst, addr);
+            asm.fence(prisma_ir::FenceKind::Mfence);
+            values.insert(result, dst);
+        }
+        Op::StoreMemTSO(store) => {
+            let addr = *values
+                .get(&store.addr)
+                .ok_or(LowerError::MissingValue(store.addr))?;
+            let value = *values
+                .get(&store.value)
+                .ok_or(LowerError::MissingValue(store.value))?;
+            asm.fence(prisma_ir::FenceKind::Mfence);
+            emit_store_mem(asm, store.size, value, addr);
+            asm.fence(prisma_ir::FenceKind::Mfence);
+        }
+        Op::LoadSegBase(seg) => {
+            lower_load_seg_base(stmt, asm, values, seg)?;
+        }
+        Op::Cpuid(_) => lower_cpuid(asm),
+        Op::Xgetbv(_) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Xgetbv"))?;
+            let dst = value_reg(result);
+            lower_xgetbv(asm, dst);
+            values.insert(result, dst);
+        }
+        Op::Rdtsc(_) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Rdtsc"))?;
+            let dst = value_reg(result);
+            asm.mrs_cntvct(dst);
+            values.insert(result, dst);
+        }
+        Op::Syscall(_) => {
+            lower_syscall(asm);
+        }
+        Op::Trap(_) => {
+            asm.movz_x(0, 0, 0);
+            asm.ret();
+        }
+        Op::Extend(extend) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Extend"))?;
+            let dst = value_reg(result);
+            let src = *values
+                .get(&extend.value)
+                .ok_or(LowerError::MissingValue(extend.value))?;
+            lower_extend(
+                asm,
+                dst,
+                src,
+                extend.from_size,
+                extend.to_size,
+                extend.is_signed,
+            );
+            values.insert(result, dst);
+        }
+        Op::Truncate(trunc) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Truncate"))?;
+            let dst = value_reg(result);
+            let src = *values
+                .get(&trunc.value)
+                .ok_or(LowerError::MissingValue(trunc.value))?;
+            lower_truncate(asm, dst, src, trunc.to_size);
+            values.insert(result, dst);
+        }
+        Op::Fence(fence) => match fence.kind {
+            prisma_ir::FenceKind::Mfence
+            | prisma_ir::FenceKind::Lfence
+            | prisma_ir::FenceKind::Sfence => {
+                asm.fence(fence.kind);
+            }
+        },
+        Op::GuestPc(_) => {}
+        Op::WriteFlags(write_flags) => {
+            lower_write_flags(asm, values, flags, write_flags, stmt)?;
+        }
+        Op::WriteFlagsPopcnt(popcnt) => {
+            lower_write_flags_popcnt(asm, values, popcnt)?;
+        }
+        Op::WriteFlagsCountZero(count_zero) => {
+            lower_write_flags_count_zero(asm, values, count_zero)?;
+        }
+        Op::ReadFlag(flag_read) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("ReadFlag"))?;
+            let dst = value_reg(result);
+            lower_read_flag(asm, flags, flag_read, dst)?;
+            values.insert(result, dst);
+        }
+        Op::Lzcnt(lzcnt) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Lzcnt"))?;
+            let src = *values
+                .get(&lzcnt.value)
+                .ok_or(LowerError::MissingValue(lzcnt.value))?;
+            let dst = value_reg(result);
+            lower_lzcnt(asm, dst, src, lzcnt.size);
+            values.insert(result, dst);
+        }
+        Op::Tzcnt(tzcnt) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Tzcnt"))?;
+            let src = *values
+                .get(&tzcnt.value)
+                .ok_or(LowerError::MissingValue(tzcnt.value))?;
+            let dst = value_reg(result);
+            lower_tzcnt(asm, dst, src, tzcnt.size);
+            values.insert(result, dst);
+        }
+        Op::Popcnt(popcnt) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Popcnt"))?;
+            let src = *values
+                .get(&popcnt.value)
+                .ok_or(LowerError::MissingValue(popcnt.value))?;
+            let dst = value_reg(result);
+            lower_popcnt(asm, dst, src, popcnt.size);
+            values.insert(result, dst);
+        }
+        Op::Bswap(bswap) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Bswap"))?;
+            let src = *values
+                .get(&bswap.value)
+                .ok_or(LowerError::MissingValue(bswap.value))?;
+            let dst = value_reg(result);
+            lower_bswap(asm, dst, src, bswap.size);
+            values.insert(result, dst);
+        }
+        Op::Crc32c(crc) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("Crc32c"))?;
+            let crc_reg = *values
+                .get(&crc.crc)
+                .ok_or(LowerError::MissingValue(crc.crc))?;
+            let data_reg = *values
+                .get(&crc.data)
+                .ok_or(LowerError::MissingValue(crc.data))?;
+            let dst = value_reg(result);
+            lower_crc32c(asm, dst, crc_reg, data_reg, crc.data_size);
+            values.insert(result, dst);
         }
         Op::Jump(jump) => {
             let target = labels
@@ -215,15 +367,179 @@ fn lower_stmt(
         Op::CondJumpRel(jump) => {
             lower_cond_jump_rel(asm, labels, jump)?;
         }
+        Op::Select(select) => {
+            lower_select(asm, values, select, stmt)?;
+        }
         Op::JumpReg(jump) => {
             let target = *values
                 .get(&jump.target)
                 .ok_or(LowerError::MissingValue(jump.target))?;
             asm.br_x(target);
         }
+        Op::JumpRel(jump) => {
+            let target = block_label(labels, jump.target_guest_pc)?;
+            asm.b_label(target);
+        }
+        Op::CallRel(call) => {
+            let target = block_label(labels, call.target_guest_pc)?;
+            asm.b_label(target);
+            let _ = call.return_guest_pc;
+        }
+        Op::CallReg(call) => {
+            let target = *values
+                .get(&call.target)
+                .ok_or(LowerError::MissingValue(call.target))?;
+            asm.blr_x(target);
+            let _ = call.return_guest_pc;
+        }
+        Op::RspAdjust(rsp) => {
+            lower_rsp_adjust(asm, rsp)?;
+        }
         Op::Return(_) => asm.ret(),
+        Op::RetAdjusted(ret) => {
+            lower_ret_adjusted(asm, ret.pop_bytes)?;
+        }
         _ => return Err(LowerError::UnsupportedOp("unsupported")),
     }
+
+    Ok(())
+}
+
+const FS_BASE_OFFSET: u16 = 792;
+const GS_BASE_OFFSET: u16 = 800;
+const KSTATE_CPUID_MAX_LEAF: u64 = 7;
+const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
+const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;
+const KSTATE_CPUID_VENDOR_ECX: u64 = 0x6C65_746E;
+const KSTATE_CPUID_LEAF1_EAX: u64 = 0x0002_06A7;
+const KSTATE_CPUID_LEAF1_EBX: u64 = 0x0000_0800;
+const KSTATE_CPUID_LEAF1_ECX: u64 = (1u64 << 0)
+    | (1u64 << 9)
+    | (1u64 << 12)
+    | (1u64 << 13)
+    | (1u64 << 19)
+    | (1u64 << 22)
+    | (1u64 << 23)
+    | (1u64 << 27)
+    | (1u64 << 28);
+const KSTATE_CPUID_LEAF1_EDX: u64 =
+    (1u64 << 0) | (1u64 << 4) | (1u64 << 8) | (1u64 << 15) | (1u64 << 25) | (1u64 << 26);
+const KSTATE_CPUID_LEAF7_EBX: u64 = 1u64 << 8;
+const KSTATE_XCR0_EAX: u64 = 0x7;
+
+fn lower_select(
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    select: &prisma_ir::Select,
+    stmt: &Stmt,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("Select"))?;
+    let true_value = *values
+        .get(&select.true_value)
+        .ok_or(LowerError::MissingValue(select.true_value))?;
+    let false_value = *values
+        .get(&select.false_value)
+        .ok_or(LowerError::MissingValue(select.false_value))?;
+
+    let result_reg = value_reg(result);
+    let true_label = asm.create_label();
+    let end_label = asm.create_label();
+
+    asm.b_cond_label(select.cc, true_label);
+    asm.mov_x(result_reg, false_value);
+    asm.b_label(end_label);
+    asm.bind_label(true_label);
+    asm.mov_x(result_reg, true_value);
+    asm.bind_label(end_label);
+
+    values.insert(result, result_reg);
+    Ok(())
+}
+
+fn lower_bswap(asm: &mut Arm64Assembler, dst: u8, src: u8, size: OpSize) {
+    match size {
+        OpSize::I64 => asm.rev_x(dst, src),
+        OpSize::I32 => asm.rev_w(dst, src),
+        OpSize::I16 => {
+            asm.rev_w(dst, src);
+            emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 16);
+            asm.lsr_x(dst, dst, FLAG_ALIGN_SHIFT_REG);
+        }
+        OpSize::I8 => lower_truncate(asm, dst, src, OpSize::I8),
+    }
+}
+
+fn lower_crc32c(asm: &mut Arm64Assembler, dst: u8, crc: u8, data: u8, data_size: OpSize) {
+    match data_size {
+        OpSize::I8 => asm.crc32cb(dst, crc, data),
+        OpSize::I16 => asm.crc32ch(dst, crc, data),
+        OpSize::I32 => asm.crc32cw(dst, crc, data),
+        OpSize::I64 => asm.crc32cx(dst, crc, data),
+    }
+}
+
+fn lower_write_flags_count_zero(
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    count_zero: &prisma_ir::WriteFlagsCountZero,
+) -> Result<(), LowerError> {
+    let src = *values
+        .get(&count_zero.src)
+        .ok_or(LowerError::MissingValue(count_zero.src))?;
+    let result = *values
+        .get(&count_zero.result)
+        .ok_or(LowerError::MissingValue(count_zero.result))?;
+
+    let z_bit = FLAG_ALIGN_LHS_REG;
+    let c_bit = FLAG_ALIGN_RHS_REG;
+    let shift = FLAG_ALIGN_SHIFT_REG;
+
+    if count_zero.size == OpSize::I64 {
+        asm.cmp_x(result, 31);
+    } else {
+        lower_truncate(asm, z_bit, result, count_zero.size);
+        asm.cmp_x(z_bit, 31);
+    }
+    asm.cset_x(z_bit, prisma_ir::CondCode::Eq);
+    if count_zero.size == OpSize::I64 {
+        asm.cmp_x(src, 31);
+    } else {
+        lower_truncate(asm, c_bit, src, count_zero.size);
+        asm.cmp_x(c_bit, 31);
+    }
+    asm.cset_x(c_bit, prisma_ir::CondCode::Eq);
+    emit_u64_constant(asm, shift, 30);
+    asm.lsl_x(z_bit, z_bit, shift);
+    emit_u64_constant(asm, shift, 29);
+    asm.lsl_x(c_bit, c_bit, shift);
+    asm.orr_x(z_bit, z_bit, c_bit);
+    asm.msr_nzcv(z_bit);
+
+    Ok(())
+}
+
+fn lower_write_flags_popcnt(
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    popcnt: &prisma_ir::WriteFlagsPopcnt,
+) -> Result<(), LowerError> {
+    let src = *values
+        .get(&popcnt.src)
+        .ok_or(LowerError::MissingValue(popcnt.src))?;
+
+    let z_bit = FLAG_ALIGN_LHS_REG;
+    let shift = FLAG_ALIGN_SHIFT_REG;
+
+    if popcnt.size == OpSize::I64 {
+        asm.cmp_x(src, 31);
+    } else {
+        lower_truncate(asm, z_bit, src, popcnt.size);
+        asm.cmp_x(z_bit, 31);
+    }
+    asm.cset_x(z_bit, prisma_ir::CondCode::Eq);
+    emit_u64_constant(asm, shift, 30);
+    asm.lsl_x(z_bit, z_bit, shift);
+    asm.msr_nzcv(z_bit);
 
     Ok(())
 }
@@ -244,6 +560,7 @@ fn lower_binop(
         | BinOpKind::Shr
         | BinOpKind::Sar
         | BinOpKind::Ror
+        | BinOpKind::Rol
         | BinOpKind::Mul
         | BinOpKind::UMulHi
         | BinOpKind::SMulHi
@@ -252,6 +569,110 @@ fn lower_binop(
         BinOpKind::UMod | BinOpKind::SMod => lower_mod_binop(stmt, asm, values, bin),
         _ => Err(LowerError::UnsupportedOp("BinOp")),
     }
+}
+
+fn lower_cpuid(asm: &mut Arm64Assembler) {
+    let leaf0 = asm.create_label();
+    let leaf1 = asm.create_label();
+    let leaf7 = asm.create_label();
+    let other = asm.create_label();
+    let done = asm.create_label();
+
+    let rax = FLAG_ALIGN_SHIFT_REG;
+    let rcx = FLAG_ALIGN_RHS_REG;
+    let tmp = FLAG_ALIGN_LHS_REG;
+    let shift = RSP_ADJUST_TMP_REG;
+
+    emit_load_reg(asm, OpSize::I64, rax, Gpr::Rax);
+    emit_load_reg(asm, OpSize::I64, rcx, Gpr::Rcx);
+    asm.uxtw_x(rax, rax);
+    asm.uxtw_x(rcx, rcx);
+
+    asm.cbz_x_label(rax, leaf0);
+    emit_u64_constant(asm, tmp, 1);
+    asm.eor_x(tmp, rax, tmp);
+    asm.cbz_x_label(tmp, leaf1);
+    emit_u64_constant(asm, tmp, 7);
+    asm.eor_x(tmp, rax, tmp);
+    asm.cbz_x_label(tmp, leaf7);
+
+    emit_u64_constant(asm, tmp, 31);
+    asm.lsr_x(shift, rax, tmp);
+    asm.cbnz_x_label(shift, other);
+
+    emit_u64_constant(asm, tmp, 3);
+    asm.lsr_x(shift, rax, tmp);
+    asm.cbnz_x_label(shift, leaf7);
+
+    asm.b_label(other);
+
+    asm.bind_label(leaf7);
+    asm.cbnz_x_label(rcx, other);
+    emit_u64_constant(asm, rax, 0);
+    emit_u64_constant(asm, tmp, KSTATE_CPUID_LEAF7_EBX);
+    emit_u64_constant(asm, rcx, 0);
+    emit_u64_constant(asm, shift, 0);
+    emit_store_reg(asm, OpSize::I64, rax, Gpr::Rax);
+    emit_store_reg(asm, OpSize::I64, tmp, Gpr::Rbx);
+    emit_store_reg(asm, OpSize::I64, rcx, Gpr::Rcx);
+    emit_store_reg(asm, OpSize::I64, shift, Gpr::Rdx);
+    asm.b_label(done);
+
+    asm.bind_label(leaf1);
+    emit_u64_constant(asm, rax, KSTATE_CPUID_LEAF1_EAX);
+    emit_u64_constant(asm, tmp, KSTATE_CPUID_LEAF1_EBX);
+    emit_u64_constant(asm, rcx, KSTATE_CPUID_LEAF1_ECX);
+    emit_u64_constant(asm, shift, KSTATE_CPUID_LEAF1_EDX);
+    emit_store_reg(asm, OpSize::I64, rax, Gpr::Rax);
+    emit_store_reg(asm, OpSize::I64, tmp, Gpr::Rbx);
+    emit_store_reg(asm, OpSize::I64, rcx, Gpr::Rcx);
+    emit_store_reg(asm, OpSize::I64, shift, Gpr::Rdx);
+    asm.b_label(done);
+
+    asm.bind_label(leaf0);
+    emit_u64_constant(asm, rax, KSTATE_CPUID_MAX_LEAF);
+    emit_u64_constant(asm, tmp, KSTATE_CPUID_VENDOR_EBX);
+    emit_u64_constant(asm, rcx, KSTATE_CPUID_VENDOR_ECX);
+    emit_u64_constant(asm, shift, KSTATE_CPUID_VENDOR_EDX);
+    emit_store_reg(asm, OpSize::I64, rax, Gpr::Rax);
+    emit_store_reg(asm, OpSize::I64, tmp, Gpr::Rbx);
+    emit_store_reg(asm, OpSize::I64, rcx, Gpr::Rcx);
+    emit_store_reg(asm, OpSize::I64, shift, Gpr::Rdx);
+    asm.b_label(done);
+
+    asm.bind_label(other);
+    emit_u64_constant(asm, rax, 0);
+    emit_u64_constant(asm, tmp, 0);
+    emit_u64_constant(asm, rcx, 0);
+    emit_u64_constant(asm, shift, 0);
+    emit_store_reg(asm, OpSize::I64, rax, Gpr::Rax);
+    emit_store_reg(asm, OpSize::I64, tmp, Gpr::Rbx);
+    emit_store_reg(asm, OpSize::I64, rcx, Gpr::Rcx);
+    emit_store_reg(asm, OpSize::I64, shift, Gpr::Rdx);
+
+    asm.bind_label(done);
+}
+
+fn lower_xgetbv(asm: &mut Arm64Assembler, dst: u8) {
+    let rcx = RSP_ADJUST_TMP_REG;
+    let other = asm.create_label();
+    let done = asm.create_label();
+
+    emit_load_reg(asm, OpSize::I64, rcx, Gpr::Rcx);
+    asm.uxtw_x(rcx, rcx);
+    asm.cbnz_x_label(rcx, other);
+    emit_u64_constant(asm, dst, KSTATE_XCR0_EAX);
+    emit_store_reg(asm, OpSize::I64, dst, Gpr::Rax);
+    emit_u64_constant(asm, rcx, 0);
+    emit_store_reg(asm, OpSize::I64, rcx, Gpr::Rdx);
+    asm.b_label(done);
+
+    asm.bind_label(other);
+    emit_u64_constant(asm, dst, 0);
+    emit_store_reg(asm, OpSize::I64, dst, Gpr::Rax);
+    emit_store_reg(asm, OpSize::I64, dst, Gpr::Rdx);
+
+    asm.bind_label(done);
 }
 
 fn lower_add_sub(
@@ -267,14 +688,32 @@ fn lower_add_sub(
         .ok_or(LowerError::MissingValue(bin.lhs))?;
     let dst = value_reg(result);
     if let Some(rhs) = constants.get(&bin.rhs) {
-        let imm12 = u16::try_from(*rhs).map_err(|_| LowerError::ImmediateOutOfRange(*rhs))?;
-        if imm12 >= 4096 {
-            return Err(LowerError::ImmediateOutOfRange(*rhs));
-        }
-        match bin.op {
-            BinOpKind::Add => asm.add_x_imm(dst, lhs, imm12),
-            BinOpKind::Sub => asm.sub_x_imm(dst, lhs, imm12),
-            _ => unreachable!("called only for Add/Sub"),
+        if let Ok(imm12) = u16::try_from(*rhs) {
+            if imm12 < 4096 {
+                match bin.op {
+                    BinOpKind::Add => asm.add_x_imm(dst, lhs, imm12),
+                    BinOpKind::Sub => asm.sub_x_imm(dst, lhs, imm12),
+                    _ => unreachable!("called only for Add/Sub"),
+                }
+            } else {
+                let rhs = *values
+                    .get(&bin.rhs)
+                    .ok_or(LowerError::MissingValue(bin.rhs))?;
+                match bin.op {
+                    BinOpKind::Add => asm.add_x(dst, lhs, rhs),
+                    BinOpKind::Sub => asm.sub_x(dst, lhs, rhs),
+                    _ => unreachable!("called only for Add/Sub"),
+                }
+            }
+        } else {
+            let rhs = *values
+                .get(&bin.rhs)
+                .ok_or(LowerError::MissingValue(bin.rhs))?;
+            match bin.op {
+                BinOpKind::Add => asm.add_x(dst, lhs, rhs),
+                BinOpKind::Sub => asm.sub_x(dst, lhs, rhs),
+                _ => unreachable!("called only for Add/Sub"),
+            }
         }
     } else {
         let rhs = *values
@@ -312,6 +751,10 @@ fn lower_reg_binop(
         BinOpKind::Shr => asm.lsr_x(dst, lhs, rhs),
         BinOpKind::Sar => asm.asr_x(dst, lhs, rhs),
         BinOpKind::Ror => asm.ror_x(dst, lhs, rhs),
+        BinOpKind::Rol => {
+            asm.sub_x(FLAG_ALIGN_SHIFT_REG, 31, rhs);
+            asm.ror_x(dst, lhs, FLAG_ALIGN_SHIFT_REG);
+        }
         BinOpKind::Mul => asm.mul_x(dst, lhs, rhs),
         BinOpKind::UMulHi => asm.umulh_x(dst, lhs, rhs),
         BinOpKind::SMulHi => asm.smulh_x(dst, lhs, rhs),
@@ -388,6 +831,218 @@ fn lower_cmp_flags(
     Ok(())
 }
 
+fn lower_alu_flags(
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    alu: &prisma_ir::AluFlags,
+) -> Result<(), LowerError> {
+    let lhs = *values
+        .get(&alu.lhs)
+        .ok_or(LowerError::MissingValue(alu.lhs))?;
+    let rhs = *values
+        .get(&alu.rhs)
+        .ok_or(LowerError::MissingValue(alu.rhs))?;
+    let (lhs, rhs) = align_flag_operands(asm, alu.size, lhs, rhs);
+    match alu.op {
+        BinOpKind::Sub => asm.cmp_x(lhs, rhs),
+        BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        BinOpKind::And => asm.ands_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        _ => {
+            return Err(LowerError::UnsupportedOp(
+                "AluFlags only supports Sub/Add/And today",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn lower_load_seg_base(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    seg: &prisma_ir::LoadSegBase,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("LoadSegBase"))?;
+    let dst = value_reg(result);
+    match seg.seg {
+        prisma_ir::SegmentReg::Fs => asm.ldr_x_unsigned(dst, abi::K_STATE_PTR_REG, FS_BASE_OFFSET),
+        prisma_ir::SegmentReg::Gs => asm.ldr_x_unsigned(dst, abi::K_STATE_PTR_REG, GS_BASE_OFFSET),
+        prisma_ir::SegmentReg::Es
+        | prisma_ir::SegmentReg::Cs
+        | prisma_ir::SegmentReg::Ss
+        | prisma_ir::SegmentReg::Ds => emit_u64_constant(asm, dst, 0),
+    }
+    values.insert(result, dst);
+    Ok(())
+}
+
+fn lower_extend(
+    asm: &mut Arm64Assembler,
+    dst: u8,
+    src: u8,
+    from_size: OpSize,
+    to_size: OpSize,
+    is_signed: bool,
+) {
+    if is_signed {
+        match from_size {
+            OpSize::I8 => asm.sxtb_x(dst, src),
+            OpSize::I16 => asm.sxth_x(dst, src),
+            OpSize::I32 => asm.sxtw_x(dst, src),
+            OpSize::I64 => asm.mov_x(dst, src),
+        }
+        if to_size != OpSize::I64 {
+            lower_truncate(asm, dst, dst, to_size);
+        }
+    } else {
+        lower_truncate(asm, dst, src, from_size);
+    }
+}
+
+fn lower_truncate(asm: &mut Arm64Assembler, dst: u8, src: u8, to_size: OpSize) {
+    match to_size {
+        OpSize::I8 => asm.uxtb_x(dst, src),
+        OpSize::I16 => asm.uxth_x(dst, src),
+        OpSize::I32 => asm.uxtw_x(dst, src),
+        OpSize::I64 => asm.mov_x(dst, src),
+    }
+}
+
+fn lower_write_flags(
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    flags: &mut HashSet<Ref>,
+    write: &prisma_ir::WriteFlags,
+    stmt: &Stmt,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("WriteFlags"))?;
+    let lhs = *values
+        .get(&write.lhs)
+        .ok_or(LowerError::MissingValue(write.lhs))?;
+    let rhs = *values
+        .get(&write.rhs)
+        .ok_or(LowerError::MissingValue(write.rhs))?;
+    let (lhs, rhs) = align_flag_operands(asm, write.size, lhs, rhs);
+    match write.op {
+        BinOpKind::Sub => asm.cmp_x(lhs, rhs),
+        BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        BinOpKind::And => asm.ands_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        _ => {
+            return Err(LowerError::UnsupportedOp(
+                "WriteFlags only supports Sub/Add/And today",
+            ));
+        }
+    }
+    flags.insert(result);
+    Ok(())
+}
+
+fn lower_read_flag(
+    asm: &mut Arm64Assembler,
+    flags: &HashSet<Ref>,
+    read: &prisma_ir::ReadFlag,
+    dst: u8,
+) -> Result<(), LowerError> {
+    if !flags.contains(&read.flags) {
+        return Err(LowerError::MissingValue(read.flags));
+    }
+    let cc = match read.which {
+        prisma_ir::FlagBit::Carry => prisma_ir::CondCode::Cc,
+        prisma_ir::FlagBit::Zero => prisma_ir::CondCode::Eq,
+        prisma_ir::FlagBit::Sign => prisma_ir::CondCode::Mi,
+        prisma_ir::FlagBit::Overflow => prisma_ir::CondCode::Ov,
+        prisma_ir::FlagBit::Parity | prisma_ir::FlagBit::Aux => {
+            return Err(LowerError::UnsupportedOp(
+                "ReadFlag(Parity/Aux) needs software emulation",
+            ));
+        }
+    };
+    asm.cset_x(dst, cc);
+    Ok(())
+}
+
+fn lower_syscall(asm: &mut Arm64Assembler) {
+    asm.nop();
+}
+
+fn lower_lzcnt(asm: &mut Arm64Assembler, dst: u8, src: u8, size: OpSize) {
+    match size {
+        OpSize::I64 => asm.clz_x(dst, src),
+        OpSize::I32 => asm.clz_w(dst, src),
+        OpSize::I16 | OpSize::I8 => {
+            let shift = u16::try_from(64 - size.bit_width()).expect("small size shift fits");
+            lower_truncate(asm, dst, src, size);
+            asm.movz_x(FLAG_ALIGN_SHIFT_REG, shift, 0);
+            asm.lsl_x(dst, dst, FLAG_ALIGN_SHIFT_REG);
+            asm.clz_x(dst, dst);
+            clamp_count_to_width(asm, dst, size);
+        }
+    }
+}
+
+fn lower_tzcnt(asm: &mut Arm64Assembler, dst: u8, src: u8, size: OpSize) {
+    match size {
+        OpSize::I64 => {
+            asm.rbit_x(dst, src);
+            asm.clz_x(dst, dst);
+        }
+        OpSize::I32 => {
+            asm.rbit_w(dst, src);
+            asm.clz_w(dst, dst);
+        }
+        OpSize::I16 | OpSize::I8 => {
+            lower_truncate(asm, dst, src, size);
+            asm.rbit_w(dst, dst);
+            asm.clz_w(dst, dst);
+            clamp_count_to_width(asm, dst, size);
+        }
+    }
+}
+
+fn lower_popcnt(asm: &mut Arm64Assembler, dst: u8, src: u8, size: OpSize) {
+    let tmp = FLAG_ALIGN_LHS_REG;
+    let mask = FLAG_ALIGN_RHS_REG;
+    let shift = FLAG_ALIGN_SHIFT_REG;
+    let mul = RSP_ADJUST_TMP_REG;
+
+    lower_truncate(asm, dst, src, size);
+
+    emit_u64_constant(asm, shift, 1);
+    asm.lsr_x(tmp, dst, shift);
+    emit_u64_constant(asm, mask, 0x5555_5555_5555_5555);
+    asm.and_x(tmp, tmp, mask);
+    asm.sub_x(dst, dst, tmp);
+
+    emit_u64_constant(asm, shift, 2);
+    asm.lsr_x(tmp, dst, shift);
+    emit_u64_constant(asm, mask, 0x3333_3333_3333_3333);
+    asm.and_x(dst, dst, mask);
+    asm.and_x(tmp, tmp, mask);
+    asm.add_x(dst, dst, tmp);
+
+    emit_u64_constant(asm, shift, 4);
+    asm.lsr_x(tmp, dst, shift);
+    asm.add_x(dst, dst, tmp);
+    emit_u64_constant(asm, mask, 0x0f0f_0f0f_0f0f_0f0f);
+    asm.and_x(dst, dst, mask);
+
+    emit_u64_constant(asm, mul, 0x0101_0101_0101_0101);
+    asm.mul_x(dst, dst, mul);
+    emit_u64_constant(asm, shift, 56);
+    asm.lsr_x(dst, dst, shift);
+}
+
+fn clamp_count_to_width(asm: &mut Arm64Assembler, dst: u8, size: OpSize) {
+    let done = asm.create_label();
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, u64::from(size.bit_width()));
+    asm.cmp_x(dst, FLAG_ALIGN_SHIFT_REG);
+    asm.b_cond_label(prisma_ir::CondCode::Ule, done);
+    asm.mov_x(dst, FLAG_ALIGN_SHIFT_REG);
+    asm.bind_label(done);
+}
+
 fn align_flag_operands(asm: &mut Arm64Assembler, size: OpSize, lhs: u8, rhs: u8) -> (u8, u8) {
     if size == OpSize::I64 {
         return (lhs, rhs);
@@ -454,6 +1109,68 @@ fn lower_cond_jump_rel(
     asm.b_cond_label(jump.cc, if_true);
     asm.b_label(if_false);
     Ok(())
+}
+
+fn lower_rsp_adjust(
+    asm: &mut Arm64Assembler,
+    adjust: &prisma_ir::RspAdjust,
+) -> Result<(), LowerError> {
+    emit_load_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, adjust.delta_bytes)?;
+    emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    Ok(())
+}
+
+fn lower_ret_adjusted(asm: &mut Arm64Assembler, pop_bytes: u64) -> Result<(), LowerError> {
+    emit_load_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    if pop_bytes != 0 {
+        let pop =
+            i64::try_from(pop_bytes).map_err(|_| LowerError::ImmediateOutOfRange(pop_bytes))?;
+        emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, pop)?;
+    }
+    emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    asm.ret();
+    Ok(())
+}
+
+fn emit_rsp_imm_add(
+    asm: &mut Arm64Assembler,
+    register: u8,
+    delta_bytes: i64,
+) -> Result<(), LowerError> {
+    match delta_bytes {
+        0 => Ok(()),
+        1..=4095 => {
+            let imm = u16::try_from(delta_bytes).expect("small positive immediate fits");
+            asm.add_x_imm(register, register, imm);
+            Ok(())
+        }
+        -4095..=-1 => {
+            let imm = delta_bytes
+                .checked_neg()
+                .and_then(|value| u16::try_from(value).ok())
+                .ok_or(LowerError::ImmediateOutOfRange(delta_bytes.cast_unsigned()))?;
+            asm.sub_x_imm(register, register, imm);
+            Ok(())
+        }
+        _ => {
+            if delta_bytes == i64::MIN {
+                return Err(LowerError::ImmediateOutOfRange(delta_bytes as u64));
+            }
+            let abs = if delta_bytes.is_negative() {
+                delta_bytes.unsigned_abs()
+            } else {
+                u64::try_from(delta_bytes).expect("non-negative delta in this branch")
+            };
+            emit_u64_constant(asm, RSP_ADJUST_IMM_REG, abs);
+            if delta_bytes.is_negative() {
+                asm.sub_x(register, register, RSP_ADJUST_IMM_REG);
+            } else {
+                asm.add_x(register, register, RSP_ADJUST_IMM_REG);
+            }
+            Ok(())
+        }
+    }
 }
 
 fn block_label(labels: &HashMap<u32, Label>, guest_pc: u64) -> Result<Label, LowerError> {
@@ -529,10 +1246,18 @@ fn gpr_offset_bytes(reg: Gpr) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembler::{cmp_x, cset_x, lsl_x, movz_x};
+    use crate::abi;
+    use crate::assembler::{
+        add_x, add_x_imm, adds_x, ands_x, b, b_cond, blr_x, clz_w, clz_x, cmp_x, crc32cb, crc32ch,
+        crc32cw, crc32cx, cset_x, fence, ldr_x_unsigned, lsl_x, lsr_x, mov_x, movz_x, mrs_cntvct,
+        msr_nzcv, rbit_w, rbit_x, str_x_unsigned, sub_x_imm, sxtb_x, uxth_x, uxtw_x,
+    };
     use prisma_ir::{
-        BasicBlock, BinOp, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags, CondJumpRel,
-        Constant, Jump, LoadMem, LoadReg, Return, Stmt, StoreMem, StoreReg,
+        AluFlags, BasicBlock, BinOp, Bswap, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags,
+        CondJumpRel, Constant, Crc32c, Fence, FenceKind, FlagBit, Gpr, Jump, LoadMem, LoadMemTSO,
+        LoadReg, LoadSegBase, Lzcnt, Popcnt, Rdtsc, ReadFlag, Return, RspAdjust, SegmentReg,
+        Select, Stmt, StoreMem, StoreMemTSO, StoreReg, Truncate, Tzcnt, WriteFlags,
+        WriteFlagsCountZero, WriteFlagsPopcnt,
     };
 
     fn function(stmts: Vec<Stmt>) -> Function {
@@ -544,6 +1269,322 @@ mod tests {
 
     fn function_with_blocks(blocks: Vec<BasicBlock>, entry: u32) -> Function {
         Function { blocks, entry }
+    }
+
+    #[test]
+    fn lowers_segment_bases_from_state_frame() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::LoadSegBase(LoadSegBase {
+                    seg: SegmentReg::Fs,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::LoadSegBase(LoadSegBase {
+                    seg: SegmentReg::Gs,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::LoadSegBase(LoadSegBase {
+                    seg: SegmentReg::Ds,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                ldr_x_unsigned(value_reg(0), abi::K_STATE_PTR_REG, FS_BASE_OFFSET),
+                ldr_x_unsigned(value_reg(1), abi::K_STATE_PTR_REG, GS_BASE_OFFSET),
+                movz_x(value_reg(2), 0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_extend_and_truncate_scalars() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0xff,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Extend(prisma_ir::Extend {
+                    value: 0,
+                    from_size: OpSize::I8,
+                    to_size: OpSize::I64,
+                    is_signed: true,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Extend(prisma_ir::Extend {
+                    value: 0,
+                    from_size: OpSize::I16,
+                    to_size: OpSize::I64,
+                    is_signed: false,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Truncate(Truncate {
+                    value: 0,
+                    to_size: OpSize::I32,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0xff, 0),
+                sxtb_x(value_reg(1), value_reg(0)),
+                uxth_x(value_reg(2), value_reg(0)),
+                uxtw_x(value_reg(3), value_reg(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_write_flags_then_read_flag() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::WriteFlags(WriteFlags {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::ReadFlag(ReadFlag {
+                    flags: 2,
+                    which: FlagBit::Carry,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 7, 0),
+                movz_x(value_reg(1), 3, 0),
+                adds_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                cset_x(value_reg(3), CondCode::Cc),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_read_flag_parity_without_emulation() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::WriteFlags(WriteFlags {
+                    op: BinOpKind::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::ReadFlag(ReadFlag {
+                    flags: 2,
+                    which: FlagBit::Parity,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func),
+            Err(LowerError::UnsupportedOp(
+                "ReadFlag(Parity/Aux) needs software emulation"
+            ))
+        );
+    }
+
+    #[test]
+    fn lowers_write_flags_count_zero_to_nzcv() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 64,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::WriteFlagsCountZero(WriteFlagsCountZero {
+                    src: 0,
+                    result: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0, 0),
+                movz_x(value_reg(1), 64, 0),
+                cmp_x(value_reg(1), 31),
+                cset_x(FLAG_ALIGN_LHS_REG, CondCode::Eq),
+                cmp_x(value_reg(0), 31),
+                cset_x(FLAG_ALIGN_RHS_REG, CondCode::Eq),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 30, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 29, 0),
+                lsl_x(FLAG_ALIGN_RHS_REG, FLAG_ALIGN_RHS_REG, FLAG_ALIGN_SHIFT_REG),
+                crate::assembler::orr_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                msr_nzcv(FLAG_ALIGN_LHS_REG),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_write_flags_count_zero_truncates_narrow_values_before_compare() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x100,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x100,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::WriteFlagsCountZero(WriteFlagsCountZero {
+                    src: 0,
+                    result: 1,
+                    size: OpSize::I8,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x100, 0),
+                movz_x(value_reg(1), 0x100, 0),
+                crate::assembler::uxtb_x(FLAG_ALIGN_LHS_REG, value_reg(1)),
+                cmp_x(FLAG_ALIGN_LHS_REG, 31),
+                cset_x(FLAG_ALIGN_LHS_REG, CondCode::Eq),
+                crate::assembler::uxtb_x(FLAG_ALIGN_RHS_REG, value_reg(0)),
+                cmp_x(FLAG_ALIGN_RHS_REG, 31),
+                cset_x(FLAG_ALIGN_RHS_REG, CondCode::Eq),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 30, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 29, 0),
+                lsl_x(FLAG_ALIGN_RHS_REG, FLAG_ALIGN_RHS_REG, FLAG_ALIGN_SHIFT_REG),
+                crate::assembler::orr_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                msr_nzcv(FLAG_ALIGN_LHS_REG),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_write_flags_popcnt_to_zf_only_nzcv() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x8000_0000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::WriteFlagsPopcnt(WriteFlagsPopcnt {
+                    src: 0,
+                    size: OpSize::I32,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0, 0),
+                crate::assembler::movk_x(value_reg(0), 0x8000, 16),
+                crate::assembler::uxtw_x(FLAG_ALIGN_LHS_REG, value_reg(0)),
+                cmp_x(FLAG_ALIGN_LHS_REG, 31),
+                cset_x(FLAG_ALIGN_LHS_REG, CondCode::Eq),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 30, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_SHIFT_REG),
+                msr_nzcv(FLAG_ALIGN_LHS_REG),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_rdtsc_and_fence() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::Rdtsc(Rdtsc)),
+            Stmt::new(
+                None,
+                Op::Fence(Fence {
+                    kind: FenceKind::Mfence,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![mrs_cntvct(value_reg(0)), fence(FenceKind::Mfence)]
+        );
     }
 
     #[test]
@@ -612,6 +1653,44 @@ mod tests {
         assert_eq!(
             Lowerer::new().lower_function(&func).unwrap(),
             vec![0xD280_0149, 0xD280_006A, 0xD100_0D2B]
+        );
+    }
+
+    #[test]
+    fn lowers_large_add_immediate_via_register_fallback() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 10,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x1234,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 10, 0),
+                movz_x(value_reg(1), 0x1234, 0),
+                add_x(value_reg(2), value_reg(0), value_reg(1)),
+            ]
         );
     }
 
@@ -815,6 +1894,120 @@ mod tests {
                 0x9B4A_7D2D,
                 0x9ACA_092E,
                 0x9ACA_0D2F,
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_lzcnt_and_tzcnt_i64_i32() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x10,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Lzcnt(Lzcnt {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Tzcnt(Tzcnt {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Lzcnt(Lzcnt {
+                    value: 0,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::Tzcnt(Tzcnt {
+                    value: 0,
+                    size: OpSize::I32,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x10, 0),
+                clz_x(value_reg(1), value_reg(0)),
+                rbit_x(value_reg(2), value_reg(0)),
+                clz_x(value_reg(2), value_reg(2)),
+                clz_w(value_reg(3), value_reg(0)),
+                rbit_w(value_reg(4), value_reg(0)),
+                clz_w(value_reg(4), value_reg(4)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_popcnt_i64_scalar_sequence() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x10,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Popcnt(Popcnt {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x10, 0),
+                mov_x(value_reg(1), value_reg(0)),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 1, 0),
+                lsr_x(FLAG_ALIGN_LHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_RHS_REG, 0x5555, 0),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x5555, 16),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x5555, 32),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x5555, 48),
+                crate::assembler::and_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                crate::assembler::sub_x(value_reg(1), value_reg(1), FLAG_ALIGN_LHS_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 2, 0),
+                lsr_x(FLAG_ALIGN_LHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_RHS_REG, 0x3333, 0),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x3333, 16),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x3333, 32),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x3333, 48),
+                crate::assembler::and_x(value_reg(1), value_reg(1), FLAG_ALIGN_RHS_REG),
+                crate::assembler::and_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                crate::assembler::add_x(value_reg(1), value_reg(1), FLAG_ALIGN_LHS_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 4, 0),
+                lsr_x(FLAG_ALIGN_LHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                crate::assembler::add_x(value_reg(1), value_reg(1), FLAG_ALIGN_LHS_REG),
+                movz_x(FLAG_ALIGN_RHS_REG, 0x0f0f, 0),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x0f0f, 16),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x0f0f, 32),
+                crate::assembler::movk_x(FLAG_ALIGN_RHS_REG, 0x0f0f, 48),
+                crate::assembler::and_x(value_reg(1), value_reg(1), FLAG_ALIGN_RHS_REG),
+                movz_x(RSP_ADJUST_TMP_REG, 0x0101, 0),
+                crate::assembler::movk_x(RSP_ADJUST_TMP_REG, 0x0101, 16),
+                crate::assembler::movk_x(RSP_ADJUST_TMP_REG, 0x0101, 32),
+                crate::assembler::movk_x(RSP_ADJUST_TMP_REG, 0x0101, 48),
+                crate::assembler::mul_x(value_reg(1), value_reg(1), RSP_ADJUST_TMP_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 56, 0),
+                lsr_x(value_reg(1), value_reg(1), FLAG_ALIGN_SHIFT_REG),
             ]
         );
     }
@@ -1036,6 +2229,54 @@ mod tests {
         assert_eq!(
             Lowerer::new().lower_function(&func).unwrap(),
             vec![0xD282_0009, 0xD280_054A, 0xF900_012A, 0xF940_012B]
+        );
+    }
+
+    #[test]
+    fn lowers_tso_memory_ops_with_full_barriers() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x2a,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreMemTSO(StoreMemTSO {
+                    addr: 0,
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::LoadMemTSO(LoadMemTSO {
+                    addr: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x1000, 0),
+                movz_x(value_reg(1), 0x2a, 0),
+                fence(FenceKind::Mfence),
+                str_x_unsigned(value_reg(1), value_reg(0), 0),
+                fence(FenceKind::Mfence),
+                ldr_x_unsigned(value_reg(2), value_reg(0), 0),
+                fence(FenceKind::Mfence),
+            ]
         );
     }
 
@@ -1427,7 +2668,192 @@ mod tests {
 
         assert_eq!(
             Lowerer::new().lower_function(&func).unwrap(),
-            vec![0x5400_0041, 0x1400_0002, 0xD65F_03C0, 0xD65F_03C0]
+            vec![0x5400_0040, 0x1400_0002, 0xD65F_03C0, 0xD65F_03C0]
+        );
+    }
+
+    #[test]
+    fn lowers_select_false_path_from_compare() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 2,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Compare(Compare {
+                    cc: CondCode::Eq,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Select(Select {
+                    cc: CondCode::Eq,
+                    true_value: 0,
+                    false_value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(None, Op::Return(Return)),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 1, 0),
+                movz_x(value_reg(1), 2, 0),
+                cmp_x(value_reg(0), value_reg(1)),
+                cset_x(value_reg(2), CondCode::Eq),
+                b_cond(CondCode::Eq, 12),
+                mov_x(value_reg(3), value_reg(1)),
+                b(8),
+                mov_x(value_reg(3), value_reg(0)),
+                0xD65F_03C0,
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_select_true_path_from_compare() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 2,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Compare(Compare {
+                    cc: CondCode::Eq,
+                    lhs: 0,
+                    rhs: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Select(Select {
+                    cc: CondCode::Eq,
+                    true_value: 0,
+                    false_value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(None, Op::Return(Return)),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 1, 0),
+                movz_x(value_reg(1), 2, 0),
+                cmp_x(value_reg(0), value_reg(0)),
+                cset_x(value_reg(2), CondCode::Eq),
+                b_cond(CondCode::Eq, 12),
+                mov_x(value_reg(3), value_reg(1)),
+                b(8),
+                mov_x(value_reg(3), value_reg(0)),
+                0xD65F_03C0,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_select_missing_result() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 2,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::Select(Select {
+                    cc: CondCode::Eq,
+                    true_value: 0,
+                    false_value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func),
+            Err(LowerError::MissingResult("Select"))
+        );
+    }
+
+    #[test]
+    fn rejects_select_missing_true_value() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 2,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Compare(Compare {
+                    cc: CondCode::Eq,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Select(Select {
+                    cc: CondCode::Eq,
+                    true_value: 99,
+                    false_value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func),
+            Err(LowerError::MissingValue(99))
         );
     }
 
@@ -1560,6 +2986,376 @@ mod tests {
                 0x1400_0002,
                 0xD65F_03C0,
                 0xD65F_03C0,
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_alu_flags_sub_add_and() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::And,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                0xD280_00E9,
+                0xD280_006A,
+                0xEB0A_013F,
+                adds_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                ands_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_alu_flags_op() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func),
+            Err(LowerError::UnsupportedOp(
+                "AluFlags only supports Sub/Add/And today"
+            ))
+        );
+    }
+
+    #[test]
+    fn lowers_bswap_scalar_sizes() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Bswap(Bswap {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Bswap(Bswap {
+                    value: 2,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::Constant(Constant {
+                    value: 0x1122,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(5),
+                Op::Bswap(Bswap {
+                    value: 4,
+                    size: OpSize::I16,
+                }),
+            ),
+            Stmt::new(
+                Some(6),
+                Op::Constant(Constant {
+                    value: 0x7f,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(7),
+                Op::Bswap(Bswap {
+                    value: 6,
+                    size: OpSize::I8,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                crate::assembler::movz_x(value_reg(0), 1, 0),
+                crate::assembler::rev_x(value_reg(1), value_reg(0)),
+                crate::assembler::movz_x(value_reg(2), 1, 0),
+                crate::assembler::rev_w(value_reg(3), value_reg(2)),
+                crate::assembler::movz_x(value_reg(4), 0x1122, 0),
+                crate::assembler::rev_w(value_reg(5), value_reg(4)),
+                crate::assembler::movz_x(FLAG_ALIGN_SHIFT_REG, 16, 0),
+                crate::assembler::lsr_x(value_reg(5), value_reg(5), FLAG_ALIGN_SHIFT_REG),
+                crate::assembler::movz_x(value_reg(6), 0x7f, 0),
+                crate::assembler::uxtb_x(value_reg(7), value_reg(6)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_crc32c_scalar_sizes() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1234,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0xabcd,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Crc32c(Crc32c {
+                    crc: 0,
+                    data: 1,
+                    data_size: OpSize::I8,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Crc32c(Crc32c {
+                    crc: 0,
+                    data: 1,
+                    data_size: OpSize::I16,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::Crc32c(Crc32c {
+                    crc: 0,
+                    data: 1,
+                    data_size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                Some(5),
+                Op::Crc32c(Crc32c {
+                    crc: 0,
+                    data: 1,
+                    data_size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                crate::assembler::movz_x(value_reg(0), 0x1234, 0),
+                crate::assembler::movz_x(value_reg(1), 0xabcd, 0),
+                crc32cb(value_reg(2), value_reg(0), value_reg(1)),
+                crc32ch(value_reg(3), value_reg(0), value_reg(1)),
+                crc32cw(value_reg(4), value_reg(0), value_reg(1)),
+                crc32cx(value_reg(5), value_reg(0), value_reg(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_i8_alu_flags_are_aligned_for_flags_ops() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I8,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::And,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I8,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I8,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                0xD280_00E9,
+                0xD280_006A,
+                movz_x(FLAG_ALIGN_SHIFT_REG, 56, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                adds_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 56, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                ands_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 56, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                cmp_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_i32_alu_flags_are_aligned_for_flags_ops() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1234,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x5678,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::And,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I32,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x1234, 0),
+                movz_x(value_reg(1), 0x5678, 0),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 32, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                cmp_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 32, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                adds_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 32, 0),
+                lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
+                lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
+                ands_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
             ]
         );
     }
@@ -1832,6 +3628,169 @@ mod tests {
         assert_eq!(
             Lowerer::new().lower_function(&func),
             Err(LowerError::MissingValue(99))
+        );
+    }
+
+    #[test]
+    fn lowers_jump_rel() {
+        let func = function_with_blocks(
+            vec![
+                BasicBlock {
+                    id: 0,
+                    stmts: vec![Stmt::new(
+                        None,
+                        Op::JumpRel(prisma_ir::JumpRel {
+                            target_guest_pc: 0x1000,
+                        }),
+                    )],
+                },
+                BasicBlock {
+                    id: 0x1000,
+                    stmts: Vec::new(),
+                },
+            ],
+            0,
+        );
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![0x1400_0001]
+        );
+    }
+
+    #[test]
+    fn lowers_call_rel_as_tail_jump() {
+        let func = function_with_blocks(
+            vec![
+                BasicBlock {
+                    id: 0,
+                    stmts: vec![Stmt::new(
+                        None,
+                        Op::CallRel(prisma_ir::CallRel {
+                            target_guest_pc: 0x1000,
+                            return_guest_pc: 0x1005,
+                        }),
+                    )],
+                },
+                BasicBlock {
+                    id: 0x1000,
+                    stmts: Vec::new(),
+                },
+                BasicBlock {
+                    id: 0x1005,
+                    stmts: vec![Stmt::new(None, Op::Return(Return))],
+                },
+            ],
+            0,
+        );
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![0x1400_0001, 0xD65F_03C0]
+        );
+    }
+
+    #[test]
+    fn lowers_call_reg() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::CallReg(prisma_ir::CallReg {
+                    target: 0,
+                    return_guest_pc: 0x1234,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                ldr_x_unsigned(
+                    value_reg(0),
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rax)
+                ),
+                blr_x(value_reg(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_rsp_adjust_push_pop() {
+        let func = function(vec![
+            Stmt::new(None, Op::RspAdjust(RspAdjust { delta_bytes: -8 })),
+            Stmt::new(None, Op::RspAdjust(RspAdjust { delta_bytes: 16 })),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                ldr_x_unsigned(
+                    RSP_ADJUST_TMP_REG,
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rsp)
+                ),
+                sub_x_imm(RSP_ADJUST_TMP_REG, RSP_ADJUST_TMP_REG, 8),
+                str_x_unsigned(
+                    RSP_ADJUST_TMP_REG,
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rsp)
+                ),
+                ldr_x_unsigned(
+                    RSP_ADJUST_TMP_REG,
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rsp)
+                ),
+                add_x_imm(RSP_ADJUST_TMP_REG, RSP_ADJUST_TMP_REG, 16),
+                str_x_unsigned(
+                    RSP_ADJUST_TMP_REG,
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rsp)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_ret_adjusted_to_return() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::RetAdjusted(prisma_ir::RetAdjusted { pop_bytes: 16 }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                0xD280_0029,
+                ldr_x_unsigned(
+                    RSP_ADJUST_TMP_REG,
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rsp)
+                ),
+                add_x_imm(RSP_ADJUST_TMP_REG, RSP_ADJUST_TMP_REG, 16),
+                str_x_unsigned(
+                    RSP_ADJUST_TMP_REG,
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rsp)
+                ),
+                0xD65F_03C0
+            ]
         );
     }
 }
