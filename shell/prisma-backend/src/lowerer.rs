@@ -847,13 +847,31 @@ fn lower_alu_flags(
         BinOpKind::Sub => asm.cmp_x(lhs, rhs),
         BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
         BinOpKind::And => asm.ands_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        // OR/XOR have no flag-setting ARM64 form; materialise the result
+        // then re-AND it with itself so NZCV picks up N/Z and clears C/V,
+        // matching x86 logical-op flags (SF/ZF from result, CF=OF=0).
+        BinOpKind::Or => emit_logical_flags_or_xor(asm, lhs, rhs, false),
+        BinOpKind::Xor => emit_logical_flags_or_xor(asm, lhs, rhs, true),
         _ => {
             return Err(LowerError::UnsupportedOp(
-                "AluFlags only supports Sub/Add/And today",
+                "AluFlags only supports Sub/Add/And/Or/Xor today",
             ));
         }
     }
     Ok(())
+}
+
+/// Emit a flag-setting OR (`is_xor == false`) or XOR over the flag-aligned
+/// operands. ARM64 has no `orrs`/`eors`, so we compute into the ALU flags
+/// scratch register and follow with `ands Xt, Xt, Xt` to publish N/Z and
+/// clear C/V.
+fn emit_logical_flags_or_xor(asm: &mut Arm64Assembler, lhs: u8, rhs: u8, is_xor: bool) {
+    if is_xor {
+        asm.eor_x(ALU_FLAGS_TMP_REG, lhs, rhs);
+    } else {
+        asm.orr_x(ALU_FLAGS_TMP_REG, lhs, rhs);
+    }
+    asm.ands_x(ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG);
 }
 
 fn lower_load_seg_base(
@@ -929,9 +947,11 @@ fn lower_write_flags(
         BinOpKind::Sub => asm.cmp_x(lhs, rhs),
         BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
         BinOpKind::And => asm.ands_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        BinOpKind::Or => emit_logical_flags_or_xor(asm, lhs, rhs, false),
+        BinOpKind::Xor => emit_logical_flags_or_xor(asm, lhs, rhs, true),
         _ => {
             return Err(LowerError::UnsupportedOp(
-                "WriteFlags only supports Sub/Add/And today",
+                "WriteFlags only supports Sub/Add/And/Or/Xor today",
             ));
         }
     }
@@ -1249,8 +1269,9 @@ mod tests {
     use crate::abi;
     use crate::assembler::{
         add_x, add_x_imm, adds_x, ands_x, b, b_cond, blr_x, clz_w, clz_x, cmp_x, crc32cb, crc32ch,
-        crc32cw, crc32cx, cset_x, fence, ldr_x_unsigned, lsl_x, lsr_x, mov_x, movz_x, mrs_cntvct,
-        msr_nzcv, rbit_w, rbit_x, str_x_unsigned, sub_x_imm, sxtb_x, uxth_x, uxtw_x,
+        crc32cw, crc32cx, cset_x, eor_x, fence, ldr_x_unsigned, lsl_x, lsr_x, mov_x, movz_x,
+        mrs_cntvct, msr_nzcv, orr_x, rbit_w, rbit_x, str_x_unsigned, sub_x_imm, sxtb_x, uxth_x,
+        uxtw_x,
     };
     use prisma_ir::{
         AluFlags, BasicBlock, BinOp, Bswap, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags,
@@ -3079,8 +3100,58 @@ mod tests {
         assert_eq!(
             Lowerer::new().lower_function(&func),
             Err(LowerError::UnsupportedOp(
-                "AluFlags only supports Sub/Add/And today"
+                "AluFlags only supports Sub/Add/And/Or/Xor today"
             ))
+        );
+    }
+
+    #[test]
+    fn lowers_alu_flags_or_xor() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Or,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Xor,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                0xD280_00E9,
+                0xD280_006A,
+                orr_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                ands_x(ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG),
+                eor_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                ands_x(ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG),
+            ]
         );
     }
 
