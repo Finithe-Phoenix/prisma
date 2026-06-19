@@ -243,10 +243,10 @@ pub enum TwoByteOpcode {
     Tzcnt,
     /// BSWAP r32/r64 (0F C8+rd)
     Bswap,
-    /// CMPXCHG r/m8, r8 (0F B0) and r/m, r (0F B1). The opcode byte is
-    /// threaded through so the decoder picks I8 (0xB0) vs. prefix-sized
-    /// (0xB1) operands.
+    /// CMPXCHG r/m, r (0F B1). Register-direct, I16/I32/I64.
     Cmpxchg,
+    /// BT/BTS/BTR/BTC r/m64, imm8 group (0F BA /4../7).
+    BtGroup,
     /// Three-byte 0F 38 escape map.
     ThreeByte0F38,
     Unsupported,
@@ -401,6 +401,7 @@ pub const fn classify_two_byte(opcode: u8) -> TwoByteOpcode {
         // Only 0F B1 (CMPXCHG r/m,r). The C++ reference does not decode the
         // r/m8,r8 form (0F B0), so leave it Unsupported to keep the differential.
         0xB1u8 => TwoByteOpcode::Cmpxchg,
+        0xBAu8 => TwoByteOpcode::BtGroup,
         0xC8u8..=0xCFu8 => TwoByteOpcode::Bswap,
         0x38u8 => TwoByteOpcode::ThreeByte0F38,
         _ => TwoByteOpcode::Unsupported,
@@ -575,6 +576,7 @@ mod tests {
         assert_eq!(classify_two_byte(0xB1), TwoByteOpcode::Cmpxchg);
         assert_eq!(classify_two_byte(0xC8), TwoByteOpcode::Bswap);
         assert_eq!(classify_two_byte(0xCF), TwoByteOpcode::Bswap);
+        assert_eq!(classify_two_byte(0xBA), TwoByteOpcode::BtGroup);
         assert_eq!(classify_two_byte(0x38), TwoByteOpcode::ThreeByte0F38);
         assert_eq!(classify_two_byte(0xFF), TwoByteOpcode::UndefinedRm);
         assert_eq!(classify_two_byte(0x24), TwoByteOpcode::Unsupported);

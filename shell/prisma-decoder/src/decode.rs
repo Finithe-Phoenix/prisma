@@ -443,6 +443,7 @@ fn decode_two_byte(
                 decode_bsf_bsr(prefixes, op2, bytes, start, false, stmts)
             }
         }
+        tables::TwoByteOpcode::BtGroup => decode_bt_group_imm8(prefixes, op2, bytes, start, stmts),
         tables::TwoByteOpcode::Bswap => decode_bswap(prefixes, op2, stmts),
         tables::TwoByteOpcode::Cmpxchg => decode_cmpxchg(prefixes, op2, bytes, start, stmts),
         tables::TwoByteOpcode::ThreeByte0F38 => {
@@ -4966,6 +4967,168 @@ fn decode_bsf_bsr(
         }),
     ));
     Ok(2)
+}
+
+// BT/BTS/BTR/BTC r/m64, imm8 (0F BA /4../7). Register-direct (mod==3) only,
+// always 64-bit, matching the C++ decode_bt_r64_rm_imm8_from_rm placeholder.
+//   ModRM.reg selects: 4=BT, 5=BTS, 6=BTR, 7=BTC.
+//   mask   = 1 << imm8
+//   oldbit = src & mask                       (the tested bit)
+//   BTS: src |= mask; BTR: src &= ~mask; BTC: src ^= mask  (BT has no store)
+//   CmpFlags(oldbit, 0)  -> CF mirrors the old bit value.
+fn decode_bt_group_imm8(
+    prefixes: &PrefixSet,
+    op2: u8,
+    bytes: &[u8],
+    cursor: usize,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        // Memory form is deferred, matching the C++ placeholder.
+        return Err(crate::DecodeError::UnsupportedOpcode(op2));
+    }
+    let imm = read_imm(bytes, cursor + 2, 1)?;
+    let size = OpSize::I64;
+    let reg = map_reg(modrm.rm, &prefixes.rex, false);
+
+    let src = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(src), Op::LoadReg(LoadReg { reg, size })));
+    let shift = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(shift),
+        Op::Constant(Constant { value: imm, size }),
+    ));
+    let one = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(one),
+        Op::Constant(Constant { value: 1, size }),
+    ));
+    let mask = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(mask),
+        Op::BinOp(BinOp {
+            op: BinOpKind::Shl,
+            lhs: one,
+            rhs: shift,
+            size,
+        }),
+    ));
+    let oldbit = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(oldbit),
+        Op::BinOp(BinOp {
+            op: BinOpKind::And,
+            lhs: src,
+            rhs: mask,
+            size,
+        }),
+    ));
+
+    match modrm.reg {
+        4 => {} // BT: test only, no store.
+        5 => {
+            // BTS: newval = src | mask.
+            let newval = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(newval),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Or,
+                    lhs: src,
+                    rhs: mask,
+                    size,
+                }),
+            ));
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg,
+                    value: newval,
+                    size,
+                }),
+            ));
+        }
+        6 => {
+            // BTR: newval = src & ~mask.
+            let all_ones = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(all_ones),
+                Op::Constant(Constant {
+                    value: u64::MAX,
+                    size,
+                }),
+            ));
+            let inv_mask = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(inv_mask),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Xor,
+                    lhs: mask,
+                    rhs: all_ones,
+                    size,
+                }),
+            ));
+            let newval = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(newval),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::And,
+                    lhs: src,
+                    rhs: inv_mask,
+                    size,
+                }),
+            ));
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg,
+                    value: newval,
+                    size,
+                }),
+            ));
+        }
+        7 => {
+            // BTC: newval = src ^ mask.
+            let newval = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(newval),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Xor,
+                    lhs: src,
+                    rhs: mask,
+                    size,
+                }),
+            ));
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg,
+                    value: newval,
+                    size,
+                }),
+            ));
+        }
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(op2)),
+    }
+
+    let zero = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(zero),
+        Op::Constant(Constant { value: 0, size }),
+    ));
+    // CmpFlags must carry a result ref in this codebase (unlike the C++
+    // std::nullopt) or fused-block translation rejects the block.
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::CmpFlags(CmpFlags {
+            lhs: oldbit,
+            rhs: zero,
+            size,
+        }),
+    ));
+    // op2 + modrm + imm8 (consumed after the 0F escape byte).
+    Ok(3)
 }
 
 fn decode_bswap(
@@ -11804,5 +11967,201 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn decode_bt_rm64_imm8_no_store() {
+        // BT rcx, 4 -> 0F BA E1 04 (modrm 0xE1 = 11 100 001: reg=4(BT), rm=1(rcx)).
+        let d = decode_one(b"\x0F\xBA\xE1\x04", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rcx,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::Constant(Constant {
+                        value: 4,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::Constant(Constant {
+                        value: 1,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(3),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Shl,
+                        lhs: 2,
+                        rhs: 1,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(4),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::And,
+                        lhs: 0,
+                        rhs: 3,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(5),
+                    Op::Constant(Constant {
+                        value: 0,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(6),
+                    Op::CmpFlags(CmpFlags {
+                        lhs: 4,
+                        rhs: 5,
+                        size: OpSize::I64,
+                    })
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_bts_rm64_imm8_stores_or() {
+        // BTS rcx, 4 -> 0F BA E9 04 (modrm 0xE9 = 11 101 001: reg=5(BTS), rm=1).
+        let d = decode_one(b"\x0F\xBA\xE9\x04", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        // newval = src | mask, stored back to rcx.
+        assert_eq!(
+            d.stmts[5],
+            Stmt::new(
+                Some(5),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Or,
+                    lhs: 0,
+                    rhs: 3,
+                    size: OpSize::I64,
+                })
+            )
+        );
+        assert_eq!(
+            d.stmts[6],
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rcx,
+                    value: 5,
+                    size: OpSize::I64,
+                })
+            )
+        );
+        // CmpFlags still present last, reading oldbit (ref 4).
+        assert_eq!(
+            d.stmts.last().unwrap().op,
+            Op::CmpFlags(CmpFlags {
+                lhs: 4,
+                rhs: 7,
+                size: OpSize::I64,
+            })
+        );
+    }
+
+    #[test]
+    fn decode_btr_rm64_imm8_stores_and_not() {
+        // BTR rcx, 4 -> 0F BA F1 04 (modrm 0xF1 = 11 110 001: reg=6(BTR), rm=1).
+        let d = decode_one(b"\x0F\xBA\xF1\x04", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        // all_ones (5), inv_mask = mask ^ all_ones (6), newval = src & inv_mask (7).
+        assert_eq!(
+            d.stmts[5],
+            Stmt::new(
+                Some(5),
+                Op::Constant(Constant {
+                    value: u64::MAX,
+                    size: OpSize::I64,
+                })
+            )
+        );
+        assert_eq!(
+            d.stmts[6],
+            Stmt::new(
+                Some(6),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Xor,
+                    lhs: 3,
+                    rhs: 5,
+                    size: OpSize::I64,
+                })
+            )
+        );
+        assert_eq!(
+            d.stmts[7],
+            Stmt::new(
+                Some(7),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::And,
+                    lhs: 0,
+                    rhs: 6,
+                    size: OpSize::I64,
+                })
+            )
+        );
+        assert_eq!(
+            d.stmts[8],
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rcx,
+                    value: 7,
+                    size: OpSize::I64,
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn decode_btc_rm64_imm8_stores_xor() {
+        // BTC rcx, 4 -> 0F BA F9 04 (modrm 0xF9 = 11 111 001: reg=7(BTC), rm=1).
+        let d = decode_one(b"\x0F\xBA\xF9\x04", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert_eq!(
+            d.stmts[5],
+            Stmt::new(
+                Some(5),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Xor,
+                    lhs: 0,
+                    rhs: 3,
+                    size: OpSize::I64,
+                })
+            )
+        );
+        assert_eq!(
+            d.stmts[6],
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rcx,
+                    value: 5,
+                    size: OpSize::I64,
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn decode_bt_group_memory_form_unsupported() {
+        // mod != 3 (e.g. modrm 0x21 = 00 100 001: BT [rcx], imm8) is deferred.
+        let r = decode_one(b"\x0F\xBA\x21\x04", 0);
+        assert_eq!(r, Err(crate::DecodeError::UnsupportedOpcode(0xBA)));
     }
 }
