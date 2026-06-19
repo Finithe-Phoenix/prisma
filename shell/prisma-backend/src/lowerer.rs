@@ -1252,12 +1252,22 @@ fn emit_store_mem(asm: &mut Arm64Assembler, size: OpSize, value: u8, addr: u8) {
     }
 }
 
+/// ARM64 zero register (`WZR`/`XZR`) in the `Rt` position of a load/store.
+const ZERO_REG: u8 = 31;
+
 fn emit_store_reg(asm: &mut Arm64Assembler, size: OpSize, value: u8, reg: Gpr) {
     let offset = gpr_offset_bytes(reg);
     match size {
         OpSize::I8 => asm.strb_unsigned(value, abi::K_STATE_PTR_REG, offset),
         OpSize::I16 => asm.strh_unsigned(value, abi::K_STATE_PTR_REG, offset),
-        OpSize::I32 => asm.str_w_unsigned(value, abi::K_STATE_PTR_REG, offset),
+        OpSize::I32 => {
+            // x86-64: writing a 32-bit GPR zero-extends into the full 64-bit
+            // register. The slot is 8 bytes wide and the low store touches only
+            // 4, so clear the upper 4 bytes with WZR. (The C++ core gets this
+            // for free via register-pinned guest state + `mov w,w`.)
+            asm.str_w_unsigned(value, abi::K_STATE_PTR_REG, offset);
+            asm.str_w_unsigned(ZERO_REG, abi::K_STATE_PTR_REG, offset + 4);
+        }
         OpSize::I64 => asm.str_x_unsigned(value, abi::K_STATE_PTR_REG, offset),
     }
 }
@@ -2155,6 +2165,38 @@ mod tests {
         assert_eq!(
             Lowerer::new().lower_function(&func).unwrap(),
             vec![0xD280_0849, 0xF900_0369]
+        );
+    }
+
+    #[test]
+    fn store_reg_i32_zero_extends_upper_half() {
+        // A 32-bit register write must zero the upper 32 bits (x86-64). The
+        // 8-byte slot therefore needs the low `STR Wt` plus a `STR WZR` to
+        // [x27, #4]. Constant 0x42 -> x9, then StoreReg Rax I32.
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x42,
+                    size: OpSize::I32,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: prisma_ir::Gpr::Rax,
+                    value: 0,
+                    size: OpSize::I32,
+                }),
+            ),
+        ]);
+
+        let words = Lowerer::new().lower_function(&func).unwrap();
+        // Last two words: STR W9, [x27] then STR WZR, [x27, #4].
+        assert_eq!(
+            &words[words.len() - 2..],
+            &[0xB900_0369, 0xB900_077F],
+            "I32 StoreReg must low-store then zero the upper word"
         );
     }
 
