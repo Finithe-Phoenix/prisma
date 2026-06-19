@@ -21,8 +21,8 @@ const COND_JUMP_REL8_MATRIX: &[(u8, u32)] = &[
     (0x71, 0x0007),
     (0x72, 0x0002),
     (0x73, 0x0003),
-    (0x74, 0x0040),
-    (0x75, 0x0041),
+    (0x74, 0x0000),
+    (0x75, 0x0001),
     (0x76, 0x0009),
     (0x77, 0x0008),
     (0x78, 0x0004),
@@ -38,8 +38,8 @@ const COND_JUMP_REL32_MATRIX: &[(u8, u32)] = &[
     (0x81, 0x0007),
     (0x82, 0x0002),
     (0x83, 0x0003),
-    (0x84, 0x0040),
-    (0x85, 0x0041),
+    (0x84, 0x0000),
+    (0x85, 0x0001),
     (0x86, 0x0009),
     (0x87, 0x0008),
     (0x88, 0x0004),
@@ -391,25 +391,25 @@ const FIXTURES: &[SmokeFixture] = &[
         name: "cond_jump_rel8_ov_forward",
         guest_bytes: &[0x70, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0006, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0046, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_no_ov_forward",
         guest_bytes: &[0x71, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0007, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0047, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_nc_forward",
         guest_bytes: &[0x72, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0002, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0042, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_cc_forward",
         guest_bytes: &[0x73, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0003, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0043, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_eq_forward",
@@ -427,73 +427,73 @@ const FIXTURES: &[SmokeFixture] = &[
         name: "cond_jump_rel8_ule_forward",
         guest_bytes: &[0x76, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0009, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0049, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_ugt_forward",
         guest_bytes: &[0x77, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0008, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0048, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_mi_forward",
         guest_bytes: &[0x78, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0004, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0044, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_pl_forward",
         guest_bytes: &[0x79, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0005, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0045, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_slt_forward",
         guest_bytes: &[0x7C, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000B, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004B, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_sge_forward",
         guest_bytes: &[0x7D, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000A, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004A, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_sle_forward",
         guest_bytes: &[0x7E, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000D, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004D, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel8_sgt_forward",
         guest_bytes: &[0x7F, 0x02],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000C, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004C, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_ov_forward",
         guest_bytes: &[0x0F, 0x80, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0006, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0046, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_no_ov_forward",
         guest_bytes: &[0x0F, 0x81, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0007, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0047, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_nc_forward",
         guest_bytes: &[0x0F, 0x82, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0002, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0042, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_cc_forward",
         guest_bytes: &[0x0F, 0x83, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0003, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0043, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_eq_forward",
@@ -511,49 +511,49 @@ const FIXTURES: &[SmokeFixture] = &[
         name: "cond_jump_rel32_ule_forward",
         guest_bytes: &[0x0F, 0x86, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0009, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0049, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_ugt_forward",
         guest_bytes: &[0x0F, 0x87, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0008, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0048, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_mi_forward",
         guest_bytes: &[0x0F, 0x88, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0004, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0044, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_pl_forward",
         guest_bytes: &[0x0F, 0x89, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_0005, 0x1400_0001]),
+        rust_words: Some(&[0x5400_0045, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_slt_forward",
         guest_bytes: &[0x0F, 0x8C, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000B, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004B, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_sge_forward",
         guest_bytes: &[0x0F, 0x8D, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000A, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004A, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_sle_forward",
         guest_bytes: &[0x0F, 0x8E, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000D, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004D, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cond_jump_rel32_sgt_forward",
         guest_bytes: &[0x0F, 0x8F, 0x02, 0x00, 0x00, 0x00],
         expected_exit: BlockExitKind::CondJumpRel,
-        rust_words: Some(&[0x5400_000C, 0x1400_0001]),
+        rust_words: Some(&[0x5400_004C, 0x1400_0001]),
     },
     SmokeFixture {
         name: "cmp_rax_rcx_then_je_forward",
@@ -678,7 +678,7 @@ fn live_cpp_translator_cond_jump_matrix_contains_supported_paths() {
         let rust_translation = rust
             .translate(guest_pc, &forward)
             .unwrap_or_else(|| panic!("{opcode:#x}: rust translate failed"));
-        let expected = words_to_le_bytes(&[0x5400_0000 | cond_imm, 0x1400_0001]);
+        let expected = words_to_le_bytes(&[0x5400_0040 | cond_imm, 0x1400_0001]);
         assert_eq!(
             rust_translation, expected,
             "{opcode:#x} forward rel8 expected backend bytes"
@@ -710,7 +710,7 @@ fn live_cpp_translator_cond_jump_matrix_contains_supported_paths() {
         let rust_translation = rust
             .translate(guest_pc, &forward)
             .unwrap_or_else(|| panic!("{opcode:#x}: rust translate failed"));
-        let expected = words_to_le_bytes(&[0x5400_0000 | cond_imm, 0x1400_0001]);
+        let expected = words_to_le_bytes(&[0x5400_0040 | cond_imm, 0x1400_0001]);
         assert_eq!(
             rust_translation, expected,
             "{opcode:#x} forward rel32 expected backend bytes"
