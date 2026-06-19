@@ -247,6 +247,20 @@ impl Translator {
     pub fn set_cache_limits(&mut self, max_entries: usize, max_bytes: usize) {
         self.cache.set_limits(max_entries, max_bytes);
     }
+
+    /// Drop the cached translation(s) at `guest_addr`. Call this when the guest
+    /// rewrites code at that address (self-modifying code) so the next
+    /// translation re-decodes the new bytes instead of serving stale code.
+    pub fn invalidate(&mut self, guest_addr: u64) {
+        // The cache keys on (addr, content hash) but tracks addr -> hash, so a
+        // zero-hash key evicts whatever translation currently lives at the addr.
+        self.cache.invalidate(&(guest_addr, 0));
+    }
+
+    /// Drop every cached translation (e.g. on a full guest address-space flush).
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +418,30 @@ mod tests {
         t.translate(0xD008, MOV_RAX_RCX).unwrap();
         t.translate(0xD010, MOV_RAX_RCX).unwrap();
         assert_eq!(t.cached_count(), 1, "LRU should hold the budget at 1 entry");
+    }
+
+    #[test]
+    fn invalidate_evicts_one_address_and_forces_a_re_translation() {
+        let mut t = Translator::new();
+        t.translate(0xE000, MOV_RAX_RCX).unwrap();
+        t.translate(0xE008, ADD_RAX_IMM8).unwrap();
+        assert_eq!(t.cached_count(), 2);
+
+        t.invalidate(0xE000);
+        assert_eq!(t.cached_count(), 1, "only the rewritten address is dropped");
+
+        // Re-translating the invalidated address is a fresh miss, not a hit.
+        let again = t.translate(0xE000, MOV_RAX_RCX).unwrap();
+        assert!(!again.from_cache);
+    }
+
+    #[test]
+    fn clear_cache_drops_every_translation() {
+        let mut t = Translator::new();
+        t.translate(0xF000, MOV_RAX_RCX).unwrap();
+        t.translate(0xF008, ADD_RAX_IMM8).unwrap();
+        assert_eq!(t.cached_count(), 2);
+        t.clear_cache();
+        assert_eq!(t.cached_count(), 0);
     }
 }
