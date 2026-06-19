@@ -442,6 +442,7 @@ fn decode_two_byte(
             }
         }
         tables::TwoByteOpcode::Bswap => decode_bswap(prefixes, op2, stmts),
+        tables::TwoByteOpcode::Cmpxchg => decode_cmpxchg(prefixes, op2, bytes, start, stmts),
         tables::TwoByteOpcode::ThreeByte0F38 => {
             decode_three_byte_0f38(prefixes, bytes, start, stmts)
         }
@@ -2737,6 +2738,137 @@ fn decode_xadd(
         ));
         Ok(1 + used)
     }
+}
+
+/// CMPXCHG r/m8, r8 (0F B0) and r/m, r (0F B1), register-direct (mod==3) only.
+///
+/// Semantics (mirrors `decode_cmpxchg_rm_r` in the C++ reference):
+///   if RAX == dst: dst = src (ZF=1) else RAX = dst (ZF=0)
+/// On success the accumulator is NOT written; failure writes the accumulator:
+/// r/m16 writes AX only, r/m32/64 writes the full RAX (I32 zero-extends).
+/// The accumulator writeback is emitted FIRST, then the destination, so that
+/// when the r/m operand aliases RAX (e.g. `cmpxchg rax, rcx`) the compare
+/// always succeeds and the dst write wins (SDM accumulator-then-DEST order).
+///
+/// Memory and LOCK forms (and CMPXCHG8B/16B) are deferred.
+fn decode_cmpxchg(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let size = if opcode == 0xB0 {
+        OpSize::I8
+    } else {
+        operand_size(prefixes, true)
+    };
+    let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        // Register-direct only; memory/LOCK forms are deferred.
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let src_reg = map_reg(modrm.reg, &prefixes.rex, true);
+    let dst_reg = map_reg(modrm.rm, &prefixes.rex, false);
+
+    // ref_acc = RAX at the operand size (the comparison operand).
+    let acc = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(acc),
+        Op::LoadReg(LoadReg {
+            reg: Gpr::Rax,
+            size,
+        }),
+    ));
+    // For I32/I64, capture the full RAX so the failure writeback preserves the
+    // upper bits on success and zero-extends on a 32-bit failure.
+    let rax_full = if size == OpSize::I16 {
+        None
+    } else {
+        let r = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(r),
+            Op::LoadReg(LoadReg {
+                reg: Gpr::Rax,
+                size: OpSize::I64,
+            }),
+        ));
+        Some(r)
+    };
+
+    // ref_src = explicit register operand (ModRM.reg).
+    let src = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(src),
+        Op::LoadReg(LoadReg { reg: src_reg, size }),
+    ));
+    // ref_dst = register-direct destination (ModRM.rm).
+    let dst = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(dst),
+        Op::LoadReg(LoadReg { reg: dst_reg, size }),
+    ));
+
+    // ZF = (acc == dst). The Rust lowerer requires CmpFlags to carry a result
+    // ref (unlike the C++ nullopt); the following Selects read NZCV by cc.
+    let cmp = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(cmp),
+        Op::CmpFlags(CmpFlags {
+            lhs: acc,
+            rhs: dst,
+            size,
+        }),
+    ));
+
+    // equal -> dst = src ; else dst unchanged.
+    let new_dst = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(new_dst),
+        Op::Select(Select {
+            cc: CondCode::Eq,
+            true_value: src,
+            false_value: dst,
+            size,
+        }),
+    ));
+    // Accumulator writeback value: success keeps the accumulator, failure
+    // captures dst. I16 writes AX only; I32/I64 select into the full RAX.
+    let new_rax = alloc_ref(stmts);
+    let (rax_keep, rax_size) = if size == OpSize::I16 {
+        (acc, OpSize::I16)
+    } else {
+        (rax_full.expect("rax_full loaded for non-I16"), OpSize::I64)
+    };
+    stmts.push(Stmt::new(
+        Some(new_rax),
+        Op::Select(Select {
+            cc: CondCode::Eq,
+            true_value: rax_keep,
+            false_value: dst,
+            size: rax_size,
+        }),
+    ));
+
+    // Accumulator writeback FIRST, then DEST (matters when rm aliases RAX).
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: Gpr::Rax,
+            value: new_rax,
+            size: rax_size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: dst_reg,
+            value: new_dst,
+            size,
+        }),
+    ));
+    Ok(2)
 }
 
 fn decode_movnti(
@@ -9605,6 +9737,253 @@ mod tests {
     fn decode_bswap_rejects_16_bit_operand_size() {
         let r = decode_one(b"\x66\x0F\xC8", 0);
         assert_eq!(r.unwrap_err(), crate::DecodeError::UnsupportedOpcode(0xC8));
+    }
+
+    #[test]
+    fn decode_cmpxchg_rm_r_register_direct_emission_order() {
+        // cmpxchg rcx, rdx  (REX.W 0F B1 /r, modrm 0xD1 = 11 010 001):
+        //   reg=rdx (src), rm=rcx (dst). I64 operands.
+        let d = decode_one(b"\x48\x0F\xB1\xD1", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert_eq!(
+            d.stmts,
+            vec![
+                // ref_acc = RAX (operand size)
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // ref_rax_full = RAX (I64) for the accumulator writeback width
+                Stmt::new(
+                    Some(1),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // ref_src = ModRM.reg (rdx)
+                Stmt::new(
+                    Some(2),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rdx,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // ref_dst = ModRM.rm (rcx)
+                Stmt::new(
+                    Some(3),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rcx,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // ZF = (acc == dst); result ref required by the Rust lowerer.
+                Stmt::new(
+                    Some(4),
+                    Op::CmpFlags(CmpFlags {
+                        lhs: 0,
+                        rhs: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // new_dst: equal -> src, else dst unchanged.
+                Stmt::new(
+                    Some(5),
+                    Op::Select(Select {
+                        cc: CondCode::Eq,
+                        true_value: 2,
+                        false_value: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // new_rax: equal -> full RAX (unchanged), else dst (failure).
+                Stmt::new(
+                    Some(6),
+                    Op::Select(Select {
+                        cc: CondCode::Eq,
+                        true_value: 1,
+                        false_value: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // Accumulator writeback FIRST.
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 6,
+                        size: OpSize::I64,
+                    }),
+                ),
+                // Then DEST.
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rcx,
+                        value: 5,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_cmpxchg_rm8_r8_byte_form() {
+        // cmpxchg cl, dl  (0F B0 /r, modrm 0xD1): reg=dl (src), rm=cl (dst).
+        // I8 operands; rax_full still loaded (size != I16) for the writeback.
+        let d = decode_one(b"\x0F\xB0\xD1", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 3);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rdx,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(3),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rcx,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(4),
+                    Op::CmpFlags(CmpFlags {
+                        lhs: 0,
+                        rhs: 3,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(5),
+                    Op::Select(Select {
+                        cc: CondCode::Eq,
+                        true_value: 2,
+                        false_value: 3,
+                        size: OpSize::I8,
+                    }),
+                ),
+                // Failure writeback selects into the full RAX (I64).
+                Stmt::new(
+                    Some(6),
+                    Op::Select(Select {
+                        cc: CondCode::Eq,
+                        true_value: 1,
+                        false_value: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 6,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rcx,
+                        value: 5,
+                        size: OpSize::I8,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_cmpxchg_i16_failure_writes_ax_only() {
+        // cmpxchg cx, dx  (66 0F B1 /r, modrm 0xD1): I16 operands. The failure
+        // writeback selects into AX (I16), preserving the rest of RAX.
+        let d = decode_one(b"\x66\x0F\xB1\xD1", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        // No ref_rax_full load for I16: acc, src, dst, cmp, new_dst, new_rax.
+        assert_eq!(d.stmts.len(), 8);
+        assert_eq!(
+            d.stmts[0],
+            Stmt::new(
+                Some(0),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I16,
+                }),
+            )
+        );
+        // ref_src is ref 1 (no full-RAX load was inserted).
+        assert_eq!(
+            d.stmts[1],
+            Stmt::new(
+                Some(1),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rdx,
+                    size: OpSize::I16,
+                }),
+            )
+        );
+        // new_rax selects acc (success keeps AX) vs dst (failure), at I16.
+        assert_eq!(
+            d.stmts[5],
+            Stmt::new(
+                Some(5),
+                Op::Select(Select {
+                    cc: CondCode::Eq,
+                    true_value: 0,
+                    false_value: 2,
+                    size: OpSize::I16,
+                }),
+            )
+        );
+        // Accumulator store is I16 (AX only) and comes before the DEST store.
+        assert_eq!(
+            d.stmts[6],
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rax,
+                    value: 5,
+                    size: OpSize::I16,
+                }),
+            )
+        );
+        assert!(matches!(
+            d.stmts[7].op,
+            Op::StoreReg(StoreReg {
+                reg: Gpr::Rcx,
+                size: OpSize::I16,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_cmpxchg_memory_form_deferred() {
+        // cmpxchg [rcx], rdx  (0F B1 /r, modrm 0x11 = 00 010 001): mod != 3.
+        let r = decode_one(b"\x0F\xB1\x11", 0);
+        assert_eq!(r.unwrap_err(), crate::DecodeError::UnsupportedOpcode(0xB1));
     }
 
     #[test]
