@@ -1,4 +1,4 @@
-//! ARM64 execution e2e for CMPXCHG r/m, r register-direct (0F B0/B1).
+//! ARM64 execution e2e for CMPXCHG r/m, r register-direct (0F B1).
 //!
 //! Each test fuses a single `cmpxchg rcx, rdx` instruction with
 //! `prisma-translator` and runs it through the canonical
@@ -41,6 +41,55 @@ fn cmpxchg_rcx_rdx_success_writes_dst() {
         assert_eq!(state.gpr[gpr::RCX], 99, "dst := src on match");
         assert_eq!(state.gpr[gpr::RAX], 5, "accumulator unchanged on success");
         assert_eq!(state.gpr[gpr::RDX], 99, "source untouched");
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        assert!(matches!(r, Err(ExecError::WrongArch)));
+    }
+}
+
+#[test]
+fn cmpxchg_ecx_edx_failure_zero_extends_rax() {
+    // 32-bit form (no REX.W): cmpxchg ecx, edx (0F B1 D1). On failure RAX gets
+    // the 32-bit dst zero-extended (upper 32 bits cleared).
+    let code = translate(0x1500, &[0x0F, 0xB1, 0xD1]);
+    let mut state = CpuStateFrame::default();
+    state.gpr[gpr::RAX] = 0xFFFF_FFFF_0000_0005; // eax = 5, upper set
+    state.gpr[gpr::RCX] = 0x0000_0007; // ecx = 7 (mismatch)
+    state.gpr[gpr::RDX] = 99;
+    let r = execute_block(&code, &mut state);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        r.expect("execute on the ARM64 host");
+        assert_eq!(
+            state.gpr[gpr::RAX],
+            7,
+            "32-bit failure write zero-extends RAX"
+        );
+        assert_eq!(state.gpr[gpr::RCX], 7, "dst unchanged on failure");
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        assert!(matches!(r, Err(ExecError::WrongArch)));
+    }
+}
+
+#[test]
+fn cmpxchg_rax_aliased_dst_lets_dest_write_win() {
+    // cmpxchg rax, rcx (REX.W 0F B1 modrm 0xC8 = reg=rcx, rm=rax): the r/m
+    // operand aliases RAX so the compare always succeeds; the accumulator-then-
+    // DEST store order means the dst write (rax := rcx) must win.
+    let code = translate(0x2500, &[0x48, 0x0F, 0xB1, 0xC8]);
+    let mut state = CpuStateFrame::default();
+    state.gpr[gpr::RAX] = 42;
+    state.gpr[gpr::RCX] = 99;
+    let r = execute_block(&code, &mut state);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        r.expect("execute on the ARM64 host");
+        assert_eq!(state.gpr[gpr::RAX], 99, "dest write wins for the RAX alias");
     }
     #[cfg(not(target_arch = "aarch64"))]
     {

@@ -392,7 +392,9 @@ pub const fn classify_two_byte(opcode: u8) -> TwoByteOpcode {
         0xC3u8 => TwoByteOpcode::Movnti,
         0xBDu8 => TwoByteOpcode::Lzcnt,
         0xBCu8 => TwoByteOpcode::Tzcnt,
-        0xB0u8 | 0xB1u8 => TwoByteOpcode::Cmpxchg,
+        // Only 0F B1 (CMPXCHG r/m,r). The C++ reference does not decode the
+        // r/m8,r8 form (0F B0), so leave it Unsupported to keep the differential.
+        0xB1u8 => TwoByteOpcode::Cmpxchg,
         0xC8u8..=0xCFu8 => TwoByteOpcode::Bswap,
         0x38u8 => TwoByteOpcode::ThreeByte0F38,
         _ => TwoByteOpcode::Unsupported,
@@ -561,7 +563,7 @@ mod tests {
         assert_eq!(classify_two_byte(0xAE), TwoByteOpcode::Fence);
         assert_eq!(classify_two_byte(0xC1), TwoByteOpcode::Xadd);
         assert_eq!(classify_two_byte(0xC3), TwoByteOpcode::Movnti);
-        assert_eq!(classify_two_byte(0xB0), TwoByteOpcode::Cmpxchg);
+        assert_eq!(classify_two_byte(0xB0), TwoByteOpcode::Unsupported);
         assert_eq!(classify_two_byte(0xB1), TwoByteOpcode::Cmpxchg);
         assert_eq!(classify_two_byte(0xC8), TwoByteOpcode::Bswap);
         assert_eq!(classify_two_byte(0xCF), TwoByteOpcode::Bswap);

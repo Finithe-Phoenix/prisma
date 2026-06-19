@@ -2742,6 +2742,9 @@ fn decode_xadd(
 
 /// CMPXCHG r/m8, r8 (0F B0) and r/m, r (0F B1), register-direct (mod==3) only.
 ///
+/// CMPXCHG r/m, r — 0F B1 only (I16/I32/I64), register-direct. The C++
+/// reference does not decode the r/m8,r8 form (0F B0), so neither do we.
+///
 /// Semantics (mirrors `decode_cmpxchg_rm_r` in the C++ reference):
 ///   if RAX == dst: dst = src (ZF=1) else RAX = dst (ZF=0)
 /// On success the accumulator is NOT written; failure writes the accumulator:
@@ -2758,11 +2761,16 @@ fn decode_cmpxchg(
     cursor: usize,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    let size = if opcode == 0xB0 {
-        OpSize::I8
-    } else {
-        operand_size(prefixes, true)
-    };
+    // Prefix guards mirroring the C++ dispatch: F2/F3 without LOCK is invalid,
+    // and REX.W combined with the 0x66 operand-size override is invalid.
+    if matches!(prefixes.rep, Some(0xF2 | 0xF3)) && !prefixes.lock {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    if prefixes.rex.w && prefixes.operand_override {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    // 0F B1 only (I16/I32/I64); the C++ reference does not decode 0F B0.
+    let size = operand_size(prefixes, true);
     let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
     if modrm.mod_ != 3 {
         // Register-direct only; memory/LOCK forms are deferred.
@@ -2835,6 +2843,9 @@ fn decode_cmpxchg(
     ));
     // Accumulator writeback value: success keeps the accumulator, failure
     // captures dst. I16 writes AX only; I32/I64 select into the full RAX.
+    // Both Selects read the single CmpFlags' NZCV (one-cmp-two-select, as in the
+    // C++ reference); the first Select lowers to `b.cond`+`mov`, neither of which
+    // clobbers NZCV, so the second Select still sees the correct flags.
     let new_rax = alloc_ref(stmts);
     let (rax_keep, rax_size) = if size == OpSize::I16 {
         (acc, OpSize::I16)
@@ -9832,86 +9843,26 @@ mod tests {
     }
 
     #[test]
-    fn decode_cmpxchg_rm8_r8_byte_form() {
-        // cmpxchg cl, dl  (0F B0 /r, modrm 0xD1): reg=dl (src), rm=cl (dst).
-        // I8 operands; rax_full still loaded (size != I16) for the writeback.
-        let d = decode_one(b"\x0F\xB0\xD1", 0).unwrap();
-        assert_eq!(d.bytes_consumed, 3);
+    fn decode_cmpxchg_rm8_r8_byte_form_unsupported() {
+        // 0F B0 (CMPXCHG r/m8,r8) is NOT decoded by the C++ reference, so the
+        // Rust decoder leaves it Unsupported to keep the differential.
         assert_eq!(
-            d.stmts,
-            vec![
-                Stmt::new(
-                    Some(0),
-                    Op::LoadReg(LoadReg {
-                        reg: Gpr::Rax,
-                        size: OpSize::I8,
-                    }),
-                ),
-                Stmt::new(
-                    Some(1),
-                    Op::LoadReg(LoadReg {
-                        reg: Gpr::Rax,
-                        size: OpSize::I64,
-                    }),
-                ),
-                Stmt::new(
-                    Some(2),
-                    Op::LoadReg(LoadReg {
-                        reg: Gpr::Rdx,
-                        size: OpSize::I8,
-                    }),
-                ),
-                Stmt::new(
-                    Some(3),
-                    Op::LoadReg(LoadReg {
-                        reg: Gpr::Rcx,
-                        size: OpSize::I8,
-                    }),
-                ),
-                Stmt::new(
-                    Some(4),
-                    Op::CmpFlags(CmpFlags {
-                        lhs: 0,
-                        rhs: 3,
-                        size: OpSize::I8,
-                    }),
-                ),
-                Stmt::new(
-                    Some(5),
-                    Op::Select(Select {
-                        cc: CondCode::Eq,
-                        true_value: 2,
-                        false_value: 3,
-                        size: OpSize::I8,
-                    }),
-                ),
-                // Failure writeback selects into the full RAX (I64).
-                Stmt::new(
-                    Some(6),
-                    Op::Select(Select {
-                        cc: CondCode::Eq,
-                        true_value: 1,
-                        false_value: 3,
-                        size: OpSize::I64,
-                    }),
-                ),
-                Stmt::new(
-                    None,
-                    Op::StoreReg(StoreReg {
-                        reg: Gpr::Rax,
-                        value: 6,
-                        size: OpSize::I64,
-                    }),
-                ),
-                Stmt::new(
-                    None,
-                    Op::StoreReg(StoreReg {
-                        reg: Gpr::Rcx,
-                        value: 5,
-                        size: OpSize::I8,
-                    }),
-                ),
-            ]
+            decode_one(b"\x0F\xB0\xD1", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xB0))
+        );
+    }
+
+    #[test]
+    fn decode_cmpxchg_prefix_guards_reject() {
+        // F3 without LOCK is invalid for 0F B1 (mirrors the C++ guard).
+        assert_eq!(
+            decode_one(b"\xF3\x0F\xB1\xD1", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xB1))
+        );
+        // REX.W combined with the 0x66 operand-size override is invalid.
+        assert_eq!(
+            decode_one(b"\x66\x48\x0F\xB1\xD1", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xB1))
         );
     }
 
