@@ -108,7 +108,11 @@ jobs:
 
   ffi-link-windows:
     name: ffi-link-windows
-    runs-on: windows-latest
+    # Pin to windows-2022: the `windows-latest` image moved off Visual Studio
+    # 2022, so the `-G "Visual Studio 17 2022"` generator below stopped finding
+    # any VS instance ("could not find any instance of Visual Studio"). 2022 is
+    # the env this job passed on through 2026-06-14.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
 
