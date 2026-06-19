@@ -49,4 +49,19 @@ proptest! {
         let mut b = Translator::new();
         prop_assert_eq!(a.translate(addr, &bytes), b.translate(addr, &bytes));
     }
+
+    /// Fused-block translation (with SSA renumbering across instructions) never
+    /// panics on arbitrary bytes and stays within its byte / instruction budget.
+    #[test]
+    fn translate_fused_block_never_panics_and_stays_in_bounds(
+        addr in any::<u64>(),
+        bytes in prop::collection::vec(any::<u8>(), 0..64),
+        cap in 0usize..32,
+    ) {
+        let mut t = Translator::new();
+        if let Ok(block) = t.translate_fused_block(addr, &bytes, cap) {
+            prop_assert!(block.guest_bytes <= bytes.len());
+            prop_assert!(block.instruction_count <= cap);
+        }
+    }
 }

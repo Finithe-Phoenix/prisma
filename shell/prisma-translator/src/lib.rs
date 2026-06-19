@@ -177,6 +177,101 @@ impl Translator {
         })
     }
 
+    /// Like [`Translator::translate_block`], but fuses the whole straight-line
+    /// run into a SINGLE optimized SSA region instead of translating each
+    /// instruction in isolation. The decoder numbers refs per instruction, so
+    /// each instruction's refs are renumbered (via [`prisma_ir::Op::map_refs`])
+    /// into a disjoint range before being concatenated; the default pipeline
+    /// then optimizes ACROSS instruction boundaries (e.g. forwarding a
+    /// register write into a later read) and the result is lowered once.
+    ///
+    /// Not cached (the unit is a block, not a single instruction). Returns an
+    /// empty block for empty input.
+    ///
+    /// # Errors
+    /// [`TranslateError::Decode`] if the first instruction cannot be decoded;
+    /// [`TranslateError::Lower`] if the fused region is not lowerable.
+    pub fn translate_fused_block(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+        max_insns: usize,
+    ) -> Result<BlockTranslation, TranslateError> {
+        let mut stmts = Vec::new();
+        let mut offset = 0usize;
+        let mut pc = guest_addr;
+        let mut instruction_count = 0usize;
+        let mut ended_at_terminator = false;
+        // Next free SSA ref: every instruction's refs are shifted above all
+        // refs already placed in the block so names never collide.
+        let mut base: u32 = 0;
+
+        while offset < bytes.len() && instruction_count < max_insns {
+            let decoded = match decode_one_at(bytes, offset, pc) {
+                Ok(d) => d,
+                Err(e) => {
+                    if instruction_count == 0 {
+                        return Err(TranslateError::Decode(e));
+                    }
+                    break;
+                }
+            };
+
+            let mut renumbered = decoded.stmts.clone();
+            let mut local_max = base;
+            let mut overflow = false;
+            for stmt in &mut renumbered {
+                stmt.map_refs(|r| {
+                    r.checked_add(base).map_or_else(
+                        || {
+                            overflow = true;
+                            r
+                        },
+                        |v| {
+                            local_max = local_max.max(v);
+                            v
+                        },
+                    )
+                });
+            }
+            if overflow {
+                // Ref space exhausted (pathological run): stop cleanly.
+                break;
+            }
+
+            stmts.extend(renumbered);
+            instruction_count += 1;
+            offset += decoded.bytes_consumed;
+            pc = pc.wrapping_add(decoded.bytes_consumed as u64);
+            base = local_max.saturating_add(1);
+
+            if decoded.stmts.iter().any(|s| is_terminator(&s.op)) {
+                ended_at_terminator = true;
+                break;
+            }
+        }
+
+        let func = Function {
+            entry: 0,
+            blocks: vec![BasicBlock { id: 0, stmts }],
+        };
+        let optimized = self.pipeline.run(func);
+        let words = Lowerer::new()
+            .lower_function(&optimized)
+            .map_err(TranslateError::Lower)?;
+        let mut code = Vec::with_capacity(words.len() * 4);
+        for word in &words {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        Ok(BlockTranslation {
+            code,
+            instruction_count,
+            guest_bytes: offset,
+            ended_at_terminator,
+        })
+    }
+
     fn translate_decoded(
         &mut self,
         guest_addr: u64,
@@ -443,5 +538,70 @@ mod tests {
         assert_eq!(t.cached_count(), 2);
         t.clear_cache();
         assert_eq!(t.cached_count(), 0);
+    }
+
+    #[test]
+    fn fused_block_stops_at_terminator() {
+        // mov rax, rcx ; add rax, 0x10 ; ret
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(ADD_RAX_IMM8);
+        prog.push(0xC3);
+
+        let mut t = Translator::new();
+        let block = t.translate_fused_block(0x1_0000, &prog, 64).unwrap();
+        assert!(block.ended_at_terminator);
+        assert_eq!(block.instruction_count, 3);
+        assert_eq!(block.guest_bytes, prog.len());
+        assert!(!block.code.is_empty());
+        assert_eq!(block.code.len() % 4, 0);
+    }
+
+    #[test]
+    fn fused_single_instruction_matches_the_simple_path() {
+        // With one instruction the renumber base is 0 (identity shift), so the
+        // fused lowering must byte-match the plain single-instruction path.
+        let mut a = Translator::new();
+        let mut b = Translator::new();
+        let fused = a.translate_fused_block(0x2_0000, ADD_RAX_IMM8, 64).unwrap();
+        let simple = b.translate(0x2_0000, ADD_RAX_IMM8).unwrap();
+        assert_eq!(fused.code, simple.code);
+        assert_eq!(fused.instruction_count, 1);
+    }
+
+    #[test]
+    fn fused_block_is_never_larger_than_separate_translation() {
+        // mov rax, rcx ; mov rax, rcx — fusing exposes the redundant first
+        // store / repeated load to the optimizer, so the single fused region
+        // can only be <= the two independently lowered instructions.
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(MOV_RAX_RCX);
+
+        let mut t1 = Translator::new();
+        let fused = t1.translate_fused_block(0x3_0000, &prog, 64).unwrap();
+        let mut t2 = Translator::new();
+        let separate = t2.translate_block(0x3_0000, &prog, 64).unwrap();
+
+        assert_eq!(fused.instruction_count, 2);
+        assert!(
+            fused.code.len() <= separate.code.len(),
+            "fused {} bytes should not exceed separate {} bytes",
+            fused.code.len(),
+            separate.code.len()
+        );
+    }
+
+    #[test]
+    fn fused_block_is_deterministic() {
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(ADD_RAX_IMM8);
+        let mut a = Translator::new();
+        let mut b = Translator::new();
+        assert_eq!(
+            a.translate_fused_block(0x4_0000, &prog, 64).unwrap(),
+            b.translate_fused_block(0x4_0000, &prog, 64).unwrap()
+        );
     }
 }
