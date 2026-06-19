@@ -17,3 +17,7 @@ objc = "0.2"
 
 [dev-dependencies]
 proptest = { workspace = true }
+# End-to-end execution test only: translate a guest program with the full
+# Rust pipeline, then JIT-execute it. Acyclic — prisma-translator does not
+# depend on prisma-runtime.
+prisma-translator = { path = "../prisma-translator" }
