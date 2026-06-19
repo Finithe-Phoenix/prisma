@@ -429,14 +429,16 @@ fn decode_two_byte(
             if prefixes.rep == Some(0xF3) {
                 decode_lzcnt(prefixes, bytes, start, stmts)
             } else {
-                Err(crate::DecodeError::UnsupportedOpcode(op2))
+                // Bare 0F BD is BSR (F3 makes it LZCNT).
+                decode_bsf_bsr(prefixes, op2, bytes, start, true, stmts)
             }
         }
         tables::TwoByteOpcode::Tzcnt => {
             if prefixes.rep == Some(0xF3) {
                 decode_tzcnt(prefixes, bytes, start, stmts)
             } else {
-                Err(crate::DecodeError::UnsupportedOpcode(op2))
+                // Bare 0F BC is BSF (F3 makes it TZCNT).
+                decode_bsf_bsr(prefixes, op2, bytes, start, false, stmts)
             }
         }
         tables::TwoByteOpcode::Bswap => decode_bswap(prefixes, op2, stmts),
@@ -4614,6 +4616,104 @@ fn decode_tzcnt(
         Op::WriteFlagsCountZero(prisma_ir::WriteFlagsCountZero { src, result, size }),
     ));
     Ok(1 + used)
+}
+
+// BSF/BSR (bare 0F BC/BD), register-direct only — mirrors the C++ reference
+// `decode_bsf_bsr`. BSF = trailing-zero count; BSR = the high set-bit *index*
+// = (bit_width - 1) - lzcnt (NOT lzcnt itself). x86 sets ZF=1 and leaves the
+// destination unchanged when the source is zero, so a CmpFlags{src,0} sets ZF
+// and a Select keeps the old destination on the zero case.
+fn decode_bsf_bsr(
+    prefixes: &PrefixSet,
+    op2: u8,
+    bytes: &[u8],
+    cursor: usize,
+    is_bsr: bool,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let size = operand_size(prefixes, true);
+    let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        // Register-direct only, matching the C++ MVP.
+        return Err(crate::DecodeError::UnsupportedOpcode(op2));
+    }
+    let dst_reg = map_reg(modrm.reg, &prefixes.rex, true);
+    let src_reg = map_reg(modrm.rm, &prefixes.rex, false);
+
+    let src = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(src),
+        Op::LoadReg(LoadReg { reg: src_reg, size }),
+    ));
+    let old = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(old),
+        Op::LoadReg(LoadReg { reg: dst_reg, size }),
+    ));
+
+    let count = if is_bsr {
+        let lz = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(lz), Op::Lzcnt(Lzcnt { value: src, size })));
+        let width = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(width),
+            Op::Constant(Constant {
+                value: u64::from(size.bit_width() - 1),
+                size,
+            }),
+        ));
+        let idx = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(idx),
+            Op::BinOp(BinOp {
+                op: BinOpKind::Sub,
+                lhs: width,
+                rhs: lz,
+                size,
+            }),
+        ));
+        idx
+    } else {
+        let tz = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(tz), Op::Tzcnt(Tzcnt { value: src, size })));
+        tz
+    };
+
+    let zero = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(zero),
+        Op::Constant(Constant { value: 0, size }),
+    ));
+    // CmpFlags needs a result ref (the flags value); the Select then reads NZCV
+    // by condition code. Sets ZF iff src == 0.
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::CmpFlags(CmpFlags {
+            lhs: src,
+            rhs: zero,
+            size,
+        }),
+    ));
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(result),
+        Op::Select(Select {
+            cc: CondCode::Eq,
+            true_value: old,
+            false_value: count,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: dst_reg,
+            value: result,
+            size,
+        }),
+    ));
+    Ok(2)
 }
 
 fn decode_bswap(
@@ -9366,6 +9466,75 @@ mod tests {
                     size: OpSize::I64,
                 }),
             )
+        );
+    }
+
+    #[test]
+    fn decode_bsf_bare_is_tzcnt_with_zero_select() {
+        // bsf rax, rcx  (48 0F BC C1) — bare (no F3) => BSF, not TZCNT.
+        let d = decode_one(b"\x48\x0F\xBC\xC1", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        // src load, old-dst load, tzcnt, zero const, cmpflags, select, store.
+        assert_eq!(
+            d.stmts[0],
+            Stmt::new(
+                Some(0),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rcx,
+                    size: OpSize::I64,
+                }),
+            )
+        );
+        assert!(matches!(d.stmts[2].op, Op::Tzcnt(Tzcnt { value: 0, .. })));
+        assert!(matches!(
+            d.stmts.iter().find_map(|s| match &s.op {
+                Op::Select(sel) => Some(sel.cc),
+                _ => None,
+            }),
+            Some(CondCode::Eq)
+        ));
+        assert!(matches!(
+            d.stmts.last().unwrap().op,
+            Op::StoreReg(StoreReg { reg: Gpr::Rax, .. })
+        ));
+    }
+
+    #[test]
+    fn decode_bsr_bare_is_width_minus_lzcnt() {
+        // bsr rax, rcx  (48 0F BD C1) — bare => BSR = (width-1) - lzcnt.
+        let d = decode_one(b"\x48\x0F\xBD\xC1", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert!(matches!(d.stmts[2].op, Op::Lzcnt(Lzcnt { value: 0, .. })));
+        assert_eq!(
+            d.stmts[3],
+            Stmt::new(
+                Some(3),
+                Op::Constant(Constant {
+                    value: 63,
+                    size: OpSize::I64,
+                }),
+            )
+        );
+        assert_eq!(
+            d.stmts[4],
+            Stmt::new(
+                Some(4),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Sub,
+                    lhs: 3,
+                    rhs: 2,
+                    size: OpSize::I64,
+                }),
+            )
+        );
+    }
+
+    #[test]
+    fn decode_bsf_memory_form_deferred() {
+        // bsf rax, [rcx] (48 0F BC 01, mod=00): register-direct only.
+        assert_eq!(
+            decode_one(b"\x48\x0F\xBC\x01", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xBC))
         );
     }
 
