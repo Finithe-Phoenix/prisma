@@ -44,12 +44,11 @@ conflicts.
 
 | Pri | Family | Notes |
 |-----|--------|-------|
-| 1 | **MUL/IMUL one-operand** (F6/F7 /4,/5 → rdx:rax) | IR/lowerer already have `Mul`+`UMulHi`/`SMulHi`; pure decoder work. Clean (no 128-bit input). |
-| 2 | **DIV/IDIV one-operand** (F6/F7 /6,/7) | Needs 128-bit rdx:rax dividend modelling — study the C++ reference first; correctness-sensitive, own PR. |
-| 3 | BSF/BSR (0F BC/BD) | CLZ/CTZ-based; check flag semantics (ZF on zero source). |
-| 4 | CMPXCHG (0F B0/B1) | Needs the implicit-rax compare + conditional store. |
-| 5 | ADC/SBB **real carry** | Currently lowered to ADD/SUB placeholders in *both* C++ and Rust — needs CF plumbing. |
-| 6 | BT/BTS/BTR/BTC, RCL/RCR, PUSHFQ/POPFQ | Lower-frequency; batch later. |
+| ✅ | **MUL/IMUL/DIV/IDIV one-operand** (F6/F7 /4../7) | **DONE — PR #46 (`7328245`).** Register-direct, RAX-only dividend (128-bit RDX:RAX deferred, mirrors C++ MVP — the reference treats the dividend as 64-bit RAX, so DIV needed no 128-bit modelling). All four execute on ARM64 via `exec_muldiv.rs`. |
+| 1 | BSF/BSR (0F BC/BD) | CLZ/CTZ-based; check flag semantics (ZF on zero source). |
+| 2 | CMPXCHG (0F B0/B1) | Needs the implicit-rax compare + conditional store. |
+| 3 | ADC/SBB **real carry** | Currently lowered to ADD/SUB placeholders in *both* C++ and Rust — needs CF plumbing. |
+| 4 | BT/BTS/BTR/BTC, RCL/RCR, PUSHFQ/POPFQ | Lower-frequency; batch later. |
 
 ## Session 2026-06-18 — secure WIP + CI parity (branch `claude/rust-migration-popcnt-decoder-batch`)
 
