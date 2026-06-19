@@ -6,9 +6,50 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-18 (Rust-migration batch E1-E9 merged to main, red CI on
-main fixed, and robustness-fuzz set landed across decoder/cache/passes/backend —
-all green on main).
+Last updated: 2026-06-19 (Rust side now JIT-executes translated blocks on ARM64
+— the Track-B milestone — plus an I32 zero-extension correctness fix and
+executing e2e coverage for three decoder families; all green on main / in CI).
+
+## Session 2026-06-19 — Rust ARM64 JIT execution milestone + correctness fix
+
+The Rust core stopped being decode-only: `prisma-runtime::executor` now wraps a
+translated block body with the AAPCS64 prologue/epilogue, installs it W^X, and
+calls it as `extern "C" fn(*mut CpuStateFrame)`. Behavioural validation runs on
+the `ffi-link-arm64` CI runner (the only ARM64 host; the dev box is x86 and
+takes the `WrongArch` no-op path), mirroring the C++ core's `constexpr is_arm64`
+gate.
+
+### Landed / in flight
+
+- **PR #43 (merged, `cc7ada7`)** — `prisma-runtime::executor` + `exec_e2e.rs`.
+  A 2-instruction program (`mov rax,rcx; add rax,0x10`) translated by
+  `prisma-translator` executes on real ARM64 and verifies `rax = rcx + 16`.
+  **This is the goal's "Done" criterion.**
+- **PR #44 (in CI)** — two parts:
+  - `shell/backend`: **32-bit register writes now zero-extend.** `StoreReg I32`
+    emitted only `STR Wt` (4 bytes) into the 8-byte GPR slot, leaving the upper
+    word stale — `and eax, imm` over a high-bit-set register produced a wrong
+    64-bit value. Now followed by `STR WZR, [x27,#+4]`. (C++ gets this free via
+    register-pinned guest state.) Proven on ARM64 by an `and eax, 0x0F0F` e2e.
+  - `shell/decoder+runtime`: unit + ARM64 e2e for the 0x81 group,
+    accumulator-immediate, MOV-immediate, and INC/DEC/NEG/NOT families. The
+    decode logic already existed (the Rust decoder is a superset of the C++
+    reference); these add behavioural (executing) coverage via the canonical
+    `executor` path. Built from a 3-agent parallel fan-out (worktree-isolated).
+
+### Next decoder gaps (grounded in source)
+
+All touch `decode.rs`, so sequence one PR at a time to avoid test-module
+conflicts.
+
+| Pri | Family | Notes |
+|-----|--------|-------|
+| 1 | **MUL/IMUL one-operand** (F6/F7 /4,/5 → rdx:rax) | IR/lowerer already have `Mul`+`UMulHi`/`SMulHi`; pure decoder work. Clean (no 128-bit input). |
+| 2 | **DIV/IDIV one-operand** (F6/F7 /6,/7) | Needs 128-bit rdx:rax dividend modelling — study the C++ reference first; correctness-sensitive, own PR. |
+| 3 | BSF/BSR (0F BC/BD) | CLZ/CTZ-based; check flag semantics (ZF on zero source). |
+| 4 | CMPXCHG (0F B0/B1) | Needs the implicit-rax compare + conditional store. |
+| 5 | ADC/SBB **real carry** | Currently lowered to ADD/SUB placeholders in *both* C++ and Rust — needs CF plumbing. |
+| 6 | BT/BTS/BTR/BTC, RCL/RCR, PUSHFQ/POPFQ | Lower-frequency; batch later. |
 
 ## Session 2026-06-18 — secure WIP + CI parity (branch `claude/rust-migration-popcnt-decoder-batch`)
 
