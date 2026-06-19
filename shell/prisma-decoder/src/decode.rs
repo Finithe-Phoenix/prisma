@@ -5660,6 +5660,112 @@ mod tests {
     }
 
     #[test]
+    fn decode_mov_ri_imm64_covers_all_sixteen_registers() {
+        // B8+rd with REX.W (and REX.B for the high eight) must reach every GPR.
+        const REGS: [Gpr; 16] = [
+            Gpr::Rax,
+            Gpr::Rcx,
+            Gpr::Rdx,
+            Gpr::Rbx,
+            Gpr::Rsp,
+            Gpr::Rbp,
+            Gpr::Rsi,
+            Gpr::Rdi,
+            Gpr::R8,
+            Gpr::R9,
+            Gpr::R10,
+            Gpr::R11,
+            Gpr::R12,
+            Gpr::R13,
+            Gpr::R14,
+            Gpr::R15,
+        ];
+        for (idx, expected) in REGS.into_iter().enumerate() {
+            // REX prefix: 0x48 (W) for low 8, 0x49 (W|B) for high 8.
+            let rex = if idx < 8 { 0x48u8 } else { 0x49u8 };
+            let opcode = 0xB8u8 + (idx as u8 & 0x7);
+            let bytes = [rex, opcode, 0x42, 0, 0, 0, 0, 0, 0, 0];
+            let d = decode_one(&bytes, 0).unwrap();
+            assert_eq!(d.bytes_consumed, 10, "reg idx {idx}");
+            assert_eq!(
+                d.stmts.last().unwrap().op,
+                Op::StoreReg(StoreReg {
+                    reg: expected,
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+                "reg idx {idx}",
+            );
+        }
+    }
+
+    #[test]
+    fn decode_mov_ri_imm32_without_rex_w_uses_i32_store() {
+        // B8+rd, no REX.W, no 0x66 => MOV r32, imm32 (zero-extends to 64).
+        let d = decode_one(b"\xB8\xEF\xBE\xAD\xDE", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 5);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0xDEAD_BEEF,
+                        size: OpSize::I32,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 0,
+                        size: OpSize::I32,
+                    }),
+                ),
+            ]
+        );
+
+        // REX.B selects r13d; still an I32 store.
+        let d = decode_one(b"\x41\xBD\x01\x00\x00\x00", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert_eq!(
+            d.stmts.last().unwrap().op,
+            Op::StoreReg(StoreReg {
+                reg: Gpr::R13,
+                value: 0,
+                size: OpSize::I32,
+            }),
+        );
+    }
+
+    #[test]
+    fn decode_mov_rm32_imm32_register_form() {
+        // C7 /0 without REX.W => MOV r/m32, imm32 (no sign-extension to 64).
+        let d = decode_one(b"\xC7\xC1\x78\x56\x34\x12", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1234_5678,
+                        size: OpSize::I32,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rcx,
+                        value: 0,
+                        size: OpSize::I32,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn decode_mov_rm_imm_register_sign_extends_i64_imm32() {
         let d = decode_one(b"\x48\xC7\xC0\xFF\xFF\xFF\xFF", 0).unwrap();
         assert_eq!(d.bytes_consumed, 7);
@@ -7363,6 +7469,177 @@ mod tests {
                 ..
             })
         )));
+    }
+
+    #[test]
+    fn decode_group1_81_register_direct_matrix() {
+        // 81 /digit id over a register: mirrors the 0x83 group but with a full
+        // imm32. /2 ADC and /3 SBB lower to ADD/SUB placeholders, matching the
+        // C++ reference's carry/borrow stance.
+        let cases: [(u8, BinOpKind); 7] = [
+            (0, BinOpKind::Add), // ADD
+            (1, BinOpKind::Or),  // OR
+            (2, BinOpKind::Add), // ADC -> ADD placeholder
+            (3, BinOpKind::Sub), // SBB -> SUB placeholder
+            (4, BinOpKind::And), // AND
+            (5, BinOpKind::Sub), // SUB
+            (6, BinOpKind::Xor), // XOR
+        ];
+        for (digit, op) in cases {
+            // REX.W, 0x81, modrm = 11 <digit> 000 (rax), imm32 = 0x1234.
+            let modrm = 0xC0 | (digit << 3);
+            let bytes = [0x48, 0x81, modrm, 0x34, 0x12, 0x00, 0x00];
+            let d = decode_one(&bytes, 0).unwrap();
+            assert_eq!(d.bytes_consumed, 7, "digit {digit}");
+            // Emission order: imm Constant (ref 0), dst LoadReg (ref 1),
+            // BinOp{lhs: dst, rhs: imm} (ref 2), StoreReg.
+            assert_eq!(
+                d.stmts[0],
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1234,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit} imm32"
+            );
+            assert_eq!(
+                d.stmts[1],
+                Stmt::new(
+                    Some(1),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit} loads dst"
+            );
+            assert_eq!(
+                d.stmts[2],
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op,
+                        lhs: 1,
+                        rhs: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit} binop"
+            );
+            assert_eq!(
+                d.stmts[3],
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 2,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit} stores result"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_group1_81_cmp_register_sets_flags_only() {
+        // cmp rbx, 0x1234  (48 81 FB 34 12 00 00 -> /7 over rbx)
+        let d = decode_one(b"\x48\x81\xFB\x34\x12\x00\x00", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 7);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1234,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rbx,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::CmpFlags(CmpFlags {
+                        lhs: 1,
+                        rhs: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_accumulator_immediate_opcode_matrix() {
+        // opcode -> (is_byte, BinOpKind) for the ALU accumulator-immediate set,
+        // excluding CMP (0x3C/0x3D) and TEST (0xA8/0xA9) which take other paths.
+        let cases: [(u8, bool, BinOpKind); 12] = [
+            (0x04, true, BinOpKind::Add),  // ADD al, imm8
+            (0x05, false, BinOpKind::Add), // ADD eax, imm32
+            (0x0C, true, BinOpKind::Or),   // OR  al, imm8
+            (0x0D, false, BinOpKind::Or),  // OR  eax, imm32
+            (0x14, true, BinOpKind::Add),  // ADC al  -> ADD placeholder
+            (0x15, false, BinOpKind::Add), // ADC eax -> ADD placeholder
+            (0x1C, true, BinOpKind::Sub),  // SBB al  -> SUB placeholder
+            (0x1D, false, BinOpKind::Sub), // SBB eax -> SUB placeholder
+            (0x24, true, BinOpKind::And),  // AND al, imm8
+            (0x2C, true, BinOpKind::Sub),  // SUB al, imm8
+            (0x34, true, BinOpKind::Xor),  // XOR al, imm8
+            (0x35, false, BinOpKind::Xor), // XOR eax, imm32
+        ];
+        for (opcode, is_byte, op) in cases {
+            let (bytes, consumed, size): (Vec<u8>, usize, OpSize) = if is_byte {
+                (vec![opcode, 0x10], 2, OpSize::I8)
+            } else {
+                (vec![opcode, 0x34, 0x12, 0x00, 0x00], 5, OpSize::I32)
+            };
+            let d = decode_one(&bytes, 0).unwrap();
+            assert_eq!(d.bytes_consumed, consumed, "opcode {opcode:#x}");
+            assert_eq!(
+                d.stmts[0],
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size
+                    })
+                ),
+                "opcode {opcode:#x} loads rax"
+            );
+            assert_eq!(
+                d.stmts[2],
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op,
+                        lhs: 0,
+                        rhs: 1,
+                        size,
+                    }),
+                ),
+                "opcode {opcode:#x} binop"
+            );
+            assert_eq!(
+                d.stmts.last().unwrap(),
+                &Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 2,
+                        size,
+                    }),
+                ),
+                "opcode {opcode:#x} stores rax"
+            );
+        }
     }
 
     #[test]
@@ -10015,6 +10292,179 @@ mod tests {
                 }),
             )
         );
+    }
+
+    #[test]
+    fn decode_group3_not_byte() {
+        // F6 /2: NOT r/m8 -> dst = dst XOR 0xFF
+        let d = decode_one(b"\xF6\xD3", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 2);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rbx,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::Constant(Constant {
+                        value: 0xFF,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Xor,
+                        lhs: 0,
+                        rhs: 1,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rbx,
+                        value: 2,
+                        size: OpSize::I8,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_group3_neg_byte() {
+        // F6 /3: NEG r/m8 -> dst = 0 - dst
+        let d = decode_one(b"\xF6\xD8", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 2);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::Constant(Constant {
+                        value: 0,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Sub,
+                        lhs: 1,
+                        rhs: 0,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 2,
+                        size: OpSize::I8,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_group4_inc_dec_byte_memory() {
+        // FE /0: INC byte ptr [rax]
+        let inc = decode_one(b"\xFE\x00", 0).unwrap();
+        assert!(inc.bytes_consumed >= 2);
+        assert!(matches!(
+            inc.stmts.last().unwrap().op,
+            Op::StoreMem(StoreMem {
+                size: OpSize::I8,
+                ..
+            })
+        ));
+        assert!(inc.stmts.iter().any(|s| matches!(
+            s.op,
+            Op::BinOp(BinOp {
+                op: BinOpKind::Add,
+                size: OpSize::I8,
+                ..
+            })
+        )));
+
+        // FE /1: DEC byte ptr [rax]
+        let dec = decode_one(b"\xFE\x08", 0).unwrap();
+        assert!(dec.bytes_consumed >= 2);
+        assert!(matches!(
+            dec.stmts.last().unwrap().op,
+            Op::StoreMem(StoreMem {
+                size: OpSize::I8,
+                ..
+            })
+        ));
+        assert!(dec.stmts.iter().any(|s| matches!(
+            s.op,
+            Op::BinOp(BinOp {
+                op: BinOpKind::Sub,
+                size: OpSize::I8,
+                ..
+            })
+        )));
+    }
+
+    #[test]
+    fn decode_group5_inc_dec_rexw_register() {
+        // 48 FF C0: INC rax (64-bit)
+        let inc = decode_one(b"\x48\xFF\xC0", 0).unwrap();
+        assert_eq!(inc.bytes_consumed, 3);
+        assert_eq!(
+            inc.stmts.last().unwrap(),
+            &Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rax,
+                    value: 2,
+                    size: OpSize::I64,
+                }),
+            )
+        );
+        assert!(inc.stmts.iter().any(|s| matches!(
+            s.op,
+            Op::BinOp(BinOp {
+                op: BinOpKind::Add,
+                size: OpSize::I64,
+                ..
+            })
+        )));
+
+        // 48 FF C8: DEC rax (64-bit)
+        let dec = decode_one(b"\x48\xFF\xC8", 0).unwrap();
+        assert_eq!(dec.bytes_consumed, 3);
+        assert!(matches!(
+            dec.stmts.last().unwrap().op,
+            Op::StoreReg(StoreReg {
+                reg: Gpr::Rax,
+                size: OpSize::I64,
+                ..
+            })
+        ));
+        assert!(dec.stmts.iter().any(|s| matches!(
+            s.op,
+            Op::BinOp(BinOp {
+                op: BinOpKind::Sub,
+                size: OpSize::I64,
+                ..
+            })
+        )));
     }
 
     #[test]
