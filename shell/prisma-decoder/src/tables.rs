@@ -171,6 +171,10 @@ pub enum OneByteOpcode {
     Group4,
     /// 0xFF group 5
     Group5,
+    /// PUSHFQ (9C) — placeholder: pushes Constant 0 (no flags bank in IR yet).
+    Pushfq,
+    /// POPFQ (9D) — placeholder: pops into a discarded temp (no flags bank yet).
+    Popfq,
     /// 0x0F escape.
     TwoBytePrefix,
     Unsupported,
@@ -318,6 +322,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0xC6u8 | 0xC7u8 => OneByteOpcode::MovRmImm,
         0xE8u8 => OneByteOpcode::CallRel32,
         0x90u8 => OneByteOpcode::Nop,
+        0x9Cu8 => OneByteOpcode::Pushfq,
+        0x9Du8 => OneByteOpcode::Popfq,
         0x9Bu8 => OneByteOpcode::Fwait,
         0x91u8..=0x97u8 => OneByteOpcode::XchgAcc,
         0x98u8 => OneByteOpcode::SignExtendAcc,
@@ -478,6 +484,8 @@ mod tests {
         assert_eq!(classify_one_byte(0x70), OneByteOpcode::CondJumpRel8);
         assert_eq!(classify_one_byte(0x90), OneByteOpcode::Nop);
         assert_eq!(classify_one_byte(0x9B), OneByteOpcode::Fwait);
+        assert_eq!(classify_one_byte(0x9C), OneByteOpcode::Pushfq);
+        assert_eq!(classify_one_byte(0x9D), OneByteOpcode::Popfq);
         assert_eq!(classify_one_byte(0x86), OneByteOpcode::Xchg);
         assert_eq!(classify_one_byte(0x91), OneByteOpcode::XchgAcc);
         assert_eq!(classify_one_byte(0x97), OneByteOpcode::XchgAcc);

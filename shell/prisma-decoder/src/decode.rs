@@ -262,6 +262,8 @@ pub fn decode_one_at(
         tables::OneByteOpcode::IoTrapDx => {
             decode_one_byte_trap(&prefixes, opcode, TrapKind::Sigill, &mut stmts)?
         }
+        tables::OneByteOpcode::Pushfq => decode_pushfq(&mut stmts),
+        tables::OneByteOpcode::Popfq => decode_popfq(&mut stmts),
         tables::OneByteOpcode::Nop => {
             if prefixes.rep == Some(0xF3)
                 && !prefixes.rex.present
@@ -1833,6 +1835,113 @@ fn emit_rax_rdx_pair(
             size,
         }),
     ));
+}
+
+// PUSHFQ placeholder (9C). There is no explicit flags register in the IR yet,
+// so this is modelled as pushing a constant 0 onto the guest stack.
+//   rsp_new = rsp - 8; [rsp_new] = 0; rsp = rsp_new.
+fn decode_pushfq(stmts: &mut Vec<Stmt>) -> usize {
+    let rsp = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(rsp),
+        Op::LoadReg(LoadReg {
+            reg: Gpr::Rsp,
+            size: OpSize::I64,
+        }),
+    ));
+    let eight = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(eight),
+        Op::Constant(Constant {
+            value: 8,
+            size: OpSize::I64,
+        }),
+    ));
+    let new_rsp = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(new_rsp),
+        Op::BinOp(BinOp {
+            op: BinOpKind::Sub,
+            lhs: rsp,
+            rhs: eight,
+            size: OpSize::I64,
+        }),
+    ));
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::Constant(Constant {
+            value: 0,
+            size: OpSize::I64,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreMemTSO(StoreMemTSO {
+            addr: new_rsp,
+            value: flags,
+            size: OpSize::I64,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: Gpr::Rsp,
+            value: new_rsp,
+            size: OpSize::I64,
+        }),
+    ));
+    1
+}
+
+// POPFQ placeholder (9D). There is no explicit flags bank in the IR yet, so the
+// loaded value is intentionally discarded; only RSP is advanced.
+//   tmp = [rsp]; rsp = rsp + 8.
+fn decode_popfq(stmts: &mut Vec<Stmt>) -> usize {
+    let rsp = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(rsp),
+        Op::LoadReg(LoadReg {
+            reg: Gpr::Rsp,
+            size: OpSize::I64,
+        }),
+    ));
+    // The loaded value is intentionally unused: flags are not modelled yet.
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::LoadMemTSO(LoadMemTSO {
+            addr: rsp,
+            size: OpSize::I64,
+        }),
+    ));
+    let eight = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(eight),
+        Op::Constant(Constant {
+            value: 8,
+            size: OpSize::I64,
+        }),
+    ));
+    let new_rsp = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(new_rsp),
+        Op::BinOp(BinOp {
+            op: BinOpKind::Add,
+            lhs: rsp,
+            rhs: eight,
+            size: OpSize::I64,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: Gpr::Rsp,
+            value: new_rsp,
+            size: OpSize::I64,
+        }),
+    ));
+    1
 }
 
 fn decode_group3(
@@ -11587,5 +11696,113 @@ mod tests {
     fn unsupported_opcode() {
         let r = decode_one(b"\x0F\x00", 0);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn decode_pushfq_placeholder() {
+        // 9C PUSHFQ: rsp_new = rsp - 8; [rsp_new] = 0; rsp = rsp_new.
+        let d = decode_one(b"\x9C", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 1);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rsp,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::Constant(Constant {
+                        value: 8,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Sub,
+                        lhs: 0,
+                        rhs: 1,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(3),
+                    Op::Constant(Constant {
+                        value: 0,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreMemTSO(StoreMemTSO {
+                        addr: 2,
+                        value: 3,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rsp,
+                        value: 2,
+                        size: OpSize::I64,
+                    })
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_popfq_placeholder() {
+        // 9D POPFQ: tmp = [rsp] (discarded); rsp = rsp + 8.
+        let d = decode_one(b"\x9D", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 1);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rsp,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadMemTSO(LoadMemTSO {
+                        addr: 0,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::Constant(Constant {
+                        value: 8,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    Some(3),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Add,
+                        lhs: 0,
+                        rhs: 2,
+                        size: OpSize::I64,
+                    })
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rsp,
+                        value: 3,
+                        size: OpSize::I64,
+                    })
+                ),
+            ]
+        );
     }
 }
