@@ -6,7 +6,29 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-11 (Rust migration roadmap RFC 0015 + Phase 0 prisma-ir landed).
+Last updated: 2026-06-18 (Rust-migration batch E1-E9 committed + workspace clippy
+gate satisfied on the Windows/MSVC host).
+
+## Session 2026-06-18 — secure WIP + CI parity (branch `claude/rust-migration-popcnt-decoder-batch`)
+
+Native `cargo` (1.96.0) is now installed on the Windows host, so the long-running
+`shell/` migration WIP could finally be built, tested, linted, and committed
+(previously toolchain-absent). All pure-Rust crates: build + `cargo test` (443
+tests) + `cargo clippy --all-targets -D warnings` (pedantic+nursery) + `cargo fmt`
+green. FFI-bridge / ARM64 paths still need CI (cannot run locally).
+
+- `e710fa2` shell/ir,passes: `WriteFlagsPopcnt` IR op + 6-pass plumbing.
+- `bc948b5` shell/cache: limits/LRU/invalidate management API + 9 tests (E3).
+- `695af1e` shell/decoder: broad one/two-byte opcode coverage (E2).
+- `6e76052` shell/backend: lower expanded IR op set to ARM64 (E6).
+- `3f63bb1` shell/runtime: decoder->backend smoke path + differential tests (E5/E7).
+- `a3d7b72` shell/backend: lower OR/XOR logical flags (AluFlags/WriteFlags) — closes
+  a hard `UnsupportedOp` gap; AND/OR/XOR/TEST share x86 logical-flag semantics.
+- `3acc9ac` shell: satisfy clippy -D warnings across the pure-Rust workspace.
+
+Verified: decoder emits 31 distinct `Op`s, all handled by the 42-op lowerer (no
+decoder->backend integration gap). Next confident widening needs the C++ FFI
+differential (new decoder families) and belongs to the codex-decoder lane.
 
 ## Currently active
 

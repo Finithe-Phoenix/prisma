@@ -3,7 +3,7 @@
 //! This module is intentionally minimal during this migration stage and
 //! exposes the public surface required by the backend crate API.
 
-use prisma_ir::CondCode;
+use prisma_ir::{CondCode, FenceKind};
 
 /// Backend-side assembler handle for ARM64 emission.
 #[derive(Debug, Default, Clone)]
@@ -84,6 +84,21 @@ impl Arm64Assembler {
     /// Emits `NOP`.
     pub fn nop(&mut self) {
         self.emit_word(nop());
+    }
+
+    /// Emits `MRS Xd, CNTVCT_EL0`.
+    pub fn mrs_cntvct(&mut self, dst: u8) {
+        self.emit_word(mrs_cntvct(dst));
+    }
+
+    /// Emits `MSR NZCV, Xt`.
+    pub fn msr_nzcv(&mut self, src: u8) {
+        self.emit_word(msr_nzcv(src));
+    }
+
+    /// Emits the ARM64 barrier corresponding to an x86 fence.
+    pub fn fence(&mut self, kind: FenceKind) {
+        self.emit_word(fence(kind));
     }
 
     /// Emits `B imm26`.
@@ -192,6 +207,11 @@ impl Arm64Assembler {
         self.emit_word(add_x(dst, lhs, rhs));
     }
 
+    /// Emits `ADDS Xd, Xn, Xm`.
+    pub fn adds_x(&mut self, dst: u8, lhs: u8, rhs: u8) {
+        self.emit_word(adds_x(dst, lhs, rhs));
+    }
+
     /// Emits `SUB Xd, Xn, #imm12`.
     pub fn sub_x_imm(&mut self, dst: u8, src: u8, imm12: u16) {
         self.emit_word(sub_x_imm(dst, src, imm12));
@@ -205,6 +225,11 @@ impl Arm64Assembler {
     /// Emits `AND Xd, Xn, Xm`.
     pub fn and_x(&mut self, dst: u8, lhs: u8, rhs: u8) {
         self.emit_word(and_x(dst, lhs, rhs));
+    }
+
+    /// Emits `ANDS Xd, Xn, Xm`.
+    pub fn ands_x(&mut self, dst: u8, lhs: u8, rhs: u8) {
+        self.emit_word(ands_x(dst, lhs, rhs));
     }
 
     /// Emits `ORR Xd, Xn, Xm`.
@@ -235,6 +260,86 @@ impl Arm64Assembler {
     /// Emits `RORV Xd, Xn, Xm`.
     pub fn ror_x(&mut self, dst: u8, lhs: u8, rhs: u8) {
         self.emit_word(ror_x(dst, lhs, rhs));
+    }
+
+    /// Emits `CRC32CB Wd, Wn, Wm`.
+    pub fn crc32cb(&mut self, dst: u8, crc: u8, data: u8) {
+        self.emit_word(crc32cb(dst, crc, data));
+    }
+
+    /// Emits `CRC32CH Wd, Wn, Wm`.
+    pub fn crc32ch(&mut self, dst: u8, crc: u8, data: u8) {
+        self.emit_word(crc32ch(dst, crc, data));
+    }
+
+    /// Emits `CRC32CW Wd, Wn, Wm`.
+    pub fn crc32cw(&mut self, dst: u8, crc: u8, data: u8) {
+        self.emit_word(crc32cw(dst, crc, data));
+    }
+
+    /// Emits `CRC32CX Wd, Wn, Xm`.
+    pub fn crc32cx(&mut self, dst: u8, crc: u8, data: u8) {
+        self.emit_word(crc32cx(dst, crc, data));
+    }
+
+    /// Emits `CLZ Xd, Xn`.
+    pub fn clz_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(clz_x(dst, src));
+    }
+
+    /// Emits `CLZ Wd, Wn`.
+    pub fn clz_w(&mut self, dst: u8, src: u8) {
+        self.emit_word(clz_w(dst, src));
+    }
+
+    /// Emits `RBIT Xd, Xn`.
+    pub fn rbit_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(rbit_x(dst, src));
+    }
+
+    /// Emits `RBIT Wd, Wn`.
+    pub fn rbit_w(&mut self, dst: u8, src: u8) {
+        self.emit_word(rbit_w(dst, src));
+    }
+
+    /// Emits `REV Xd, Xn`.
+    pub fn rev_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(rev_x(dst, src));
+    }
+
+    /// Emits `REV Wd, Wn`.
+    pub fn rev_w(&mut self, dst: u8, src: u8) {
+        self.emit_word(rev_w(dst, src));
+    }
+
+    /// Emits `SXTB Xd, Wn`.
+    pub fn sxtb_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(sxtb_x(dst, src));
+    }
+
+    /// Emits `SXTH Xd, Wn`.
+    pub fn sxth_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(sxth_x(dst, src));
+    }
+
+    /// Emits `SXTW Xd, Wn`.
+    pub fn sxtw_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(sxtw_x(dst, src));
+    }
+
+    /// Emits a zero-extension of the low byte into `Xd`.
+    pub fn uxtb_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(uxtb_x(dst, src));
+    }
+
+    /// Emits a zero-extension of the low halfword into `Xd`.
+    pub fn uxth_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(uxth_x(dst, src));
+    }
+
+    /// Emits a zero-extension of the low word into `Xd`.
+    pub fn uxtw_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(uxtw_x(dst, src));
     }
 
     /// Emits `MUL Xd, Xn, Xm`.
@@ -372,6 +477,38 @@ impl Arm64Assembler {
 #[must_use]
 pub const fn nop() -> u32 {
     0xD503_201F
+}
+
+/// Encodes `MRS Xd, CNTVCT_EL0`.
+///
+/// # Panics
+///
+/// Panics if `dst` is outside the `AArch64` register range `0..32`.
+#[must_use]
+pub fn mrs_cntvct(dst: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    0xD53B_E040 | u32::from(dst)
+}
+
+/// Encodes `MSR NZCV, Xt`.
+///
+/// # Panics
+///
+/// Panics if `src` is outside the `AArch64` register range `0..32`.
+#[must_use]
+pub fn msr_nzcv(src: u8) -> u32 {
+    assert!(src < 32, "source register out of range");
+    0xD51B_4200 | u32::from(src)
+}
+
+/// Encodes an ARM64 `DMB` for the supplied x86 fence kind.
+#[must_use]
+pub const fn fence(kind: FenceKind) -> u32 {
+    match kind {
+        FenceKind::Mfence => 0xD503_3BBF,
+        FenceKind::Lfence => 0xD503_39BF,
+        FenceKind::Sfence => 0xD503_3ABF,
+    }
 }
 
 /// Encodes `RET`.
@@ -541,6 +678,17 @@ pub fn add_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
     encode_logical_x_reg(0x8B00_0000, dst, lhs, rhs)
 }
 
+/// Encodes `ADDS Xd, Xn, Xm`.
+///
+/// # Panics
+///
+/// Panics if any register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn adds_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
+    encode_logical_x_reg(0xAB00_0000, dst, lhs, rhs)
+}
+
 /// Encodes `SUB Xd, Xn, Xm`.
 ///
 /// # Panics
@@ -561,6 +709,17 @@ pub fn sub_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
 #[must_use]
 pub fn and_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
     encode_logical_x_reg(0x8A00_0000, dst, lhs, rhs)
+}
+
+/// Encodes `ANDS Xd, Xn, Xm`.
+///
+/// # Panics
+///
+/// Panics if any register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn ands_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
+    encode_logical_x_reg(0xEA00_0000, dst, lhs, rhs)
 }
 
 /// Encodes `ORR Xd, Xn, Xm`.
@@ -627,6 +786,182 @@ pub fn asr_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
 #[must_use]
 pub fn ror_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
     encode_shift_x_reg(0x9AC0_2C00, dst, lhs, rhs)
+}
+
+/// Encodes `CRC32CB Wd, Wn, Wm`.
+///
+/// # Panics
+///
+/// Panics if any register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn crc32cb(dst: u8, crc: u8, data: u8) -> u32 {
+    encode_data_processing_two_source(0x1AC0_5000, dst, crc, data)
+}
+
+/// Encodes `CRC32CH Wd, Wn, Wm`.
+///
+/// # Panics
+///
+/// Panics if any register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn crc32ch(dst: u8, crc: u8, data: u8) -> u32 {
+    encode_data_processing_two_source(0x1AC0_5400, dst, crc, data)
+}
+
+/// Encodes `CRC32CW Wd, Wn, Wm`.
+///
+/// # Panics
+///
+/// Panics if any register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn crc32cw(dst: u8, crc: u8, data: u8) -> u32 {
+    encode_data_processing_two_source(0x1AC0_5800, dst, crc, data)
+}
+
+/// Encodes `CRC32CX Wd, Wn, Xm`.
+///
+/// # Panics
+///
+/// Panics if any register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn crc32cx(dst: u8, crc: u8, data: u8) -> u32 {
+    encode_data_processing_two_source(0x9AC0_5C00, dst, crc, data)
+}
+
+/// Encodes `CLZ Xd, Xn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn clz_x(dst: u8, src: u8) -> u32 {
+    encode_data_processing_one_source(0xDAC0_1000, dst, src)
+}
+
+/// Encodes `CLZ Wd, Wn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn clz_w(dst: u8, src: u8) -> u32 {
+    encode_data_processing_one_source(0x5AC0_1000, dst, src)
+}
+
+/// Encodes `RBIT Xd, Xn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn rbit_x(dst: u8, src: u8) -> u32 {
+    encode_data_processing_one_source(0xDAC0_0000, dst, src)
+}
+
+/// Encodes `RBIT Wd, Wn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn rbit_w(dst: u8, src: u8) -> u32 {
+    encode_data_processing_one_source(0x5AC0_0000, dst, src)
+}
+
+/// Encodes `REV Xd, Xn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn rev_x(dst: u8, src: u8) -> u32 {
+    encode_data_processing_one_source(0xDAC0_0C00, dst, src)
+}
+
+/// Encodes `REV Wd, Wn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn rev_w(dst: u8, src: u8) -> u32 {
+    encode_data_processing_one_source(0x5AC0_0800, dst, src)
+}
+
+/// Encodes `SXTB Xd, Wn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn sxtb_x(dst: u8, src: u8) -> u32 {
+    encode_bitfield_x(0x9340_0000, dst, src, 0, 7)
+}
+
+/// Encodes `SXTH Xd, Wn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn sxth_x(dst: u8, src: u8) -> u32 {
+    encode_bitfield_x(0x9340_0000, dst, src, 0, 15)
+}
+
+/// Encodes `SXTW Xd, Wn`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn sxtw_x(dst: u8, src: u8) -> u32 {
+    encode_bitfield_x(0x9340_0000, dst, src, 0, 31)
+}
+
+/// Encodes a zero-extension of the low byte into `Xd`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn uxtb_x(dst: u8, src: u8) -> u32 {
+    encode_bitfield_x(0xD340_0000, dst, src, 0, 7)
+}
+
+/// Encodes a zero-extension of the low halfword into `Xd`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn uxth_x(dst: u8, src: u8) -> u32 {
+    encode_bitfield_x(0xD340_0000, dst, src, 0, 15)
+}
+
+/// Encodes a zero-extension of the low word into `Xd`.
+///
+/// # Panics
+///
+/// Panics if either register number is outside the `AArch64` register range
+/// `0..32`.
+#[must_use]
+pub fn uxtw_x(dst: u8, src: u8) -> u32 {
+    encode_bitfield_x(0xD340_0000, dst, src, 0, 31)
 }
 
 /// Encodes `MUL Xd, Xn, Xm` as `MADD Xd, Xn, Xm, XZR`.
@@ -857,6 +1192,32 @@ fn encode_shift_x_reg(base: u32, dst: u8, lhs: u8, rhs: u8) -> u32 {
     base | (u32::from(rhs) << 16) | (u32::from(lhs) << 5) | u32::from(dst)
 }
 
+fn encode_data_processing_two_source(base: u32, dst: u8, lhs: u8, rhs: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    assert!(lhs < 32, "left register out of range");
+    assert!(rhs < 32, "right register out of range");
+    base | (u32::from(rhs) << 16) | (u32::from(lhs) << 5) | u32::from(dst)
+}
+
+// immr/imms are the canonical ARMv8 bitfield encoding field names.
+#[allow(clippy::similar_names)]
+fn encode_bitfield_x(base: u32, dst: u8, src: u8, immr: u8, imms: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    assert!(src < 32, "source register out of range");
+    assert!(immr < 64, "immr out of range");
+    assert!(imms < 64, "imms out of range");
+    base | (u32::from(immr) << 16)
+        | (u32::from(imms) << 10)
+        | (u32::from(src) << 5)
+        | u32::from(dst)
+}
+
+fn encode_data_processing_one_source(base: u32, dst: u8, src: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    assert!(src < 32, "source register out of range");
+    base | (u32::from(src) << 5) | u32::from(dst)
+}
+
 fn encode_madd_x(base: u32, dst: u8, lhs: u8, rhs: u8, addend: u8) -> u32 {
     assert!(dst < 32, "destination register out of range");
     assert!(lhs < 32, "left register out of range");
@@ -995,6 +1356,41 @@ mod tests {
     }
 
     #[test]
+    fn encodes_system_counter_and_fences() {
+        assert_eq!(mrs_cntvct(0), 0xD53B_E040);
+        assert_eq!(mrs_cntvct(9), 0xD53B_E049);
+        assert_eq!(msr_nzcv(0), 0xD51B_4200);
+        assert_eq!(msr_nzcv(9), 0xD51B_4209);
+        assert_eq!(fence(FenceKind::Mfence), 0xD503_3BBF);
+        assert_eq!(fence(FenceKind::Lfence), 0xD503_39BF);
+        assert_eq!(fence(FenceKind::Sfence), 0xD503_3ABF);
+    }
+
+    #[test]
+    fn encodes_extend_aliases() {
+        assert_eq!(sxtb_x(0, 1), 0x9340_1C20);
+        assert_eq!(sxth_x(2, 3), 0x9340_3C62);
+        assert_eq!(sxtw_x(4, 5), 0x9340_7CA4);
+        assert_eq!(uxtb_x(6, 7), 0xD340_1CE6);
+        assert_eq!(uxth_x(8, 9), 0xD340_3D28);
+        assert_eq!(uxtw_x(10, 11), 0xD340_7D6A);
+    }
+
+    #[test]
+    fn encodes_count_zero_primitives() {
+        assert_eq!(clz_x(0, 1), 0xDAC0_1020);
+        assert_eq!(clz_w(2, 3), 0x5AC0_1062);
+        assert_eq!(rbit_x(4, 5), 0xDAC0_00A4);
+        assert_eq!(rbit_w(6, 7), 0x5AC0_00E6);
+    }
+
+    #[test]
+    fn encodes_reverse_byte_primitives() {
+        assert_eq!(rev_x(0, 1), 0xDAC0_0C20);
+        assert_eq!(rev_w(2, 3), 0x5AC0_0862);
+    }
+
+    #[test]
     fn resolves_forward_branch_label() {
         let mut asm = Arm64Assembler::new();
         let target = asm.create_label();
@@ -1089,6 +1485,12 @@ mod tests {
     }
 
     #[test]
+    fn encodes_adds_and_ands_register_ops() {
+        assert_eq!(adds_x(11, 10, 9), 0xAB09_014B);
+        assert_eq!(ands_x(11, 10, 9), 0xEA09_014B);
+    }
+
+    #[test]
     fn encodes_logical_register_ops() {
         assert_eq!(and_x(11, 9, 10), 0x8A0A_012B);
         assert_eq!(orr_x(11, 9, 10), 0xAA0A_012B);
@@ -1101,6 +1503,14 @@ mod tests {
         assert_eq!(lsr_x(11, 9, 10), 0x9ACA_252B);
         assert_eq!(asr_x(11, 9, 10), 0x9ACA_292B);
         assert_eq!(ror_x(11, 9, 10), 0x9ACA_2D2B);
+    }
+
+    #[test]
+    fn encodes_crc32c_primitives() {
+        assert_eq!(crc32cb(0, 1, 2), 0x1AC2_5020);
+        assert_eq!(crc32ch(3, 4, 5), 0x1AC5_5483);
+        assert_eq!(crc32cw(6, 7, 8), 0x1AC8_58E6);
+        assert_eq!(crc32cx(9, 10, 11), 0x9ACB_5D49);
     }
 
     #[test]

@@ -664,6 +664,11 @@ pub struct Tzcnt {
     pub size: OpSize,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WriteFlagsPopcnt {
+    pub src: Ref,
+    pub size: OpSize,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WriteFlagsCountZero {
     pub src: Ref,
     pub result: Ref,
@@ -903,6 +908,7 @@ pub enum Op {
     Popcnt(Popcnt),
     Lzcnt(Lzcnt),
     Tzcnt(Tzcnt),
+    WriteFlagsPopcnt(WriteFlagsPopcnt),
     WriteFlagsCountZero(WriteFlagsCountZero),
     VecBlend(VecBlend),
     WriteFlagsPtest(WriteFlagsPtest),

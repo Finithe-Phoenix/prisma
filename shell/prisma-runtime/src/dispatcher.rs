@@ -205,21 +205,42 @@ impl GuestTranslator for RustSmokeTranslator {
         let mut missing_block_ids = HashSet::<u32>::new();
         for block in &blocks {
             for stmt in &block.stmts {
-                if let Op::CondJumpRel(jump) = &stmt.op {
-                    if let Ok(target_id) = u32::try_from(jump.target_guest_pc) {
-                        if !emitted_block_ids.contains(&target_id) {
-                            missing_block_ids.insert(target_id);
+                match &stmt.op {
+                    Op::CondJumpRel(jump) => {
+                        if let Ok(target_id) = u32::try_from(jump.target_guest_pc) {
+                            if !emitted_block_ids.contains(&target_id) {
+                                missing_block_ids.insert(target_id);
+                            }
+                        } else {
+                            return None;
                         }
-                    } else {
-                        return None;
-                    }
-                    if let Ok(fallthrough_id) = u32::try_from(jump.fallthrough_guest_pc) {
-                        if !emitted_block_ids.contains(&fallthrough_id) {
-                            missing_block_ids.insert(fallthrough_id);
+                        if let Ok(fallthrough_id) = u32::try_from(jump.fallthrough_guest_pc) {
+                            if !emitted_block_ids.contains(&fallthrough_id) {
+                                missing_block_ids.insert(fallthrough_id);
+                            }
+                        } else {
+                            return None;
                         }
-                    } else {
-                        return None;
                     }
+                    Op::JumpRel(jump) => {
+                        if let Ok(target_id) = u32::try_from(jump.target_guest_pc) {
+                            if !emitted_block_ids.contains(&target_id) {
+                                missing_block_ids.insert(target_id);
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    Op::CallRel(call) => {
+                        if let Ok(target_id) = u32::try_from(call.target_guest_pc) {
+                            if !emitted_block_ids.contains(&target_id) {
+                                missing_block_ids.insert(target_id);
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -353,6 +374,11 @@ pub fn install_translation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prisma_backend::assembler::{
+        add_x, add_x_imm, and_x, ands_x, b, b_cond, clz_x, cmp_x, crc32cx, cset_x, ldr_w_unsigned,
+        ldr_x_unsigned, ldrb_unsigned, lsl_x, lsr_x, mov_x, movk_x, movz_x, msr_nzcv, mul_x, orr_x,
+        rbit_x, rev_w, rev_x, str_w_unsigned, str_x_unsigned, strb_unsigned, sub_x, sxtw_x,
+    };
     use std::fs;
 
     fn entry(bytes: &[u8], guest_size: usize) -> CacheEntry {
@@ -687,6 +713,69 @@ mod tests {
             Some(words_to_le_bytes(&[0xF940_0769, 0xF900_0369]))
         );
         assert_eq!(
+            translator.translate(0xB000, &[0x48, 0xC7, 0xC0, 0x34, 0x12, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[
+                movz_x(9, 0x1234, 0),
+                str_x_unsigned(9, 27, 0)
+            ]))
+        );
+        assert!(translator
+            .translate(0xB000, &[0x6A, 0x7F])
+            .is_some_and(|bytes| !bytes.is_empty()));
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x05, 0x34, 0x12, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 0),
+                movz_x(10, 0x1234, 0),
+                add_x(11, 9, 10),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x81, 0xC0, 0x34, 0x12, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[
+                movz_x(9, 0x1234, 0),
+                ldr_x_unsigned(10, 27, 0),
+                add_x(11, 10, 9),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0xC1, 0xE0, 0x03]),
+            Some(words_to_le_bytes(&[
+                movz_x(9, 3, 0),
+                ldr_x_unsigned(10, 27, 0),
+                lsl_x(11, 10, 9),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0xD3, 0xE0]),
+            Some(words_to_le_bytes(&[
+                ldrb_unsigned(9, 27, 8),
+                ldr_x_unsigned(10, 27, 0),
+                lsl_x(11, 10, 9),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x63, 0xC1]),
+            Some(words_to_le_bytes(&[
+                ldr_w_unsigned(9, 27, 8),
+                sxtw_x(10, 9),
+                str_x_unsigned(10, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x8D, 0x41, 0x08]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 8),
+                movz_x(10, 8, 0),
+                add_x_imm(11, 9, 8),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
             translator.translate(0xB000, &[0x48, 0x01, 0xC8]),
             Some(words_to_le_bytes(&[
                 0xF940_0769,
@@ -695,9 +784,273 @@ mod tests {
                 0xF900_036B,
             ]))
         );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x85, 0xC8]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 8),
+                ldr_x_unsigned(10, 27, 0),
+                ands_x(23, 10, 9),
+            ]))
+        );
         assert!(translator
             .translate(0xB000, &[0x48, 0x39, 0xC8, 0x74, 0x02])
             .is_some_and(|bytes| !bytes.is_empty()));
+        assert_eq!(
+            translator.translate(0xB000, &[0x74, 0x02]),
+            Some(words_to_le_bytes(&[0x5400_0040, 0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x74, 0xFE]),
+            Some(words_to_le_bytes(&[0x5400_0000, 0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x0F, 0x84, 0x02, 0x00, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[0x5400_0040, 0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x39, 0xC8, 0x74, 0x02]),
+            Some(words_to_le_bytes(&[
+                0xF940_0769,
+                0xF940_036A,
+                0xEB09_015F,
+                0x5400_0040,
+                0x1400_0001,
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x39, 0xC8]),
+            Some(words_to_le_bytes(&[0xF940_0769, 0xF940_036A, 0xEB09_015F]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x0F, 0x44, 0xC1]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 0),
+                ldr_x_unsigned(10, 27, 8),
+                b_cond(prisma_ir::CondCode::Eq, 12),
+                mov_x(11, 9),
+                b(8),
+                mov_x(11, 10),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x0F, 0x94, 0xC0]),
+            Some(words_to_le_bytes(&[
+                movz_x(9, 1, 0),
+                movz_x(10, 0, 0),
+                b_cond(prisma_ir::CondCode::Eq, 12),
+                mov_x(11, 10),
+                b(8),
+                mov_x(11, 9),
+                strb_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xF3, 0x48, 0x0F, 0xBD, 0xC1]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 8),
+                clz_x(10, 9),
+                str_x_unsigned(10, 27, 0),
+                cmp_x(10, 31),
+                cset_x(17, prisma_ir::CondCode::Eq),
+                cmp_x(9, 31),
+                cset_x(18, prisma_ir::CondCode::Eq),
+                movz_x(19, 30, 0),
+                lsl_x(17, 17, 19),
+                movz_x(19, 29, 0),
+                lsl_x(18, 18, 19),
+                orr_x(17, 17, 18),
+                msr_nzcv(17),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xF3, 0x48, 0x0F, 0xBC, 0xC1]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 8),
+                rbit_x(10, 9),
+                clz_x(10, 10),
+                str_x_unsigned(10, 27, 0),
+                cmp_x(10, 31),
+                cset_x(17, prisma_ir::CondCode::Eq),
+                cmp_x(9, 31),
+                cset_x(18, prisma_ir::CondCode::Eq),
+                movz_x(19, 30, 0),
+                lsl_x(17, 17, 19),
+                movz_x(19, 29, 0),
+                lsl_x(18, 18, 19),
+                orr_x(17, 17, 18),
+                msr_nzcv(17),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xF3, 0x48, 0x0F, 0xB8, 0xC1]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 8),
+                mov_x(10, 9),
+                movz_x(19, 1, 0),
+                lsr_x(17, 10, 19),
+                movz_x(18, 0x5555, 0),
+                movk_x(18, 0x5555, 16),
+                movk_x(18, 0x5555, 32),
+                movk_x(18, 0x5555, 48),
+                and_x(17, 17, 18),
+                sub_x(10, 10, 17),
+                movz_x(19, 2, 0),
+                lsr_x(17, 10, 19),
+                movz_x(18, 0x3333, 0),
+                movk_x(18, 0x3333, 16),
+                movk_x(18, 0x3333, 32),
+                movk_x(18, 0x3333, 48),
+                and_x(10, 10, 18),
+                and_x(17, 17, 18),
+                add_x(10, 10, 17),
+                movz_x(19, 4, 0),
+                lsr_x(17, 10, 19),
+                add_x(10, 10, 17),
+                movz_x(18, 0x0f0f, 0),
+                movk_x(18, 0x0f0f, 16),
+                movk_x(18, 0x0f0f, 32),
+                movk_x(18, 0x0f0f, 48),
+                and_x(10, 10, 18),
+                movz_x(21, 0x0101, 0),
+                movk_x(21, 0x0101, 16),
+                movk_x(21, 0x0101, 32),
+                movk_x(21, 0x0101, 48),
+                mul_x(10, 10, 21),
+                movz_x(19, 56, 0),
+                lsr_x(10, 10, 19),
+                str_x_unsigned(10, 27, 0),
+                cmp_x(9, 31),
+                cset_x(17, prisma_ir::CondCode::Eq),
+                movz_x(19, 30, 0),
+                lsl_x(17, 17, 19),
+                msr_nzcv(17),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x48, 0x0F, 0xC8]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 0),
+                rev_x(10, 9),
+                str_x_unsigned(10, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x41, 0x0F, 0xC8]),
+            Some(words_to_le_bytes(&[
+                ldr_w_unsigned(9, 27, 64),
+                rev_w(10, 9),
+                str_w_unsigned(10, 27, 64),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xF2, 0x48, 0x0F, 0x38, 0xF1, 0xC1]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 0),
+                ldr_x_unsigned(10, 27, 8),
+                crc32cx(11, 9, 10),
+                str_x_unsigned(11, 27, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x0F, 0x38, 0xF0, 0x08]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 0),
+                ldr_w_unsigned(10, 9, 0),
+                rev_w(11, 10),
+                str_w_unsigned(11, 27, 8),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x0F, 0x38, 0xF1, 0x08]),
+            Some(words_to_le_bytes(&[
+                ldr_x_unsigned(9, 27, 0),
+                ldr_w_unsigned(10, 27, 8),
+                rev_w(11, 10),
+                str_w_unsigned(11, 9, 0),
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x83, 0xF8, 0x10]),
+            Some(words_to_le_bytes(&[
+                0xD280_0209,
+                0xB940_036A,
+                0xD280_0413,
+                0x9AD3_2151,
+                0x9AD3_2132,
+                0xEB12_023F,
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x66, 0x83, 0xF8, 0x10]),
+            Some(words_to_le_bytes(&[
+                0xD280_0209,
+                0x7940_036A,
+                0xD280_0613,
+                0x9AD3_2151,
+                0x9AD3_2132,
+                0xEB12_023F,
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x83, 0xFB, 0x10]),
+            Some(words_to_le_bytes(&[
+                0xD280_0209,
+                0xB940_1B6A,
+                0xD280_0413,
+                0x9AD3_2151,
+                0x9AD3_2132,
+                0xEB12_023F,
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0x66, 0x83, 0xFB, 0x10]),
+            Some(words_to_le_bytes(&[
+                0xD280_0209,
+                0x7940_336A,
+                0xD280_0613,
+                0x9AD3_2151,
+                0x9AD3_2132,
+                0xEB12_023F,
+            ]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xEB, 0x00]),
+            Some(words_to_le_bytes(&[0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xEB, 0xFE]),
+            Some(words_to_le_bytes(&[0x1400_0000]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xEB, 0x02]),
+            Some(words_to_le_bytes(&[0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xE9, 0x00, 0x00, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xE9, 0x04, 0x00, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xE8, 0x00, 0x00, 0x00, 0x00]),
+            Some(words_to_le_bytes(&[0x1400_0001]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xC3]),
+            Some(words_to_le_bytes(&[0xD65F_03C0]))
+        );
+        assert_eq!(
+            translator.translate(0xB000, &[0xC2, 0x10, 0x00]),
+            Some(words_to_le_bytes(&[
+                0xF940_1375,
+                0x9100_62B5,
+                0xF900_1375,
+                0xD65F_03C0,
+            ]))
+        );
         assert_eq!(translator.translate(0xB000, &[0xFF]), None);
     }
 

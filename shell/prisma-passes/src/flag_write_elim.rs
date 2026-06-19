@@ -2,10 +2,10 @@
 //!
 //! Mirrors C++ `flag_write_elimination`. Drops implicit flag writes whose
 //! NZCV is never consumed. Flag writers: `CmpFlags`, `AluFlags`, `Compare`,
-//! `WriteFlagsCountZero`. Flag readers: `CondJumpRel`, `Select` (lowers to
-//! csel). `Compare` is never dropped (its result ref may be consumed
-//! elsewhere); only the result-less writers (`CmpFlags`, `AluFlags`,
-//! `WriteFlagsCountZero`) are droppable.
+//! `WriteFlagsPopcnt`, `WriteFlagsCountZero`. Flag readers: `CondJumpRel`,
+//! `Select` (lowers to csel). `Compare` is never dropped (its result ref may be
+//! consumed elsewhere); only the result-less writers (`CmpFlags`, `AluFlags`,
+//! `WriteFlagsPopcnt`, `WriteFlagsCountZero`) are droppable.
 
 use prisma_ir::{BasicBlock, Function, Op};
 
@@ -45,7 +45,10 @@ pub fn flag_write_elimination(func: Function) -> Function {
 
             for (i, stmt) in block.stmts.iter().enumerate() {
                 match &stmt.op {
-                    Op::CmpFlags(_) | Op::AluFlags(_) | Op::WriteFlagsCountZero(_) => {
+                    Op::CmpFlags(_)
+                    | Op::AluFlags(_)
+                    | Op::WriteFlagsPopcnt(_)
+                    | Op::WriteFlagsCountZero(_) => {
                         if let Some(prev) = pending_writer {
                             if pending_droppable {
                                 drop[prev] = true;

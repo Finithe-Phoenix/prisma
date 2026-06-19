@@ -79,9 +79,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_existing_prefix() {
-        // Use a known-existing dir; on every supported host /tmp
-        // exists and is readable.
-        let c = Container::new("ok", "/tmp");
+        // Use the platform temp dir, which exists and is readable on
+        // every supported host (Unix /tmp, Windows %TEMP%) — a literal
+        // "/tmp" does not exist on the Windows CI runner.
+        let c = Container::new("ok", std::env::temp_dir());
         assert!(c.validate().is_ok());
     }
 

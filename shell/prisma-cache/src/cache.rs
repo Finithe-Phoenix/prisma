@@ -146,6 +146,17 @@ impl TranslationCache {
         self.max_bytes
     }
 
+    pub fn set_limits(&mut self, max_entries: usize, max_bytes: usize) {
+        self.max_entries = max_entries;
+        self.max_bytes = max_bytes;
+        self.maybe_evict();
+    }
+
+    #[must_use]
+    pub fn limits(&self) -> (usize, usize) {
+        (self.max_entries, self.max_bytes)
+    }
+
     #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
@@ -154,6 +165,29 @@ impl TranslationCache {
     #[must_use]
     pub fn size(&self) -> usize {
         self.addr_to_hash.len()
+    }
+
+    #[must_use]
+    pub fn live_entry_count(&self) -> usize {
+        self.entries
+            .keys()
+            .filter(|key| self.is_live_key(key))
+            .count()
+    }
+
+    #[must_use]
+    pub fn stale_count(&self) -> usize {
+        self.entries.len().saturating_sub(self.live_entry_count())
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.addr_to_hash.clear();
+        self.next_tick = 1;
+    }
+
+    pub fn contains_key(&self, key: &CacheKey) -> bool {
+        self.entries.contains_key(key)
     }
 
     pub fn lookup(&mut self, guest_addr: u64, guest_bytes: &[u8]) -> LookupResult {
@@ -215,6 +249,27 @@ impl TranslationCache {
         self.maybe_evict();
     }
 
+    pub fn invalidate(&mut self, key: &CacheKey) {
+        if let Some(current_hash) = self.addr_to_hash.remove(&key.0) {
+            if current_hash != key.1 {
+                self.entries.remove(&(key.0, current_hash));
+            }
+        }
+        self.entries.remove(key);
+    }
+
+    pub fn touch(&mut self, key: &CacheKey) -> bool {
+        if let Some(entry) = self.entries.get_mut(key) {
+            let tick = self.next_tick;
+            self.next_tick = self.next_tick.saturating_add(1);
+            entry.hit_count = entry.hit_count.saturating_add(1);
+            entry.last_used = tick;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn invalidate_page(&mut self, page_addr: u64, page_size: usize) {
         let end = page_addr.saturating_add(page_size as u64);
         let to_drop: Vec<u64> = self
@@ -269,13 +324,6 @@ impl TranslationCache {
 
     fn is_live_key(&self, key: &CacheKey) -> bool {
         matches!(self.addr_to_hash.get(&key.0), Some(hash) if *hash == key.1)
-    }
-
-    fn live_entry_count(&self) -> usize {
-        self.entries
-            .keys()
-            .filter(|key| self.is_live_key(key))
-            .count()
     }
 
     pub fn set_compress_on_save(&mut self, on: bool) {
@@ -491,6 +539,13 @@ impl TranslationCache {
         while (self.max_entries != 0 && self.entries.len() > self.max_entries)
             || (self.max_bytes != 0 && self.total_code_bytes() > self.max_bytes)
         {
+            let stale_evicted = self.compact();
+            if stale_evicted > 0
+                && (self.max_entries == 0 || self.entries.len() <= self.max_entries)
+                && (self.max_bytes == 0 || self.total_code_bytes() <= self.max_bytes)
+            {
+                break;
+            }
             if let Some((lru, _)) = self
                 .entries
                 .iter()
@@ -635,6 +690,160 @@ mod tests {
         assert_eq!(cache.load_from_file(&missing), Some(IoError::OpenFailed));
         assert_eq!(cache.entry_count(), 1);
         assert!(matches!(cache.lookup(0x5000, &guest), LookupResult::Hit(_)));
+    }
+
+    #[test]
+    fn limits_are_observable_and_enforced() {
+        let mut c = TranslationCache::new();
+        let h1 = fnv1a_64(&[0x90]);
+        let h2 = fnv1a_64(&[0x91]);
+        c.set_limits(1, 32);
+        assert_eq!(c.limits(), (1, 32));
+
+        assert!(c.insert((0x1000, h1), entry(&[0xAA], 1, h1)));
+        assert!(c.insert((0x2000, h2), entry(&[0xBB], 1, h2)));
+
+        assert_eq!(c.entry_count(), 1);
+        assert!(matches!(c.lookup(0x1000, &[0x90]), LookupResult::Miss(_)));
+        assert!(matches!(c.lookup(0x2000, &[0x91]), LookupResult::Hit(_)));
+    }
+
+    #[test]
+    fn set_limits_reclaim_oldest_lru_first() {
+        let mut c = TranslationCache::new();
+        let h1 = fnv1a_64(&[0x90]);
+        let h2 = fnv1a_64(&[0x91]);
+        let h3 = fnv1a_64(&[0x92]);
+
+        c.set_limits(0, 0);
+        assert!(c.insert((0x1000, h1), entry(&[0x11], 1, h1)));
+        assert!(c.insert((0x1100, h2), entry(&[0x22], 1, h2)));
+        assert!(c.insert((0x1200, h3), entry(&[0x33], 1, h3)));
+        assert_eq!(c.entry_count(), 3);
+
+        c.set_limits(1, 3);
+        assert_eq!(c.entry_count(), 1);
+        assert!(matches!(c.lookup(0x1000, &[0x90]), LookupResult::Miss(_)));
+        assert!(matches!(c.lookup(0x1100, &[0x91]), LookupResult::Miss(_)));
+        assert!(matches!(c.lookup(0x1200, &[0x92]), LookupResult::Hit(_)));
+    }
+
+    #[test]
+    fn max_bytes_eviction_uses_lru() {
+        let mut c = TranslationCache::new();
+        c.set_max_bytes(5);
+        let h1 = fnv1a_64(&[0x90]);
+        let h2 = fnv1a_64(&[0x91]);
+        let h3 = fnv1a_64(&[0x92]);
+
+        assert!(c.insert((0x1000, h1), entry(&[1, 2], 2, h1)));
+        assert!(c.insert((0x2000, h2), entry(&[3, 4], 2, h2)));
+        assert!(c.insert((0x3000, h3), entry(&[5, 6], 2, h3)));
+
+        assert_eq!(c.entry_count(), 2);
+        assert!(matches!(c.lookup(0x1000, &[0x90]), LookupResult::Miss(_)));
+        assert!(matches!(c.lookup(0x3000, &[0x92]), LookupResult::Hit(_)));
+    }
+
+    #[test]
+    fn compact_removes_stale_entries_only() {
+        let mut c = TranslationCache::new();
+        let addr = 0x5000u64;
+        let old = b"\x90";
+        let new = b"\x90\x90";
+        let old_hash = fnv1a_64(old);
+        let new_hash = fnv1a_64(new);
+
+        assert!(c.insert((addr, old_hash), entry(&[0xAA], old.len(), old_hash)));
+        assert!(c.insert((addr, new_hash), entry(&[0xBB, 0xCC], new.len(), new_hash)));
+
+        assert_eq!(c.stale_count(), 1);
+        assert_eq!(c.compact(), 1);
+        assert_eq!(c.stale_count(), 0);
+        assert_eq!(c.entry_count(), 1);
+        assert!(matches!(
+            c.lookup(addr, old),
+            LookupResult::Miss(MissReason::StaleContent)
+        ));
+        assert!(matches!(c.lookup(addr, new), LookupResult::Hit(_)));
+    }
+
+    #[test]
+    fn touch_tracks_stats_and_returns_status() {
+        let mut c = TranslationCache::new();
+        let hash = fnv1a_64(&[0x90]);
+        let key = (0x7000, hash);
+        assert!(c.insert(key, entry(&[0x11], 1, hash)));
+
+        assert!(c.touch(&key));
+        let first = c.stats_for(&key).unwrap();
+        assert_eq!(first.hit_count, 1);
+        assert!(c.touch(&key));
+        let second = c.stats_for(&key).unwrap();
+        assert_eq!(second.hit_count, 2);
+        assert!(second.last_used_tick > first.last_used_tick);
+        assert!(!c.touch(&(0x7001, hash)));
+    }
+
+    #[test]
+    fn async_save_and_wait_reports_errors_and_success() {
+        let mut c = TranslationCache::new();
+        let hash = fnv1a_64(&[0xC3]);
+        assert!(c.insert((0x8000, hash), entry(&[0x11], 1, hash)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("async-save.bin");
+        c.save_to_file_async(path.clone());
+        assert!(c.wait_for_async_save().is_none());
+        assert!(path.exists());
+
+        let mut reloaded = TranslationCache::new();
+        assert!(reloaded.load_from_file(&path).is_none());
+        assert_eq!(reloaded.entry_count(), 1);
+    }
+
+    #[test]
+    fn cache_invalidate_erases_key_and_address_map() {
+        let mut c = TranslationCache::new();
+        let hash = fnv1a_64(&[0x90]);
+        let key = (0x9000, hash);
+        assert!(c.insert(key, entry(&[0x11, 0x22], 2, hash)));
+        assert_eq!(c.size(), 1);
+        assert!(c.contains_key(&key));
+        c.invalidate(&key);
+        assert_eq!(c.size(), 0);
+        assert!(!c.contains_key(&key));
+    }
+
+    #[test]
+    fn clear_removes_all_state_and_resets_counters() {
+        let mut c = TranslationCache::new();
+        let h1 = fnv1a_64(&[0x90]);
+        let h2 = fnv1a_64(&[0x91]);
+        c.set_limits(2, 64);
+        c.insert((0xA000, h1), entry(&[0xAA], 1, h1));
+        c.insert((0xA100, h2), entry(&[0xBB], 1, h2));
+        c.touch(&(0xA000, h1));
+        assert!(c.contains_key(&(0xA000, h1)));
+        assert_eq!(c.entry_count(), 2);
+
+        c.clear();
+        assert_eq!(c.entry_count(), 0);
+        assert_eq!(c.size(), 0);
+        assert!(!c.contains_key(&(0xA000, h1)));
+        assert!(!c.contains_key(&(0xA100, h2)));
+    }
+
+    #[test]
+    fn unlimited_limits_allow_growth_when_zeroed() {
+        let mut c = TranslationCache::new();
+        c.set_limits(0, 0);
+        assert_eq!(c.limits(), (0, 0));
+        let base = 0xB000u64;
+        for i in 0u8..16 {
+            let hash = fnv1a_64(&[i]);
+            assert!(c.insert((base + u64::from(i), hash), entry(&[0xCC; 64], 64, hash)));
+        }
+        assert_eq!(c.entry_count(), 16);
     }
 
     #[test]

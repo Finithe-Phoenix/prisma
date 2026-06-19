@@ -112,10 +112,13 @@ fn override_slot() -> &'static Mutex<Option<HostFeatures>> {
 /// A test override (see [`override_for_test`]) shadows the detected values.
 #[must_use]
 pub fn host_features() -> HostFeatures {
-    if let Some(f) = *override_slot().lock().unwrap() {
+    static CACHED: OnceLock<HostFeatures> = OnceLock::new();
+    // Read and release the override lock before consulting the cache so the
+    // mutex guard does not stay live across the `get_or_init` call.
+    let override_value = *override_slot().lock().unwrap();
+    if let Some(f) = override_value {
         return f;
     }
-    static CACHED: OnceLock<HostFeatures> = OnceLock::new();
     *CACHED.get_or_init(detect)
 }
 

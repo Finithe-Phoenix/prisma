@@ -93,6 +93,10 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.rhs = resolve_alias(op.rhs, aliases);
             Op::WriteFlags(op)
         }
+        Op::WriteFlagsPopcnt(mut op) => {
+            op.src = resolve_alias(op.src, aliases);
+            Op::WriteFlagsPopcnt(op)
+        }
         Op::WriteFlagsCountZero(mut op) => {
             op.src = resolve_alias(op.src, aliases);
             op.result = resolve_alias(op.result, aliases);

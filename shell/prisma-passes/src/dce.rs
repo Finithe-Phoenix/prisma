@@ -254,6 +254,9 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
         Op::Tzcnt(x) => {
             into.insert(x.value);
         }
+        Op::WriteFlagsPopcnt(x) => {
+            into.insert(x.src);
+        }
         Op::WriteFlagsCountZero(x) => {
             into.insert(x.src);
             into.insert(x.result);
