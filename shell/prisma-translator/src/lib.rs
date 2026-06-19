@@ -70,10 +70,27 @@ pub enum TranslateError {
     Lower(LowerError),
 }
 
+/// Cumulative translator counters, useful for profiling the dispatch loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TranslatorStats {
+    /// Translations served from the cache without re-running the pipeline.
+    pub cache_hits: u64,
+    /// Translations that missed the cache and ran the full pipeline.
+    pub cache_misses: u64,
+}
+
+impl TranslatorStats {
+    /// Total translation requests served (hits + misses).
+    pub const fn total(self) -> u64 {
+        self.cache_hits + self.cache_misses
+    }
+}
+
 /// The integrated decode -> optimize -> lower -> cache pipeline.
 pub struct Translator {
     cache: TranslationCache,
     pipeline: PassPipeline,
+    stats: TranslatorStats,
 }
 
 impl Default for Translator {
@@ -81,6 +98,7 @@ impl Default for Translator {
         Self {
             cache: TranslationCache::new(),
             pipeline: default_pipeline(),
+            stats: TranslatorStats::default(),
         }
     }
 }
@@ -166,12 +184,14 @@ impl Translator {
         decoded: &Decoded,
     ) -> Result<Translation, TranslateError> {
         if let LookupResult::Hit(entry) = self.cache.lookup(guest_addr, insn) {
+            self.stats.cache_hits += 1;
             return Ok(Translation {
                 code: entry.code_bytes.into_vec(),
                 guest_bytes: decoded.bytes_consumed,
                 from_cache: true,
             });
         }
+        self.stats.cache_misses += 1;
 
         let func = Function {
             entry: 0,
@@ -210,6 +230,22 @@ impl Translator {
     /// Number of distinct translations currently held in the cache.
     pub fn cached_count(&self) -> usize {
         self.cache.entry_count()
+    }
+
+    /// Cumulative cache hit/miss counters since construction (or last reset).
+    pub const fn stats(&self) -> TranslatorStats {
+        self.stats
+    }
+
+    /// Reset the hit/miss counters to zero (the cache contents are untouched).
+    pub fn reset_stats(&mut self) {
+        self.stats = TranslatorStats::default();
+    }
+
+    /// Bound the translation cache: at most `max_entries` entries and
+    /// `max_bytes` of code (0 means unbounded). LRU eviction enforces both.
+    pub fn set_cache_limits(&mut self, max_entries: usize, max_bytes: usize) {
+        self.cache.set_limits(max_entries, max_bytes);
     }
 }
 
@@ -340,5 +376,33 @@ mod tests {
         assert_eq!(block.guest_bytes, 0);
         assert!(block.code.is_empty());
         assert!(!block.ended_at_terminator);
+    }
+
+    #[test]
+    fn stats_track_hits_and_misses() {
+        let mut t = Translator::new();
+        assert_eq!(t.stats(), TranslatorStats::default());
+
+        t.translate(0xC000, MOV_RAX_RCX).unwrap(); // miss
+        t.translate(0xC000, MOV_RAX_RCX).unwrap(); // hit
+        t.translate(0xC008, ADD_RAX_IMM8).unwrap(); // miss
+
+        let s = t.stats();
+        assert_eq!(s.cache_hits, 1);
+        assert_eq!(s.cache_misses, 2);
+        assert_eq!(s.total(), 3);
+
+        t.reset_stats();
+        assert_eq!(t.stats(), TranslatorStats::default());
+    }
+
+    #[test]
+    fn set_cache_limits_evicts_to_the_entry_budget() {
+        let mut t = Translator::new();
+        t.set_cache_limits(1, 0); // at most one entry
+        t.translate(0xD000, MOV_RAX_RCX).unwrap();
+        t.translate(0xD008, MOV_RAX_RCX).unwrap();
+        t.translate(0xD010, MOV_RAX_RCX).unwrap();
+        assert_eq!(t.cached_count(), 1, "LRU should hold the budget at 1 entry");
     }
 }
