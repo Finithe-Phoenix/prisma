@@ -6,8 +6,9 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-18 (Rust-migration batch E1-E9 committed + workspace clippy
-gate satisfied on the Windows/MSVC host).
+Last updated: 2026-06-18 (Rust-migration batch E1-E9 merged to main, red CI on
+main fixed, and robustness-fuzz set landed across decoder/cache/passes/backend —
+all green on main).
 
 ## Session 2026-06-18 — secure WIP + CI parity (branch `claude/rust-migration-popcnt-decoder-batch`)
 
@@ -29,6 +30,28 @@ green. FFI-bridge / ARM64 paths still need CI (cannot run locally).
 Verified: decoder emits 31 distinct `Op`s, all handled by the 42-op lowerer (no
 decoder->backend integration gap). Next confident widening needs the C++ FFI
 differential (new decoder families) and belongs to the codex-decoder lane.
+
+### Landed via PRs (all merged, full CI green incl. ffi-link x86/arm64/windows)
+
+- **PR #28** — the E1-E9 batch above + OR/XOR flags + clippy parity, **plus** the
+  fixes that the (previously skipped) Windows gate had masked: i64->usize cast in
+  `cfg(unix)`, a test asserting a non-existent `CoreError.guest_addr`, cond-jump
+  forward byte drift (B.cond imm19 offset missing from the FFI differential
+  matrix + 24 fixtures), and a non-portable `/tmp` in the orchestrator test.
+- **CI fix (in #28)** — `ffi-link-windows` pinned to `windows-2022`; the
+  `windows-latest` image had rolled off Visual Studio 2022, leaving the whole
+  ffi-bridge workflow red on main since 2026-06-15. PR #29 (standalone fix)
+  closed as superseded.
+- **PR #30** — decoder proptest robustness fuzz + **cache deserialization DoS
+  fix** (untrusted `count` no longer drives `HashMap::with_capacity`).
+- **PR #31** — passes pipeline robustness fuzz (valid-SSA generator; never
+  panics on shift>=64 / div0 / mod0; deterministic).
+- **PR #32** — backend IR->ARM64 lowerer robustness fuzz.
+
+The four shell processing stages (decoder, cache, passes, backend) now each have
+a proptest robustness harness. KEY: the FFI crates' build.rs tolerates a missing
+`PRISMA_CORE_LIB_DIR`, so `cargo clippy --workspace --all-targets -D warnings`
+runs the full gate locally without the C++ DLL (only the test *link* needs it).
 
 ## Currently active
 
