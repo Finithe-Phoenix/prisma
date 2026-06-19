@@ -27,6 +27,7 @@
 )]
 
 pub mod dispatcher;
+pub mod executor;
 pub mod guest_signal;
 pub mod host_features;
 pub mod jit_buffer_pool;
