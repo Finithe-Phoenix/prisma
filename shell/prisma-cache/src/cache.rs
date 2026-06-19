@@ -66,6 +66,9 @@ impl std::error::Error for IoError {}
 const MAGIC: u64 = 0x50_52_53_4d_43_41_43_48;
 const VERSION: u32 = 2;
 const FLAG_COMPRESSED: u32 = 1;
+/// Smallest possible on-disk size of one serialized entry (four u64 header
+/// fields). Used to bound deserialization pre-allocation against the file size.
+const MIN_ENTRY_BYTES: usize = 32;
 
 fn write_u32(out: &mut Vec<u8>, n: u32) {
     out.extend_from_slice(&n.to_le_bytes());
@@ -459,8 +462,16 @@ impl TranslationCache {
         };
         let compressed = version >= VERSION && (flags & FLAG_COMPRESSED) != 0;
 
-        let mut entries = HashMap::with_capacity(count);
-        let mut addr_to_hash = HashMap::with_capacity(count);
+        // `count` is attacker-controlled (it comes straight from the file
+        // header), so never pre-allocate beyond what the remaining bytes could
+        // actually hold. Each entry carries at least four u64 header fields
+        // (32 bytes); a crafted huge count would otherwise make with_capacity
+        // attempt a multi-gigabyte allocation and abort. The loop below still
+        // honours the real `count`, bailing out with Truncated when the bytes
+        // run out.
+        let prealloc = count.min(input.len().saturating_sub(i) / MIN_ENTRY_BYTES);
+        let mut entries = HashMap::with_capacity(prealloc);
+        let mut addr_to_hash = HashMap::with_capacity(prealloc);
 
         for _ in 0..count {
             let guest_addr = match read_u64(&input, &mut i) {
@@ -580,6 +591,29 @@ mod tests {
             hit_count: 0,
             last_used: 0,
         }
+    }
+
+    #[test]
+    fn load_rejects_crafted_huge_entry_count_without_panicking() {
+        // A malicious cache file can set the entry count to an enormous value.
+        // load_from_file must not pre-allocate that many slots (with_capacity
+        // would abort) and must report Truncated once the promised entries are
+        // absent, instead of crashing the host.
+        let mut header = Vec::new();
+        write_u64(&mut header, MAGIC);
+        write_u32(&mut header, VERSION);
+        write_u32(&mut header, 0); // flags: uncompressed
+        write_u64(&mut header, 0); // cpu-feature fingerprint
+        write_u64(&mut header, u64::MAX); // attacker-controlled entry count
+                                          // No entry bytes follow the header.
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evil.bin");
+        std::fs::write(&path, &header).unwrap();
+
+        let mut c = TranslationCache::new();
+        assert_eq!(c.load_from_file(&path), Some(IoError::Truncated));
+        assert_eq!(c.entry_count(), 0);
     }
 
     #[test]
