@@ -49,7 +49,7 @@ mod platform {
     pub fn page_size() -> usize {
         // SAFETY: GetSystemInfo writes a fully-initialized SystemInfo.
         let mut info: SystemInfo = unsafe { core::mem::zeroed() };
-        unsafe { GetSystemInfo(&mut info) };
+        unsafe { GetSystemInfo(&raw mut info) };
         info.dw_page_size as usize
     }
 
@@ -71,7 +71,7 @@ mod platform {
     pub fn protect_rx(ptr: *mut u8, size: usize) -> bool {
         let mut old: u32 = 0;
         // SAFETY: ptr/size came from a prior alloc_rw of the same region.
-        unsafe { VirtualProtect(ptr.cast(), size, PAGE_EXECUTE_READ, &mut old) != 0 }
+        unsafe { VirtualProtect(ptr.cast(), size, PAGE_EXECUTE_READ, &raw mut old) != 0 }
     }
 
     pub fn free(ptr: *mut u8, _size: usize) {
@@ -323,10 +323,11 @@ pub struct ExecAllocation {
     pub capacity: usize,
 }
 
-/// Owns a set of executable buffers, one per installed block. Mirrors C++
-/// `JitBufferPool::add`: each `add` allocates an [`ExecBuffer`], writes the
-/// code, flips it executable, and hands back an [`ExecAllocation`] whose
-/// `entry` is directly callable.
+/// Owns a set of executable buffers, one per installed block.
+///
+/// Mirrors C++ `JitBufferPool::add`: each `add` allocates an [`ExecBuffer`],
+/// writes the code, flips it executable, and hands back an [`ExecAllocation`]
+/// whose `entry` is directly callable.
 #[derive(Debug, Default)]
 pub struct ExecPool {
     buffers: Vec<ExecBuffer>,

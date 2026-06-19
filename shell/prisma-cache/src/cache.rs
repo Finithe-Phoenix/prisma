@@ -251,13 +251,9 @@ impl TranslationCache {
 
     pub fn invalidate(&mut self, key: &CacheKey) {
         if let Some(current_hash) = self.addr_to_hash.remove(&key.0) {
-            if current_hash == key.1 {
-                self.entries.remove(key);
-            } else {
+            if current_hash != key.1 {
                 self.entries.remove(&(key.0, current_hash));
-                self.entries.remove(key);
             }
-            return;
         }
         self.entries.remove(key);
     }
@@ -544,12 +540,11 @@ impl TranslationCache {
             || (self.max_bytes != 0 && self.total_code_bytes() > self.max_bytes)
         {
             let stale_evicted = self.compact();
-            if stale_evicted > 0 {
-                if (self.max_entries == 0 || self.entries.len() <= self.max_entries)
-                    && (self.max_bytes == 0 || self.total_code_bytes() <= self.max_bytes)
-                {
-                    break;
-                }
+            if stale_evicted > 0
+                && (self.max_entries == 0 || self.entries.len() <= self.max_entries)
+                && (self.max_bytes == 0 || self.total_code_bytes() <= self.max_bytes)
+            {
+                break;
             }
             if let Some((lru, _)) = self
                 .entries
@@ -721,9 +716,9 @@ mod tests {
         let h3 = fnv1a_64(&[0x92]);
 
         c.set_limits(0, 0);
-        assert_eq!(c.insert((0x1000, h1), entry(&[0x11], 1, h1)), true);
-        assert_eq!(c.insert((0x1100, h2), entry(&[0x22], 1, h2)), true);
-        assert_eq!(c.insert((0x1200, h3), entry(&[0x33], 1, h3)), true);
+        assert!(c.insert((0x1000, h1), entry(&[0x11], 1, h1)));
+        assert!(c.insert((0x1100, h2), entry(&[0x22], 1, h2)));
+        assert!(c.insert((0x1200, h3), entry(&[0x33], 1, h3)));
         assert_eq!(c.entry_count(), 3);
 
         c.set_limits(1, 3);
@@ -798,7 +793,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("async-save.bin");
         c.save_to_file_async(path.clone());
-        assert!(matches!(c.wait_for_async_save(), None));
+        assert!(c.wait_for_async_save().is_none());
         assert!(path.exists());
 
         let mut reloaded = TranslationCache::new();
@@ -844,9 +839,9 @@ mod tests {
         c.set_limits(0, 0);
         assert_eq!(c.limits(), (0, 0));
         let base = 0xB000u64;
-        for i in 0..16 {
-            let hash = fnv1a_64(&[i as u8]);
-            assert!(c.insert((base + (i as u64), hash), entry(&[0xCC; 64], 64, hash)));
+        for i in 0u8..16 {
+            let hash = fnv1a_64(&[i]);
+            assert!(c.insert((base + u64::from(i), hash), entry(&[0xCC; 64], 64, hash)));
         }
         assert_eq!(c.entry_count(), 16);
     }

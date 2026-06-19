@@ -444,11 +444,7 @@ fn decode_two_byte(
             decode_three_byte_0f38(prefixes, bytes, start, stmts)
         }
         tables::TwoByteOpcode::CondJumpRel32 => {
-            if prefixes.rex.present {
-                Err(crate::DecodeError::UnsupportedOpcode(op2))
-            } else if prefixes.rep == Some(0xF3) {
-                Err(crate::DecodeError::UnsupportedOpcode(op2))
-            } else if prefixes.operand_override {
+            if prefixes.rex.present || prefixes.rep == Some(0xF3) || prefixes.operand_override {
                 Err(crate::DecodeError::UnsupportedOpcode(op2))
             } else {
                 decode_cond_jump_rel32(op2, bytes, cursor, opcode_guest_pc, stmts)
@@ -666,8 +662,7 @@ fn decode_fence(
 ) -> Result<usize, crate::DecodeError> {
     let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
     if modrm.mod_ != 3
-        && ((modrm.reg == 7 && !prefixes.operand_override)
-            || ((modrm.reg == 6 || modrm.reg == 7) && prefixes.operand_override))
+        && (modrm.reg == 7 || (modrm.reg == 6 && prefixes.operand_override))
         && !prefixes.rex.present
         && !prefixes.lock
         && prefixes.segment.is_none()
@@ -3041,8 +3036,8 @@ fn decode_cmp_r_rm_with_size(
 fn sign_extend_imm8_to_size(imm: u8, size: OpSize) -> u64 {
     match size {
         OpSize::I64 => i64::from(imm as i8).cast_unsigned(),
-        OpSize::I32 => i64::from(imm as i8) as i32 as u32 as u64,
-        OpSize::I16 => i64::from(imm as i8) as i16 as u16 as u64,
+        OpSize::I32 => u64::from((i64::from(imm as i8) as i32).cast_unsigned()),
+        OpSize::I16 => u64::from((i64::from(imm as i8) as i16).cast_unsigned()),
         OpSize::I8 => imm as u64,
     }
 }
@@ -10225,7 +10220,7 @@ mod tests {
                 assert_eq!(*target, 0);
                 assert_eq!(*return_guest_pc, 0x3003);
             }
-            other => panic!("unexpected stmt: {:?}", other),
+            other => panic!("unexpected stmt: {other:?}"),
         }
 
         let jmp = decode_one_at(b"\x48\xFF\x20", 0, 0x3000).unwrap();
@@ -10235,7 +10230,7 @@ mod tests {
                 op: Op::JumpReg(JumpReg { target }),
                 ..
             } => assert_eq!(*target, 0),
-            other => panic!("unexpected stmt: {:?}", other),
+            other => panic!("unexpected stmt: {other:?}"),
         }
 
         let push = decode_one_at(b"\x48\xFF\x30", 0, 0x3000).unwrap();
@@ -10250,7 +10245,7 @@ mod tests {
                     }),
                 ..
             } => assert_eq!(*value, 1),
-            other => panic!("unexpected stmt: {:?}", other),
+            other => panic!("unexpected stmt: {other:?}"),
         }
     }
 
@@ -10278,7 +10273,7 @@ mod tests {
                 assert_eq!(*target, 0);
                 assert_eq!(*return_guest_pc, 0x3002);
             }
-            other => panic!("unexpected stmt: {:?}", other),
+            other => panic!("unexpected stmt: {other:?}"),
         }
 
         let jmp = decode_one(b"\xFF\x20", 0).unwrap();
@@ -10288,7 +10283,7 @@ mod tests {
                 op: Op::JumpReg(JumpReg { target }),
                 ..
             } => assert_eq!(*target, 0),
-            other => panic!("unexpected stmt: {:?}", other),
+            other => panic!("unexpected stmt: {other:?}"),
         }
     }
 

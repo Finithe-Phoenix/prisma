@@ -153,6 +153,9 @@ impl Lowerer {
     }
 }
 
+// One match arm per IR op; the dispatch is inherently long and splitting it
+// would only scatter the op->lowering mapping across helpers.
+#[allow(clippy::too_many_lines)]
 fn lower_stmt(
     stmt: &Stmt,
     asm: &mut Arm64Assembler,
@@ -1169,13 +1172,13 @@ fn emit_rsp_imm_add(
             let imm = delta_bytes
                 .checked_neg()
                 .and_then(|value| u16::try_from(value).ok())
-                .ok_or(LowerError::ImmediateOutOfRange(delta_bytes.cast_unsigned()))?;
+                .ok_or_else(|| LowerError::ImmediateOutOfRange(delta_bytes.cast_unsigned()))?;
             asm.sub_x_imm(register, register, imm);
             Ok(())
         }
         _ => {
             if delta_bytes == i64::MIN {
-                return Err(LowerError::ImmediateOutOfRange(delta_bytes as u64));
+                return Err(LowerError::ImmediateOutOfRange(delta_bytes.cast_unsigned()));
             }
             let abs = if delta_bytes.is_negative() {
                 delta_bytes.unsigned_abs()

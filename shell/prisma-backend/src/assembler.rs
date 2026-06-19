@@ -1199,6 +1199,8 @@ fn encode_data_processing_two_source(base: u32, dst: u8, lhs: u8, rhs: u8) -> u3
     base | (u32::from(rhs) << 16) | (u32::from(lhs) << 5) | u32::from(dst)
 }
 
+// immr/imms are the canonical ARMv8 bitfield encoding field names.
+#[allow(clippy::similar_names)]
 fn encode_bitfield_x(base: u32, dst: u8, src: u8, immr: u8, imms: u8) -> u32 {
     assert!(dst < 32, "destination register out of range");
     assert!(src < 32, "source register out of range");

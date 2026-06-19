@@ -18,9 +18,11 @@ const MIN_BRANCH_WORDS: i64 = -(1 << 25);
 const MAX_BRANCH_WORDS: i64 = (1 << 25) - 1;
 
 /// Encode an unconditional AArch64 `B` branching from `site` to `target`
-/// (both absolute addresses). Mirrors the encoding path of C++
-/// `JitSlabPool::patch_aarch64_branch`: `0x1400_0000 | (imm26 & 0x03ff_ffff)`
-/// where `imm26` is the signed word displacement `(target - site) / 4`.
+/// (both absolute addresses).
+///
+/// Mirrors the encoding path of C++ `JitSlabPool::patch_aarch64_branch`:
+/// `0x1400_0000 | (imm26 & 0x03ff_ffff)` where `imm26` is the signed word
+/// displacement `(target - site) / 4`.
 ///
 /// # Errors
 /// [`PatchError::Unaligned`] if either address is not 4-byte aligned;
@@ -36,7 +38,7 @@ pub const fn encode_aarch64_b(site: u64, target: u64) -> Result<u32, PatchError>
     if word_delta < MIN_BRANCH_WORDS || word_delta > MAX_BRANCH_WORDS {
         return Err(PatchError::OutOfRange);
     }
-    Ok(0x1400_0000 | (word_delta as u32 & 0x03ff_ffff))
+    Ok(0x1400_0000 | (word_delta.cast_unsigned() as u32 & 0x03ff_ffff))
 }
 
 /// Lightweight metrics for a JIT buffer pool.

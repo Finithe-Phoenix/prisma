@@ -1222,11 +1222,8 @@ fn rust_smoke_translator_matches_pinned_backend_bytes() {
     let mut translator = RustSmokeTranslator::new();
 
     for fixture in FIXTURES {
-        let expected = match fixture.rust_words {
-            Some(words) => Some(words_to_le_bytes(words)),
-            None => None,
-        };
-        let is_nop = fixture.guest_bytes == &[0x90];
+        let expected = fixture.rust_words.map(words_to_le_bytes);
+        let is_nop = matches!(fixture.guest_bytes, [0x90]);
         let translated = translator
             .translate(0x1000, fixture.guest_bytes)
             .expect("rust translator should emit bytes");
@@ -1246,9 +1243,8 @@ fn rust_smoke_translator_matches_pinned_backend_bytes() {
                 );
             }
         }
-        match expected {
-            Some(expected_bytes) => assert_eq!(translated, expected_bytes, "{}", fixture.name),
-            None => {}
+        if let Some(expected_bytes) = expected {
+            assert_eq!(translated, expected_bytes, "{}", fixture.name);
         }
     }
 }

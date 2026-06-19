@@ -14,6 +14,12 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::branches_sharing_code,
+    // Opcode dispatch/decode tables list bytes on separate arms (each with
+    // its own comment) and the dispatchers are inherently long; register-named
+    // bindings (next_rsi/next_rdi) trip similar_names by construction.
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    clippy::similar_names,
     clippy::manual_let_else,
     clippy::missing_const_for_fn,
     clippy::missing_errors_doc,
