@@ -113,7 +113,7 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 | `prisma-decoder` | ~11.8k | Subset del C++ (one/two-byte, grupos, Jcc, mem forms) |
 | `prisma-backend` | ~5.6k | Lowering de ~42 ops a ARM64 |
 | `prisma-passes` | ~5.0k | 13 pases + 2 function-pass; completo |
-| `prisma-runtime` | ~2.6k | jit_memory (W^X), dispatcher de contrato, smc_guard, syscall boundary |
+| `prisma-runtime` | ~2.6k | jit_memory (W^X), dispatcher de contrato, smc_guard, syscall boundary, **`executor` (ejecuta bloques traducidos en ARM64)** |
 | `prisma-ir` | ~1.4k | Tipos IR + `Op::map_refs` (visitor SSA de 94 variantes) |
 | `prisma-cache` | ~1.0k | Cache real (zstd + sha256), fix de DoS de deserialización |
 | `prisma-translator` | ~0.7k | **Fachada integrada**: decode→optimizar→lower→cache + `translate_block` + `translate_fused_block` (renumeración SSA) + stats/límites/SMC |
@@ -121,8 +121,13 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 
 - **Fuzzing de robustez** proptest en las 5 superficies (decoder/cache/passes/
   backend/translator).
-- **Sin ejecución JIT todavía** en el lado Rust (es el siguiente hito del Track
-  B en el ROADMAP).
+- **Ejecución JIT en ARM64 ALCANZADA** (PR #43, sha `cc7ada7`): `prisma-runtime::executor`
+  envuelve el cuerpo de bloque traducido con prólogo/epílogo AAPCS64, lo instala
+  W^X y lo llama como `extern "C" fn(*mut CpuStateFrame)`. Un programa de varias
+  instrucciones traducido por `prisma-translator` (`mov rax,rcx; add rax,0x10`)
+  ejecuta en el runner `ffi-link-arm64` de CI y verifica `rax = rcx + 16`. La
+  validación conductual corre en ARM64 real (gateada a `aarch64`, espejo del
+  `constexpr is_arm64` del core C++).
 - Gate cross-language real: `ffi-link` (ubuntu) corre `clippy --workspace` +
   `test --workspace` contra el DLL C++ (C-ABI, RFC 0014).
 
