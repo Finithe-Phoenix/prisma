@@ -949,6 +949,237 @@ impl Stmt {
     pub const fn new(result: Option<Ref>, op: Op) -> Self {
         Self { result, op }
     }
+
+    /// Apply `f` to every SSA value reference in this statement — its result
+    /// (if any) and every operand ref inside the op. Block ids, guest
+    /// addresses, register indices, and immediates are left untouched.
+    pub fn map_refs(&mut self, mut f: impl FnMut(Ref) -> Ref) {
+        if let Some(r) = self.result {
+            self.result = Some(f(r));
+        }
+        self.op.map_refs(f);
+    }
+}
+
+impl Op {
+    /// Apply `f` to every SSA value reference (operand) this op reads. Used to
+    /// renumber SSA refs when concatenating independently-decoded instructions
+    /// into one basic block. The match is exhaustive so a new `Op` variant
+    /// forces this to be updated rather than silently dropping its refs.
+    #[allow(clippy::too_many_lines)]
+    pub fn map_refs(&mut self, mut f: impl FnMut(Ref) -> Ref) {
+        match self {
+            Self::StoreReg(x) => x.value = f(x.value),
+            Self::BinOp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::Compare(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::Select(x) => {
+                x.true_value = f(x.true_value);
+                x.false_value = f(x.false_value);
+            }
+            Self::LoadMem(x) => x.addr = f(x.addr),
+            Self::StoreMem(x) => {
+                x.addr = f(x.addr);
+                x.value = f(x.value);
+            }
+            Self::LoadMemTSO(x) => x.addr = f(x.addr),
+            Self::StoreMemTSO(x) => {
+                x.addr = f(x.addr);
+                x.value = f(x.value);
+            }
+            Self::CondJump(x) => x.cond = f(x.cond),
+            Self::CmpFlags(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::AluFlags(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::JumpReg(x) => x.target = f(x.target),
+            Self::CallReg(x) => x.target = f(x.target),
+            Self::Extend(x) => x.value = f(x.value),
+            Self::Truncate(x) => x.value = f(x.value),
+            Self::WriteFlags(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::ReadFlag(x) => x.flags = f(x.flags),
+            Self::CondJumpFlags(x) => x.flags = f(x.flags),
+            Self::FpBinOp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecBinOp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::StoreVecReg(x) => x.value = f(x.value),
+            Self::LoadVec(x) => x.addr = f(x.addr),
+            Self::StoreVec(x) => {
+                x.addr = f(x.addr);
+                x.value = f(x.value);
+            }
+            Self::VecFpBinOp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecFpScalarBinOp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::XmmFromGpr(x) => x.value = f(x.value),
+            Self::GprFromXmm(x) => x.value = f(x.value),
+            Self::VecCmp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecShuffle32x4(x) => x.src = f(x.src),
+            Self::VecUnpack(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecShiftImm(x) => x.src = f(x.src),
+            Self::VecShiftBytes(x) => x.src = f(x.src),
+            Self::IntToFpScalar(x) => x.value = f(x.value),
+            Self::FpToIntScalar(x) => x.value = f(x.value),
+            Self::FpCvtScalar(x) => {
+                x.lhs = f(x.lhs);
+                x.src = f(x.src);
+            }
+            Self::VecShuffle2Src(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecInsertLane(x) => {
+                x.lhs_xmm = f(x.lhs_xmm);
+                x.value = f(x.value);
+            }
+            Self::VecExtractLaneU(x) => x.src_xmm = f(x.src_xmm),
+            Self::VecMaskMsb(x) => x.src_xmm = f(x.src_xmm),
+            Self::WriteFlagsFp(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecShuffleH4(x) => x.src = f(x.src),
+            Self::VecMaskFp(x) => x.src_xmm = f(x.src_xmm),
+            Self::VecFpCompare(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecPshufb(x) => {
+                x.src = f(x.src);
+                x.mask = f(x.mask);
+            }
+            Self::VecAbs(x) => x.src = f(x.src),
+            Self::VecAlignr(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecExtend(x) => x.src = f(x.src),
+            Self::VecFpRound(x) => {
+                x.lhs = f(x.lhs);
+                x.src = f(x.src);
+            }
+            Self::Popcnt(x) => x.value = f(x.value),
+            Self::Lzcnt(x) => x.value = f(x.value),
+            Self::Tzcnt(x) => x.value = f(x.value),
+            Self::WriteFlagsPopcnt(x) => x.src = f(x.src),
+            Self::WriteFlagsCountZero(x) => {
+                x.src = f(x.src);
+                x.result = f(x.result);
+            }
+            Self::VecBlend(x) => {
+                x.dst = f(x.dst);
+                x.src = f(x.src);
+                x.mask = f(x.mask);
+            }
+            Self::WriteFlagsPtest(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::WriteFlagsPtestYmm(x) => {
+                x.lo_lhs = f(x.lo_lhs);
+                x.lo_rhs = f(x.lo_rhs);
+                x.hi_lhs = f(x.hi_lhs);
+                x.hi_rhs = f(x.hi_rhs);
+            }
+            Self::VecTbl2(x) => {
+                x.src_lo = f(x.src_lo);
+                x.src_hi = f(x.src_hi);
+                x.idx = f(x.idx);
+            }
+            Self::VecAes(x) => {
+                x.src = f(x.src);
+                x.key = f(x.key);
+            }
+            Self::VecAesKeygenAssist(x) => x.src = f(x.src),
+            Self::VecSha(x) => {
+                x.a = f(x.a);
+                x.b = f(x.b);
+                x.wk = f(x.wk);
+            }
+            Self::Bswap(x) => x.value = f(x.value),
+            Self::Crc32c(x) => {
+                x.crc = f(x.crc);
+                x.data = f(x.data);
+            }
+            Self::VecGather(x) => {
+                x.base = f(x.base);
+                x.index = f(x.index);
+                x.mask = f(x.mask);
+                x.prev = f(x.prev);
+            }
+            Self::StoreVecRegHi(x) => x.value = f(x.value),
+            Self::VecFpFma(x) => {
+                x.a = f(x.a);
+                x.b = f(x.b);
+                x.c = f(x.c);
+            }
+            Self::VecFpScalarFma(x) => {
+                x.a = f(x.a);
+                x.b = f(x.b);
+                x.c = f(x.c);
+                x.scalar_upper = f(x.scalar_upper);
+            }
+            Self::X87Store(x) => x.value = f(x.value),
+            Self::X87Push(x) => x.value = f(x.value),
+            // Ops with no SSA operand refs: constants, register/segment loads,
+            // block/guest-address control transfers, fences, CPU queries,
+            // string ops, and the x87 load/pop forms.
+            Self::Constant(_)
+            | Self::LoadReg(_)
+            | Self::LoadSegBase(_)
+            | Self::Jump(_)
+            | Self::Return(_)
+            | Self::JumpRel(_)
+            | Self::CondJumpRel(_)
+            | Self::CallRel(_)
+            | Self::RetAdjusted(_)
+            | Self::Cpuid(_)
+            | Self::Xgetbv(_)
+            | Self::Rdtsc(_)
+            | Self::Syscall(_)
+            | Self::Trap(_)
+            | Self::Fence(_)
+            | Self::GuestPc(_)
+            | Self::InlineAsm(_)
+            | Self::FpConstant(_)
+            | Self::RspAdjust(_)
+            | Self::VecConstant(_)
+            | Self::LoadVecReg(_)
+            | Self::LoadVecRegHi(_)
+            | Self::RepStos(_)
+            | Self::RepMovs(_)
+            | Self::X87Load(_)
+            | Self::X87Pop(_) => {}
+        }
+    }
 }
 
 /// A basic block.
@@ -988,6 +1219,64 @@ pub const REP_MAX_BYTES_PER_CALL: u64 = 16 << 20;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_refs_shifts_operands_and_result() {
+        // r2 = r0 + r1  ->  shift by 10  ->  r12 = r10 + r11
+        let mut stmt = Stmt::new(
+            Some(2),
+            Op::BinOp(BinOp {
+                op: BinOpKind::Add,
+                lhs: 0,
+                rhs: 1,
+                size: OpSize::I64,
+            }),
+        );
+        stmt.map_refs(|r| r + 10);
+        assert_eq!(stmt.result, Some(12));
+        match stmt.op {
+            Op::BinOp(b) => {
+                assert_eq!((b.lhs, b.rhs), (10, 11));
+            }
+            _ => panic!("op changed"),
+        }
+    }
+
+    #[test]
+    fn map_refs_identity_is_a_noop_and_skips_non_ref_fields() {
+        // StoreReg names a register (not a ref) plus a value ref; only the ref
+        // moves. Constant has no refs at all.
+        let mut store = Stmt::new(
+            None,
+            Op::StoreReg(StoreReg {
+                reg: Gpr::Rax,
+                value: 3,
+                size: OpSize::I64,
+            }),
+        );
+        let before = store.clone();
+        store.map_refs(|r| r); // identity
+        assert_eq!(store, before);
+        store.map_refs(|r| r + 5);
+        match store.op {
+            Op::StoreReg(s) => {
+                assert_eq!(s.value, 8);
+                assert_eq!(s.reg, Gpr::Rax, "register index is not a ref");
+            }
+            _ => panic!("op changed"),
+        }
+
+        let mut konst = Stmt::new(
+            Some(0),
+            Op::Constant(Constant {
+                value: 0xDEAD,
+                size: OpSize::I32,
+            }),
+        );
+        konst.map_refs(|r| r + 100);
+        assert_eq!(konst.result, Some(100));
+        assert!(matches!(konst.op, Op::Constant(c) if c.value == 0xDEAD));
+    }
 
     #[test]
     fn op_size_bit_width() {
