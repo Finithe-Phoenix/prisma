@@ -69,15 +69,21 @@ backend + cache:
 - **#37** end-to-end proptest robustness fuzz (5th fuzz surface).
 - **#38** SMC support — `invalidate(addr)` + `clear_cache()`.
 
-**Next major feature (gated):** fusing a multi-instruction block into a SINGLE
-optimized SSA region (real cross-instruction optimization). The decoder numbers
-refs per-instruction (`alloc_ref = stmts.len()`), so this needs function-global
-SSA renumbering — a ref-remap over all 94 `Op` variants. That is correctness-
-critical and lives in codex's `prisma-ir` territory; it should be built (with a
-proptest-verified IR ref-visitor) in coordination with the decoder owner rather
-than rushed solo. x86 instructions communicate via registers (StoreReg/LoadReg),
-not SSA refs, which is why per-instruction blocks are correct today but do not
-optimize across instructions.
+- **#40** `translate_fused_block` + `prisma_ir::Op::map_refs` — **DONE**. Fuses a
+  straight-line run into a SINGLE optimized SSA region so the pipeline optimizes
+  ACROSS instruction boundaries. The blocker (the decoder numbers refs per
+  instruction) was solved with a function-global SSA ref-visitor over all 94
+  `Op` variants: exhaustive match (new variant = compile error), every shifted
+  field is `Ref`-typed (compiler rejects non-ref fields), and the 112 operand
+  assignments equal the 112 `Ref` fields. Each instruction's refs are renumbered
+  into a disjoint range before concatenation. Verified without execution: a
+  single-instruction fused block byte-matches the plain path (identity-renumber
+  correctness) and a fused block is never larger than the separately-translated
+  one (cross-instruction optimization can only shrink it).
+
+The shell processing chain is now a complete, optimizing Rust translation engine:
+decode -> renumber+fuse a block -> optimize across instructions -> lower -> cache,
+all behind `prisma-translator`, with robustness fuzzing on every stage.
 
 ## Currently active
 
