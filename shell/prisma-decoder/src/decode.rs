@@ -1769,6 +1769,69 @@ fn decode_group5(
     }
 }
 
+// MUL/IMUL (Group 3 /4,/5) and DIV/IDIV (/6,/7), register-direct only.
+// Mirrors the C++ MVP (`decode_mul_imul_from_rm` / `decode_div_from_rm`):
+// the operand is RAX-only, full 128-bit RDX:RAX is deferred — most
+// compiler output zero/sign-extends RDX first, so this covers the common
+// case. low/quotient -> RAX, high/remainder -> RDX.
+fn emit_rax_rdx_pair(
+    stmts: &mut Vec<Stmt>,
+    src_reg: Gpr,
+    size: OpSize,
+    lo_kind: BinOpKind,
+    hi_kind: BinOpKind,
+) {
+    let rax_ref = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(rax_ref),
+        Op::LoadReg(LoadReg {
+            reg: Gpr::Rax,
+            size,
+        }),
+    ));
+    let rhs_ref = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(rhs_ref),
+        Op::LoadReg(LoadReg { reg: src_reg, size }),
+    ));
+    let lo_ref = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lo_ref),
+        Op::BinOp(BinOp {
+            op: lo_kind,
+            lhs: rax_ref,
+            rhs: rhs_ref,
+            size,
+        }),
+    ));
+    let hi_ref = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(hi_ref),
+        Op::BinOp(BinOp {
+            op: hi_kind,
+            lhs: rax_ref,
+            rhs: rhs_ref,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: Gpr::Rax,
+            value: lo_ref,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: Gpr::Rdx,
+            value: hi_ref,
+            size,
+        }),
+    ));
+}
+
 fn decode_group3(
     prefixes: &PrefixSet,
     opcode: u8,
@@ -1983,6 +2046,18 @@ fn decode_group3(
                 ));
                 Ok(1 + used)
             }
+        }
+        // mul/imul (/4,/5) + div/idiv (/6,/7), register-direct only.
+        4..=7 if modrm.mod_ == 3 => {
+            let src_reg = map_reg(modrm.rm, &prefixes.rex, false);
+            let (lo_kind, hi_kind) = match modrm.reg {
+                4 => (BinOpKind::Mul, BinOpKind::UMulHi), // mul
+                5 => (BinOpKind::Mul, BinOpKind::SMulHi), // imul
+                6 => (BinOpKind::UDiv, BinOpKind::UMod),  // div
+                _ => (BinOpKind::SDiv, BinOpKind::SMod),  // idiv (7)
+            };
+            emit_rax_rdx_pair(stmts, src_reg, size, lo_kind, hi_kind);
+            Ok(2)
         }
         _ => Err(crate::DecodeError::UnsupportedOpcode(opcode)),
     }
@@ -10469,10 +10544,100 @@ mod tests {
 
     #[test]
     fn decode_group3_unsupported_subop() {
+        // /1 has no decode (only /0 is TEST here).
         assert_eq!(
-            decode_one(b"\xF7\xE0", 0),
+            decode_one(b"\xF7\xC8", 0),
             Err(crate::DecodeError::UnsupportedOpcode(0xF7))
         );
+    }
+
+    #[test]
+    fn decode_group3_muldiv_memory_form_deferred() {
+        // mul dword [rax] (F7 /4, mod=00): register-direct only, like the C++
+        // MVP — the memory form is still unsupported.
+        assert_eq!(
+            decode_one(b"\xF7\x20", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xF7))
+        );
+    }
+
+    #[test]
+    fn decode_group3_mul_imul_div_idiv_register_direct() {
+        // (reg digit, opcode byte) -> (low kind, high kind). All over rcx
+        // (REX.W F7 /digit, modrm = 11 <digit> 001).
+        let cases = [
+            (4u8, BinOpKind::Mul, BinOpKind::UMulHi), // mul rcx
+            (5u8, BinOpKind::Mul, BinOpKind::SMulHi), // imul rcx
+            (6u8, BinOpKind::UDiv, BinOpKind::UMod),  // div rcx
+            (7u8, BinOpKind::SDiv, BinOpKind::SMod),  // idiv rcx
+        ];
+        for (digit, lo, hi) in cases {
+            let modrm = 0xC0 | (digit << 3) | 0x01; // 11 <digit> 001 (rcx)
+            let d = decode_one(&[0x48, 0xF7, modrm], 0).unwrap();
+            assert_eq!(d.bytes_consumed, 3, "digit {digit}");
+            // LoadReg Rax, LoadReg Rcx, BinOp lo, BinOp hi, StoreReg Rax, StoreReg Rdx.
+            assert_eq!(
+                d.stmts[0],
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit}"
+            );
+            assert_eq!(
+                d.stmts[2],
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op: lo,
+                        lhs: 0,
+                        rhs: 1,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit}"
+            );
+            assert_eq!(
+                d.stmts[3],
+                Stmt::new(
+                    Some(3),
+                    Op::BinOp(BinOp {
+                        op: hi,
+                        lhs: 0,
+                        rhs: 1,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit}"
+            );
+            assert_eq!(
+                d.stmts[4],
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 2,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit}"
+            );
+            assert_eq!(
+                d.stmts[5],
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rdx,
+                        value: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+                "digit {digit}"
+            );
+        }
     }
 
     #[test]
