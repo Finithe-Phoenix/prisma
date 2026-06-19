@@ -262,8 +262,19 @@ pub fn decode_one_at(
         tables::OneByteOpcode::IoTrapDx => {
             decode_one_byte_trap(&prefixes, opcode, TrapKind::Sigill, &mut stmts)?
         }
-        tables::OneByteOpcode::Pushfq => decode_pushfq(&mut stmts),
-        tables::OneByteOpcode::Popfq => decode_popfq(&mut stmts),
+        tables::OneByteOpcode::Pushfq => {
+            // C++ rejects the 0x66 override, F3, and any REX for 9C/9D.
+            if prefixes.operand_override || prefixes.rep == Some(0xF3) || prefixes.rex.present {
+                return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+            }
+            decode_pushfq(&mut stmts)
+        }
+        tables::OneByteOpcode::Popfq => {
+            if prefixes.operand_override || prefixes.rep == Some(0xF3) || prefixes.rex.present {
+                return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+            }
+            decode_popfq(&mut stmts)
+        }
         tables::OneByteOpcode::Nop => {
             if prefixes.rep == Some(0xF3)
                 && !prefixes.rex.present
@@ -11967,6 +11978,29 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn decode_pushfq_popfq_reject_prefixes() {
+        // C++ rejects the 0x66 override, F3, and any REX for 9C/9D.
+        for prog in [
+            &b"\x66\x9C"[..], // operand-size override
+            &b"\xF3\x9C"[..], // F3
+            &b"\x48\x9C"[..], // REX.W
+        ] {
+            assert_eq!(
+                decode_one(prog, 0),
+                Err(crate::DecodeError::UnsupportedOpcode(0x9C)),
+                "pushfq prefix {prog:02X?}"
+            );
+        }
+        for prog in [&b"\x66\x9D"[..], &b"\xF3\x9D"[..], &b"\x48\x9D"[..]] {
+            assert_eq!(
+                decode_one(prog, 0),
+                Err(crate::DecodeError::UnsupportedOpcode(0x9D)),
+                "popfq prefix {prog:02X?}"
+            );
+        }
     }
 
     #[test]
