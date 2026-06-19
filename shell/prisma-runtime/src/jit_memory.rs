@@ -95,7 +95,7 @@ mod platform {
         // SAFETY: sysconf with a valid name returns the page size or -1.
         let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         if ps > 0 {
-            ps as usize
+            usize::try_from(ps).unwrap_or(4096)
         } else {
             4096
         }
