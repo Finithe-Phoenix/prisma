@@ -4,22 +4,51 @@ Guía para futuras sesiones de AI trabajando en este repositorio.
 
 ## Snapshot operativo actual
 
-Ultima actualizacion: 2026-05-30 America/Mexico_City.
+Ultima actualizacion: 2026-06-19 America/Mexico_City.
 
-- Esta rama integra la linea avanzada de trabajo `claude/hopeful-taussig-051239`
-  sobre `main`, con los conflictos resueltos a favor del estado tecnico mas
-  nuevo de core/backlog/docs.
+- **Estado del proyecto:** ver [docs/STATUS.md](docs/STATUS.md) (mapa con
+  evidencia archivo:linea) y [docs/ROADMAP.md](docs/ROADMAP.md) (plan completo
+  por fases + pila de tareas). Tecnicamente estamos a **mitad de Fase 2**: el
+  core C++ es un DBT x86->ARM64 funcional que **JIT-ejecuta en ARM64 real**;
+  hay una migracion a Rust en marcha (`shell/`, RFC 0015) con el primer motor
+  de traduccion integrado `prisma-translator` (decode -> optimizar -> lower ->
+  cache + fusion de bloques con renumeracion SSA).
+- **Toolchain en la maquina Windows de Danny:** ya hay `cargo` nativo (1.96+).
+  El workspace `shell/` completo compila, testea, fmt y clippea en local. El
+  build script de los crates FFI tolera la ausencia del DLL, asi que
+  `cargo clippy --workspace --all-targets -D warnings` corre el gate completo
+  sin el DLL C++ (solo el *link* de los tests FFI lo necesita). Los paths
+  `#[cfg(unix)]` no compilan en Windows: esos lints solo afloran en `ffi-link`
+  (Linux) de CI. No hay cmake/ninja/clang/lake nativos: para C++/Lean usar CI o
+  Docker.
 - `docs/BACKLOG.md` ya no debe contener marcadores `pending commit`; si aparece
   uno nuevo, auditarlo antes de tomar mas trabajo.
-- F1-IR-003/004/005 ya estan cerrados en la linea avanzada mediante
-  `a1ee74c`: `Flags`, `WriteFlags`, `ReadFlag` y `CondJumpFlags` con flags
-  explicitos.
 - Los workflows deben correr en todo PR para poder ser required checks sin
   quedarse en `Pending` por path filters. Los contexts esperados son
-  `core-build`, `asan-ubsan`, `tsan`, `ir-spec-build`, `markdownlint`,
-  `check-rfc-frontmatter`, `shell-check` y `benchmarks-smoke`.
+  `core-build`, `core-build-arm64`, `asan-ubsan`, `tsan`, `ir-spec-build`,
+  `ffi-link`, `ffi-link-arm64`, `ffi-link-windows`, `markdownlint`,
+  `check-rfc-frontmatter`, `shell-check` y `benchmarks-smoke`. **`ffi-link`
+  (ubuntu) es el gate real cross-language** (clippy --workspace + test
+  --workspace contra el DLL C++ via RFC 0014). `ffi-link-windows` esta fijado a
+  `windows-2022` (el runner `windows-latest` perdio Visual Studio 2022).
 - Antes de empujar a `main`, validar en una rama/PR de integracion y esperar
   GitHub Actions verde.
+
+## Trabajo con agentes en paralelo
+
+El trabajo de programacion se organiza con **agentes en paralelo** sobre
+fronteras de archivos cerradas (ver [docs/ROADMAP.md](docs/ROADMAP.md) §1 y
+[docs/COORDINATION.md](docs/COORDINATION.md)):
+
+- Fan-out tipico para una familia de instrucciones nueva: 1 agente decoder, 1
+  backend/lowering, 1 tests/differential — sincronizados por el IR. Ningun
+  agente toca el modulo de otro.
+- Fan-out para revision/auditoria: N agentes por dimension (correctness,
+  seguridad, perf) + verificacion adversarial + sintesis.
+- Cada agente declara ownership en `docs/BACKLOG.md` (`[~|<agente>]`) y commitea
+  el claim antes de tocar codigo; al terminar marca `[x] (<sha>)`.
+- Split de territorio: Claude dirige emitter + passes + lowerer + cache +
+  runtime + infra CI; Codex dirige decoder + IR variants + dispatcher + backend.
 
 ## Contexto del proyecto
 
