@@ -3,9 +3,11 @@
 // Combines the decoder, optimization passes, ARM64 lowerer, and translation
 // cache into one entry point: bytes in, optimized ARM64 machine code out,
 // memoized by (guest_addr, content hash). Mirrors the C++ `prisma_translator`
-// facade. Currently translates a single guest instruction per call; chaining a
-// straight-line block (which needs function-global SSA renumbering) is the
-// documented follow-up.
+// facade. `translate` handles one guest instruction; `translate_block` chains a
+// straight-line run up to the next control transfer, caching each instruction
+// independently. Fusing a block into a single optimized region (which needs
+// function-global SSA renumbering across instructions) is the documented
+// follow-up.
 
 #![deny(unsafe_op_in_unsafe_fn, unused_must_use)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
@@ -14,9 +16,9 @@
 use prisma_backend::lowerer::{LowerError, Lowerer};
 use prisma_cache::cache::{fnv1a_64, LookupResult};
 use prisma_cache::{CacheEntry, TranslationCache};
-use prisma_decoder::decode::decode_one_at;
+use prisma_decoder::decode::{decode_one_at, Decoded};
 use prisma_decoder::DecodeError;
-use prisma_ir::{BasicBlock, Function};
+use prisma_ir::{BasicBlock, Function, Op};
 use prisma_passes::pipeline::{default_pipeline, PassPipeline};
 
 /// A translated guest instruction: the ARM64 machine code plus how many guest
@@ -26,6 +28,37 @@ pub struct Translation {
     pub code: Vec<u8>,
     pub guest_bytes: usize,
     pub from_cache: bool,
+}
+
+/// A translated straight-line block: the concatenated ARM64 code and how it
+/// ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockTranslation {
+    pub code: Vec<u8>,
+    pub instruction_count: usize,
+    pub guest_bytes: usize,
+    /// True if the block ended on a control-transfer instruction (rather than
+    /// the byte budget, instruction cap, or a mid-run decode failure).
+    pub ended_at_terminator: bool,
+}
+
+/// Whether `op` transfers control and therefore ends a basic block.
+fn is_terminator(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Return(_)
+            | Op::Jump(_)
+            | Op::JumpReg(_)
+            | Op::JumpRel(_)
+            | Op::CondJump(_)
+            | Op::CondJumpRel(_)
+            | Op::CondJumpFlags(_)
+            | Op::CallRel(_)
+            | Op::CallReg(_)
+            | Op::RetAdjusted(_)
+            | Op::Trap(_)
+            | Op::Syscall(_)
+    )
 }
 
 /// Errors from the translation pipeline.
@@ -71,8 +104,67 @@ impl Translator {
         bytes: &[u8],
     ) -> Result<Translation, TranslateError> {
         let decoded = decode_one_at(bytes, 0, guest_addr).map_err(TranslateError::Decode)?;
-        let insn = &bytes[..decoded.bytes_consumed];
+        self.translate_decoded(guest_addr, bytes, &decoded)
+    }
 
+    /// Translate a straight-line run of instructions starting at `guest_addr`
+    /// into one concatenated ARM64 block, stopping at the first control-transfer
+    /// instruction, when `bytes` is exhausted, or after `max_insns` (a guard
+    /// against pathological runs). Each instruction is translated and cached
+    /// independently. An undecodable byte mid-run ends the block; an
+    /// undecodable first instruction is an error.
+    ///
+    /// # Errors
+    /// [`TranslateError`] from the first instruction if it cannot be decoded or
+    /// lowered.
+    pub fn translate_block(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+        max_insns: usize,
+    ) -> Result<BlockTranslation, TranslateError> {
+        let mut code = Vec::new();
+        let mut offset = 0usize;
+        let mut pc = guest_addr;
+        let mut instruction_count = 0usize;
+        let mut ended_at_terminator = false;
+
+        while offset < bytes.len() && instruction_count < max_insns {
+            let decoded = match decode_one_at(bytes, offset, pc) {
+                Ok(d) => d,
+                Err(e) => {
+                    if instruction_count == 0 {
+                        return Err(TranslateError::Decode(e));
+                    }
+                    break;
+                }
+            };
+            let insn = &bytes[offset..offset + decoded.bytes_consumed];
+            let translation = self.translate_decoded(pc, insn, &decoded)?;
+            code.extend_from_slice(&translation.code);
+            instruction_count += 1;
+            offset += decoded.bytes_consumed;
+            pc = pc.wrapping_add(decoded.bytes_consumed as u64);
+            if decoded.stmts.iter().any(|s| is_terminator(&s.op)) {
+                ended_at_terminator = true;
+                break;
+            }
+        }
+
+        Ok(BlockTranslation {
+            code,
+            instruction_count,
+            guest_bytes: offset,
+            ended_at_terminator,
+        })
+    }
+
+    fn translate_decoded(
+        &mut self,
+        guest_addr: u64,
+        insn: &[u8],
+        decoded: &Decoded,
+    ) -> Result<Translation, TranslateError> {
         if let LookupResult::Hit(entry) = self.cache.lookup(guest_addr, insn) {
             return Ok(Translation {
                 code: entry.code_bytes.into_vec(),
@@ -85,7 +177,7 @@ impl Translator {
             entry: 0,
             blocks: vec![BasicBlock {
                 id: 0,
-                stmts: decoded.stmts,
+                stmts: decoded.stmts.clone(),
             }],
         };
         let optimized = self.pipeline.run(func);
@@ -181,5 +273,72 @@ mod tests {
             t.translate(0x6000, &[]),
             Err(TranslateError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn translate_block_stops_at_terminator() {
+        // mov rax, rcx ; add rax, 0x10 ; ret
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(ADD_RAX_IMM8);
+        prog.push(0xC3); // ret
+
+        let mut t = Translator::new();
+        let block = t.translate_block(0x7000, &prog, 64).unwrap();
+        assert!(block.ended_at_terminator);
+        assert_eq!(block.instruction_count, 3);
+        assert_eq!(block.guest_bytes, prog.len());
+        // Each guest instruction cached independently.
+        assert_eq!(t.cached_count(), 3);
+        // Concatenated code is the sum of the per-instruction translations.
+        assert!(!block.code.is_empty());
+        assert_eq!(block.code.len() % 4, 0);
+    }
+
+    #[test]
+    fn translate_block_honours_instruction_cap() {
+        // Three movs, no terminator; cap at 2 instructions.
+        let mut prog = Vec::new();
+        for _ in 0..3 {
+            prog.extend_from_slice(MOV_RAX_RCX);
+        }
+        let mut t = Translator::new();
+        let block = t.translate_block(0x8000, &prog, 2).unwrap();
+        assert!(!block.ended_at_terminator);
+        assert_eq!(block.instruction_count, 2);
+        assert_eq!(block.guest_bytes, MOV_RAX_RCX.len() * 2);
+    }
+
+    #[test]
+    fn translate_block_runs_to_end_without_terminator() {
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(ADD_RAX_IMM8);
+
+        let mut t = Translator::new();
+        let block = t.translate_block(0x9000, &prog, 64).unwrap();
+        assert!(!block.ended_at_terminator);
+        assert_eq!(block.instruction_count, 2);
+        assert_eq!(block.guest_bytes, prog.len());
+    }
+
+    #[test]
+    fn translate_block_first_instruction_error_propagates() {
+        let mut t = Translator::new();
+        // A lone REX.W prefix has no opcode byte: a truncated first instruction.
+        assert!(matches!(
+            t.translate_block(0xA000, &[0x48], 64),
+            Err(TranslateError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn translate_block_on_empty_input_is_an_empty_block() {
+        let mut t = Translator::new();
+        let block = t.translate_block(0xB000, &[], 64).unwrap();
+        assert_eq!(block.instruction_count, 0);
+        assert_eq!(block.guest_bytes, 0);
+        assert!(block.code.is_empty());
+        assert!(!block.ended_at_terminator);
     }
 }
