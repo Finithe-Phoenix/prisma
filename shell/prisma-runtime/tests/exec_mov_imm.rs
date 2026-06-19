@@ -13,7 +13,9 @@
 //!   - MOV r8, imm8     (B0+r)
 //!   - MOV r/m8, imm8   (C6 /0, register form)
 
-use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, ExecError};
+#[cfg(not(target_arch = "aarch64"))]
+use prisma_runtime::executor::ExecError;
+use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame};
 use prisma_translator::Translator;
 
 #[test]

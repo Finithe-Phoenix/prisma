@@ -6,7 +6,9 @@
 //! every other host the translate + W^X install path runs and the call is
 //! skipped with `WrongArch` — the same gate the C++ e2e corpus uses.
 
-use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, ExecError};
+#[cfg(not(target_arch = "aarch64"))]
+use prisma_runtime::executor::ExecError;
+use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame};
 use prisma_translator::Translator;
 
 /// Translate `program` at `addr` into a non-empty fused ARM64 block.

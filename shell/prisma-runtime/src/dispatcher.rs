@@ -941,6 +941,8 @@ mod tests {
                 ldr_w_unsigned(9, 27, 64),
                 rev_w(10, 9),
                 str_w_unsigned(10, 27, 64),
+                // 32-bit write zero-extends: clear the upper word of r8's slot.
+                str_w_unsigned(31, 27, 68),
             ]))
         );
         assert_eq!(
@@ -959,6 +961,8 @@ mod tests {
                 ldr_w_unsigned(10, 9, 0),
                 rev_w(11, 10),
                 str_w_unsigned(11, 27, 8),
+                // 32-bit write zero-extends: clear the upper word of rcx's slot.
+                str_w_unsigned(31, 27, 12),
             ]))
         );
         assert_eq!(
