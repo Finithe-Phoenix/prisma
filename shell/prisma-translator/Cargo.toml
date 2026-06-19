@@ -1,0 +1,16 @@
+[package]
+name = "prisma-translator"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma translation facade — decode -> optimize -> lower -> cache, all in Rust"
+
+[dependencies]
+prisma-ir = { path = "../prisma-ir" }
+prisma-decoder = { path = "../prisma-decoder" }
+prisma-passes = { path = "../prisma-passes" }
+prisma-backend = { path = "../prisma-backend" }
+prisma-cache = { path = "../prisma-cache" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
