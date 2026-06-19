@@ -53,6 +53,32 @@ a proptest robustness harness. KEY: the FFI crates' build.rs tolerates a missing
 `PRISMA_CORE_LIB_DIR`, so `cargo clippy --workspace --all-targets -D warnings`
 runs the full gate locally without the C++ DLL (only the test *link* needs it).
 
+### Feature arc — `prisma-translator`, the integrated Rust engine (PRs #34-#38)
+
+New crate `shell/prisma-translator` — the first end-to-end Rust translation
+pipeline (the facade the plan/C++ describe), combining decoder + passes +
+backend + cache:
+
+- **#34** `Translator::translate(addr, bytes)` = decode -> default_pipeline ->
+  lower to ARM64 -> cache (FNV-1a keyed). First Rust path to run the optimizer
+  and the translation cache end to end.
+- **#35** `translate_block(addr, bytes, max_insns)` — translate a straight-line
+  run to the next control transfer, caching each instruction independently
+  (`is_terminator` over control-flow ops).
+- **#36** `TranslatorStats` (cache_hits/misses) + `set_cache_limits`.
+- **#37** end-to-end proptest robustness fuzz (5th fuzz surface).
+- **#38** SMC support — `invalidate(addr)` + `clear_cache()`.
+
+**Next major feature (gated):** fusing a multi-instruction block into a SINGLE
+optimized SSA region (real cross-instruction optimization). The decoder numbers
+refs per-instruction (`alloc_ref = stmts.len()`), so this needs function-global
+SSA renumbering — a ref-remap over all 94 `Op` variants. That is correctness-
+critical and lives in codex's `prisma-ir` territory; it should be built (with a
+proptest-verified IR ref-visitor) in coordination with the decoder owner rather
+than rushed solo. x86 instructions communicate via registers (StoreReg/LoadReg),
+not SSA refs, which is why per-instruction blocks are correct today but do not
+optimize across instructions.
+
 ## Currently active
 
 Branch: `main`. Decoder-gap-sweep merged (7294673), branches cleaned up.
