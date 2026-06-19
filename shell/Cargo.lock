@@ -392,6 +392,20 @@ dependencies = [
  "prisma-cache",
  "prisma-decoder",
  "prisma-ir",
+ "prisma-translator",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "prisma-translator"
+version = "0.1.0"
+dependencies = [
+ "prisma-backend",
+ "prisma-cache",
+ "prisma-decoder",
+ "prisma-ir",
+ "prisma-passes",
  "proptest",
  "thiserror",
 ]
