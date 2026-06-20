@@ -181,6 +181,16 @@ theorem propagate_cons (s : TSO) (t : Tid) (a : Addr) (v : Val) (r : StoreBuffer
 @[simp] theorem fence_sb (s : TSO) (t : Tid) : (s.fence t).sb t = [] := by
   simp [fence]
 
+/-- **F1-LN-015 — a fence restores the Write→Read order.** After a fence the
+    issuing core's buffer is empty (`fence_sb`), so a subsequent load reads
+    shared memory directly: no earlier store of `t` can still be observed
+    *after* this load. This is exactly the guarantee `mfence` / a `lock`
+    prefix provides, and the reason the TSO-adaptive rewrite (Pillar 3) must
+    keep a barrier wherever the W→R relaxation would otherwise be observable. -/
+theorem load_after_fence (s : TSO) (t : Tid) (a : Addr) :
+    (s.fence t).load t a = (s.fence t).mem a := by
+  simp [load, sbLatest]
+
 /-- **SB via the operational semantics.** From a zeroed machine, two `issue`
     steps — core 0 stores `x := 1` (addr 0), core 1 stores `y := 1` (addr 1) —
     reach, through `Steps`, a state in which each core's load of the OTHER
