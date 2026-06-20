@@ -47,9 +47,9 @@ pub const fn classify(number: u32) -> SyscallClass {
         }
         // Memory
         9 | 10 | 11 | 12 | 25 | 28 => SyscallClass::Memory,
-        // Process lifecycle / identity: getpid, exit, getppid, getpgrp,
-        // exit_group, wait4.
-        39 | 60 | 61 | 110 | 111 | 231 => SyscallClass::Process,
+        // Process lifecycle / identity: getpid, gettid, exit, getppid,
+        // getpgrp, exit_group, wait4.
+        39 | 60 | 61 | 110 | 111 | 186 | 231 => SyscallClass::Process,
         // Signals
         13 | 14 | 15 | 127 | 128 => SyscallClass::Signal,
         // Threading / TLS / futex
@@ -135,16 +135,20 @@ impl SyscallHandler {
 
     /// Classify and admit a syscall under the active policy.
     ///
-    /// Real execution is not wired yet: a permitted, modelled syscall returns
-    /// `Ok(0)` as a placeholder result, while unknown numbers under a
-    /// deny-by-default policy are rejected with `Unsupported`. This gives the
-    /// dispatcher a typed boundary to build real handlers behind without
-    /// changing call sites later.
+    /// The first real handlers are the process-identity calls: `getpid` (39)
+    /// and `gettid` (186) return the host process id, because the translator
+    /// runs the guest *inside* the host process — that is the correct answer a
+    /// guest observes (single-threaded guests have tid == pid, matching the
+    /// C++ runtime). Every other modelled syscall still returns `Ok(0)` as a
+    /// placeholder; unknown numbers under a deny-by-default policy are rejected.
     ///
     /// # Errors
     /// Returns [`SyscallError::Unsupported`] when the number is not modelled
     /// and the policy denies unknown syscalls.
-    pub const fn dispatch(&self, number: u32, _args: &[u64; 6]) -> Result<u64, SyscallError> {
+    pub fn dispatch(&self, number: u32, _args: &[u64; 6]) -> Result<u64, SyscallError> {
+        if number == 39 || number == 186 {
+            return Ok(u64::from(std::process::id()));
+        }
         if is_known(number) {
             Ok(0)
         } else if self.policy.deny_unknown {
@@ -209,5 +213,21 @@ mod tests {
     fn is_known_matches_classification() {
         assert!(is_known(0) && is_known(60) && is_known(202));
         assert!(!is_known(0x0FFF_FFFF));
+    }
+
+    #[test]
+    fn gettid_is_now_classified() {
+        assert_eq!(classify(186), SyscallClass::Process); // gettid
+        assert!(is_known(186));
+    }
+
+    #[test]
+    fn getpid_and_gettid_return_the_host_pid() {
+        let h = SyscallHandler::new();
+        let args = [0u64; 6];
+        let pid = u64::from(std::process::id());
+        assert_eq!(h.dispatch(39, &args), Ok(pid)); // getpid
+        assert_eq!(h.dispatch(186, &args), Ok(pid)); // gettid (== pid, single-threaded)
+        assert_ne!(pid, 0); // a real pid, not the placeholder
     }
 }
