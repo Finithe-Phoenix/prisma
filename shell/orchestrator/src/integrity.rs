@@ -1,6 +1,9 @@
 //! sha256 verification of downloaded artefacts (Wine bundles,
 //! DXVK / VKD3D binaries, future translation cache slabs).
 
+use std::io::Read;
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -40,6 +43,30 @@ impl Sha256Hash {
         }
         Ok(Self(arr))
     }
+
+    /// Hash a file by streaming it in fixed-size chunks.
+    ///
+    /// Reads through an 8 KiB window, so memory stays constant no matter how
+    /// large the artefact is — a downloaded Wine/DXVK bundle can be hundreds of
+    /// MB, and must never be slurped whole into RAM just to be hashed.
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, IntegrityError> {
+        let mut f = std::fs::File::open(path).map_err(|e| IntegrityError::Io(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut window = [0u8; 8 * 1024];
+        loop {
+            let n = f
+                .read(&mut window)
+                .map_err(|e| IntegrityError::Io(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&window[..n]);
+        }
+        let out = hasher.finalize();
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&out);
+        Ok(Self(arr))
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -50,11 +77,29 @@ pub enum IntegrityError {
     BadHexChar,
     #[error("hash mismatch: expected {expected}, got {actual}")]
     Mismatch { expected: String, actual: String },
+    #[error("I/O error reading artefact: {0}")]
+    Io(String),
 }
 
 /// Verify that `bytes` hashes to `expected`.
 pub fn verify(bytes: &[u8], expected: &Sha256Hash) -> Result<(), IntegrityError> {
     let actual = Sha256Hash::from_bytes(bytes);
+    if &actual == expected {
+        Ok(())
+    } else {
+        Err(IntegrityError::Mismatch {
+            expected: expected.to_hex(),
+            actual: actual.to_hex(),
+        })
+    }
+}
+
+/// Verify a file on disk against `expected`, streaming it in bounded memory.
+///
+/// The download path for components (Wine/DXVK/VKD3D bundles): hash the file
+/// without loading it whole, then compare. Errors on I/O failure or mismatch.
+pub fn verify_file<P: AsRef<Path>>(path: P, expected: &Sha256Hash) -> Result<(), IntegrityError> {
+    let actual = Sha256Hash::from_file(path)?;
     if &actual == expected {
         Ok(())
     } else {
@@ -115,5 +160,48 @@ mod tests {
     fn from_hex_rejects_non_hex() {
         let bad = "z".repeat(64);
         assert_eq!(Sha256Hash::from_hex(&bad), Err(IntegrityError::BadHexChar));
+    }
+
+    #[test]
+    fn from_file_matches_from_bytes() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"prisma-artefact").unwrap();
+        assert_eq!(
+            Sha256Hash::from_file(tmp.path()).unwrap(),
+            Sha256Hash::from_bytes(b"prisma-artefact")
+        );
+    }
+
+    #[test]
+    fn from_file_streams_across_chunk_boundaries() {
+        // > 64 KiB so the read loop runs several windows; the streamed hash
+        // must equal the one-shot hash of the same bytes (the property that a
+        // chunk-boundary bug would break).
+        let big: Vec<u8> = b"prisma".iter().cycle().take(200_000).copied().collect();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &big).unwrap();
+        assert_eq!(
+            Sha256Hash::from_file(tmp.path()).unwrap(),
+            Sha256Hash::from_bytes(&big)
+        );
+    }
+
+    #[test]
+    fn verify_file_accepts_and_rejects() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"bundle").unwrap();
+        assert!(verify_file(tmp.path(), &Sha256Hash::from_bytes(b"bundle")).is_ok());
+        assert!(matches!(
+            verify_file(tmp.path(), &Sha256Hash::from_bytes(b"tampered")),
+            Err(IntegrityError::Mismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn from_file_missing_errors() {
+        assert!(matches!(
+            Sha256Hash::from_file("/no/such/artefact.bin"),
+            Err(IntegrityError::Io(_))
+        ));
     }
 }
