@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::config::ContainerConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Container {
     pub name: String,
@@ -59,6 +61,25 @@ impl Container {
             .map_err(|e| ContainerError::PrefixRemove(self.prefix_path.clone(), e.to_string()))
     }
 
+    /// Path to this container's persisted config file inside its prefix.
+    #[must_use]
+    pub fn config_path(&self) -> PathBuf {
+        self.prefix_path.join(ContainerConfig::FILE_NAME)
+    }
+
+    /// Persist `cfg` into this container's prefix (atomic write via
+    /// [`ContainerConfig::save_to_file`]).
+    pub fn save_config(&self, cfg: &ContainerConfig) -> Result<(), ContainerError> {
+        cfg.save_to_file(self.config_path())
+            .map_err(|e| ContainerError::Config(e.to_string()))
+    }
+
+    /// Load this container's persisted config from its prefix.
+    pub fn load_config(&self) -> Result<ContainerConfig, ContainerError> {
+        ContainerConfig::load_from_file(self.config_path())
+            .map_err(|e| ContainerError::Config(e.to_string()))
+    }
+
     pub const fn start(&self) -> Result<(), ContainerError> {
         Err(ContainerError::NotImplemented("Container::start"))
     }
@@ -77,6 +98,9 @@ pub enum ContainerError {
 
     #[error("failed to remove prefix directory {0}: {1}")]
     PrefixRemove(PathBuf, String),
+
+    #[error("container config error: {0}")]
+    Config(String),
 
     #[error("operation not implemented yet: {0}")]
     NotImplemented(&'static str),
@@ -158,5 +182,28 @@ mod tests {
         std::fs::write(prefix.join("sub").join("nested"), b"x").unwrap();
         c.destroy().expect("destroy populated");
         assert!(!prefix.exists());
+    }
+
+    #[test]
+    fn save_then_load_config_roundtrips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let c = Container::new("a", tmp.path().join("prefix"));
+        c.create().expect("create");
+        let cfg = ContainerConfig {
+            dxvk_version: Some("2.5".to_owned()),
+            use_esync: false,
+            ..ContainerConfig::default()
+        };
+        c.save_config(&cfg).expect("save_config");
+        assert!(c.config_path().exists());
+        assert_eq!(c.load_config().expect("load_config"), cfg);
+    }
+
+    #[test]
+    fn load_config_before_save_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let c = Container::new("a", tmp.path().join("prefix"));
+        c.create().expect("create");
+        assert!(matches!(c.load_config(), Err(ContainerError::Config(_))));
     }
 }
