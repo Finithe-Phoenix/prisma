@@ -66,6 +66,35 @@ El manifiesto técnico y las decisiones estratégicas están en [PROYECTO_PLAN_E
 
 4. **Honest failure mode.** Los decision points del plan son reales. Si un pilar no funciona, publicar resultados negativos honestamente. No esconder ni glosar.
 
+## Cláusula obligatoria: disciplina de memoria y recursos
+
+**SIEMPRE liberar la memoria y los recursos del SO de forma determinista.** No es
+opcional. El servidor (runtime host / backend P2P en `server/`) se reinicia, y un
+recurso filtrado **no debe sobrevivir un reinicio, filtrarse entre reinicios, ni
+corromper el estado**.
+
+Aplica a todos los recursos sensibles a reinicio que Prisma maneja:
+
+- **Memoria ejecutable JIT** (MAP_JIT / mmap / `ExecBuffer` / `JitSlabPool`): los
+  buffers W^X se desmapean en su `Drop` / al evictar.
+- **Mapeos del guest** (PE loader, espacio de direcciones invitado).
+- **File handles y archivos de la translation cache** (RFC 0007): flush + close
+  limpio.
+- **Entradas en memoria de la cache**: liberadas en eviction LRU/byte-budget y en
+  `clear_cache` / invalidación SMC.
+
+Reglas:
+
+- Cada allocación tiene un dueño cuyo `Drop` (Rust) / destructor RAII (C++) la
+  libera. Preferir RAII sobre free manual. **Nada de leaks.**
+- Las rutas de shutdown/restart liberan **explícitamente** (flush → close →
+  unmap); no confiar en que la salida del proceso reclame (un reinicio puede no
+  ser una salida limpia).
+- Nada de `mem::forget` (Rust) ni ownership-leak sobre un recurso del SO sin
+  justificación documentada en `docs/rfc/`.
+- Código nuevo que asigna memoria ejecutable / mmaps / fds debe añadir el `Drop` +
+  un test (o chequeo ASan/leak) de que el recurso se libera.
+
 ## Convenciones de código
 
 - **C++**: C++20, concepts, std::span, std::atomic_ref. Estilo Google con tabwidth 2 spaces. Clang-format + clang-tidy obligatorio.
