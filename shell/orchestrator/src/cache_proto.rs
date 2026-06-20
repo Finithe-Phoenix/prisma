@@ -194,4 +194,29 @@ mod tests {
             Err(CacheVerifyError::DecompressTooLarge(64))
         ));
     }
+
+    proptest::proptest! {
+        /// `verify` on an arbitrary peer entry never panics and stays bounded.
+        /// A malicious peer controls `code_bytes` and the `compressed` flag;
+        /// whatever it sends, the trust gate must reject it cleanly (mismatch,
+        /// decompress-failed, or too-large) — never crash or over-allocate.
+        #[test]
+        fn verify_never_panics_on_arbitrary_entry(
+            code in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+            compressed in proptest::prelude::any::<bool>(),
+            seed in proptest::prelude::any::<u64>(),
+        ) {
+            let e = CacheEntry {
+                guest_addr: 0,
+                content_hash: 0,
+                guest_size: 0,
+                code_sha256: Sha256Hash::from_bytes(&seed.to_le_bytes()),
+                code_bytes: code,
+                compressed,
+            };
+            // Small ceiling keeps the fuzz itself bounded; the real cap is
+            // exercised by the unit test above.
+            let _ = e.verify_bounded(4096);
+        }
+    }
 }
