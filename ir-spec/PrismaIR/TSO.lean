@@ -146,6 +146,23 @@ theorem load_store_diff_addr (s : TSO) (t t' : Tid) (a b : Addr) (v : Val)
   · simp only [load, store, upd]
     rw [if_neg ht]
 
+/-- **Independent stores commute.** Two same-core stores to distinct addresses
+    leave the core observing identical values regardless of their order — the
+    formal licence for a rewrite to reorder writes to disjoint locations
+    (TSO keeps W→W program order, but on disjoint addresses that order is
+    unobservable). -/
+theorem store_store_commute (s : TSO) (t : Tid) (a b : Addr) (v w : Val)
+    (hab : a ≠ b) (c : Addr) :
+    ((s.store t a v).store t b w).load t c
+      = ((s.store t b w).store t a v).load t c := by
+  simp only [load, store, upd_same, sbLatest, List.foldl_append, List.foldl_cons,
+    List.foldl_nil]
+  by_cases hca : c = a
+  · subst hca; simp [Ne.symm hab]
+  · by_cases hcb : c = b
+    · subst hcb; simp [hab]
+    · simp [Ne.symm hca, Ne.symm hcb]
+
 /-- A store never modifies shared memory. -/
 @[simp] theorem store_mem (s : TSO) (t : Tid) (a : Addr) (v : Val) :
     (s.store t a v).mem = s.mem := rfl
