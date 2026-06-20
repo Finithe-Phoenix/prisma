@@ -49,6 +49,10 @@ def upd {α : Type} [DecidableEq α] {β : Type} (f : α → β) (x : α) (y : �
     (f : α → β) {x x' : α} (y : β) (h : x' ≠ x) : upd f x y x' = f x' := by
   simp [upd, h]
 
+@[simp] theorem upd_idem {α : Type} [DecidableEq α] {β : Type}
+    (f : α → β) (x : α) (a b : β) : upd (upd f x a) x b = upd f x b := by
+  funext x'; by_cases h : x' = x <;> simp [upd, h]
+
 /-- A core's FIFO store buffer: oldest entry at the head, newest appended at
     the tail. Each entry is a pending `(address, value)` store. -/
 abbrev StoreBuffer := List (Addr × Val)
@@ -212,6 +216,12 @@ theorem propagate_cons (s : TSO) (t : Tid) (a : Addr) (v : Val) (r : StoreBuffer
 /-- A fence empties the issuing core's buffer, so its subsequent loads read
     only shared memory — the post-fence ordering F1-LN-015 builds on. -/
 @[simp] theorem fence_sb (s : TSO) (t : Tid) : (s.fence t).sb t = [] := by
+  simp [fence]
+
+/-- **A second fence is redundant.** Fencing an already-fenced core is a no-op
+    (its buffer is already empty), so a rewrite may drop back-to-back barriers
+    on the same core. -/
+theorem fence_idempotent (s : TSO) (t : Tid) : (s.fence t).fence t = s.fence t := by
   simp [fence]
 
 /-- **F1-LN-015 — a fence restores the Write→Read order.** After a fence the
