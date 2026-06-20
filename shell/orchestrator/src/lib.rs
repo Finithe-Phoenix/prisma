@@ -10,6 +10,8 @@
 //!
 //! - [`container`]   — `Container { name, prefix_path, ... }` value
 //!   type and its [`ContainerError`].
+//! - [`registry`]    — directory-backed catalogue of containers under
+//!   a root (list / create / remove).
 //! - [`config`]      — TOML-backed per-container configuration.
 //! - [`integrity`]   — sha256 verification of downloaded artefacts.
 //! - [`cache_proto`] — shared types for the future P2P translation
@@ -34,6 +36,7 @@ pub mod config;
 pub mod container;
 pub mod integrity;
 pub mod pe_loader;
+pub mod registry;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
