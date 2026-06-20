@@ -38,7 +38,10 @@ pub struct CpuStateFrame {
     pub fs_base: u64,
     /// `GS` segment base.
     pub gs_base: u64,
-    _tail: [u8; 64],
+    /// Persistent x86 carry flag (0 or 1) at byte offset 808, matching the
+    /// lowerer's `CF_OFFSET`. Used by multi-precision ADC/SBB.
+    pub cf: u64,
+    _tail: [u8; 56],
 }
 
 impl Default for CpuStateFrame {
@@ -48,7 +51,8 @@ impl Default for CpuStateFrame {
             _reserved: [0; FS_BASE_OFFSET - GPR_BYTES],
             fs_base: 0,
             gs_base: 0,
-            _tail: [0; 64],
+            cf: 0,
+            _tail: [0; 56],
         }
     }
 }
@@ -183,6 +187,10 @@ mod tests {
                     .cast::<u8>()
                     .offset_from(base),
                 800
+            );
+            assert_eq!(
+                std::ptr::addr_of!(frame.cf).cast::<u8>().offset_from(base),
+                808
             );
         }
     }

@@ -674,6 +674,27 @@ pub struct WriteFlagsCountZero {
     pub result: Ref,
     pub size: OpSize,
 }
+/// Loads the persistent x86 carry flag (0 or 1) into `result`.
+///
+/// The host NZCV carry is transient and SSA-scoped; multi-precision ADC/SBB
+/// need CF to survive between instructions, so it lives in a dedicated
+/// `CpuStateFrame` slot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadCarry;
+/// Materialises the carry-out of a preceding flag-setting op into `result` (0/1).
+///
+/// `from_sub` inverts: ARM64 sets C = NOT(borrow) on subtraction, so x86 CF
+/// (borrow) is `cset cc` after a sub and `cset cs` after an add.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReadCarryOut {
+    pub flags: Ref,
+    pub from_sub: bool,
+}
+/// Stores `value` (must be 0 or 1) into the persistent CF slot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreCarry {
+    pub value: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VecBlend {
     pub dst: Ref,
@@ -930,6 +951,9 @@ pub enum Op {
     X87Store(X87Store),
     X87Push(X87Push),
     X87Pop(X87Pop),
+    LoadCarry(LoadCarry),
+    ReadCarryOut(ReadCarryOut),
+    StoreCarry(StoreCarry),
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +1173,8 @@ impl Op {
             }
             Self::X87Store(x) => x.value = f(x.value),
             Self::X87Push(x) => x.value = f(x.value),
+            Self::ReadCarryOut(x) => x.flags = f(x.flags),
+            Self::StoreCarry(x) => x.value = f(x.value),
             // Ops with no SSA operand refs: constants, register/segment loads,
             // block/guest-address control transfers, fences, CPU queries,
             // string ops, and the x87 load/pop forms.
@@ -1177,7 +1203,8 @@ impl Op {
             | Self::RepStos(_)
             | Self::RepMovs(_)
             | Self::X87Load(_)
-            | Self::X87Pop(_) => {}
+            | Self::X87Pop(_)
+            | Self::LoadCarry(_) => {}
         }
     }
 }
