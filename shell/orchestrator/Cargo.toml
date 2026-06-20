@@ -23,6 +23,7 @@ anyhow    = { workspace = true }
 [dev-dependencies]
 tempfile   = "3.10"
 serde_json = "1.0"
+proptest   = { workspace = true }
 
 # Lints — match the Prisma C++ "warnings as errors" stance.
 [lints.rust]

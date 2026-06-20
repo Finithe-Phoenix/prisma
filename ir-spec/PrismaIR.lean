@@ -8,6 +8,7 @@
 import PrismaIR.Syntax
 import PrismaIR.Semantics
 import PrismaIR.MachineState
+import PrismaIR.TSO
 import PrismaIR.Trace
 import PrismaIR.Lemmas
 import PrismaIR.Passes.ConstantPropagation
