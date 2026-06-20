@@ -236,6 +236,39 @@ theorem fence_eq_propagate_fence (s : TSO) (t : Tid) :
   | nil => simp [h]
   | cons e r => simp [h, upd_same, List.foldl_cons]
 
+/-- Drain core `t`'s buffer with `n` fuel units (one `propagate` each). -/
+def drainN (s : TSO) (t : Tid) : Nat → TSO
+  | 0 => s
+  | n + 1 => match s.sb t with
+             | [] => s
+             | _ :: _ => drainN (s.propagate t) t n
+
+/-- **A fence equals a full step-wise drain.** With fuel covering the buffer,
+    repeatedly propagating reaches the same shared memory the atomic fence does
+    — closing the gap between the abstract `fence` and the operational
+    `propagate` steps the rewrite reasons about (RFC 0016 / M3). -/
+theorem fence_eq_drainN (s : TSO) (t : Tid) (n : Nat) (hn : (s.sb t).length ≤ n) :
+    (s.fence t).mem = (drainN s t n).mem := by
+  induction n generalizing s with
+  | zero =>
+    have h : s.sb t = [] := by
+      cases hb : s.sb t with
+      | nil => rfl
+      | cons _ _ => rw [hb] at hn; simp at hn
+    simp [drainN, fence, h]
+  | succ n ih =>
+    cases hb : s.sb t with
+    | nil => simp [drainN, hb, fence]
+    | cons e r =>
+      have hps : (s.propagate t).sb t = r := by simp [propagate, hb, upd_same]
+      rw [hb] at hn
+      have hlen : ((s.propagate t).sb t).length ≤ n := by
+        rw [hps]; simp [List.length_cons] at hn; omega
+      have hstep : drainN s t (n + 1) = drainN (s.propagate t) t n := by
+        simp [drainN, hb]
+      rw [fence_eq_propagate_fence, hstep]
+      exact ih (s.propagate t) hlen
+
 /-- A fence is core-local: it drains only the issuing core's buffer, leaving
     every other core's buffer untouched. The structural complement to the
     cross-core visibility lemmas. -/
