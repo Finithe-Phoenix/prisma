@@ -205,6 +205,56 @@ theorem fence_publishes_two (s : TSO) (t : Tid) (a b : Addr) (v w : Val)
   · simp [store, fence, upd, hempty, hne]
   · simp [store, fence, upd, hempty]
 
+/-- The `sbLatest` fold is independent of its starting accumulator up to
+    `orElse`: a later (newer) matching store overrides whatever came before. -/
+private theorem sbLatest_acc (buf : StoreBuffer) (a : Addr) (acc : Option Val) :
+    (buf.foldl (fun acc e => if e.1 = a then some e.2 else acc) acc)
+      = (sbLatest buf a).orElse (fun _ => acc) := by
+  induction buf generalizing acc with
+  | nil => simp [sbLatest]
+  | cons e r ih =>
+    have lhs : (e :: r).foldl (fun acc e => if e.1 = a then some e.2 else acc) acc
+             = (sbLatest r a).orElse (fun _ => if e.1 = a then some e.2 else acc) := by
+      rw [List.foldl_cons, ih]
+    have rhs : sbLatest (e :: r) a
+             = (sbLatest r a).orElse (fun _ => if e.1 = a then some e.2 else none) := by
+      rw [sbLatest, List.foldl_cons]; exact ih (if e.1 = a then some e.2 else none)
+    rw [lhs, rhs]
+    rcases sbLatest r a with _ | v
+    · by_cases he : e.1 = a <;> simp [he]
+    · simp
+
+/-- **The two views of the same writes agree.** Draining a store buffer into
+    memory (`fence`'s fold) and reading `a` gives exactly what the buffered
+    `load` would forward: the buffer's latest store to `a`, else memory. -/
+private theorem foldl_upd_apply (buf : StoreBuffer) (m : Addr → Val) (a : Addr) :
+    (buf.foldl (fun m e => upd m e.1 e.2) m) a = (sbLatest buf a).getD (m a) := by
+  induction buf generalizing m with
+  | nil => simp [sbLatest]
+  | cons e r ih =>
+    have hrec : sbLatest (e :: r) a
+              = (sbLatest r a).orElse (fun _ => if e.1 = a then some e.2 else none) := by
+      rw [sbLatest, List.foldl_cons]; exact sbLatest_acc r a _
+    rw [List.foldl_cons, ih, hrec]
+    rcases sbLatest r a with _ | v
+    · by_cases he : e.1 = a
+      · simp [upd, he]
+      · simp [upd, he, Ne.symm he]
+    · simp
+
+/-- **F1-LN-016 (single-thread soundness core) — a core's own load is
+    unaffected by its own fence.** Store forwarding already lets `t` observe
+    its latest store, so draining the buffer (a fence) changes nothing `t`
+    itself can see: `(s.fence t).load t a = s.load t a`. This is the formal
+    justification for dropping a barrier in a region where only the issuing
+    core's observations matter (the single-threaded case the TSO-adaptive
+    rewrite, Pillar 3, classifies as safe to relax). -/
+theorem load_unaffected_by_fence (s : TSO) (t : Tid) (a : Addr) :
+    (s.fence t).load t a = s.load t a := by
+  rw [load_after_fence]
+  simp only [fence, load]
+  exact foldl_upd_apply (s.sb t) s.mem a
+
 /-- **SB via the operational semantics.** From a zeroed machine, two `issue`
     steps — core 0 stores `x := 1` (addr 0), core 1 stores `y := 1` (addr 1) —
     reach, through `Steps`, a state in which each core's load of the OTHER
