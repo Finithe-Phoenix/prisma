@@ -9,6 +9,8 @@ import PrismaIR.Syntax
 import PrismaIR.Semantics
 import PrismaIR.MachineState
 import PrismaIR.TSO
+import PrismaIR.TSORewrite
+import PrismaIR.TSORewriteExamples
 import PrismaIR.Trace
 import PrismaIR.Lemmas
 import PrismaIR.Passes.ConstantPropagation
