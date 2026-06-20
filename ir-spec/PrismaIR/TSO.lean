@@ -293,6 +293,7 @@ theorem drainN_reachable (s : TSO) (t : Tid) (n : Nat) : Steps s (drainN s t n) 
       rw [hstep]
       exact Steps.head_step (Step.drain s t) (ih (s.propagate t))
 
+
 /-- A fence is core-local: it drains only the issuing core's buffer, leaving
     every other core's buffer untouched. The structural complement to the
     cross-core visibility lemmas. -/
@@ -445,6 +446,22 @@ theorem sb_litmus_reachable :
   · exact Steps.tail (Steps.tail (Steps.refl _) (Step.issue _ 0 0 1)) (Step.issue _ 1 1 1)
   · simp [store, load, sbLatest, upd]
   · simp [store, load, sbLatest, upd]
+
+/-- **A full drain is unobservable to the issuing core.** Draining any number of
+    `t`'s buffered stores leaves `t`'s own loads unchanged (each step is, by
+    `load_unaffected_by_propagate`). The operational form of single-threaded
+    soundness: the *timing and amount* a core drains never changes what it
+    itself sees (RFC 0016 / M3, F1-LN-016). -/
+theorem load_unaffected_by_drainN (s : TSO) (t : Tid) (a : Addr) (n : Nat) :
+    (drainN s t n).load t a = s.load t a := by
+  induction n generalizing s with
+  | zero => simp [drainN]
+  | succ n ih =>
+    cases hb : s.sb t with
+    | nil => simp [drainN, hb]
+    | cons e r =>
+      have hstep : drainN s t (n + 1) = drainN (s.propagate t) t n := by simp [drainN, hb]
+      rw [hstep, ih (s.propagate t), load_unaffected_by_propagate]
 
 end TSO
 
