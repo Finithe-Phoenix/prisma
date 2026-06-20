@@ -109,6 +109,36 @@ Two-eyes rule applies to anything affecting:
 Self-merge is fine for tests, docs, RFCs, and contained refactors
 inside one subsystem.
 
+### External review (Codex / Gemini)
+
+For substantive diffs (decoder/IR/lowerer/runtime), run the external reviewers
+as the second set of eyes before merge:
+
+```pwsh
+pwsh -File scripts/review-with-codex.ps1            # codex on origin/main...HEAD
+pwsh -File scripts/review-with-codex.ps1 -WithGemini  # once Gemini is re-authed
+```
+
+Triage every finding against the C++ reference and the existing test suite
+before acting — reviewers produce occasional false positives. Record the
+outcome under `docs/REVIEWS/` for anything in two-eyes territory.
+
+## Automation & merge flow
+
+The repo is configured so routine steps are not done by hand:
+
+- **Auto-merge is enabled.** Open a PR, then `gh pr merge <n> --squash --auto
+  --delete-branch`. GitHub merges it the moment all required checks pass and the
+  branch is up to date — no manual polling.
+- **Head branches auto-delete on merge.** No manual branch cleanup.
+- **Local pre-push validation:** `pwsh -File scripts/validate-rust-workspace.ps1`
+  runs fmt + clippy (`-D warnings`) + tests across the `shell/` workspace.
+- **The real cross-language gate** is the `ffi-link` family (`ffi-link`,
+  `ffi-link-arm64`, `ffi-link-windows`) plus `core-build-arm64`: these run the
+  C++/Rust differential and execute translated blocks on real ARM64. Treat them
+  as blocking even though they are not yet in the branch-protection required set
+  (adding them is a pending governance change for the repo owner).
+
 ## Style
 
 Languages and tools per [`CLAUDE.md`](../CLAUDE.md):
