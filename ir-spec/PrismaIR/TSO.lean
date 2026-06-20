@@ -218,6 +218,12 @@ theorem propagate_cons (s : TSO) (t : Tid) (a : Addr) (v : Val) (r : StoreBuffer
 @[simp] theorem fence_sb (s : TSO) (t : Tid) : (s.fence t).sb t = [] := by
   simp [fence]
 
+/-- With an empty buffer a core's load reads shared memory directly — the base
+    case the forwarding/soundness lemmas reduce to. -/
+theorem load_no_buffer (s : TSO) (t : Tid) (a : Addr) (h : s.sb t = []) :
+    s.load t a = s.mem a := by
+  simp [load, h, sbLatest]
+
 /-- A fence is core-local: it drains only the issuing core's buffer, leaving
     every other core's buffer untouched. The structural complement to the
     cross-core visibility lemmas. -/
