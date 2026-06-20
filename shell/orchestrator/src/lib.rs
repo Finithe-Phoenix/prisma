@@ -33,6 +33,7 @@ pub mod cache_proto;
 pub mod config;
 pub mod container;
 pub mod integrity;
+pub mod module_table;
 pub mod pe_loader;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
