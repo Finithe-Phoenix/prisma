@@ -176,5 +176,31 @@ theorem elimFences_fenceFree (l : List Op) :
 theorem elimFences_idempotent (l : List Op) :
     elimFences (elimFences l) = elimFences l := by
   simp only [elimFences_eq_filter, List.filter_filter, Bool.and_self]
+
+/-- Folding stores into memory leaves address `a` untouched when no folded entry
+    targets `a`. The memory-side invariant behind a full barrier on another
+    core not disturbing a write-private address. -/
+theorem foldl_upd_no_addr (buf : StoreBuffer) (a : Addr) (m0 : Addr → Val)
+    (h : ∀ e ∈ buf, e.1 ≠ a) :
+    (buf.foldl (fun m e => upd m e.1 e.2) m0) a = m0 a := by
+  induction buf generalizing m0 with
+  | nil => rfl
+  | cons hd tl ih =>
+    have hhd : hd.1 ≠ a := h hd List.mem_cons_self
+    have htl : ∀ e ∈ tl, e.1 ≠ a := fun e he => h e (List.mem_cons_of_mem hd he)
+    simp only [List.foldl_cons]
+    rw [ih (upd m0 hd.1 hd.2) htl]
+    exact upd_noteq m0 hd.2 (Ne.symm hhd)
+
+/-- A FULL barrier on another core never changes the owner's view of a
+    write-private address — the strongest other-core event (drain the whole
+    buffer at once) still cannot disturb it, since every drained store is to a
+    different address and the owner's own buffer is untouched. Strengthens
+    `load_private_drain_other` from one drain to the whole barrier. -/
+theorem load_private_fence_other (s : TSO) (t t' : Tid) (a : Addr)
+    (htt : t' ≠ t) (h : NoStoreTo (s.sb t') a) :
+    (s.fence t').load t a = s.load t a := by
+  simp only [TSO.load, fence, upd_noteq s.sb [] htt.symm,
+    foldl_upd_no_addr (s.sb t') a s.mem h]
 end TSO
 end PrismaIR
