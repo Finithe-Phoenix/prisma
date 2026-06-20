@@ -115,6 +115,11 @@ inductive Steps : TSO → TSO → Prop where
     sbLatest (buf ++ [(a, v)]) a = some v := by
   simp [sbLatest]
 
+-- A store to a different address than the query never shadows it.
+@[simp] theorem sbLatest_append_other (buf : StoreBuffer) (a b : Addr) (v : Val)
+    (hab : a ≠ b) : sbLatest (buf ++ [(a, v)]) b = sbLatest buf b := by
+  simp [sbLatest, List.foldl_append, hab]
+
 /-- **Store forwarding.** A core reads back its own most recent store
     immediately, before it has drained to shared memory. -/
 theorem load_store_self (s : TSO) (t : Tid) (a : Addr) (v : Val) :
@@ -129,6 +134,17 @@ theorem load_store_other (s : TSO) (t t' : Tid) (a : Addr) (v : Val)
     (s.store t a v).load t' a = s.load t' a := by
   simp only [load, store, upd]
   rw [if_neg h]
+
+/-- **Stores are address-local.** A store to `a` is invisible to a load of any
+    other address `b ≠ a`, on any core — the buffered entry never shadows a
+    different location. -/
+theorem load_store_diff_addr (s : TSO) (t t' : Tid) (a b : Addr) (v : Val)
+    (hab : a ≠ b) : (s.store t a v).load t' b = s.load t' b := by
+  by_cases ht : t' = t
+  · subst ht
+    simp [load, store, sbLatest_append_other, hab]
+  · simp only [load, store, upd]
+    rw [if_neg ht]
 
 /-- A store never modifies shared memory. -/
 @[simp] theorem store_mem (s : TSO) (t : Tid) (a : Addr) (v : Val) :
