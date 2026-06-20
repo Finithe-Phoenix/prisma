@@ -160,11 +160,12 @@ substantialmente cubiertos, ejecutando en hardware ARM64).
     via VecShiftBytes para sintetizar el high half source).
     VecConstant lowering ahora carga 128 bits completos (lo + INS
     hi) — antes silenciosamente truncaba.
-  - `prisma_passes` — 10 pases en el pipeline por defecto:
-    const_prop → algebraic → strength_reduce → const_prop_2 →
-    redundant_load → CSE → copy_propagate → dead_store →
-    branch_fold → dead_code_eliminate. Pass timing + dump hooks
-    (F1-PS-016/017).
+  - `prisma_passes` — 13 pases en el pipeline por defecto
+    (`pass_manager.cpp:106-145`): const_prop → algebraic →
+    strength_reduce → peephole → const_prop_2 → redundant_load →
+    CSE → x87_stack_eliminate → copy_propagate → dead_store →
+    branch_fold → flag_write_elim → dead_code_eliminate. Pass
+    timing + dump hooks (F1-PS-016/017).
   - `prisma_emitter` — vixl-backed ARM64 emitter. ALU 3-reg,
     mul/umulh/smulh/sdiv/udiv/msub, clz/cls/rbit, rol/ror,
     ldxr/stxr/ldaxr/stlxr, casal/ldaddal (LSE), labels + branches,
