@@ -320,6 +320,17 @@ theorem load_unaffected_by_propagate (s : TSO) (t : Tid) (a : Addr) :
       · simp [upd, he, Ne.symm he]
     · simp
 
+/-- **Cross-core publication.** Once core `t` fences (drains its buffer), its
+    store is in shared memory, so any other core `t'` whose own buffer is empty
+    observes it. The complement of private buffering: a *buffered* store is
+    invisible across cores, a *fenced* (drained) one is visible — together they
+    characterise inter-core visibility under TSO. -/
+theorem store_visible_to_idle_core (s : TSO) (t t' : Tid) (a : Addr) (v : Val)
+    (htt : t ≠ t') (hs : s.sb t = []) (hs' : s.sb t' = []) :
+    ((s.store t a v).fence t).load t' a = v := by
+  simp [store, fence, load, upd, sbLatest, hs, hs', Ne.symm htt,
+    List.foldl_cons, List.foldl_nil]
+
 /-- **SB via the operational semantics.** From a zeroed machine, two `issue`
     steps — core 0 stores `x := 1` (addr 0), core 1 stores `y := 1` (addr 1) —
     reach, through `Steps`, a state in which each core's load of the OTHER
