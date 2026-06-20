@@ -92,6 +92,39 @@ explícitos.
 
 ---
 
+## Bitácora de ejecución (viva)
+
+Progreso del loop de ejecución (rama por historia → validar → integrar → limpiar).
+El mapa canónico sigue siendo [BACKLOG.md](BACKLOG.md); esto registra qué EWPs
+avanzaron para que la campaña multi-mes no pierda el hilo.
+
+**Sesión 2026-06-19 (autónoma):**
+
+- **EWP-F1 (PE loader → Wine)** — avanzado sustancialmente. El loader pasó de
+  "solo mapea memoria" a: parsear la **import table** (DLLs + símbolos por
+  nombre/ordinal, `parse_imports`), aplicar **base relocations** (HIGHLOW/DIR64,
+  `apply_relocations`), un **cap anti-OOM** sobre `size_of_image` no confiable
+  (`ImageTooLarge`), y un **fuzz proptest** del parser. PRs #62/#63/#64/#65.
+  Falta: resolución/binding de imports (necesita proveedor de DLLs / Wine),
+  TLS callbacks, forwards.
+- **EWP-F4 (container lifecycle)** — `create`/`destroy` reales sobre el prefix
+  (PR #66); `destroy` limpia el árbol completo (cláusula de recursos). Falta:
+  `start`/`stop` (backend Wine), registry/listado, overlay FS (EWP-F5).
+- **EWP-H6 (paridad de fuzzing)** — cerrada la 5.ª superficie proptest que
+  faltaba: `prisma-cache` (round-trip, archivo corrupto, bytes arbitrarios,
+  budget de eviction) — PR #60. Más el fuzz del PE loader (PR #65).
+- **Reconciliación docs↔código** (PR #61): flags NZCV pillar ya existe,
+  ADC/SBB/RCL/RCR ya landeados, 97 Op variants, 13 pases, sorry-budget 0,
+  benchmarks es harness real.
+- **Lane de memoria** — aplicado: DoS de deserialización de cache, cap de
+  `size_of_image`, `destroy()` sin fugas, parsing/relocations acotados.
+
+**Lección de proceso:** strict-mode + builds C++ ~10min serializan los merges; no
+re-actualizar ramas en cascada (reinicia CI). Evitar PR stacks profundos; preferir
+PRs independientes off-main en archivos distintos (mergean en paralelo).
+
+---
+
 ## 1. Camino crítico hacia "correr una `.exe` de Windows"
 
 La línea que de verdad importa. Cada nodo es un EPIC; las flechas son
