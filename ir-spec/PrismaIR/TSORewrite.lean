@@ -232,5 +232,17 @@ theorem load_private_drainN_other (s : TSO) (t t' : Tid) (a : Addr) (n : Nat)
         simp [drainN, hb]
       rw [hstep, ih (s.propagate t') (noStoreTo_propagate s t' a h),
           load_private_drain_other s t t' a htt h]
+/-- **The Pillar-3 payoff, unified.** A quiescent core reading a write-private
+    address sees plain shared memory, and that reading is invariant under the
+    other core's entire barrier — full sequential consistency for a thread-local
+    access. This is exactly the precondition under which the adaptive pass may
+    compile the access with a plain (un-ordered) ARM64 load/store and drop the
+    surrounding barrier: both rewrite halves are justified by one fact. -/
+theorem load_private_quiescent_sc (s : TSO) (t t' : Tid) (a : Addr)
+    (htt : t' ≠ t) (hq : Quiescent s t) (h : NoStoreTo (s.sb t') a) :
+    s.load t a = s.mem a ∧ (s.fence t').load t a = s.load t a := by
+  refine ⟨?_, load_private_fence_other s t t' a htt h⟩
+  have hsb : s.sb t = [] := hq
+  simp [TSO.load, hsb, sbLatest]
 end TSO
 end PrismaIR
