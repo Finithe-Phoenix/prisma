@@ -224,6 +224,18 @@ theorem load_no_buffer (s : TSO) (t : Tid) (a : Addr) (h : s.sb t = []) :
     s.load t a = s.mem a := by
   simp [load, h, sbLatest]
 
+/-- **A fence subsumes one drain step.** Propagating one buffered store and then
+    fencing reaches the same shared memory as fencing directly — the fence is
+    the closed form of the step-wise `propagate` drain. A building block for
+    lifting the single-state soundness lemmas to operational `Steps` traces
+    (RFC 0016, F1-LN-016 / M3). -/
+theorem fence_eq_propagate_fence (s : TSO) (t : Tid) :
+    (s.fence t).mem = ((s.propagate t).fence t).mem := by
+  unfold propagate fence
+  cases h : s.sb t with
+  | nil => simp [h]
+  | cons e r => simp [h, upd_same, List.foldl_cons]
+
 /-- A fence is core-local: it drains only the issuing core's buffer, leaving
     every other core's buffer untouched. The structural complement to the
     cross-core visibility lemmas. -/
