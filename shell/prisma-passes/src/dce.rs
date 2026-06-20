@@ -42,6 +42,8 @@ fn is_pure_for_dce(op: &Op) -> bool {
             | Op::Crc32c(_)
             | Op::VecGather(_)
             | Op::X87Load(_)
+            | Op::LoadCarry(_)
+            | Op::ReadCarryOut(_)
     )
 }
 
@@ -76,8 +78,15 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
         | Op::LoadVecReg(_)
         | Op::LoadVecRegHi(_)
         | Op::X87Load(_)
-        | Op::X87Pop(_) => {}
+        | Op::X87Pop(_)
+        | Op::LoadCarry(_) => {}
 
+        Op::ReadCarryOut(x) => {
+            into.insert(x.flags);
+        }
+        Op::StoreCarry(x) => {
+            into.insert(x.value);
+        }
         Op::StoreReg(x) => {
             into.insert(x.value);
         }

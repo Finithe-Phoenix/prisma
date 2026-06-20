@@ -306,6 +306,38 @@ fn lower_stmt(
             lower_read_flag(asm, flags, flag_read, dst)?;
             values.insert(result, dst);
         }
+        Op::LoadCarry(_) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("LoadCarry"))?;
+            let dst = value_reg(result);
+            asm.ldr_x_unsigned(dst, abi::K_STATE_PTR_REG, CF_OFFSET);
+            values.insert(result, dst);
+        }
+        Op::ReadCarryOut(read) => {
+            let result = stmt
+                .result
+                .ok_or(LowerError::MissingResult("ReadCarryOut"))?;
+            if !flags.contains(&read.flags) {
+                return Err(LowerError::MissingValue(read.flags));
+            }
+            let dst = value_reg(result);
+            // ARM64 C is set on add, inverted (C = NOT borrow) on sub, so x86 CF
+            // is `cset <carry-set>` after an add and `cset <carry-clear>` after a
+            // sub. In this codebase `Nc` encodes carry-set (0x2) and `Cc` encodes
+            // carry-clear (0x3) — see the assembler cond table and jcc_condition.
+            let cc = if read.from_sub {
+                prisma_ir::CondCode::Cc
+            } else {
+                prisma_ir::CondCode::Nc
+            };
+            asm.cset_x(dst, cc);
+            values.insert(result, dst);
+        }
+        Op::StoreCarry(store) => {
+            let value = *values
+                .get(&store.value)
+                .ok_or(LowerError::MissingValue(store.value))?;
+            asm.str_x_unsigned(value, abi::K_STATE_PTR_REG, CF_OFFSET);
+        }
         Op::Lzcnt(lzcnt) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("Lzcnt"))?;
             let src = *values
@@ -410,6 +442,9 @@ fn lower_stmt(
 
 const FS_BASE_OFFSET: u16 = 792;
 const GS_BASE_OFFSET: u16 = 800;
+/// Byte offset of the persistent x86 carry flag in `CpuStateFrame` (follows
+/// `gs_base`). Matches `prisma_runtime::executor::CpuStateFrame::cf`.
+const CF_OFFSET: u16 = 808;
 const KSTATE_CPUID_MAX_LEAF: u64 = 7;
 const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
 const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;

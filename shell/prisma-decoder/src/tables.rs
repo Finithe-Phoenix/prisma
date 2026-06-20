@@ -39,6 +39,14 @@ pub enum OneByteOpcode {
     AddRRm,
     /// ADD r8, r/m8 (02 /r)
     AddR8Rm,
+    /// ADC r/m64, r64 (REX.W 11 /r) — add-with-carry (real CF).
+    AdcRmR,
+    /// ADC r/m8, r8 (10 /r).
+    AdcRmR8,
+    /// SBB r/m64, r64 (REX.W 19 /r) — sub-with-borrow (real CF).
+    SbbRmR,
+    /// SBB r/m8, r8 (18 /r).
+    SbbRmR8,
     /// ALU/test/cmp accumulator immediate forms.
     AccImm,
     /// ADD/SUB/... r/m, full-width immediate (80/81 /digit).
@@ -278,8 +286,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0x01u8 => OneByteOpcode::AddRmR,
         0x02u8 => OneByteOpcode::AddR8Rm,
         0x03u8 => OneByteOpcode::AddRRm,
-        0x10u8 => OneByteOpcode::AddRmR8,
-        0x11u8 => OneByteOpcode::AddRmR,
+        0x10u8 => OneByteOpcode::AdcRmR8,
+        0x11u8 => OneByteOpcode::AdcRmR,
         0x12u8 => OneByteOpcode::AddR8Rm,
         0x13u8 => OneByteOpcode::AddRRm,
         0x08u8 => OneByteOpcode::OrRmR8,
@@ -293,8 +301,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0x28u8 => OneByteOpcode::SubRmR8,
         0x2Au8 => OneByteOpcode::SubR8Rm,
         0x2Bu8 => OneByteOpcode::SubRRm,
-        0x18u8 => OneByteOpcode::SubRmR8,
-        0x19u8 => OneByteOpcode::SubRmR,
+        0x18u8 => OneByteOpcode::SbbRmR8,
+        0x19u8 => OneByteOpcode::SbbRmR,
         0x1Au8 => OneByteOpcode::SubR8Rm,
         0x1Bu8 => OneByteOpcode::SubRRm,
         0x21u8 => OneByteOpcode::AndRmR,
@@ -526,9 +534,11 @@ mod tests {
         assert_eq!(classify_one_byte(0xF7), OneByteOpcode::Group3);
         assert_eq!(classify_one_byte(0xFE), OneByteOpcode::Group4);
         assert_eq!(classify_one_byte(0xFF), OneByteOpcode::Group5);
-        assert_eq!(classify_one_byte(0x10), OneByteOpcode::AddRmR8);
+        assert_eq!(classify_one_byte(0x10), OneByteOpcode::AdcRmR8);
+        assert_eq!(classify_one_byte(0x11), OneByteOpcode::AdcRmR);
         assert_eq!(classify_one_byte(0x13), OneByteOpcode::AddRRm);
-        assert_eq!(classify_one_byte(0x18), OneByteOpcode::SubRmR8);
+        assert_eq!(classify_one_byte(0x18), OneByteOpcode::SbbRmR8);
+        assert_eq!(classify_one_byte(0x19), OneByteOpcode::SbbRmR);
         assert_eq!(classify_one_byte(0x1B), OneByteOpcode::SubRRm);
     }
 

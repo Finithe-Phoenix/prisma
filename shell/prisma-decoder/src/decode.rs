@@ -68,6 +68,28 @@ pub fn decode_one_at(
         tables::OneByteOpcode::AddRmR => {
             decode_binop_rm_r(BinOpKind::Add, &prefixes, bytes, cursor, &mut stmts)?
         }
+        tables::OneByteOpcode::AdcRmR => decode_adc_sbb_rm_r(
+            false,
+            &prefixes,
+            bytes,
+            cursor,
+            operand_size(&prefixes, true),
+            &mut stmts,
+        )?,
+        tables::OneByteOpcode::AdcRmR8 => {
+            decode_adc_sbb_rm_r(false, &prefixes, bytes, cursor, OpSize::I8, &mut stmts)?
+        }
+        tables::OneByteOpcode::SbbRmR => decode_adc_sbb_rm_r(
+            true,
+            &prefixes,
+            bytes,
+            cursor,
+            operand_size(&prefixes, true),
+            &mut stmts,
+        )?,
+        tables::OneByteOpcode::SbbRmR8 => {
+            decode_adc_sbb_rm_r(true, &prefixes, bytes, cursor, OpSize::I8, &mut stmts)?
+        }
         tables::OneByteOpcode::AddR8Rm => decode_binop_r_rm_with_size(
             BinOpKind::Add,
             &prefixes,
@@ -2625,6 +2647,128 @@ fn decode_binop_rm_r(
 ) -> Result<usize, crate::DecodeError> {
     let size = operand_size(prefixes, true);
     decode_binop_rm_r_with_size(kind, prefixes, bytes, cursor, stmts, size)
+}
+
+/// Emit `dst = lhs (+|-) rhs (+|-) CF` with real carry: read the persistent CF,
+/// chain two adds/subs, OR the two carry/borrow-outs into the new CF, and store
+/// both the result and the new CF. `is_sbb` selects subtract-with-borrow.
+fn emit_adc_sbb(
+    stmts: &mut Vec<Stmt>,
+    is_sbb: bool,
+    lhs: Ref,
+    rhs: Ref,
+    dst_reg: Gpr,
+    size: OpSize,
+) {
+    let op = if is_sbb {
+        BinOpKind::Sub
+    } else {
+        BinOpKind::Add
+    };
+    let cf = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(cf), Op::LoadCarry(LoadCarry)));
+    // first stage: lhs (+|-) rhs, capture carry/borrow-out c1.
+    let t = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(t), Op::BinOp(BinOp { op, lhs, rhs, size })));
+    let wf1 = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(wf1),
+        Op::WriteFlags(WriteFlags { op, lhs, rhs, size }),
+    ));
+    let c1 = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(c1),
+        Op::ReadCarryOut(ReadCarryOut {
+            flags: wf1,
+            from_sub: is_sbb,
+        }),
+    ));
+    // second stage: t (+|-) cf, capture carry/borrow-out c2.
+    let res = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(res),
+        Op::BinOp(BinOp {
+            op,
+            lhs: t,
+            rhs: cf,
+            size,
+        }),
+    ));
+    let wf2 = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(wf2),
+        Op::WriteFlags(WriteFlags {
+            op,
+            lhs: t,
+            rhs: cf,
+            size,
+        }),
+    ));
+    let c2 = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(c2),
+        Op::ReadCarryOut(ReadCarryOut {
+            flags: wf2,
+            from_sub: is_sbb,
+        }),
+    ));
+    let new_cf = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(new_cf),
+        Op::BinOp(BinOp {
+            op: BinOpKind::Or,
+            lhs: c1,
+            rhs: c2,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreCarry(StoreCarry { value: new_cf }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: dst_reg,
+            value: res,
+            size,
+        }),
+    ));
+}
+
+/// ADC/SBB r/m, r. Register-direct uses real carry ([`emit_adc_sbb`]); the
+/// memory form keeps the historical Add/Sub placeholder to avoid a regression.
+fn decode_adc_sbb_rm_r(
+    is_sbb: bool,
+    prefixes: &PrefixSet,
+    bytes: &[u8],
+    cursor: usize,
+    size: OpSize,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        let kind = if is_sbb {
+            BinOpKind::Sub
+        } else {
+            BinOpKind::Add
+        };
+        return decode_binop_rm_r_with_size(kind, prefixes, bytes, cursor, stmts, size);
+    }
+    let src_reg = map_reg(modrm.reg, &prefixes.rex, true);
+    let dst_reg = map_reg(modrm.rm, &prefixes.rex, false);
+    let dst = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(dst),
+        Op::LoadReg(LoadReg { reg: dst_reg, size }),
+    ));
+    let src = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(src),
+        Op::LoadReg(LoadReg { reg: src_reg, size }),
+    ));
+    emit_adc_sbb(stmts, is_sbb, dst, src, dst_reg, size);
+    Ok(2)
 }
 
 fn decode_binop_rm_r_with_size(
@@ -7855,14 +7999,13 @@ mod tests {
     }
 
     #[test]
-    fn decode_adc_sbb_register_forms_placeholders() {
+    fn decode_adc_sbb_reverse_forms_still_placeholders() {
+        // The reverse-direction r, r/m forms (12/13 ADC, 1A/1B SBB) remain
+        // Add/Sub placeholders; only the r/m, r forms (10/11/18/19) gained real
+        // carry (see decode_adc_sbb_rm_r_real_carry).
         let cases = [
-            (b"\x10\xC8".as_slice(), BinOpKind::Add, OpSize::I8),
-            (b"\x48\x11\xC8".as_slice(), BinOpKind::Add, OpSize::I64),
             (b"\x12\xC1".as_slice(), BinOpKind::Add, OpSize::I8),
             (b"\x48\x13\xC1".as_slice(), BinOpKind::Add, OpSize::I64),
-            (b"\x18\xC8".as_slice(), BinOpKind::Sub, OpSize::I8),
-            (b"\x48\x19\xC8".as_slice(), BinOpKind::Sub, OpSize::I64),
             (b"\x1A\xC1".as_slice(), BinOpKind::Sub, OpSize::I8),
             (b"\x48\x1B\xC1".as_slice(), BinOpKind::Sub, OpSize::I64),
         ];
@@ -7882,6 +8025,29 @@ mod tests {
                 }) if *actual == op && *actual_size == size
             ));
         }
+    }
+
+    #[test]
+    fn decode_adc_sbb_rm_r_real_carry() {
+        // adc rax, rcx (48 11 C8): real carry — LoadCarry, two Adds, two
+        // ReadCarryOut, an Or, StoreCarry, StoreReg.
+        let adc = decode_one(b"\x48\x11\xC8", 0).unwrap();
+        assert_eq!(adc.bytes_consumed, 3);
+        assert!(adc.stmts.iter().any(|s| matches!(s.op, Op::LoadCarry(_))));
+        assert!(adc.stmts.iter().any(|s| matches!(s.op, Op::StoreCarry(_))));
+        assert!(adc.stmts.iter().any(|s| matches!(
+            &s.op,
+            Op::ReadCarryOut(ReadCarryOut {
+                from_sub: false,
+                ..
+            })
+        )));
+        // sbb uses from_sub = true.
+        let sbb = decode_one(b"\x48\x19\xC8", 0).unwrap();
+        assert!(sbb
+            .stmts
+            .iter()
+            .any(|s| matches!(&s.op, Op::ReadCarryOut(ReadCarryOut { from_sub: true, .. }))));
     }
 
     #[test]
