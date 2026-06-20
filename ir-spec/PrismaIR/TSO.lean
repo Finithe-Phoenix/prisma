@@ -225,6 +225,13 @@ theorem propagate_cons (s : TSO) (t : Tid) (a : Addr) (v : Val) (r : StoreBuffer
     (s.fence t).sb t' = s.sb t' := by
   simp [fence, h]
 
+/-- A store is core-local for the buffer too: it appends only to the issuing
+    core's buffer, so any other core's buffer is unchanged (the structural
+    root of private buffering). -/
+@[simp] theorem store_other_sb (s : TSO) (t t' : Tid) (a : Addr) (v : Val)
+    (h : t' ≠ t) : (s.store t a v).sb t' = s.sb t' := by
+  simp [store, h]
+
 /-- **A second fence is redundant.** Fencing an already-fenced core is a no-op
     (its buffer is already empty), so a rewrite may drop back-to-back barriers
     on the same core. -/
