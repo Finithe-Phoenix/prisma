@@ -29,6 +29,7 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::too_many_lines)]
 
+pub mod address_space;
 pub mod cache_proto;
 pub mod config;
 pub mod container;
