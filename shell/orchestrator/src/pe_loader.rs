@@ -123,6 +123,9 @@ pub enum PeError {
     #[error("image_base + size_of_image wraps the 64-bit address space")]
     ImageWrapsAddressSpace,
 
+    #[error("size_of_image {0:#x} exceeds the loader's maximum mappable size")]
+    ImageTooLarge(u32),
+
     #[error("import directory RVA {0:#x} does not map into any section's file data")]
     ImportRvaUnmapped(u32),
 
@@ -151,12 +154,21 @@ pub struct MappedImage {
 
 /// Lay out a parsed PE in guest virtual memory.
 ///
-/// Zero-filled `size_of_image` bytes at `image_base`, each section's
-/// raw data copied to its virtual address. No relocations, no imports
-/// — the Fase 2 hybrid path loads fully-linked position-dependent
-/// images. All bounds come from untrusted input, so every offset is
-/// checked; malformed sections error instead of truncating silently.
+/// Zero-filled `size_of_image` bytes at `image_base`, each section's raw data
+/// copied to its virtual address. All bounds come from untrusted input, so
+/// every offset is checked and `size_of_image` is capped (malformed sections
+/// or an oversized image error instead of truncating or over-allocating).
+/// Relocations and imports are applied separately ([`apply_relocations`] /
+/// [`parse_imports`]).
 pub fn map_image(img: &PeImage, file: &[u8]) -> Result<MappedImage, PeError> {
+    // size_of_image is attacker-controlled (straight from the optional header),
+    // so cap the up-front zero-fill: a crafted header must not be able to force
+    // a multi-gigabyte allocation (DoS). 1 GiB is far beyond any image we map
+    // at this stage; raise it deliberately if a real workload needs more.
+    const MAX_IMAGE_SIZE: u32 = 1 << 30;
+    if img.size_of_image > MAX_IMAGE_SIZE {
+        return Err(PeError::ImageTooLarge(img.size_of_image));
+    }
     if img.entry_point_rva >= img.size_of_image {
         return Err(PeError::EntryOutOfImage(
             img.entry_point_rva,
@@ -704,6 +716,17 @@ mod tests {
         img.entry_point_rva = img.size_of_image;
         let r = map_image(&img, &buf);
         assert!(matches!(r, Err(PeError::EntryOutOfImage(_, _))));
+    }
+
+    #[test]
+    fn map_rejects_oversized_size_of_image() {
+        // A crafted 2 GiB size_of_image must error, not attempt the allocation.
+        let mut buf = synth_minimal_pe();
+        let opt = 64 + 4 + 20;
+        buf[opt + 56..opt + 60].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        let img = parse(&buf).expect("parse");
+        let r = map_image(&img, &buf);
+        assert!(matches!(r, Err(PeError::ImageTooLarge(0x8000_0000))));
     }
 
     /// PE32+ whose `.text` section (VA 0x1000) carries a hand-laid import
