@@ -171,6 +171,10 @@ pub enum OneByteOpcode {
     Group4,
     /// 0xFF group 5
     Group5,
+    /// PUSHFQ (9C) — placeholder: pushes Constant 0 (no flags bank in IR yet).
+    Pushfq,
+    /// POPFQ (9D) — placeholder: pops into a discarded temp (no flags bank yet).
+    Popfq,
     /// 0x0F escape.
     TwoBytePrefix,
     Unsupported,
@@ -239,10 +243,10 @@ pub enum TwoByteOpcode {
     Tzcnt,
     /// BSWAP r32/r64 (0F C8+rd)
     Bswap,
-    /// CMPXCHG r/m8, r8 (0F B0) and r/m, r (0F B1). The opcode byte is
-    /// threaded through so the decoder picks I8 (0xB0) vs. prefix-sized
-    /// (0xB1) operands.
+    /// CMPXCHG r/m, r (0F B1). Register-direct, I16/I32/I64.
     Cmpxchg,
+    /// BT/BTS/BTR/BTC r/m64, imm8 group (0F BA /4../7).
+    BtGroup,
     /// Three-byte 0F 38 escape map.
     ThreeByte0F38,
     Unsupported,
@@ -318,6 +322,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0xC6u8 | 0xC7u8 => OneByteOpcode::MovRmImm,
         0xE8u8 => OneByteOpcode::CallRel32,
         0x90u8 => OneByteOpcode::Nop,
+        0x9Cu8 => OneByteOpcode::Pushfq,
+        0x9Du8 => OneByteOpcode::Popfq,
         0x9Bu8 => OneByteOpcode::Fwait,
         0x91u8..=0x97u8 => OneByteOpcode::XchgAcc,
         0x98u8 => OneByteOpcode::SignExtendAcc,
@@ -395,6 +401,7 @@ pub const fn classify_two_byte(opcode: u8) -> TwoByteOpcode {
         // Only 0F B1 (CMPXCHG r/m,r). The C++ reference does not decode the
         // r/m8,r8 form (0F B0), so leave it Unsupported to keep the differential.
         0xB1u8 => TwoByteOpcode::Cmpxchg,
+        0xBAu8 => TwoByteOpcode::BtGroup,
         0xC8u8..=0xCFu8 => TwoByteOpcode::Bswap,
         0x38u8 => TwoByteOpcode::ThreeByte0F38,
         _ => TwoByteOpcode::Unsupported,
@@ -478,6 +485,8 @@ mod tests {
         assert_eq!(classify_one_byte(0x70), OneByteOpcode::CondJumpRel8);
         assert_eq!(classify_one_byte(0x90), OneByteOpcode::Nop);
         assert_eq!(classify_one_byte(0x9B), OneByteOpcode::Fwait);
+        assert_eq!(classify_one_byte(0x9C), OneByteOpcode::Pushfq);
+        assert_eq!(classify_one_byte(0x9D), OneByteOpcode::Popfq);
         assert_eq!(classify_one_byte(0x86), OneByteOpcode::Xchg);
         assert_eq!(classify_one_byte(0x91), OneByteOpcode::XchgAcc);
         assert_eq!(classify_one_byte(0x97), OneByteOpcode::XchgAcc);
@@ -567,6 +576,7 @@ mod tests {
         assert_eq!(classify_two_byte(0xB1), TwoByteOpcode::Cmpxchg);
         assert_eq!(classify_two_byte(0xC8), TwoByteOpcode::Bswap);
         assert_eq!(classify_two_byte(0xCF), TwoByteOpcode::Bswap);
+        assert_eq!(classify_two_byte(0xBA), TwoByteOpcode::BtGroup);
         assert_eq!(classify_two_byte(0x38), TwoByteOpcode::ThreeByte0F38);
         assert_eq!(classify_two_byte(0xFF), TwoByteOpcode::UndefinedRm);
         assert_eq!(classify_two_byte(0x24), TwoByteOpcode::Unsupported);
