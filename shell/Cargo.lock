@@ -333,6 +333,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "prisma-ir",
+ "proptest",
  "serde",
  "sha2",
  "tempfile",
