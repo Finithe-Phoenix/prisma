@@ -49,13 +49,14 @@ conflicts.
 | ✅ | CMPXCHG r/m,r (0F B1) | **DONE — PR #49** (codex review: dropped 0F B0 not in C++, added prefix guards, alias/zero-ext e2e). Register-direct, accumulator-then-DEST order. |
 | ✅ | PUSHFQ/POPFQ (9C/9D) | **DONE — PR #50.** Mirror the C++ placeholders (no flags bank yet); prefix guards (reject 0x66/F3/REX) added per codex review. |
 | ✅ | BT/BTS/BTR/BTC (0F BA /4../7) | **DONE — PR #50.** Register-direct, I64, imm8; mask=1<<bit, BTS=Or/BTR=And~/BTC=Xor; ARM64 e2e. |
-| 🚧 BLOCKED | ADC/SBB **real carry** | C++ uses ADD/SUB placeholders; Rust matches. Real carry needs `ReadFlag(Carry)` + a **coordinated C++ change** (codex + core rebuild) or the byte-differential breaks. See [REVIEWS/2026-06-19-decoder-gap-closeout.md](REVIEWS/2026-06-19-decoder-gap-closeout.md). |
-| 🚧 BLOCKED | RCL/RCR | Rust decoder Group2 + backend don't handle `Rcl`/`Rcr` (only Rol/Ror/Shl/Shr/Sar); rotate-through-carry needs CF + a coordinated decoder+backend+C++ effort. |
+| ✅ | ADC/SBB **real carry** | **DONE — PR #54 (`0d5e8e2`).** A persistent CF subsystem now materializes real carry/borrow (no more ADD/SUB placeholders); ARM64 e2e in `exec_adc.rs`. |
+| ✅ | RCL/RCR | **DONE — PR #55 (`5d761cf`).** RCL/RCR by 1 through the persistent carry (Group2 `/2`/`/3`); ARM64 e2e in `exec_rcl.rs`. RCL/RCR **by CL** (variable count) is the remaining follow-up (EWP-C5). |
 
-> 2026-06-19 close-out: every Rust-only-implementable decoder gap from this list
-> is landed (PRs #48/#49/#50), each codex-reviewed (gemini unavailable —
-> IneligibleTierError). The two remaining are blocked on coordinated C++ work and
-> are the honest stopping point for the Rust-only sweep.
+> 2026-06-19 close-out: the Rust-only decoder gaps landed (PRs #48/#49/#50); the
+> two formerly-"blocked" carry items (ADC/SBB, RCL/RCR) **were since unblocked
+> and landed** via the persistent-CF subsystem (PRs #54/#55) plus block-exit ABI
+> and intra-region control-flow execution on ARM64 (#56/#57) — all
+> hardware-validated. Remaining follow-up: RCL/RCR by CL.
 
 ## Session 2026-06-18 — secure WIP + CI parity (branch `claude/rust-migration-popcnt-decoder-batch`)
 
@@ -119,7 +120,7 @@ backend + cache:
 - **#40** `translate_fused_block` + `prisma_ir::Op::map_refs` — **DONE**. Fuses a
   straight-line run into a SINGLE optimized SSA region so the pipeline optimizes
   ACROSS instruction boundaries. The blocker (the decoder numbers refs per
-  instruction) was solved with a function-global SSA ref-visitor over all 94
+  instruction) was solved with a function-global SSA ref-visitor over all 97
   `Op` variants: exhaustive match (new variant = compile error), every shifted
   field is `Ref`-typed (compiler rejects non-ref fields), and the 112 operand
   assignments equal the 112 `Ref` fields. Each instruction's refs are renumbered
