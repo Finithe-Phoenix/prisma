@@ -218,6 +218,13 @@ theorem propagate_cons (s : TSO) (t : Tid) (a : Addr) (v : Val) (r : StoreBuffer
 @[simp] theorem fence_sb (s : TSO) (t : Tid) : (s.fence t).sb t = [] := by
   simp [fence]
 
+/-- A fence is core-local: it drains only the issuing core's buffer, leaving
+    every other core's buffer untouched. The structural complement to the
+    cross-core visibility lemmas. -/
+@[simp] theorem fence_other_sb (s : TSO) (t t' : Tid) (h : t' ≠ t) :
+    (s.fence t).sb t' = s.sb t' := by
+  simp [fence, h]
+
 /-- **A second fence is redundant.** Fencing an already-fenced core is a no-op
     (its buffer is already empty), so a rewrite may drop back-to-back barriers
     on the same core. -/
