@@ -298,6 +298,28 @@ theorem load_unaffected_by_fence (s : TSO) (t : Tid) (a : Addr) :
   simp only [fence, load]
   exact foldl_upd_apply (s.sb t) s.mem a
 
+/-- **Draining is unobservable to the issuing core.** A `propagate` step (drain
+    the oldest buffered store of `t` to memory) does not change what `t` itself
+    loads: store forwarding already gives `t` its latest store, whether that
+    store is still buffered or has just drained. This is why the
+    nondeterministic *timing* of a core's drains is sound for that core's own
+    observations — the basis of relaxed single-threaded execution. -/
+theorem load_unaffected_by_propagate (s : TSO) (t : Tid) (a : Addr) :
+    (s.propagate t).load t a = s.load t a := by
+  unfold propagate load
+  cases h : s.sb t with
+  | nil => simp [h]
+  | cons e r =>
+    have hrec : sbLatest (e :: r) a
+              = (sbLatest r a).orElse (fun _ => if e.1 = a then some e.2 else none) := by
+      rw [sbLatest, List.foldl_cons]; exact sbLatest_acc r a _
+    simp only [h, upd_same, hrec]
+    rcases sbLatest r a with _ | v
+    · by_cases he : e.1 = a
+      · simp [upd, he]
+      · simp [upd, he, Ne.symm he]
+    · simp
+
 /-- **SB via the operational semantics.** From a zeroed machine, two `issue`
     steps — core 0 stores `x := 1` (addr 0), core 1 stores `y := 1` (addr 1) —
     reach, through `Steps`, a state in which each core's load of the OTHER
