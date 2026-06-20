@@ -114,7 +114,7 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 | `prisma-backend` | ~5.6k | Lowering de ~42 ops a ARM64 |
 | `prisma-passes` | ~5.0k | 13 pases + 2 function-pass; completo |
 | `prisma-runtime` | ~2.6k | jit_memory (W^X), dispatcher de contrato, smc_guard, syscall boundary, **`executor` (ejecuta bloques traducidos en ARM64)** |
-| `prisma-ir` | ~1.4k | Tipos IR + `Op::map_refs` (visitor SSA de 94 variantes) |
+| `prisma-ir` | ~1.4k | Tipos IR + `Op::map_refs` (visitor SSA de 97 variantes) |
 | `prisma-cache` | ~1.0k | Cache real (zstd + sha256), fix de DoS de deserialización |
 | `prisma-translator` | ~0.7k | **Fachada integrada**: decode→optimizar→lower→cache + `translate_block` + `translate_fused_block` (renumeración SSA) + stats/límites/SMC |
 | `orchestrator` | ~0.85k | PE loader (mapeo), container (esqueleto) |
@@ -140,13 +140,19 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 - **Syscalls solo Linux x86-64** (POSIX). En Windows es stub `-ENOSYS`.
 - **Sin threads de guest** (dispatcher single-threaded), sin TLS sintético más
   allá del segment-base, sin sincronización inter-hilo modelada.
-- **Modelo de flags NZCV diferido** (Pilar 2): los compares usan `Select`
-  booleano, no flags reales.
+- **Modelo de flags NZCV a medio migrar** (Pilar 2): el pilar `WriteFlags`/
+  `ReadFlag`/`CondJumpFlags` **ya existe** y baja a ADDS/SUBS/ANDS + CSET/CSEL
+  leyendo NZCV real (`ir.hpp:332-354`, `lowering.cpp:1248-1280`); en paralelo
+  sobrevive el legacy `Compare`→CSET-booleano (`lowering.cpp:624-639`). Falta
+  retirar el path booleano + síntesis PF/AF. ADC/SBB/RCL/RCR con carry real ya
+  aterrizaron (subsistema de CF persistente).
 - **Sin entrega de excepciones/señales al guest** (int3/invalid-opcode/SIGSEGV→
   handler del guest). Los signal handlers existen para faults del host.
 - **Sin TSO adaptativo** (Pilar 3): todo emite variantes TSO por ahora.
-- **Territorios vacíos**: `android/` (andamiaje), `server/` (vacío),
-  `tools/benchmarks/` (sin arrancar).
+- **Territorios vacíos**: `android/` (andamiaje), `server/` (solo README,
+  Fase 2.5). `tools/benchmarks/` **sí tiene harness real** (paquete Python
+  `prisma_bench` + corpus Dhrystone + CI `benchmarks-smoke`); lo que falta son
+  más corpus (CoreMark/nbench/SPEC) y los runners por baseline.
 
 ---
 
