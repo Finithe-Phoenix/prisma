@@ -3309,6 +3309,64 @@ fn decode_alu_rm_imm(
     Ok(1 + modrm_bytes + imm_bytes)
 }
 
+/// RCL/RCR by 1 through the persistent carry. RCL: `dst = (dst << 1) | CF`, new
+/// CF = old MSB. RCR: `dst = (dst >> 1) | (CF << (w-1))`, new CF = old LSB.
+fn emit_rcl_rcr_by1(stmts: &mut Vec<Stmt>, is_rcr: bool, dst_reg: Gpr, size: OpSize) {
+    let width_minus_1 = u64::from(size.bit_width() - 1);
+    let cf = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(cf), Op::LoadCarry(LoadCarry)));
+    let dst = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(dst),
+        Op::LoadReg(LoadReg { reg: dst_reg, size }),
+    ));
+    let one = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(one),
+        Op::Constant(Constant { value: 1, size }),
+    ));
+    let wm1 = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(wm1),
+        Op::Constant(Constant {
+            value: width_minus_1,
+            size,
+        }),
+    ));
+
+    let push_bin = |stmts: &mut Vec<Stmt>, op, lhs, rhs| {
+        let r = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(r), Op::BinOp(BinOp { op, lhs, rhs, size })));
+        r
+    };
+
+    let (new_dst, new_cf) = if is_rcr {
+        let new_cf = push_bin(stmts, BinOpKind::And, dst, one);
+        let shifted = push_bin(stmts, BinOpKind::Shr, dst, one);
+        let cf_top = push_bin(stmts, BinOpKind::Shl, cf, wm1);
+        let new_dst = push_bin(stmts, BinOpKind::Or, shifted, cf_top);
+        (new_dst, new_cf)
+    } else {
+        let top = push_bin(stmts, BinOpKind::Shr, dst, wm1);
+        let new_cf = push_bin(stmts, BinOpKind::And, top, one);
+        let shifted = push_bin(stmts, BinOpKind::Shl, dst, one);
+        let new_dst = push_bin(stmts, BinOpKind::Or, shifted, cf);
+        (new_dst, new_cf)
+    };
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: dst_reg,
+            value: new_dst,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreCarry(StoreCarry { value: new_cf }),
+    ));
+}
+
 fn decode_group2(
     prefixes: &PrefixSet,
     opcode: u8,
@@ -3322,6 +3380,17 @@ fn decode_group2(
         operand_size(prefixes, true)
     };
     let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
+    // RCL (/2) / RCR (/3): rotate-through-carry. Only the by-1 forms (D0/D1)
+    // register-direct are supported — they use the persistent CF. Variable-count
+    // (C0/C1 imm, D2/D3 CL) and memory forms are deferred.
+    if matches!(modrm.reg, 2 | 3) {
+        if matches!(opcode, 0xD0 | 0xD1) && modrm.mod_ == 3 {
+            let dst_reg = map_reg(modrm.rm, &prefixes.rex, false);
+            emit_rcl_rcr_by1(stmts, modrm.reg == 3, dst_reg, size);
+            return Ok(2);
+        }
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
     let op = match modrm.reg {
         0 => BinOpKind::Rol,
         1 => BinOpKind::Ror,
@@ -11496,6 +11565,38 @@ mod tests {
         assert_eq!(
             decode_one(b"\xF7\xC8", 0),
             Err(crate::DecodeError::UnsupportedOpcode(0xF7))
+        );
+    }
+
+    #[test]
+    fn decode_rcl_rcr_by1_uses_carry() {
+        // rcl rax, 1 (48 D1 D0) and rcr rax, 1 (48 D1 D8) emit LoadCarry +
+        // StoreCarry (rotate-through-carry).
+        for prog in [&b"\x48\xD1\xD0"[..], &b"\x48\xD1\xD8"[..]] {
+            let d = decode_one(prog, 0).unwrap();
+            assert_eq!(d.bytes_consumed, 3, "prog {prog:02X?}");
+            assert!(
+                d.stmts.iter().any(|s| matches!(s.op, Op::LoadCarry(_))),
+                "rcl/rcr must read CF"
+            );
+            assert!(
+                d.stmts.iter().any(|s| matches!(s.op, Op::StoreCarry(_))),
+                "rcl/rcr must write CF"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_rcl_variable_and_memory_forms_deferred() {
+        // rcl rax, cl (48 D3 D0) and rcl by imm (48 C1 D0 ..) and a memory form
+        // are not yet supported.
+        assert_eq!(
+            decode_one(b"\x48\xD3\xD0", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xD3))
+        );
+        assert_eq!(
+            decode_one(b"\x48\xD1\x10", 0), // rcl qword [rax], 1 (mod=00)
+            Err(crate::DecodeError::UnsupportedOpcode(0xD1))
         );
     }
 
