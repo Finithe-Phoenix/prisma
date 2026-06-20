@@ -202,5 +202,35 @@ theorem load_private_fence_other (s : TSO) (t t' : Tid) (a : Addr)
     (s.fence t').load t a = s.load t a := by
   simp only [TSO.load, fence, upd_noteq s.sb [] htt.symm,
     foldl_upd_no_addr (s.sb t') a s.mem h]
+
+/-- A drain shrinks the buffer, so write-privacy of `a` for that core is
+    preserved (the remaining entries are a sublist of the old ones). -/
+theorem noStoreTo_propagate (s : TSO) (t' : Tid) (a : Addr)
+    (h : NoStoreTo (s.sb t') a) : NoStoreTo ((s.propagate t').sb t') a := by
+  unfold NoStoreTo propagate at *
+  cases hb : s.sb t' with
+  | nil => simp [hb]
+  | cons hd tl =>
+    simp only [upd_same]
+    intro e he
+    exact h e (hb ▸ List.mem_cons_of_mem hd he)
+
+/-- A write-private address survives ANY number of partial drains by another
+    core — generalises `load_private_drain_other` (one drain) and
+    `load_private_fence_other` (the whole buffer) to an arbitrary drain count,
+    so no schedule of the other core's draining disturbs the owner's view. -/
+theorem load_private_drainN_other (s : TSO) (t t' : Tid) (a : Addr) (n : Nat)
+    (htt : t' ≠ t) (h : NoStoreTo (s.sb t') a) :
+    (drainN s t' n).load t a = s.load t a := by
+  induction n generalizing s with
+  | zero => simp [drainN]
+  | succ n ih =>
+    cases hb : s.sb t' with
+    | nil => simp [drainN, hb]
+    | cons e r =>
+      have hstep : drainN s t' (n + 1) = drainN (s.propagate t') t' n := by
+        simp [drainN, hb]
+      rw [hstep, ih (s.propagate t') (noStoreTo_propagate s t' a h),
+          load_private_drain_other s t t' a htt h]
 end TSO
 end PrismaIR
