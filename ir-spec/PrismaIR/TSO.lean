@@ -191,6 +191,20 @@ theorem load_after_fence (s : TSO) (t : Tid) (a : Addr) :
     (s.fence t).load t a = (s.fence t).mem a := by
   simp [load, sbLatest]
 
+/-- **F1-LN-015 — same-core stores publish in program order (W→W).** From an
+    empty buffer, two stores by `t` to distinct addresses both reach shared
+    memory after a fence, each carrying its own value: the buffer drains in
+    FIFO program order, so neither store is lost nor reordered past the other.
+    W→W is never relaxed under TSO, and the fence makes that publication
+    globally visible. -/
+theorem fence_publishes_two (s : TSO) (t : Tid) (a b : Addr) (v w : Val)
+    (hne : a ≠ b) (hempty : s.sb t = []) :
+    (((s.store t a v).store t b w).fence t).mem a = v ∧
+    (((s.store t a v).store t b w).fence t).mem b = w := by
+  refine ⟨?_, ?_⟩
+  · simp [store, fence, upd, hempty, hne]
+  · simp [store, fence, upd, hempty]
+
 /-- **SB via the operational semantics.** From a zeroed machine, two `issue`
     steps — core 0 stores `x := 1` (addr 0), core 1 stores `y := 1` (addr 1) —
     reach, through `Steps`, a state in which each core's load of the OTHER
