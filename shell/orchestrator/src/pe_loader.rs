@@ -70,6 +70,20 @@ pub enum ImportSymbol {
 pub struct PeImport {
     pub dll: String,
     pub symbols: Vec<ImportSymbol>,
+    /// RVA of this DLL's import address table (the descriptor's `FirstThunk`).
+    /// The resolved address for `symbols[i]` is written into the slot at
+    /// `iat_rva + i * thunk_width`; this is what the IAT patcher needs.
+    pub iat_rva: u32,
+}
+
+impl PeImport {
+    /// RVA of the IAT slot for `symbols[index]`. `thunk_width` is 8 for PE32+,
+    /// 4 for PE32. `None` if the computation overflows a 32-bit RVA.
+    #[must_use]
+    pub fn iat_slot_rva(&self, index: usize, thunk_width: u32) -> Option<u32> {
+        let offset = u32::try_from(index).ok()?.checked_mul(thunk_width)?;
+        self.iat_rva.checked_add(offset)
+    }
 }
 
 /// One named symbol a PE/DLL exports: its name, the RVA it resolves to, and its
@@ -607,7 +621,11 @@ pub fn parse_imports(img: &PeImage, file: &[u8]) -> Result<Vec<PeImport>, PeErro
         } else {
             parse_thunks(img, file, thunk_rva)?
         };
-        imports.push(PeImport { dll, symbols });
+        imports.push(PeImport {
+            dll,
+            symbols,
+            iat_rva: first_thunk,
+        });
         desc_off += 20;
     }
     Ok(imports)
@@ -846,9 +864,10 @@ mod tests {
         buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes()); // raw_data_offset
 
         let mut idata = vec![0u8; 0x100];
-        // IMAGE_IMPORT_DESCRIPTOR[0]: OFT=0x1040, Name=0x1060, FT=0.
+        // IMAGE_IMPORT_DESCRIPTOR[0]: OFT=0x1040, Name=0x1060, FirstThunk=0x10A0.
         idata[0..4].copy_from_slice(&0x1040u32.to_le_bytes());
         idata[12..16].copy_from_slice(&0x1060u32.to_le_bytes());
+        idata[16..20].copy_from_slice(&0x10A0u32.to_le_bytes());
         // [1] is the all-zero terminator (0x14..0x28).
         // ILT at 0x40 (PE32+ u64 thunks): by-name 0x1080, ordinal 7, terminator.
         idata[0x40..0x48].copy_from_slice(&0x1080u64.to_le_bytes());
@@ -880,6 +899,30 @@ mod tests {
                 ImportSymbol::Ordinal(7),
             ]
         );
+        // The IAT (FirstThunk) RVA is captured for the patcher, and the slots
+        // step by the PE32+ thunk width (8 bytes) per symbol.
+        assert_eq!(imports[0].iat_rva, 0x10A0);
+        assert_eq!(imports[0].iat_slot_rva(0, 8), Some(0x10A0));
+        assert_eq!(imports[0].iat_slot_rva(1, 8), Some(0x10A8));
+    }
+
+    #[test]
+    fn iat_slot_rva_steps_by_width_and_guards_overflow() {
+        let imp = PeImport {
+            dll: "d.dll".to_owned(),
+            symbols: Vec::new(),
+            iat_rva: 0x2000,
+        };
+        assert_eq!(imp.iat_slot_rva(0, 8), Some(0x2000));
+        assert_eq!(imp.iat_slot_rva(3, 8), Some(0x2018));
+        assert_eq!(imp.iat_slot_rva(2, 4), Some(0x2008)); // PE32 width
+                                                          // A slot index that overflows a 32-bit RVA is rejected, not wrapped.
+        let high = PeImport {
+            dll: "d.dll".to_owned(),
+            symbols: Vec::new(),
+            iat_rva: u32::MAX - 4,
+        };
+        assert_eq!(high.iat_slot_rva(1, 8), None);
     }
 
     #[test]
