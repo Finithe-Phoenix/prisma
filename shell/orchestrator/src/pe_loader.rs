@@ -72,6 +72,16 @@ pub struct PeImport {
     pub symbols: Vec<ImportSymbol>,
 }
 
+/// One named symbol a PE/DLL exports: its name, the RVA it resolves to, and its
+/// export ordinal. Resolving an import against a DLL matches the import name to
+/// one of these.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeExport {
+    pub name: String,
+    pub rva: u32,
+    pub ordinal: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeImage {
     pub machine: PeMachine,
@@ -92,6 +102,10 @@ pub struct PeImage {
     /// the image cannot be rebased (no `.reloc`).
     pub reloc_dir_rva: u32,
     pub reloc_dir_size: u32,
+    /// RVA + size of the export directory (entry 0). Zero RVA means the image
+    /// exports nothing (a typical `.exe`); DLLs populate it.
+    pub export_dir_rva: u32,
+    pub export_dir_size: u32,
 }
 
 #[derive(Debug, Error)]
@@ -131,6 +145,9 @@ pub enum PeError {
 
     #[error("import name/string at {0:#x} is not NUL-terminated within bounds")]
     ImportStringUnterminated(u32),
+
+    #[error("export directory RVA {0:#x} does not map into any section's file data")]
+    ExportRvaUnmapped(u32),
 
     #[error("relocation fixup at RVA {0:#x} lies outside the mapped image")]
     RelocOutOfImage(u32),
@@ -351,6 +368,15 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
     } else {
         (0, 0)
     };
+    // Export directory is data directory index 0 (offset datadir_off + 0).
+    let (export_dir_rva, export_dir_size) = if num_dirs >= 1 {
+        (
+            read_u32_at(datadir_off).unwrap_or(0),
+            read_u32_at(datadir_off + 4).unwrap_or(0),
+        )
+    } else {
+        (0, 0)
+    };
 
     // 5. Section table — each entry is 40 bytes, n_sections of them.
     let mut sec_off = opt + opt_hdr_size;
@@ -394,6 +420,8 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
         import_dir_size,
         reloc_dir_rva,
         reloc_dir_size,
+        export_dir_rva,
+        export_dir_size,
     })
 }
 
@@ -583,6 +611,78 @@ pub fn parse_imports(img: &PeImage, file: &[u8]) -> Result<Vec<PeImport>, PeErro
         desc_off += 20;
     }
     Ok(imports)
+}
+
+/// Parse the export directory into the image's named exports.
+///
+/// Returns an empty vector when the image exports nothing (a typical `.exe`);
+/// DLLs populate it. Only named exports are returned (by-ordinal-only exports
+/// are skipped). Every offset derives from untrusted input and is
+/// bounds-checked; malformed tables error rather than crash or over-read.
+pub fn parse_exports(img: &PeImage, file: &[u8]) -> Result<Vec<PeExport>, PeError> {
+    const MAX_NAMES: u32 = 1 << 20;
+    if img.export_dir_rva == 0 {
+        return Ok(Vec::new());
+    }
+    let dir = rva_to_file_offset(img, img.export_dir_rva)
+        .ok_or(PeError::ExportRvaUnmapped(img.export_dir_rva))?;
+    // IMAGE_EXPORT_DIRECTORY is 40 bytes.
+    let hdr = file
+        .get(dir..dir + 40)
+        .ok_or(PeError::ExportRvaUnmapped(img.export_dir_rva))?;
+    let base = u32::from_le_bytes(hdr[16..20].try_into().unwrap());
+    let num_funcs = u32::from_le_bytes(hdr[20..24].try_into().unwrap());
+    let num_names = u32::from_le_bytes(hdr[24..28].try_into().unwrap());
+    let funcs_rva = u32::from_le_bytes(hdr[28..32].try_into().unwrap());
+    let names_rva = u32::from_le_bytes(hdr[32..36].try_into().unwrap());
+    let ords_rva = u32::from_le_bytes(hdr[36..40].try_into().unwrap());
+    if num_names == 0 {
+        return Ok(Vec::new());
+    }
+
+    let names_off =
+        rva_to_file_offset(img, names_rva).ok_or(PeError::ExportRvaUnmapped(names_rva))?;
+    let ords_off = rva_to_file_offset(img, ords_rva).ok_or(PeError::ExportRvaUnmapped(ords_rva))?;
+    let funcs_off =
+        rva_to_file_offset(img, funcs_rva).ok_or(PeError::ExportRvaUnmapped(funcs_rva))?;
+
+    let mut exports = Vec::new();
+    for i in 0..num_names.min(MAX_NAMES) as usize {
+        let sym_rva = u32::from_le_bytes(
+            file.get(names_off + i * 4..names_off + i * 4 + 4)
+                .ok_or(PeError::ExportRvaUnmapped(names_rva))?
+                .try_into()
+                .unwrap(),
+        );
+        let sym_off =
+            rva_to_file_offset(img, sym_rva).ok_or(PeError::ExportRvaUnmapped(sym_rva))?;
+        let sym_name =
+            read_cstr(file, sym_off, 1024).ok_or(PeError::ImportStringUnterminated(sym_rva))?;
+        let idx = u16::from_le_bytes(
+            file.get(ords_off + i * 2..ords_off + i * 2 + 2)
+                .ok_or(PeError::ExportRvaUnmapped(ords_rva))?
+                .try_into()
+                .unwrap(),
+        );
+        // An ordinal index past the function table is malformed — skip it.
+        if u32::from(idx) >= num_funcs {
+            continue;
+        }
+        let slot = funcs_off + idx as usize * 4;
+        let rva = u32::from_le_bytes(
+            file.get(slot..slot + 4)
+                .ok_or(PeError::ExportRvaUnmapped(funcs_rva))?
+                .try_into()
+                .unwrap(),
+        );
+        let ordinal = (base.wrapping_add(u32::from(idx)) & 0xFFFF) as u16;
+        exports.push(PeExport {
+            name: sym_name,
+            rva,
+            ordinal,
+        });
+    }
+    Ok(exports)
 }
 
 #[cfg(test)]
@@ -890,5 +990,73 @@ mod tests {
         let mut mapped = map_image(&img, &buf).expect("map");
         let r = apply_relocations(&img, &mut mapped, 0x1_8000_0000);
         assert!(matches!(r, Err(PeError::RelocBlockTruncated(_))));
+    }
+
+    /// PE32+ whose `.text` (VA 0x1000) carries an export directory exporting one
+    /// named symbol `MyFunc` at RVA 0x2000, ordinal base 1. Data directory[0]
+    /// points at it.
+    fn synth_pe_with_exports() -> Vec<u8> {
+        let mut buf = synth_minimal_pe();
+        let opt = 64 + 4 + 20;
+        let sec = opt + 240;
+        buf[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
+        buf[opt + 112..opt + 116].copy_from_slice(&0x1000u32.to_le_bytes()); // export dir RVA (idx 0)
+        buf[opt + 116..opt + 120].copy_from_slice(&40u32.to_le_bytes()); // export dir size
+        let raw_off = u32::try_from(buf.len()).unwrap();
+        buf[sec + 16..sec + 20].copy_from_slice(&0x200u32.to_le_bytes()); // raw_data_size
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes()); // raw_data_offset
+
+        let mut d = vec![0u8; 0x200];
+        // IMAGE_EXPORT_DIRECTORY at RVA 0x1000.
+        d[12..16].copy_from_slice(&0x1080u32.to_le_bytes()); // Name
+        d[16..20].copy_from_slice(&1u32.to_le_bytes()); // Base (ordinal base)
+        d[20..24].copy_from_slice(&1u32.to_le_bytes()); // NumberOfFunctions
+        d[24..28].copy_from_slice(&1u32.to_le_bytes()); // NumberOfNames
+        d[28..32].copy_from_slice(&0x1040u32.to_le_bytes()); // AddressOfFunctions
+        d[32..36].copy_from_slice(&0x1050u32.to_le_bytes()); // AddressOfNames
+        d[36..40].copy_from_slice(&0x1060u32.to_le_bytes()); // AddressOfNameOrdinals
+        d[0x40..0x44].copy_from_slice(&0x2000u32.to_le_bytes()); // functions[0] = RVA 0x2000
+        d[0x50..0x54].copy_from_slice(&0x1090u32.to_le_bytes()); // names[0] -> name RVA
+        d[0x60..0x62].copy_from_slice(&0u16.to_le_bytes()); // ordinals[0] = function index 0
+        d[0x80..0x8A].copy_from_slice(b"MyLib.dll\0"); // DLL name (unused by us)
+        d[0x90..0x97].copy_from_slice(b"MyFunc\0"); // exported name
+
+        buf.extend_from_slice(&d);
+        buf
+    }
+
+    #[test]
+    fn parses_export_directory() {
+        let buf = synth_pe_with_exports();
+        let img = parse(&buf).expect("parse");
+        assert_eq!(img.export_dir_rva, 0x1000);
+        let exports = parse_exports(&img, &buf).expect("exports");
+        assert_eq!(
+            exports,
+            vec![PeExport {
+                name: "MyFunc".to_owned(),
+                rva: 0x2000,
+                ordinal: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn no_exports_when_directory_absent() {
+        let buf = synth_minimal_pe();
+        let img = parse(&buf).expect("parse");
+        assert_eq!(img.export_dir_rva, 0);
+        assert!(parse_exports(&img, &buf).expect("exports").is_empty());
+    }
+
+    #[test]
+    fn export_rva_outside_sections_errors() {
+        let buf = synth_pe_with_exports();
+        let mut img = parse(&buf).expect("parse");
+        img.export_dir_rva = 0xDEAD_BEEF;
+        assert!(matches!(
+            parse_exports(&img, &buf),
+            Err(PeError::ExportRvaUnmapped(0xDEAD_BEEF))
+        ));
     }
 }
