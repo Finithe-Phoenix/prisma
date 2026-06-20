@@ -35,6 +35,7 @@ pub mod address_space;
 pub mod cache_proto;
 pub mod config;
 pub mod container;
+pub mod cpu_features;
 pub mod integrity;
 pub mod module_table;
 pub mod pe_loader;
