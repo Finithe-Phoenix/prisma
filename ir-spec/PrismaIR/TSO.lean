@@ -269,6 +269,30 @@ theorem fence_eq_drainN (s : TSO) (t : Tid) (n : Nat) (hn : (s.sb t).length ≤ 
       rw [fence_eq_propagate_fence, hstep]
       exact ih (s.propagate t) hlen
 
+/-- Prepend a step to a reachability chain (the `head` companion to `tail`). -/
+theorem Steps.head_step {s s' s'' : TSO} (e : Step s s') (h : Steps s' s'') :
+    Steps s s'' := by
+  induction h with
+  | refl => exact Steps.tail (Steps.refl _) e
+  | tail _ e' ih => exact Steps.tail ih e'
+
+/-- **A drain sequence is operationally reachable.** `drainN` is repeated
+    `drain` (`propagate`) steps, so the drained state is reachable from the
+    start under the operational `Steps` semantics. With `fence_eq_drainN` this
+    means a fence's memory effect is realised by a real Steps trace — the bridge
+    from the abstract barrier to the operational model the rewrite uses
+    (RFC 0016 / M3). -/
+theorem drainN_reachable (s : TSO) (t : Tid) (n : Nat) : Steps s (drainN s t n) := by
+  induction n generalizing s with
+  | zero => simpa [drainN] using Steps.refl s
+  | succ n ih =>
+    cases hb : s.sb t with
+    | nil => simpa [drainN, hb] using Steps.refl s
+    | cons e r =>
+      have hstep : drainN s t (n + 1) = drainN (s.propagate t) t n := by simp [drainN, hb]
+      rw [hstep]
+      exact Steps.head_step (Step.drain s t) (ih (s.propagate t))
+
 /-- A fence is core-local: it drains only the issuing core's buffer, leaving
     every other core's buffer untouched. The structural complement to the
     cross-core visibility lemmas. -/
