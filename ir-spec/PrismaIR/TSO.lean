@@ -234,7 +234,7 @@ theorem fence_eq_propagate_fence (s : TSO) (t : Tid) :
   unfold propagate fence
   cases h : s.sb t with
   | nil => simp [h]
-  | cons e r => simp [h, upd_same, List.foldl_cons]
+  | cons e r => simp [upd_same, List.foldl_cons]
 
 /-- Drain core `t`'s buffer with `n` fuel units (one `propagate` each). -/
 def drainN (s : TSO) (t : Tid) : Nat → TSO
@@ -412,7 +412,7 @@ theorem load_unaffected_by_propagate (s : TSO) (t : Tid) (a : Addr) :
     have hrec : sbLatest (e :: r) a
               = (sbLatest r a).orElse (fun _ => if e.1 = a then some e.2 else none) := by
       rw [sbLatest, List.foldl_cons]; exact sbLatest_acc r a _
-    simp only [h, upd_same, hrec]
+    simp only [upd_same, hrec]
     rcases sbLatest r a with _ | v
     · by_cases he : e.1 = a
       · simp [upd, he]
@@ -463,6 +463,175 @@ theorem load_unaffected_by_drainN (s : TSO) (t : Tid) (a : Addr) (n : Nat) :
       have hstep : drainN s t (n + 1) = drainN (s.propagate t) t n := by simp [drainN, hb]
       rw [hstep, ih (s.propagate t), load_unaffected_by_propagate]
 
+
+/-! ## F1-LN-016 — TSO-adaptive rewrite soundness (state level)
+
+The translator's adaptive pass replaces a TSO barrier (a DMB / drained `fence`)
+with nothing whenever it can statically prove the executing core is *quiescent*
+— it has no pending buffered stores at that program point (e.g. right after a
+prior barrier, or in a region the pass proved store-free). The lemmas below are
+the soundness obligation of that rewrite at the machine-state level: the elided
+barrier is the identity transition, so no core at any address can observe its
+removal. RFC 0016 (M1) tracks the connection to the IR rewrite itself. -/
+
+/-- A core is *quiescent* when its store buffer is empty: the adaptive pass's
+    barrier-elision precondition. -/
+def Quiescent (s : TSO) (t : Tid) : Prop := s.sb t = []
+
+/-- **Barrier elision soundness.** A `fence` on a quiescent core is the identity
+    transition — its only effect (draining the buffer, in program order, to
+    shared memory) is already accomplished. The pass may drop it. -/
+theorem fence_elim_quiescent (s : TSO) (t : Tid) (h : Quiescent s t) :
+    s.fence t = s := by
+  have h' : s.sb t = [] := h
+  have hsb : upd s.sb t [] = s.sb := by
+    funext x'
+    by_cases hx : x' = t
+    · subst hx; simp [upd, h']
+    · simp [upd, hx]
+  simp only [fence, h', List.foldl_nil, hsb]
+
+/-- **Observational soundness of the elision.** No core, at any address, can
+    distinguish the elided-barrier machine from the kept-barrier one — the two
+    states are literally equal, so every `load` agrees. -/
+theorem fence_elim_obs (s : TSO) (t : Tid) (h : Quiescent s t) :
+    ∀ (t'' : Tid) (a : Addr), (s.fence t).load t'' a = s.load t'' a := by
+  intro t'' a; rw [fence_elim_quiescent s t h]
+
+/-- Quiescence of core `t` is stable under a *different* core issuing a store:
+    `t` keeps an empty buffer, so a barrier the pass proved elidable on `t`
+    stays elidable across other cores' writes. -/
+theorem quiescent_stable_issue_other (s : TSO) (t t' : Tid) (a : Addr) (v : Val)
+    (htt : t ≠ t') (h : Quiescent s t) : Quiescent (s.store t' a v) t := by
+  have h' : s.sb t = [] := h
+  unfold Quiescent store
+  simpa [upd, htt] using h'
+
+/-- Quiescence of core `t` is stable under a *different* core draining its
+    buffer to shared memory. Together with `quiescent_stable_issue_other`, a
+    core the pass proved store-free stays quiescent across every step of the
+    other cores — so all its barriers in that span elide. -/
+theorem quiescent_stable_drain_other (s : TSO) (t t' : Tid)
+    (htt : t ≠ t') (h : Quiescent s t) : Quiescent (s.propagate t') t := by
+  have h' : s.sb t = [] := h
+  unfold Quiescent propagate
+  cases hb : s.sb t' with
+  | nil => simpa [hb] using h'
+  | cons hd tl => simpa [hb, upd, htt] using h'
+
+/-- The adaptive rewrite is sound against any reachable state with the same
+    quiescence witness: if a later state `s'` still has core `t` quiescent, its
+    barrier on `t` elides too. The bridge from "proved quiescent once" to
+    "elidable here". -/
+theorem adaptive_fence_elim (s' : TSO) (t : Tid) (h : Quiescent s' t) :
+    s'.fence t = s' :=
+  fence_elim_quiescent s' t h
+
+/-! ### F1-LN-016 / M2 — barrier elision preserves the whole-block trace
+
+M1 above shows a single elided `fence` is the identity *transition*. M2 lifts
+that to a *block*: a translated basic block is a sequence of the executing
+core's memory ops, and its observable behaviour is the list of values its loads
+return (its trace) together with its final state. The adaptive pass removes a
+barrier whose program point the analysis proved quiescent; the theorem here is
+that this removal changes neither the trace nor the final state of the entire
+block — the rewrite is observationally sound at the block level, which is the
+granularity the pass actually operates on. -/
+
+/-- One memory op of a single core's translated block. (`MOp`, not `Op`, to
+    avoid colliding with the IR opcode type.) -/
+inductive MOp
+  | load  (a : Addr)
+  | store (a : Addr) (v : Val)
+  | bar
+  deriving DecidableEq
+
+abbrev MBlock := List MOp
+
+/-- Execute a block on core `t`: thread the TSO state through each op and
+    collect the value every `load` observes. Returns the final state paired
+    with the trace (loads in program order). A `bar` drains the buffer; a
+    `store` buffers; a `load` is a pure observation appended to the trace. -/
+def run (t : Tid) : MBlock → TSO → TSO × List Val
+  | [],                 s => (s, [])
+  | MOp.load a    :: r, s => let p := run t r s; (p.1, s.load t a :: p.2)
+  | MOp.store a v :: r, s => run t r (s.store t a v)
+  | MOp.bar       :: r, s => run t r (s.fence t)
+
+/-- Running a concatenated block is running the first half, then the second
+    from the resulting state, with the traces concatenated. The compositional
+    backbone that lets a local rewrite be reasoned about inside a larger block. -/
+theorem run_append (t : Tid) (xs ys : MBlock) (s : TSO) :
+    run t (xs ++ ys) s =
+      ((run t ys (run t xs s).1).1,
+       (run t xs s).2 ++ (run t ys (run t xs s).1).2) := by
+  induction xs generalizing s with
+  | nil => simp [run]
+  | cons op r ih =>
+    cases op with
+    | load a => simp [run, ih]
+    | store a v => simp [run, ih]
+    | bar => simp [run, ih]
+
+/-- **M2 — block-level barrier-elision soundness.** If the prefix `pre` leaves
+    core `t`'s buffer empty, then deleting the `bar` that follows it changes
+    neither the final state nor the trace of the whole block `pre ++ bar ::
+    post`. The adaptive pass may drop a barrier at any quiescent program point
+    without altering observable block behaviour. -/
+theorem bar_elim_trace (t : Tid) (pre post : MBlock) (s : TSO)
+    (h : Quiescent (run t pre s).1 t) :
+    run t (pre ++ MOp.bar :: post) s = run t (pre ++ post) s := by
+  rw [run_append, run_append]
+  have hf : (run t pre s).1.fence t = (run t pre s).1 :=
+    fence_elim_quiescent _ t h
+  simp only [run, hf]
+
+/-- A block of pure loads (no store, no barrier) never changes the machine: its
+    final state is the start state. Such a block is trivially quiescent-stable,
+    so every barrier the pass might consider inserting into it is elidable — the
+    read-only-region case of the adaptive analysis. -/
+theorem run_loads_state (t : Tid) (addrs : List Addr) (s : TSO) :
+    (run t (addrs.map MOp.load) s).1 = s := by
+  induction addrs generalizing s with
+  | nil => simp [run]
+  | cons a r ih => simp [run, ih]
+
+/-! ### F1-LN-016 / M3 — elision is sound under multi-core interleaving
+
+M1/M2 reason about the rewriting core's own view. M3 connects the elision to the
+operational `Steps` relation — the arbitrary interleaving of every core's
+issue/drain — and shows a *spectator* core can never tell the barrier was
+removed. Because an elided barrier at a quiescent point yields a *literally
+equal* machine (M1, `fence_elim_quiescent`), the two programs have identical
+reachable-state sets; hence every value a spectator could observe after the
+kept barrier it can also observe after the elided one, and conversely. This is
+the cross-core soundness obligation of the adaptive rewrite. -/
+
+/-- The elided and kept-barrier machines reach exactly the same states under
+    any interleaving: their reachable-state sets coincide. -/
+theorem bar_elim_reachable_iff (s : TSO) (t : Tid) (h : Quiescent s t) (s' : TSO) :
+    Steps (s.fence t) s' ↔ Steps s s' := by
+  rw [fence_elim_quiescent s t h]
+
+/-- **M3 — cross-core observational equivalence.** Every value a spectator core
+    `t''` can observe at address `a`, in some state reachable under the full
+    issue/drain interleaving, is identical whether the quiescent-point barrier
+    is kept or elided. No interleaving distinguishes the rewrite. -/
+theorem bar_elim_spectator_obs (s : TSO) (t t'' : Tid) (a : Addr) (v : Val)
+    (h : Quiescent s t) :
+    (∃ s', Steps (s.fence t) s' ∧ s'.load t'' a = v) ↔
+    (∃ s', Steps s s' ∧ s'.load t'' a = v) := by
+  rw [fence_elim_quiescent s t h]
+
+/-- A drain by any core is itself one legal `Step`, so a single elided barrier
+    never removes a behaviour: anything the kept-barrier machine could reach by
+    draining, the elided one reaches too (same state). The reflexive bridge used
+    when composing the elision into a larger interleaved schedule. -/
+theorem bar_elim_drain_step (s : TSO) (t t' : Tid) (h : Quiescent s t) :
+    Step (s.fence t) ((s.fence t).propagate t') ∧
+    (s.fence t).propagate t' = s.propagate t' := by
+  refine ⟨Step.drain _ _, ?_⟩
+  rw [fence_elim_quiescent s t h]
 end TSO
 
 end PrismaIR
