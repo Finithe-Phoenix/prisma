@@ -12,10 +12,13 @@
 //!   4. Hand the entry-point guest PC to the C++ Translator + Dispatcher
 //!      (`core/build/prisma_run` is the moral equivalent today).
 //!
-//! Status: parser-only skeleton. Reads the DOS stub + NT headers + the
-//! section table, validates magic numbers, returns a `PeImage` with
-//! `(virtual_address, size, characteristics)` per section. No
-//! relocation, no imports, no execution. Enough to:
+//! Status: parser. Reads the DOS stub + NT headers + the section table,
+//! validates magic numbers, returns a `PeImage` with
+//! `(virtual_address, size, characteristics)` per section, parses the
+//! import directory ([`parse_imports`] → per-DLL symbols by name/ordinal),
+//! and applies base relocations ([`apply_relocations`] → rebase a mapped
+//! image). No import *resolution* (binding to a loaded DLL), no execution.
+//! Enough to:
 //!
 //!   * Round-trip the PE shape through serde (the Android side will
 //!     display it before launching).
@@ -55,6 +58,20 @@ pub struct PeSection {
     pub characteristics: u32,
 }
 
+/// One imported symbol: by name (with its hint dropped) or by ordinal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ImportSymbol {
+    Name(String),
+    Ordinal(u16),
+}
+
+/// One imported DLL and the symbols pulled from it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeImport {
+    pub dll: String,
+    pub symbols: Vec<ImportSymbol>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeImage {
     pub machine: PeMachine,
@@ -64,6 +81,17 @@ pub struct PeImage {
     pub image_base: u64,
     pub size_of_image: u32,
     pub sections: Vec<PeSection>,
+    /// `true` for PE32+ (0x020B), `false` for PE32 (0x010B). Decides the
+    /// import-thunk width (8 vs 4 bytes).
+    pub pe32_plus: bool,
+    /// RVA + size of the import data directory (entry 1). Zero RVA means the
+    /// image declares no imports.
+    pub import_dir_rva: u32,
+    pub import_dir_size: u32,
+    /// RVA + size of the base relocation directory (entry 5). Zero RVA means
+    /// the image cannot be rebased (no `.reloc`).
+    pub reloc_dir_rva: u32,
+    pub reloc_dir_size: u32,
 }
 
 #[derive(Debug, Error)]
@@ -94,6 +122,24 @@ pub enum PeError {
 
     #[error("image_base + size_of_image wraps the 64-bit address space")]
     ImageWrapsAddressSpace,
+
+    #[error("size_of_image {0:#x} exceeds the loader's maximum mappable size")]
+    ImageTooLarge(u32),
+
+    #[error("import directory RVA {0:#x} does not map into any section's file data")]
+    ImportRvaUnmapped(u32),
+
+    #[error("import name/string at {0:#x} is not NUL-terminated within bounds")]
+    ImportStringUnterminated(u32),
+
+    #[error("relocation fixup at RVA {0:#x} lies outside the mapped image")]
+    RelocOutOfImage(u32),
+
+    #[error("relocation block at page {0:#x} has an invalid size")]
+    RelocBlockTruncated(u32),
+
+    #[error("unsupported relocation type {0}")]
+    RelocUnsupportedType(u16),
 }
 
 /// A PE image laid out flat in guest virtual memory: `bytes[i]` is the
@@ -108,12 +154,21 @@ pub struct MappedImage {
 
 /// Lay out a parsed PE in guest virtual memory.
 ///
-/// Zero-filled `size_of_image` bytes at `image_base`, each section's
-/// raw data copied to its virtual address. No relocations, no imports
-/// — the Fase 2 hybrid path loads fully-linked position-dependent
-/// images. All bounds come from untrusted input, so every offset is
-/// checked; malformed sections error instead of truncating silently.
+/// Zero-filled `size_of_image` bytes at `image_base`, each section's raw data
+/// copied to its virtual address. All bounds come from untrusted input, so
+/// every offset is checked and `size_of_image` is capped (malformed sections
+/// or an oversized image error instead of truncating or over-allocating).
+/// Relocations and imports are applied separately ([`apply_relocations`] /
+/// [`parse_imports`]).
 pub fn map_image(img: &PeImage, file: &[u8]) -> Result<MappedImage, PeError> {
+    // size_of_image is attacker-controlled (straight from the optional header),
+    // so cap the up-front zero-fill: a crafted header must not be able to force
+    // a multi-gigabyte allocation (DoS). 1 GiB is far beyond any image we map
+    // at this stage; raise it deliberately if a real workload needs more.
+    const MAX_IMAGE_SIZE: u32 = 1 << 30;
+    if img.size_of_image > MAX_IMAGE_SIZE {
+        return Err(PeError::ImageTooLarge(img.size_of_image));
+    }
     if img.entry_point_rva >= img.size_of_image {
         return Err(PeError::EntryOutOfImage(
             img.entry_point_rva,
@@ -259,6 +314,44 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
         m => return Err(PeError::UnsupportedOptHeader(m)),
     };
 
+    // 4b. Data directories — the import directory is entry 1. PE32 places the
+    //     NumberOfRvaAndSizes field at opt+92 and the array at opt+96; PE32+ at
+    //     opt+108 / opt+112. Every read is guarded against both the declared
+    //     optional-header size and the file length (untrusted input).
+    let pe32_plus = opt_magic == 0x020B;
+    let (numdirs_off, datadir_off) = if pe32_plus {
+        (opt + 108, opt + 112)
+    } else {
+        (opt + 92, opt + 96)
+    };
+    let opt_end = opt + opt_hdr_size;
+    let read_u32_at = |off: usize| -> Option<u32> {
+        if off + 4 <= opt_end && off + 4 <= bytes.len() {
+            Some(u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()))
+        } else {
+            None
+        }
+    };
+    let num_dirs = read_u32_at(numdirs_off).unwrap_or(0);
+    let import_entry = datadir_off + 8; // data directory index 1
+    let (import_dir_rva, import_dir_size) = if num_dirs >= 2 {
+        (
+            read_u32_at(import_entry).unwrap_or(0),
+            read_u32_at(import_entry + 4).unwrap_or(0),
+        )
+    } else {
+        (0, 0)
+    };
+    let reloc_entry = datadir_off + 5 * 8; // data directory index 5 (base reloc)
+    let (reloc_dir_rva, reloc_dir_size) = if num_dirs >= 6 {
+        (
+            read_u32_at(reloc_entry).unwrap_or(0),
+            read_u32_at(reloc_entry + 4).unwrap_or(0),
+        )
+    } else {
+        (0, 0)
+    };
+
     // 5. Section table — each entry is 40 bytes, n_sections of them.
     let mut sec_off = opt + opt_hdr_size;
     let mut sections = Vec::with_capacity(n_sections as usize);
@@ -296,7 +389,200 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
         image_base,
         size_of_image,
         sections,
+        pe32_plus,
+        import_dir_rva,
+        import_dir_size,
+        reloc_dir_rva,
+        reloc_dir_size,
     })
+}
+
+/// Apply base relocations to a mapped image, rebasing it to `new_base`.
+///
+/// Walks the `.reloc` blocks and adds `new_base - image_base` to every HIGHLOW
+/// (32-bit) and DIR64 (64-bit) fixup, returning the count applied. A zero delta
+/// or an image with no relocation directory is a no-op. Every offset is
+/// bounds-checked against the mapped image; malformed blocks error rather than
+/// corrupt memory.
+pub fn apply_relocations(
+    img: &PeImage,
+    mapped: &mut MappedImage,
+    new_base: u64,
+) -> Result<usize, PeError> {
+    if img.reloc_dir_rva == 0 || new_base == img.image_base {
+        return Ok(0);
+    }
+    let delta = new_base.wrapping_sub(img.image_base);
+    let delta32 = (delta & 0xFFFF_FFFF) as u32;
+    let image = &mut mapped.bytes;
+    let dir_start = img.reloc_dir_rva as usize;
+    let dir_end = dir_start
+        .checked_add(img.reloc_dir_size as usize)
+        .filter(|&end| end <= image.len())
+        .ok_or(PeError::RelocOutOfImage(img.reloc_dir_rva))?;
+
+    // Each block: { page_rva: u32, block_size: u32, entries: [u16] } where an
+    // entry's high 4 bits are the type and its low 12 bits a page offset.
+    let mut off = dir_start;
+    let mut applied = 0usize;
+    while off + 8 <= dir_end {
+        let page_rva = u32::from_le_bytes(image[off..off + 4].try_into().unwrap());
+        let block_size = u32::from_le_bytes(image[off + 4..off + 8].try_into().unwrap()) as usize;
+        if block_size < 8 || off + block_size > dir_end {
+            return Err(PeError::RelocBlockTruncated(page_rva));
+        }
+        let entries = (block_size - 8) / 2;
+        for e in 0..entries {
+            let eo = off + 8 + e * 2;
+            let raw = u16::from_le_bytes(image[eo..eo + 2].try_into().unwrap());
+            let typ = raw >> 12;
+            let target_rva = page_rva.wrapping_add(u32::from(raw & 0x0FFF));
+            let target = target_rva as usize;
+            match typ {
+                0 => {} // ABSOLUTE — padding, skip
+                3 => {
+                    let end = target
+                        .checked_add(4)
+                        .filter(|&x| x <= image.len())
+                        .ok_or(PeError::RelocOutOfImage(target_rva))?;
+                    let v = u32::from_le_bytes(image[target..end].try_into().unwrap());
+                    image[target..end].copy_from_slice(&v.wrapping_add(delta32).to_le_bytes());
+                    applied += 1;
+                }
+                10 => {
+                    let end = target
+                        .checked_add(8)
+                        .filter(|&x| x <= image.len())
+                        .ok_or(PeError::RelocOutOfImage(target_rva))?;
+                    let v = u64::from_le_bytes(image[target..end].try_into().unwrap());
+                    image[target..end].copy_from_slice(&v.wrapping_add(delta).to_le_bytes());
+                    applied += 1;
+                }
+                _ => return Err(PeError::RelocUnsupportedType(typ)),
+            }
+        }
+        off += block_size;
+    }
+
+    // Reflect the rebase in the image's load-address bookkeeping.
+    mapped.base = new_base;
+    mapped.entry_pc = new_base + u64::from(img.entry_point_rva);
+    Ok(applied)
+}
+
+/// Translate a guest RVA to a file offset using the section table.
+///
+/// Returns `None` if the RVA falls outside every section or lands in a
+/// section's purely-virtual tail (no backing file bytes).
+fn rva_to_file_offset(img: &PeImage, rva: u32) -> Option<usize> {
+    for sec in &img.sections {
+        let span = sec.virtual_size.max(sec.raw_data_size);
+        if rva >= sec.virtual_address && rva - sec.virtual_address < span {
+            let delta = rva - sec.virtual_address;
+            if delta < sec.raw_data_size {
+                return Some(sec.raw_data_offset as usize + delta as usize);
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Read a NUL-terminated ASCII string starting at `off`.
+///
+/// Scans at most `max` bytes. Non-UTF-8 bytes are replaced (names are ASCII).
+fn read_cstr(file: &[u8], off: usize, max: usize) -> Option<String> {
+    let slice = file.get(off..)?;
+    let len = slice.iter().take(max).position(|&b| b == 0)?;
+    Some(String::from_utf8_lossy(&slice[..len]).into_owned())
+}
+
+/// Walk an import lookup table (ILT/IAT) at `thunk_rva` into symbols.
+fn parse_thunks(img: &PeImage, file: &[u8], thunk_rva: u32) -> Result<Vec<ImportSymbol>, PeError> {
+    // A crafted unterminated table is bounded by this cap rather than the
+    // file size so the loop cannot spin on pathological input.
+    const MAX_SYMBOLS: usize = 65_536;
+    let mut off =
+        rva_to_file_offset(img, thunk_rva).ok_or(PeError::ImportRvaUnmapped(thunk_rva))?;
+    let mut symbols = Vec::new();
+    for _ in 0..MAX_SYMBOLS {
+        let (thunk, ordinal_flag, width) = if img.pe32_plus {
+            let raw = file
+                .get(off..off + 8)
+                .ok_or(PeError::ImportRvaUnmapped(thunk_rva))?;
+            (u64::from_le_bytes(raw.try_into().unwrap()), 1u64 << 63, 8)
+        } else {
+            let raw = file
+                .get(off..off + 4)
+                .ok_or(PeError::ImportRvaUnmapped(thunk_rva))?;
+            (
+                u64::from(u32::from_le_bytes(raw.try_into().unwrap())),
+                1u64 << 31,
+                4,
+            )
+        };
+        if thunk == 0 {
+            break; // null terminator ends the table
+        }
+        if thunk & ordinal_flag != 0 {
+            symbols.push(ImportSymbol::Ordinal((thunk & 0xFFFF) as u16));
+        } else {
+            // Low 31 bits are an RVA to IMAGE_IMPORT_BY_NAME { hint: u16, name }.
+            let by_name_rva = (thunk & 0x7FFF_FFFF) as u32;
+            let name_off = rva_to_file_offset(img, by_name_rva)
+                .ok_or(PeError::ImportRvaUnmapped(by_name_rva))?;
+            let name = read_cstr(file, name_off + 2, 1024)
+                .ok_or(PeError::ImportStringUnterminated(by_name_rva))?;
+            symbols.push(ImportSymbol::Name(name));
+        }
+        off += width;
+    }
+    Ok(symbols)
+}
+
+/// Parse the PE import directory into a per-DLL symbol list.
+///
+/// Returns an empty vector when the image declares no imports. Every offset
+/// derives from untrusted input and is bounds-checked; malformed tables error
+/// rather than truncate silently.
+pub fn parse_imports(img: &PeImage, file: &[u8]) -> Result<Vec<PeImport>, PeError> {
+    // IMAGE_IMPORT_DESCRIPTOR is 20 bytes, terminated by an all-zero entry.
+    const MAX_DLLS: usize = 8_192;
+    if img.import_dir_rva == 0 {
+        return Ok(Vec::new());
+    }
+    let mut desc_off = rva_to_file_offset(img, img.import_dir_rva)
+        .ok_or(PeError::ImportRvaUnmapped(img.import_dir_rva))?;
+    let mut imports = Vec::new();
+    for _ in 0..MAX_DLLS {
+        let desc = file
+            .get(desc_off..desc_off + 20)
+            .ok_or(PeError::ImportRvaUnmapped(img.import_dir_rva))?;
+        let original_first_thunk = u32::from_le_bytes(desc[0..4].try_into().unwrap());
+        let name_rva = u32::from_le_bytes(desc[12..16].try_into().unwrap());
+        let first_thunk = u32::from_le_bytes(desc[16..20].try_into().unwrap());
+        if original_first_thunk == 0 && name_rva == 0 && first_thunk == 0 {
+            break; // null descriptor terminates the array
+        }
+        let name_off =
+            rva_to_file_offset(img, name_rva).ok_or(PeError::ImportRvaUnmapped(name_rva))?;
+        let dll =
+            read_cstr(file, name_off, 1024).ok_or(PeError::ImportStringUnterminated(name_rva))?;
+        // Prefer the import lookup table (OFT); bound DLLs may have only the IAT.
+        let thunk_rva = if original_first_thunk != 0 {
+            original_first_thunk
+        } else {
+            first_thunk
+        };
+        let symbols = if thunk_rva == 0 {
+            Vec::new()
+        } else {
+            parse_thunks(img, file, thunk_rva)?
+        };
+        imports.push(PeImport { dll, symbols });
+        desc_off += 20;
+    }
+    Ok(imports)
 }
 
 #[cfg(test)]
@@ -430,5 +716,179 @@ mod tests {
         img.entry_point_rva = img.size_of_image;
         let r = map_image(&img, &buf);
         assert!(matches!(r, Err(PeError::EntryOutOfImage(_, _))));
+    }
+
+    #[test]
+    fn map_rejects_oversized_size_of_image() {
+        // A crafted 2 GiB size_of_image must error, not attempt the allocation.
+        let mut buf = synth_minimal_pe();
+        let opt = 64 + 4 + 20;
+        buf[opt + 56..opt + 60].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        let img = parse(&buf).expect("parse");
+        let r = map_image(&img, &buf);
+        assert!(matches!(r, Err(PeError::ImageTooLarge(0x8000_0000))));
+    }
+
+    /// PE32+ whose `.text` section (VA 0x1000) carries a hand-laid import
+    /// directory: one DLL (KERNEL32.dll) importing `GetProcAddress` by name
+    /// and ordinal 7. The optional header's data directory[1] points at it.
+    fn synth_pe_with_imports() -> Vec<u8> {
+        let mut buf = synth_minimal_pe();
+        let opt = 64 + 4 + 20;
+        let sec = opt + 240;
+        // 16 data directories; import dir (index 1) -> RVA 0x1000, size 40.
+        buf[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes());
+        buf[opt + 120..opt + 124].copy_from_slice(&0x1000u32.to_le_bytes());
+        buf[opt + 124..opt + 128].copy_from_slice(&40u32.to_le_bytes());
+        // .text raw data now backs VA 0x1000 with the import payload.
+        let raw_off = u32::try_from(buf.len()).unwrap();
+        buf[sec + 16..sec + 20].copy_from_slice(&0x100u32.to_le_bytes()); // raw_data_size
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes()); // raw_data_offset
+
+        let mut idata = vec![0u8; 0x100];
+        // IMAGE_IMPORT_DESCRIPTOR[0]: OFT=0x1040, Name=0x1060, FT=0.
+        idata[0..4].copy_from_slice(&0x1040u32.to_le_bytes());
+        idata[12..16].copy_from_slice(&0x1060u32.to_le_bytes());
+        // [1] is the all-zero terminator (0x14..0x28).
+        // ILT at 0x40 (PE32+ u64 thunks): by-name 0x1080, ordinal 7, terminator.
+        idata[0x40..0x48].copy_from_slice(&0x1080u64.to_le_bytes());
+        idata[0x48..0x50].copy_from_slice(&((1u64 << 63) | 7).to_le_bytes());
+        // DLL name at 0x60.
+        idata[0x60..0x6D].copy_from_slice(b"KERNEL32.dll\0");
+        // IMAGE_IMPORT_BY_NAME at 0x80: hint(u16)=0, "GetProcAddress\0".
+        idata[0x82..0x91].copy_from_slice(b"GetProcAddress\0");
+
+        buf.extend_from_slice(&idata);
+        buf
+    }
+
+    #[test]
+    fn parses_import_directory() {
+        let buf = synth_pe_with_imports();
+        let img = parse(&buf).expect("parse");
+        assert!(img.pe32_plus);
+        assert_eq!(img.import_dir_rva, 0x1000);
+        assert_eq!(img.import_dir_size, 40);
+
+        let imports = parse_imports(&img, &buf).expect("imports");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].dll, "KERNEL32.dll");
+        assert_eq!(
+            imports[0].symbols,
+            vec![
+                ImportSymbol::Name("GetProcAddress".to_owned()),
+                ImportSymbol::Ordinal(7),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_imports_when_directory_absent() {
+        let buf = synth_minimal_pe();
+        let img = parse(&buf).expect("parse");
+        assert_eq!(img.import_dir_rva, 0);
+        assert!(parse_imports(&img, &buf).expect("imports").is_empty());
+    }
+
+    #[test]
+    fn import_rva_outside_sections_errors() {
+        let buf = synth_pe_with_imports();
+        let mut img = parse(&buf).expect("parse");
+        img.import_dir_rva = 0xDEAD_BEEF; // maps into no section
+        let r = parse_imports(&img, &buf);
+        assert!(matches!(r, Err(PeError::ImportRvaUnmapped(0xDEAD_BEEF))));
+    }
+
+    #[test]
+    fn unterminated_dll_name_errors() {
+        let mut buf = synth_pe_with_imports();
+        // Fill the DLL-name region (file offset of VA 0x1060) with non-NUL so
+        // the scan never terminates within bounds.
+        let img = parse(&buf).expect("parse");
+        let name_off = rva_to_file_offset(&img, 0x1060).unwrap();
+        // No NUL from the DLL name to EOF -> the scan can never terminate.
+        for b in &mut buf[name_off..] {
+            *b = b'A';
+        }
+        let r = parse_imports(&img, &buf);
+        assert!(matches!(r, Err(PeError::ImportStringUnterminated(0x1060))));
+    }
+
+    /// PE32+ whose `.text` (VA 0x1000) holds a DIR64 pointer (`image_base` +
+    /// 0x1234) at RVA 0x1000 and a one-entry `.reloc` block at RVA 0x1080
+    /// targeting it. Data directory[5] points at the block.
+    fn synth_pe_with_reloc() -> Vec<u8> {
+        let mut buf = synth_minimal_pe();
+        let opt = 64 + 4 + 20;
+        let sec = opt + 240;
+        // 16 data directories; base-reloc dir (index 5) -> RVA 0x1080, size 10.
+        buf[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes());
+        buf[opt + 152..opt + 156].copy_from_slice(&0x1080u32.to_le_bytes());
+        buf[opt + 156..opt + 160].copy_from_slice(&10u32.to_le_bytes());
+        let raw_off = u32::try_from(buf.len()).unwrap();
+        buf[sec + 16..sec + 20].copy_from_slice(&0x100u32.to_le_bytes()); // raw_data_size
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes()); // raw_data_offset
+
+        let mut idata = vec![0u8; 0x100];
+        // DIR64 pointer at RVA 0x1000 = image_base + 0x1234.
+        idata[0..8].copy_from_slice(&(0x1_4000_0000u64 + 0x1234).to_le_bytes());
+        // .reloc block at RVA 0x1080: page 0x1000, size 10, one DIR64 entry @ off 0.
+        idata[0x80..0x84].copy_from_slice(&0x1000u32.to_le_bytes()); // page_rva
+        idata[0x84..0x88].copy_from_slice(&10u32.to_le_bytes()); // block_size
+        idata[0x88..0x8A].copy_from_slice(&(10u16 << 12).to_le_bytes()); // type=10, off=0
+
+        buf.extend_from_slice(&idata);
+        buf
+    }
+
+    #[test]
+    fn applies_dir64_base_relocation() {
+        let buf = synth_pe_with_reloc();
+        let img = parse(&buf).expect("parse");
+        assert_eq!(img.reloc_dir_rva, 0x1080);
+
+        let mut mapped = map_image(&img, &buf).expect("map");
+        let before = u64::from_le_bytes(mapped.bytes[0x1000..0x1008].try_into().unwrap());
+        assert_eq!(before, 0x1_4000_1234);
+
+        let new_base = 0x1_8000_0000u64;
+        let applied = apply_relocations(&img, &mut mapped, new_base).expect("reloc");
+        assert_eq!(applied, 1);
+        let after = u64::from_le_bytes(mapped.bytes[0x1000..0x1008].try_into().unwrap());
+        assert_eq!(after, 0x1_8000_1234);
+        assert_eq!(mapped.base, new_base);
+        assert_eq!(mapped.entry_pc, new_base + 0x1000);
+    }
+
+    #[test]
+    fn relocation_noop_without_directory_or_delta() {
+        // No reloc directory at all.
+        let buf = synth_minimal_pe();
+        let img = parse(&buf).expect("parse");
+        let mut mapped = map_image(&img, &buf).expect("map");
+        assert_eq!(
+            apply_relocations(&img, &mut mapped, 0xDEAD_0000).expect("reloc"),
+            0
+        );
+        // Directory present but new_base == image_base -> zero delta.
+        let buf2 = synth_pe_with_reloc();
+        let img2 = parse(&buf2).expect("parse");
+        let mut m2 = map_image(&img2, &buf2).expect("map");
+        assert_eq!(
+            apply_relocations(&img2, &mut m2, img2.image_base).expect("reloc"),
+            0
+        );
+    }
+
+    #[test]
+    fn malformed_reloc_block_errors() {
+        let mut buf = synth_pe_with_reloc();
+        let img = parse(&buf).expect("parse");
+        // Corrupt block_size to 4 (< 8) at RVA 0x1084.
+        let blk_off = rva_to_file_offset(&img, 0x1084).unwrap();
+        buf[blk_off..blk_off + 4].copy_from_slice(&4u32.to_le_bytes());
+        let mut mapped = map_image(&img, &buf).expect("map");
+        let r = apply_relocations(&img, &mut mapped, 0x1_8000_0000);
+        assert!(matches!(r, Err(PeError::RelocBlockTruncated(_))));
     }
 }
