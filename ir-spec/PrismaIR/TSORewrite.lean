@@ -162,5 +162,19 @@ theorem private_step_stable (s : TSO) (t t' : Tid) (a b : Addr) (v : Val)
     (s.propagate t').load t a = s.load t a :=
   ⟨load_unaffected_by_other_store s t t' a b v htt,
    load_private_drain_other s t t' a htt (h t' htt)⟩
+
+/-- The eliminated block has no fence left — the rewrite removes every one. -/
+theorem elimFences_fenceFree (l : List Op) :
+    ∀ op ∈ elimFences l, isFence op = false := by
+  intro op hop
+  rw [elimFences_eq_filter] at hop
+  have h := (List.mem_filter.mp hop).2
+  simpa using h
+
+/-- `elimFences` is idempotent: it reaches a fixpoint in one pass (nothing is
+    left to remove), so the adaptive pass never needs to iterate it. -/
+theorem elimFences_idempotent (l : List Op) :
+    elimFences (elimFences l) = elimFences l := by
+  simp only [elimFences_eq_filter, List.filter_filter, Bool.and_self]
 end TSO
 end PrismaIR
