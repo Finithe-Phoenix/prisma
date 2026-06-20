@@ -27,6 +27,7 @@
 )]
 
 pub mod dispatcher;
+pub mod exception_record;
 pub mod executor;
 pub mod guest_exception;
 pub mod guest_signal;
