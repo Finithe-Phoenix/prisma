@@ -45,10 +45,17 @@ conflicts.
 | Pri | Family | Notes |
 |-----|--------|-------|
 | ✅ | **MUL/IMUL/DIV/IDIV one-operand** (F6/F7 /4../7) | **DONE — PR #46 (`7328245`).** Register-direct, RAX-only dividend (128-bit RDX:RAX deferred, mirrors C++ MVP — the reference treats the dividend as 64-bit RAX, so DIV needed no 128-bit modelling). All four execute on ARM64 via `exec_muldiv.rs`. |
-| 1 | BSF/BSR (0F BC/BD) | CLZ/CTZ-based; check flag semantics (ZF on zero source). |
-| 2 | CMPXCHG (0F B0/B1) | Needs the implicit-rax compare + conditional store. |
-| 3 | ADC/SBB **real carry** | Currently lowered to ADD/SUB placeholders in *both* C++ and Rust — needs CF plumbing. |
-| 4 | BT/BTS/BTR/BTC, RCL/RCR, PUSHFQ/POPFQ | Lower-frequency; batch later. |
+| ✅ | BSF/BSR (0F BC/BD) | **DONE — PR #48.** Bare 0F BC/BD = BSF/BSR (TZCNT/LZCNT need F3). BSR = (width-1)-lzcnt; zero source keeps dst via CmpFlags+Select. ARM64 e2e. |
+| ✅ | CMPXCHG r/m,r (0F B1) | **DONE — PR #49** (codex review: dropped 0F B0 not in C++, added prefix guards, alias/zero-ext e2e). Register-direct, accumulator-then-DEST order. |
+| ✅ | PUSHFQ/POPFQ (9C/9D) | **DONE — PR #50.** Mirror the C++ placeholders (no flags bank yet); prefix guards (reject 0x66/F3/REX) added per codex review. |
+| ✅ | BT/BTS/BTR/BTC (0F BA /4../7) | **DONE — PR #50.** Register-direct, I64, imm8; mask=1<<bit, BTS=Or/BTR=And~/BTC=Xor; ARM64 e2e. |
+| 🚧 BLOCKED | ADC/SBB **real carry** | C++ uses ADD/SUB placeholders; Rust matches. Real carry needs `ReadFlag(Carry)` + a **coordinated C++ change** (codex + core rebuild) or the byte-differential breaks. See [REVIEWS/2026-06-19-decoder-gap-closeout.md](REVIEWS/2026-06-19-decoder-gap-closeout.md). |
+| 🚧 BLOCKED | RCL/RCR | Rust decoder Group2 + backend don't handle `Rcl`/`Rcr` (only Rol/Ror/Shl/Shr/Sar); rotate-through-carry needs CF + a coordinated decoder+backend+C++ effort. |
+
+> 2026-06-19 close-out: every Rust-only-implementable decoder gap from this list
+> is landed (PRs #48/#49/#50), each codex-reviewed (gemini unavailable —
+> IneligibleTierError). The two remaining are blocked on coordinated C++ work and
+> are the honest stopping point for the Rust-only sweep.
 
 ## Session 2026-06-18 — secure WIP + CI parity (branch `claude/rust-migration-popcnt-decoder-batch`)
 
