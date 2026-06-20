@@ -3,6 +3,11 @@
 > Consolidated work list across the 48-54 month plan. This file is the
 > single source of truth for "what's left". `TodoWrite` is for
 > active-session tracking; this file is the multi-year map.
+>
+> **Guía de ataque:** para los próximos meses decompuestos en paquetes de trabajo
+> agent-ready (frontera de archivos, criterios de aceptación, fan-out, deps), ver
+> [BACKLOG_EXTREMO.md](BACKLOG_EXTREMO.md). Este archivo sigue siendo el mapa
+> canónico; el EXTREMO es la guía ejecutable que lo decompone.
 
 **Legend:**
 
