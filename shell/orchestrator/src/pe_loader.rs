@@ -14,10 +14,11 @@
 //!
 //! Status: parser. Reads the DOS stub + NT headers + the section table,
 //! validates magic numbers, returns a `PeImage` with
-//! `(virtual_address, size, characteristics)` per section, and parses the
-//! import directory ([`parse_imports`] → per-DLL symbols by name/ordinal).
-//! No relocation, no import *resolution* (binding to a loaded DLL), no
-//! execution. Enough to:
+//! `(virtual_address, size, characteristics)` per section, parses the
+//! import directory ([`parse_imports`] → per-DLL symbols by name/ordinal),
+//! and applies base relocations ([`apply_relocations`] → rebase a mapped
+//! image). No import *resolution* (binding to a loaded DLL), no execution.
+//! Enough to:
 //!
 //!   * Round-trip the PE shape through serde (the Android side will
 //!     display it before launching).
@@ -87,6 +88,10 @@ pub struct PeImage {
     /// image declares no imports.
     pub import_dir_rva: u32,
     pub import_dir_size: u32,
+    /// RVA + size of the base relocation directory (entry 5). Zero RVA means
+    /// the image cannot be rebased (no `.reloc`).
+    pub reloc_dir_rva: u32,
+    pub reloc_dir_size: u32,
 }
 
 #[derive(Debug, Error)]
@@ -123,6 +128,15 @@ pub enum PeError {
 
     #[error("import name/string at {0:#x} is not NUL-terminated within bounds")]
     ImportStringUnterminated(u32),
+
+    #[error("relocation fixup at RVA {0:#x} lies outside the mapped image")]
+    RelocOutOfImage(u32),
+
+    #[error("relocation block at page {0:#x} has an invalid size")]
+    RelocBlockTruncated(u32),
+
+    #[error("unsupported relocation type {0}")]
+    RelocUnsupportedType(u16),
 }
 
 /// A PE image laid out flat in guest virtual memory: `bytes[i]` is the
@@ -316,6 +330,15 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
     } else {
         (0, 0)
     };
+    let reloc_entry = datadir_off + 5 * 8; // data directory index 5 (base reloc)
+    let (reloc_dir_rva, reloc_dir_size) = if num_dirs >= 6 {
+        (
+            read_u32_at(reloc_entry).unwrap_or(0),
+            read_u32_at(reloc_entry + 4).unwrap_or(0),
+        )
+    } else {
+        (0, 0)
+    };
 
     // 5. Section table — each entry is 40 bytes, n_sections of them.
     let mut sec_off = opt + opt_hdr_size;
@@ -357,7 +380,82 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage, PeError> {
         pe32_plus,
         import_dir_rva,
         import_dir_size,
+        reloc_dir_rva,
+        reloc_dir_size,
     })
+}
+
+/// Apply base relocations to a mapped image, rebasing it to `new_base`.
+///
+/// Walks the `.reloc` blocks and adds `new_base - image_base` to every HIGHLOW
+/// (32-bit) and DIR64 (64-bit) fixup, returning the count applied. A zero delta
+/// or an image with no relocation directory is a no-op. Every offset is
+/// bounds-checked against the mapped image; malformed blocks error rather than
+/// corrupt memory.
+pub fn apply_relocations(
+    img: &PeImage,
+    mapped: &mut MappedImage,
+    new_base: u64,
+) -> Result<usize, PeError> {
+    if img.reloc_dir_rva == 0 || new_base == img.image_base {
+        return Ok(0);
+    }
+    let delta = new_base.wrapping_sub(img.image_base);
+    let delta32 = (delta & 0xFFFF_FFFF) as u32;
+    let image = &mut mapped.bytes;
+    let dir_start = img.reloc_dir_rva as usize;
+    let dir_end = dir_start
+        .checked_add(img.reloc_dir_size as usize)
+        .filter(|&end| end <= image.len())
+        .ok_or(PeError::RelocOutOfImage(img.reloc_dir_rva))?;
+
+    // Each block: { page_rva: u32, block_size: u32, entries: [u16] } where an
+    // entry's high 4 bits are the type and its low 12 bits a page offset.
+    let mut off = dir_start;
+    let mut applied = 0usize;
+    while off + 8 <= dir_end {
+        let page_rva = u32::from_le_bytes(image[off..off + 4].try_into().unwrap());
+        let block_size = u32::from_le_bytes(image[off + 4..off + 8].try_into().unwrap()) as usize;
+        if block_size < 8 || off + block_size > dir_end {
+            return Err(PeError::RelocBlockTruncated(page_rva));
+        }
+        let entries = (block_size - 8) / 2;
+        for e in 0..entries {
+            let eo = off + 8 + e * 2;
+            let raw = u16::from_le_bytes(image[eo..eo + 2].try_into().unwrap());
+            let typ = raw >> 12;
+            let target_rva = page_rva.wrapping_add(u32::from(raw & 0x0FFF));
+            let target = target_rva as usize;
+            match typ {
+                0 => {} // ABSOLUTE — padding, skip
+                3 => {
+                    let end = target
+                        .checked_add(4)
+                        .filter(|&x| x <= image.len())
+                        .ok_or(PeError::RelocOutOfImage(target_rva))?;
+                    let v = u32::from_le_bytes(image[target..end].try_into().unwrap());
+                    image[target..end].copy_from_slice(&v.wrapping_add(delta32).to_le_bytes());
+                    applied += 1;
+                }
+                10 => {
+                    let end = target
+                        .checked_add(8)
+                        .filter(|&x| x <= image.len())
+                        .ok_or(PeError::RelocOutOfImage(target_rva))?;
+                    let v = u64::from_le_bytes(image[target..end].try_into().unwrap());
+                    image[target..end].copy_from_slice(&v.wrapping_add(delta).to_le_bytes());
+                    applied += 1;
+                }
+                _ => return Err(PeError::RelocUnsupportedType(typ)),
+            }
+        }
+        off += block_size;
+    }
+
+    // Reflect the rebase in the image's load-address bookkeeping.
+    mapped.base = new_base;
+    mapped.entry_pc = new_base + u64::from(img.entry_point_rva);
+    Ok(applied)
 }
 
 /// Translate a guest RVA to a file offset using the section table.
@@ -691,5 +789,83 @@ mod tests {
         }
         let r = parse_imports(&img, &buf);
         assert!(matches!(r, Err(PeError::ImportStringUnterminated(0x1060))));
+    }
+
+    /// PE32+ whose `.text` (VA 0x1000) holds a DIR64 pointer (`image_base` +
+    /// 0x1234) at RVA 0x1000 and a one-entry `.reloc` block at RVA 0x1080
+    /// targeting it. Data directory[5] points at the block.
+    fn synth_pe_with_reloc() -> Vec<u8> {
+        let mut buf = synth_minimal_pe();
+        let opt = 64 + 4 + 20;
+        let sec = opt + 240;
+        // 16 data directories; base-reloc dir (index 5) -> RVA 0x1080, size 10.
+        buf[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes());
+        buf[opt + 152..opt + 156].copy_from_slice(&0x1080u32.to_le_bytes());
+        buf[opt + 156..opt + 160].copy_from_slice(&10u32.to_le_bytes());
+        let raw_off = u32::try_from(buf.len()).unwrap();
+        buf[sec + 16..sec + 20].copy_from_slice(&0x100u32.to_le_bytes()); // raw_data_size
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes()); // raw_data_offset
+
+        let mut idata = vec![0u8; 0x100];
+        // DIR64 pointer at RVA 0x1000 = image_base + 0x1234.
+        idata[0..8].copy_from_slice(&(0x1_4000_0000u64 + 0x1234).to_le_bytes());
+        // .reloc block at RVA 0x1080: page 0x1000, size 10, one DIR64 entry @ off 0.
+        idata[0x80..0x84].copy_from_slice(&0x1000u32.to_le_bytes()); // page_rva
+        idata[0x84..0x88].copy_from_slice(&10u32.to_le_bytes()); // block_size
+        idata[0x88..0x8A].copy_from_slice(&(10u16 << 12).to_le_bytes()); // type=10, off=0
+
+        buf.extend_from_slice(&idata);
+        buf
+    }
+
+    #[test]
+    fn applies_dir64_base_relocation() {
+        let buf = synth_pe_with_reloc();
+        let img = parse(&buf).expect("parse");
+        assert_eq!(img.reloc_dir_rva, 0x1080);
+
+        let mut mapped = map_image(&img, &buf).expect("map");
+        let before = u64::from_le_bytes(mapped.bytes[0x1000..0x1008].try_into().unwrap());
+        assert_eq!(before, 0x1_4000_1234);
+
+        let new_base = 0x1_8000_0000u64;
+        let applied = apply_relocations(&img, &mut mapped, new_base).expect("reloc");
+        assert_eq!(applied, 1);
+        let after = u64::from_le_bytes(mapped.bytes[0x1000..0x1008].try_into().unwrap());
+        assert_eq!(after, 0x1_8000_1234);
+        assert_eq!(mapped.base, new_base);
+        assert_eq!(mapped.entry_pc, new_base + 0x1000);
+    }
+
+    #[test]
+    fn relocation_noop_without_directory_or_delta() {
+        // No reloc directory at all.
+        let buf = synth_minimal_pe();
+        let img = parse(&buf).expect("parse");
+        let mut mapped = map_image(&img, &buf).expect("map");
+        assert_eq!(
+            apply_relocations(&img, &mut mapped, 0xDEAD_0000).expect("reloc"),
+            0
+        );
+        // Directory present but new_base == image_base -> zero delta.
+        let buf2 = synth_pe_with_reloc();
+        let img2 = parse(&buf2).expect("parse");
+        let mut m2 = map_image(&img2, &buf2).expect("map");
+        assert_eq!(
+            apply_relocations(&img2, &mut m2, img2.image_base).expect("reloc"),
+            0
+        );
+    }
+
+    #[test]
+    fn malformed_reloc_block_errors() {
+        let mut buf = synth_pe_with_reloc();
+        let img = parse(&buf).expect("parse");
+        // Corrupt block_size to 4 (< 8) at RVA 0x1084.
+        let blk_off = rva_to_file_offset(&img, 0x1084).unwrap();
+        buf[blk_off..blk_off + 4].copy_from_slice(&4u32.to_le_bytes());
+        let mut mapped = map_image(&img, &buf).expect("map");
+        let r = apply_relocations(&img, &mut mapped, 0x1_8000_0000);
+        assert!(matches!(r, Err(PeError::RelocBlockTruncated(_))));
     }
 }
