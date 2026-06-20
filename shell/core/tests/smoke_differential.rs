@@ -567,6 +567,72 @@ const FIXTURES: &[SmokeFixture] = &[
             0x1400_0001,
         ]),
     },
+    // 2026-06-19 decoder-gap families. These assert C++/Rust functional parity
+    // (both translate, same exit kind, C++ caches) — byte-for-byte parity stays
+    // deferred per the note above. Plain `bt` is intentionally excluded: with no
+    // store and no flag consumer it lowers to empty code, which would trip the
+    // non-empty assertions. `rust_words` is left None (the Rust-side behaviour is
+    // pinned by the per-crate unit + ARM64 e2e tests).
+    SmokeFixture {
+        name: "cmpxchg_rcx_rdx",
+        guest_bytes: &[0x48, 0x0F, 0xB1, 0xD1],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bts_rcx_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0xE9, 0x04],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "btr_rcx_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0xF1, 0x04],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "btc_rcx_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0xF9, 0x04],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "pushfq",
+        guest_bytes: &[0x9C],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "popfq",
+        guest_bytes: &[0x9D],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bsf_rax_rcx",
+        guest_bytes: &[0x48, 0x0F, 0xBC, 0xC1],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bsr_rax_rcx",
+        guest_bytes: &[0x48, 0x0F, 0xBD, 0xC1],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "mul_rcx",
+        guest_bytes: &[0x48, 0xF7, 0xE1],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "div_rcx",
+        guest_bytes: &[0x48, 0xF7, 0xF1],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
 ];
 
 #[test]
