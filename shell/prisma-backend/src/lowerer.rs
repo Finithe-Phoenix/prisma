@@ -53,6 +53,12 @@ pub enum LowerError {
 pub struct Lowerer {
     /// Tracks an optional lowering budget for future tuning points.
     budget: usize,
+    /// When set, `Op::Return` lowers to the full AAPCS64 block epilogue
+    /// (restore callee-saved + `ret`) instead of a bare `ret`. The executor
+    /// needs this so a region containing returns balances the prologue's stack
+    /// pushes; the default (bare `ret`) preserves the historical lowering used
+    /// by the differential and the per-instruction lowering tests.
+    return_via_epilogue: bool,
 }
 
 impl Default for Lowerer {
@@ -65,7 +71,19 @@ impl Lowerer {
     /// Constructs a default lowerer.
     #[must_use]
     pub const fn new() -> Self {
-        Self { budget: 1024 }
+        Self {
+            budget: 1024,
+            return_via_epilogue: false,
+        }
+    }
+
+    /// Returns a lowerer whose `Op::Return` emits the full block epilogue
+    /// (restore callee-saved + `ret`), so a wrapped region with returns leaves
+    /// the host stack and callee-saved registers correct on exit.
+    #[must_use]
+    pub const fn with_returns_via_epilogue(mut self) -> Self {
+        self.return_via_epilogue = true;
+        self
     }
 
     /// Lowers an input instruction buffer into backend words.
@@ -145,6 +163,7 @@ impl Lowerer {
                     &mut values,
                     &mut constants,
                     &mut flags,
+                    self.return_via_epilogue,
                 )?;
             }
         }
@@ -163,6 +182,7 @@ fn lower_stmt(
     values: &mut HashMap<Ref, u8>,
     constants: &mut HashMap<Ref, u64>,
     flags: &mut HashSet<Ref>,
+    return_via_epilogue: bool,
 ) -> Result<(), LowerError> {
     match &stmt.op {
         Op::Constant(c) => {
@@ -430,7 +450,13 @@ fn lower_stmt(
         Op::RspAdjust(rsp) => {
             lower_rsp_adjust(asm, rsp)?;
         }
-        Op::Return(_) => asm.ret(),
+        Op::Return(_) => {
+            if return_via_epilogue {
+                abi::emit_block_epilogue_and_ret(asm);
+            } else {
+                asm.ret();
+            }
+        }
         Op::RetAdjusted(ret) => {
             lower_ret_adjusted(asm, ret.pop_bytes)?;
         }
@@ -2738,6 +2764,29 @@ mod tests {
                 0xD65F_03C0,
             ]
         );
+    }
+
+    #[test]
+    fn returns_via_epilogue_flag_emits_full_epilogue() {
+        let func = function_with_blocks(
+            vec![BasicBlock {
+                id: 0,
+                stmts: vec![Stmt::new(None, Op::Return(Return))],
+            }],
+            0,
+        );
+        // Default: a bare `ret`.
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![0xD65F_03C0]
+        );
+        // With the flag: the full epilogue (6 callee-saved ldp pairs + ret).
+        let with_epi = Lowerer::new()
+            .with_returns_via_epilogue()
+            .lower_function(&func)
+            .unwrap();
+        assert_eq!(*with_epi.last().unwrap(), 0xD65F_03C0, "ends in ret");
+        assert_eq!(with_epi.len(), 7, "6 ldp restores + ret");
     }
 
     #[test]
