@@ -232,6 +232,15 @@ theorem propagate_cons (s : TSO) (t : Tid) (a : Addr) (v : Val) (r : StoreBuffer
     (h : t' ≠ t) : (s.store t a v).sb t' = s.sb t' := by
   simp [store, h]
 
+/-- A `propagate` step is core-local too: draining `t`'s oldest store touches
+    only `t`'s buffer (and shared memory), never another core's buffer. With
+    `store_other_sb` and `fence_other_sb` this gives full core isolation of the
+    buffers — the foundation for reasoning about independent threads. -/
+@[simp] theorem propagate_other_sb (s : TSO) (t t' : Tid) (h : t' ≠ t) :
+    (s.propagate t).sb t' = s.sb t' := by
+  unfold propagate
+  cases s.sb t <;> simp [h]
+
 /-- **A second fence is redundant.** Fencing an already-fenced core is a no-op
     (its buffer is already empty), so a rewrite may drop back-to-back barriers
     on the same core. -/
