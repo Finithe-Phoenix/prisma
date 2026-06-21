@@ -773,11 +773,75 @@ impl Rusage {
     }
 }
 
+/// `struct sysinfo` — the system statistics `sysinfo(2)` reports.
+///
+/// The x86-64 Linux layout is a `long` uptime, three `unsigned long` load
+/// averages, six `unsigned long` memory/swap counters, a `u16` process count
+/// plus a `u16` pad, two `unsigned long` high-memory counters, and a `u32`
+/// memory unit — 112 bytes including alignment padding. The padding bytes
+/// (`[82..88]` and `[108..112]`) are written zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sysinfo {
+    /// Seconds since boot (`uptime`).
+    pub uptime: i64,
+    /// 1/5/15-minute load averages (`loads`), in the kernel's fixed-point.
+    pub loads: [u64; 3],
+    /// Total usable main memory (`totalram`), in `mem_unit` bytes.
+    pub totalram: u64,
+    /// Available memory (`freeram`).
+    pub freeram: u64,
+    /// Memory in shared pages (`sharedram`).
+    pub sharedram: u64,
+    /// Memory used by buffers (`bufferram`).
+    pub bufferram: u64,
+    /// Total swap space (`totalswap`).
+    pub totalswap: u64,
+    /// Free swap space (`freeswap`).
+    pub freeswap: u64,
+    /// Number of current processes (`procs`).
+    pub procs: u16,
+    /// Total high memory (`totalhigh`).
+    pub totalhigh: u64,
+    /// Available high memory (`freehigh`).
+    pub freehigh: u64,
+    /// Size of a memory unit in bytes (`mem_unit`).
+    pub mem_unit: u32,
+}
+
+impl Sysinfo {
+    /// On-wire size in guest memory (including alignment padding).
+    pub const SIZE: usize = 112;
+
+    /// Encode to the guest wire form; reserved/alignment padding stays zero.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..8].copy_from_slice(&self.uptime.to_le_bytes());
+        for (i, l) in self.loads.iter().enumerate() {
+            let base = 8 + i * 8;
+            out[base..base + 8].copy_from_slice(&l.to_le_bytes());
+        }
+        out[32..40].copy_from_slice(&self.totalram.to_le_bytes());
+        out[40..48].copy_from_slice(&self.freeram.to_le_bytes());
+        out[48..56].copy_from_slice(&self.sharedram.to_le_bytes());
+        out[56..64].copy_from_slice(&self.bufferram.to_le_bytes());
+        out[64..72].copy_from_slice(&self.totalswap.to_le_bytes());
+        out[72..80].copy_from_slice(&self.freeswap.to_le_bytes());
+        out[80..82].copy_from_slice(&self.procs.to_le_bytes());
+        // [82..88]: the u16 pad + 4 bytes of alignment before totalhigh -> zero.
+        out[88..96].copy_from_slice(&self.totalhigh.to_le_bytes());
+        out[96..104].copy_from_slice(&self.freehigh.to_le_bytes());
+        out[104..108].copy_from_slice(&self.mem_unit.to_le_bytes());
+        // [108..112]: trailing alignment padding -> zero.
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, Rusage, SigAltStack, Stat, Termios,
-        Timespec, Timeval, Tms, Utsname, Winsize,
+        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, Rusage, SigAltStack, Stat, Sysinfo,
+        Termios, Timespec, Timeval, Tms, Utsname, Winsize,
     };
 
     #[test]
@@ -1072,6 +1136,34 @@ mod tests {
         assert_eq!(&bytes[24..32], &3i64.to_le_bytes()); // tms_cstime
         assert_eq!(Tms::from_guest_bytes(&bytes), Some(t));
         assert!(Tms::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn sysinfo_encodes_fields_at_their_offsets_with_zero_padding() {
+        let si = Sysinfo {
+            uptime: 1234,
+            loads: [1, 2, 3],
+            totalram: 0x4000_0000,
+            freeram: 0x2000_0000,
+            sharedram: 0,
+            bufferram: 0,
+            totalswap: 0,
+            freeswap: 0,
+            procs: 7,
+            totalhigh: 0,
+            freehigh: 0,
+            mem_unit: 1,
+        };
+        let b = si.to_guest_bytes();
+        assert_eq!(b.len(), 112);
+        assert_eq!(&b[0..8], &1234i64.to_le_bytes()); // uptime
+        assert_eq!(&b[8..16], &1u64.to_le_bytes()); // loads[0]
+        assert_eq!(&b[32..40], &0x4000_0000u64.to_le_bytes()); // totalram
+        assert_eq!(&b[80..82], &7u16.to_le_bytes()); // procs
+        assert_eq!(&b[104..108], &1u32.to_le_bytes()); // mem_unit
+                                                       // The pad/alignment gaps are zero.
+        assert!(b[82..88].iter().all(|&x| x == 0));
+        assert!(b[108..112].iter().all(|&x| x == 0));
     }
 
     #[test]
