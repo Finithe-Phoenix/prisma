@@ -24,6 +24,7 @@ use crate::resource_syscalls::{self, RlimitError};
 use crate::sched_syscalls::{self, SchedError};
 use crate::sig_syscalls::{self, SigError};
 use crate::time_syscalls::{self, TimeError};
+use crate::tty_syscalls::{self, IoctlError};
 
 /// x86-64 Linux syscall numbers we route (`arch/x86/entry/syscalls/syscall_64.tbl`).
 mod nr {
@@ -81,6 +82,7 @@ mod nr {
     pub const SET_TID_ADDRESS: u64 = 218;
     pub const EXIT: u64 = 60;
     pub const EXIT_GROUP: u64 = 231;
+    pub const IOCTL: u64 = 16;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const MEMBARRIER: u64 = 324;
     pub const PRCTL: u64 = 157;
@@ -113,6 +115,7 @@ mod errno {
     pub const EBADF: i64 = -9;
     pub const EFAULT: i64 = -14;
     pub const EINVAL: i64 = -22;
+    pub const ENOTTY: i64 = -25;
     pub const ERANGE: i64 = -34;
     pub const ENOSYS: i64 = -38;
 }
@@ -291,6 +294,14 @@ const fn fstatfs_errno(e: &FstatfsError) -> i64 {
     match e {
         FstatfsError::BadFd => errno::EBADF,
         FstatfsError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn ioctl_errno(e: &IoctlError) -> i64 {
+    match e {
+        IoctlError::BadFd => errno::EBADF,
+        IoctlError::NotTty => errno::ENOTTY,
+        IoctlError::Fault(_) => errno::EFAULT,
     }
 }
 
@@ -665,6 +676,12 @@ pub fn dispatch(
             ctx.exit_status = Some(arg_i32(args[0]));
             0
         }
+        // ioctl(fd, request, argp): the modelled terminal requests; a non-tty fd
+        // or unmodelled request is ENOTTY.
+        nr::IOCTL => match tty_syscalls::ioctl(&ctx.fds, mem, arg_i32(args[0]), args[1], args[2]) {
+            Ok(v) => v,
+            Err(e) => ioctl_errno(&e),
+        },
         // set_robust_list(head, len): the kernel records the per-thread robust
         // futex list head for cleanup at thread exit. glibc calls this at startup
         // even single-threaded; with no thread teardown the list is never walked,
@@ -1569,6 +1586,43 @@ mod tests {
         // the plumbing).
         let _ = dispatch(&mut ctx, &mut mem, SYS_EXIT, [7, 0, 0, 0, 0, 0]);
         assert_eq!(ctx.exit_status, Some(7));
+    }
+
+    #[test]
+    fn ioctl_routes_tiocgwinsz_and_enotty() {
+        use prisma_runtime::guest_structs::Winsize;
+        const SYS_IOCTL: u64 = 16;
+        const TIOCGWINSZ: u64 = 0x5413;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; Winsize::SIZE];
+        let mut mem = region(&mut buf);
+        // ioctl(1, TIOCGWINSZ, argp) on stdout (a tty) -> 0; reads 80x24.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_IOCTL,
+                [1, TIOCGWINSZ, 0x1000, 0, 0, 0]
+            ),
+            0
+        );
+        let ws = Winsize::from_guest_bytes(mem.read(0x1000, Winsize::SIZE).unwrap()).unwrap();
+        assert_eq!((ws.row, ws.col), (24, 80));
+        // An unmodelled request on a tty -> -ENOTTY (-25).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_IOCTL, [1, 0x9999, 0x1000, 0, 0, 0]),
+            -25
+        );
+        // ioctl on an unopened fd -> -EBADF (-9).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_IOCTL,
+                [99, TIOCGWINSZ, 0x1000, 0, 0, 0]
+            ),
+            -9
+        );
     }
 
     #[test]
