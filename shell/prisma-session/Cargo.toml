@@ -1,0 +1,12 @@
+[package]
+name = "prisma-session"
+version = "0.1.0"
+edition = "2021"
+description = "Prisma execution session — the composition root: load -> translate -> execute (RFC 0017)"
+
+[dependencies]
+prisma_orchestrator = { path = "../orchestrator" }
+prisma-translator = { path = "../prisma-translator" }
+prisma-runtime = { path = "../prisma-runtime" }
+prisma-cache = { path = "../prisma-cache" }
+thiserror = { workspace = true }
