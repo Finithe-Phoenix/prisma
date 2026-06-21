@@ -10,6 +10,7 @@
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::guest_signal::{SigAction, SignalState, SigprocmaskHow, Sigset};
+use prisma_runtime::guest_structs::SigAltStack;
 
 /// Why a signal syscall failed (each maps to a guest errno).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,9 +136,44 @@ pub fn send_signal(state: &mut SignalState, sig: u32) -> Result<(), SigError> {
     Ok(())
 }
 
+/// `sigaltstack(ss, old_ss)`: report the current alternate signal stack to
+/// `old_ss` (when non-null) and install the one at `ss` (when non-null),
+/// returning the alt-stack that is in effect afterwards. Both pointers go
+/// through the range-checked [`GuestRegion`].
+///
+/// The handler is pure in the alt-stack state — the caller owns it (passes the
+/// `current` value and stores the returned one) so this stays decoupled from
+/// where that state lives. Flag/size validation is deferred until signal
+/// delivery actually switches to the alt-stack; for now any well-formed
+/// `stack_t` is accepted and round-tripped.
+///
+/// # Errors
+/// [`SigError::Fault`] if a non-null `ss`/`old_ss` is not accessible guest
+/// memory.
+pub fn sigaltstack(
+    mem: &mut GuestRegion,
+    ss_ptr: u64,
+    old_ss_ptr: u64,
+    current: SigAltStack,
+) -> Result<SigAltStack, SigError> {
+    if old_ss_ptr != 0 {
+        mem.write(old_ss_ptr, &current.to_guest_bytes())
+            .map_err(SigError::Fault)?;
+    }
+    if ss_ptr != 0 {
+        let bytes = mem
+            .read(ss_ptr, SigAltStack::SIZE)
+            .map_err(SigError::Fault)?;
+        let ss =
+            SigAltStack::from_guest_bytes(bytes).ok_or(SigError::Fault(RangeError::Unmapped))?;
+        return Ok(ss);
+    }
+    Ok(current)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{rt_sigprocmask, send_signal, SigError};
+    use super::{rt_sigprocmask, send_signal, sigaltstack, SigError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::guest_signal::{SigAction, SignalState, Sigset};
@@ -316,5 +352,50 @@ mod tests {
         assert_eq!(send_signal(&mut st, 65), Err(SigError::BadSignal(65)));
         assert_eq!(send_signal(&mut st, 1000), Err(SigError::BadSignal(1000)));
         assert_eq!(st.pending_count(), 0);
+    }
+
+    #[test]
+    fn sigaltstack_reports_old_and_installs_new() {
+        use prisma_runtime::guest_structs::SigAltStack;
+        let mut buf = [0u8; 64];
+        // A new alt-stack to install, encoded at guest 0x1000.
+        let new = SigAltStack {
+            sp: 0x1_4000_5000,
+            flags: 0,
+            size: 0x4000,
+        };
+        buf[0..24].copy_from_slice(&new.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // The currently-disabled alt-stack (SS_DISABLE = 2).
+        let current = SigAltStack {
+            sp: 0,
+            flags: 2,
+            size: 0,
+        };
+        // sigaltstack(ss=0x1000, old_ss=0x1020): report old, install new.
+        let installed = sigaltstack(&mut mem, 0x1000, 0x1020, current).expect("ok");
+        assert_eq!(installed, new);
+        // old_ss holds the previous (disabled) alt-stack.
+        let old = SigAltStack::from_guest_bytes(&buf[0x20..0x20 + 24]).unwrap();
+        assert_eq!(old, current);
+    }
+
+    #[test]
+    fn sigaltstack_null_pointers_and_faults() {
+        use prisma_runtime::guest_structs::SigAltStack;
+        let current = SigAltStack {
+            sp: 0x2000,
+            flags: 1,
+            size: 0x8000,
+        };
+        let mut buf = [0u8; 32];
+        let mut mem = region(&mut buf);
+        // Both null: nothing reported, nothing installed — current is unchanged.
+        assert_eq!(sigaltstack(&mut mem, 0, 0, current).unwrap(), current);
+        // A too-short old_ss region (only 8 bytes from 0x1018) is EFAULT.
+        assert_eq!(
+            sigaltstack(&mut mem, 0, 0x1018, current),
+            Err(SigError::Fault(RangeError::Unmapped))
+        );
     }
 }
