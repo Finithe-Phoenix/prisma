@@ -20,10 +20,13 @@ use crate::time_syscalls::{self, TimeError};
 
 /// x86-64 Linux syscall numbers we route (`arch/x86/entry/syscalls/syscall_64.tbl`).
 mod nr {
+    pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
     pub const RT_SIGPROCMASK: u64 = 14;
+    pub const NANOSLEEP: u64 = 35;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const CLOCK_GETTIME: u64 = 228;
+    pub const CLOCK_GETRES: u64 = 229;
 }
 
 /// Negative Linux errno values returned in `rax` on failure.
@@ -113,6 +116,12 @@ pub fn dispatch(
     args: [u64; 6],
 ) -> i64 {
     match number {
+        nr::READ => {
+            match io_syscalls::read(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_usize(args[2])) {
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
         nr::WRITE => {
             match io_syscalls::write(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_usize(args[2])) {
                 // A short/full write returns the byte count.
@@ -120,6 +129,17 @@ pub fn dispatch(
                 Err(e) => io_errno(&e),
             }
         }
+        nr::NANOSLEEP => match time_syscalls::nanosleep_request(mem, args[0]) {
+            Ok(duration) => {
+                std::thread::sleep(duration);
+                0
+            }
+            Err(e) => time_errno(e),
+        },
+        nr::CLOCK_GETRES => match time_syscalls::clock_getres(mem, args[0], args[1]) {
+            Ok(()) => 0,
+            Err(e) => time_errno(e),
+        },
         nr::RT_SIGPROCMASK => {
             match sig_syscalls::rt_sigprocmask(
                 &mut ctx.signals,
@@ -153,9 +173,12 @@ mod tests {
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::guest_structs::Timespec;
 
+    const SYS_READ: u64 = 0;
     const SYS_WRITE: u64 = 1;
+    const SYS_NANOSLEEP: u64 = 35;
     const SYS_GETTIMEOFDAY: u64 = 96;
     const SYS_CLOCK_GETTIME: u64 = 228;
+    const SYS_CLOCK_GETRES: u64 = 229;
     const CLOCK_REALTIME: u64 = 0;
 
     fn region(buf: &mut [u8]) -> GuestRegion<'_> {
@@ -226,5 +249,48 @@ mod tests {
         let mut buf = [0u8; 8];
         let mut mem = region(&mut buf);
         assert_eq!(dispatch(&mut ctx, &mut mem, 9999, [0; 6]), -38);
+    }
+
+    #[test]
+    fn read_from_a_write_only_stream_routes_to_negative_ebadf() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // read(1, ...) — stdout is write-only for the guest -> -EBADF (-9).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_READ, [1, 0x1000, 1, 0, 0, 0]),
+            -9
+        );
+    }
+
+    #[test]
+    fn nanosleep_routes_and_a_zero_request_returns_immediately() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        buf[..16].copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // A zero-duration nanosleep returns 0 without a meaningful wait.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_NANOSLEEP, [0x1000, 0, 0, 0, 0, 0]),
+            0
+        );
+    }
+
+    #[test]
+    fn clock_getres_routes_and_writes_the_resolution() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_CLOCK_GETRES,
+                [CLOCK_REALTIME, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
+        assert_eq!((ts.sec, ts.nsec), (0, 1)); // 1ns resolution
     }
 }
