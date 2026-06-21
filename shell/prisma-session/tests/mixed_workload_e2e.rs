@@ -9,7 +9,7 @@
 //! signal mask, and the clock keeps advancing throughout.
 
 use prisma_orchestrator::address_space::Protection;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_runtime::guest_signal::Sigset;
 use prisma_runtime::guest_structs::Timespec;
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
@@ -26,15 +26,17 @@ const SYS_RT_SIGPENDING: u64 = 127;
 const SIG_SETMASK: u64 = 2;
 const CLOCK_MONOTONIC: u64 = 1;
 
-fn region(buf: &mut [u8]) -> GuestRegion<'_> {
-    GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+fn region(buf: &[u8]) -> BackedAddressSpace {
+    let mut s = BackedAddressSpace::new();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite).unwrap();
+    s
 }
 
 #[test]
 fn interleaved_workload_keeps_subsystems_independent() {
     let mut ctx = SyscallContext::new();
     let mut buf = [0u8; 64];
-    let mut mem = region(&mut buf);
+    let mut mem = region(&buf);
 
     // --- fd subsystem: dup stdout, dup2 it onto a high fd ---
     let fds_start = ctx.fds.open_count();
@@ -50,7 +52,7 @@ fn interleaved_workload_keeps_subsystems_independent() {
     let mut mask = Sigset::empty();
     mask.insert(10);
     buf[0..8].copy_from_slice(&mask.to_guest_bytes());
-    let mut mem = region(&mut buf);
+    let mut mem = region(&buf);
     assert_eq!(
         dispatch(
             &mut ctx,
@@ -129,7 +131,7 @@ fn interleaved_workload_keeps_subsystems_independent() {
     let msg = *b"done";
     let mut wbuf = [0u8; 8];
     wbuf[0..4].copy_from_slice(&msg);
-    let mut wmem = region(&mut wbuf);
+    let mut wmem = region(&wbuf);
     assert_eq!(
         dispatch(&mut ctx, &mut wmem, SYS_WRITE, [1, 0x1000, 4, 0, 0, 0]),
         4

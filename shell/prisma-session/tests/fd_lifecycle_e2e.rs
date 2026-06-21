@@ -8,7 +8,7 @@
 //! descriptor is reused by the next allocation.
 
 use prisma_orchestrator::address_space::Protection;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
 
 const SYS_CLOSE: u64 = 3;
@@ -18,15 +18,17 @@ const SYS_DUP3: u64 = 292;
 
 const O_CLOEXEC: u64 = 0o2_000_000;
 
-fn region(buf: &mut [u8]) -> GuestRegion<'_> {
-    GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+fn region(buf: &[u8]) -> BackedAddressSpace {
+    let mut s = BackedAddressSpace::new();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite).unwrap();
+    s
 }
 
 #[test]
 fn dup_family_allocates_places_and_releases() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
     let start = ctx.fds.open_count();
 
     // dup(stdout) takes the lowest free fd (3, after stdio 0/1/2).
@@ -62,8 +64,8 @@ fn dup_family_allocates_places_and_releases() {
 #[test]
 fn a_freed_descriptor_is_reused_by_the_next_dup() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
 
     // Take fd 3, free it, then the next dup must hand 3 back (lowest free).
     assert_eq!(dispatch(&mut ctx, &mut mem, SYS_DUP, [1, 0, 0, 0, 0, 0]), 3);
@@ -79,8 +81,8 @@ fn a_freed_descriptor_is_reused_by_the_next_dup() {
 #[test]
 fn dup3_enforces_its_stricter_rules_in_a_live_table() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
     let start = ctx.fds.open_count();
 
     // dup3 rejects oldfd == newfd (where dup2 would silently succeed)...
