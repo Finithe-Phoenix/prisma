@@ -37,6 +37,7 @@ pub mod config;
 pub mod container;
 pub mod cpu_features;
 pub mod cpuid_leaves;
+pub mod guest_layout;
 pub mod guest_stack;
 pub mod iat_patch;
 pub mod import_resolver;
