@@ -325,9 +325,97 @@ impl Rlimit {
     }
 }
 
+/// `struct stat` — the file metadata `fstat` / `stat` / `lstat` / `fstatat`
+/// fill in.
+///
+/// The x86-64 Linux layout is 144 bytes with the field offsets below (the
+/// 4-byte `__pad0` after `st_gid` and the trailing 24-byte `__unused[3]` are
+/// reserved and written zero). The three timestamps are embedded `timespec`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stat {
+    /// Device id (`st_dev`).
+    pub dev: u64,
+    /// Inode number (`st_ino`).
+    pub ino: u64,
+    /// Hard-link count (`st_nlink`).
+    pub nlink: u64,
+    /// File type and mode bits (`st_mode`).
+    pub mode: u32,
+    /// Owning user id (`st_uid`).
+    pub uid: u32,
+    /// Owning group id (`st_gid`).
+    pub gid: u32,
+    /// Device id for a special file (`st_rdev`).
+    pub rdev: u64,
+    /// Size in bytes (`st_size`).
+    pub size: i64,
+    /// Preferred I/O block size (`st_blksize`).
+    pub blksize: i64,
+    /// Number of 512-byte blocks allocated (`st_blocks`).
+    pub blocks: i64,
+    /// Last access time (`st_atim`).
+    pub atime: Timespec,
+    /// Last modification time (`st_mtim`).
+    pub mtime: Timespec,
+    /// Last status-change time (`st_ctim`).
+    pub ctime: Timespec,
+}
+
+impl Stat {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 144;
+
+    /// Decode one `stat` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        let word = |o: usize| u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+        let signed = |o: usize| i64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+        let half = |o: usize| u32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+        Some(Self {
+            dev: word(0),
+            ino: word(8),
+            nlink: word(16),
+            mode: half(24),
+            uid: half(28),
+            gid: half(32),
+            // raw[36..40] is __pad0, ignored.
+            rdev: word(40),
+            size: signed(48),
+            blksize: signed(56),
+            blocks: signed(64),
+            atime: Timespec::from_guest_bytes(&raw[72..88])?,
+            mtime: Timespec::from_guest_bytes(&raw[88..104])?,
+            ctime: Timespec::from_guest_bytes(&raw[104..120])?,
+            // raw[120..144] is __unused[3], ignored.
+        })
+    }
+
+    /// Encode to the guest wire form. The reserved `__pad0` and `__unused` bytes
+    /// are written zero.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..8].copy_from_slice(&self.dev.to_le_bytes());
+        out[8..16].copy_from_slice(&self.ino.to_le_bytes());
+        out[16..24].copy_from_slice(&self.nlink.to_le_bytes());
+        out[24..28].copy_from_slice(&self.mode.to_le_bytes());
+        out[28..32].copy_from_slice(&self.uid.to_le_bytes());
+        out[32..36].copy_from_slice(&self.gid.to_le_bytes());
+        out[40..48].copy_from_slice(&self.rdev.to_le_bytes());
+        out[48..56].copy_from_slice(&self.size.to_le_bytes());
+        out[56..64].copy_from_slice(&self.blksize.to_le_bytes());
+        out[64..72].copy_from_slice(&self.blocks.to_le_bytes());
+        out[72..88].copy_from_slice(&self.atime.to_guest_bytes());
+        out[88..104].copy_from_slice(&self.mtime.to_guest_bytes());
+        out[104..120].copy_from_slice(&self.ctime.to_guest_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, Rlimit, SigAltStack, Termios, Timespec, Timeval, Winsize};
+    use super::{Iovec, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval, Winsize};
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -472,5 +560,45 @@ mod tests {
         assert_eq!(Rlimit::from_guest_bytes(&bytes), Some(rl));
         // A buffer one byte short is rejected, not overrun.
         assert!(Rlimit::from_guest_bytes(&[0u8; 15]).is_none());
+    }
+
+    #[test]
+    fn stat_round_trips_through_its_144_byte_layout() {
+        let st = Stat {
+            dev: 0x0010,
+            ino: 0x1234_5678,
+            nlink: 1,
+            mode: 0o100_644, // regular file, rw-r--r--
+            uid: 1000,
+            gid: 1000,
+            rdev: 0,
+            size: 4096,
+            blksize: 512,
+            blocks: 8,
+            atime: Timespec {
+                sec: 1_700_000_000,
+                nsec: 1,
+            },
+            mtime: Timespec {
+                sec: 1_700_000_001,
+                nsec: 2,
+            },
+            ctime: Timespec {
+                sec: 1_700_000_002,
+                nsec: 3,
+            },
+        };
+        let bytes = st.to_guest_bytes();
+        assert_eq!(bytes.len(), Stat::SIZE);
+        // Spot-check a few field offsets.
+        assert_eq!(&bytes[24..28], &0o100_644u32.to_le_bytes()); // st_mode
+        assert_eq!(&bytes[48..56], &4096i64.to_le_bytes()); // st_size
+        assert_eq!(&bytes[72..80], &1_700_000_000i64.to_le_bytes()); // st_atim.sec
+                                                                     // Reserved __pad0 and __unused are zero.
+        assert_eq!(&bytes[36..40], &[0u8; 4]);
+        assert_eq!(&bytes[120..144], &[0u8; 24]);
+        assert_eq!(Stat::from_guest_bytes(&bytes), Some(st));
+        // A buffer one byte short is rejected, not overrun.
+        assert!(Stat::from_guest_bytes(&[0u8; 143]).is_none());
     }
 }
