@@ -32,6 +32,10 @@ mod nr {
     pub const FSYNC: u64 = 74;
     pub const FDATASYNC: u64 = 75;
     pub const GETPID: u64 = 39;
+    pub const GETUID: u64 = 102;
+    pub const GETGID: u64 = 104;
+    pub const GETEUID: u64 = 107;
+    pub const GETEGID: u64 = 108;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
@@ -49,6 +53,11 @@ mod errno {
     pub const EINVAL: i64 = -22;
     pub const ENOSYS: i64 = -38;
 }
+
+/// The uid/gid the guest sees for `getuid`/`geteuid`/`getgid`/`getegid`. The
+/// host is Windows (no POSIX credentials), so the guest runs as a fixed
+/// unprivileged user — the conventional non-root id a Linux desktop assigns.
+const GUEST_UID: i64 = 1000;
 
 /// Per-thread state the syscall layer carries across calls: the fd table and the
 /// signal mask, plus the monotonic-clock reference. The guest memory region is
@@ -244,6 +253,10 @@ pub fn dispatch(
         // getpid / gettid: the guest runs inside the host process, so the host
         // pid is the correct answer; a single-threaded guest has tid == pid.
         nr::GETPID | nr::GETTID => i64::from(std::process::id()),
+        // getuid / geteuid / getgid / getegid: the host (Windows) has no POSIX
+        // uid, so the guest is presented as a single unprivileged user. Real
+        // and effective ids coincide — there is no setuid transition to model.
+        nr::GETUID | nr::GETEUID | nr::GETGID | nr::GETEGID => GUEST_UID,
         nr::GETTIMEOFDAY => match time_syscalls::gettimeofday(mem, args[0]) {
             Ok(()) => 0,
             Err(e) => time_errno(e),
@@ -389,6 +402,21 @@ mod tests {
         // A single-threaded guest's tid equals its pid.
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_GETTID, [0; 6]), pid);
         assert!(pid > 0);
+    }
+
+    #[test]
+    fn credential_syscalls_return_the_unprivileged_id() {
+        const SYS_GETUID: u64 = 102;
+        const SYS_GETGID: u64 = 104;
+        const SYS_GETEUID: u64 = 107;
+        const SYS_GETEGID: u64 = 108;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        for nr in [SYS_GETUID, SYS_GETGID, SYS_GETEUID, SYS_GETEGID] {
+            // Real and effective ids coincide: the guest is one fixed user.
+            assert_eq!(dispatch(&mut ctx, &mut mem, nr, [0; 6]), 1000);
+        }
     }
 
     #[test]
