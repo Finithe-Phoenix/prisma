@@ -39,6 +39,7 @@ pub mod nt_status;
 pub mod signal_handler;
 pub mod smc_guard;
 pub mod syscall_handler;
+pub mod teb;
 
 pub use dispatcher::Dispatcher;
 pub use host_features::HostFeatures;
