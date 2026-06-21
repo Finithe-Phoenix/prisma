@@ -100,6 +100,21 @@ pub fn clock_getres(mem: &mut GuestRegion, clk_id: u64, res: u64) -> Result<(), 
         .map_err(TimeError::Fault)
 }
 
+/// `time(tloc)`: return the current wall-clock time in whole seconds since the
+/// Unix epoch, also writing it (as an 8-byte `time_t`) to the guest `tloc`
+/// pointer when `tloc` is non-null.
+///
+/// # Errors
+/// [`TimeError::Fault`] if `tloc` is non-null and not writable guest memory.
+pub fn time(mem: &mut GuestRegion, tloc: u64) -> Result<i64, TimeError> {
+    let secs = realtime_timespec().sec;
+    if tloc != 0 {
+        mem.write(tloc, &secs.to_le_bytes())
+            .map_err(TimeError::Fault)?;
+    }
+    Ok(secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clock_gettime, gettimeofday, TimeError, CLOCK_MONOTONIC, CLOCK_REALTIME};
@@ -239,6 +254,38 @@ mod tests {
         assert_eq!(
             nanosleep_request(&mem, 0x1000),
             Err(TimeError::Fault(RangeError::Unmapped))
+        );
+    }
+
+    #[test]
+    fn time_returns_and_optionally_writes_the_epoch_seconds() {
+        use super::time;
+        let mut buf = [0u8; 8];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        let secs = time(&mut mem, 0x1000).expect("time ok");
+        assert!(secs > AFTER_2020);
+        // The same value was written to tloc as an 8-byte time_t.
+        assert_eq!(i64::from_le_bytes(buf), secs);
+    }
+
+    #[test]
+    fn time_with_null_tloc_just_returns_the_seconds() {
+        use super::time;
+        let mut buf = [0u8; 8];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        let secs = time(&mut mem, 0).expect("null tloc ok");
+        assert!(secs > AFTER_2020);
+        assert_eq!(buf, [0u8; 8]); // nothing written
+    }
+
+    #[test]
+    fn time_with_an_unwritable_tloc_is_efault() {
+        use super::time;
+        let mut buf = [0u8; 8];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadOnly, &mut buf);
+        assert_eq!(
+            time(&mut mem, 0x1000),
+            Err(TimeError::Fault(RangeError::NotWritable))
         );
     }
 }
