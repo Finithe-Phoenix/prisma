@@ -26,6 +26,7 @@
     clippy::too_many_lines
 )]
 
+pub mod command_line;
 pub mod dispatcher;
 pub mod exception_record;
 pub mod executor;
