@@ -11,12 +11,14 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-/// One symbol a module exports: its name and its RVA (offset from the module's
-/// load base).
+/// One symbol a module exports: its name, RVA (offset from the module's load
+/// base), and export ordinal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedSymbol {
     pub name: String,
     pub rva: u32,
+    /// Export ordinal — PE imports may bind by ordinal instead of name.
+    pub ordinal: u16,
 }
 
 /// A module mapped into the guest: its name, load base, and exports.
@@ -34,6 +36,16 @@ impl LoadedModule {
     #[must_use]
     pub fn resolve(&self, symbol: &str) -> Option<u64> {
         let export = self.exports.iter().find(|e| e.name == symbol)?;
+        self.base.checked_add(u64::from(export.rva))
+    }
+
+    /// Resolve an export by ordinal to its guest virtual address. PE imports
+    /// can bind by ordinal (no name in the import table), so the linker needs
+    /// this alongside name resolution. `None` if no export has that ordinal or
+    /// the address would overflow.
+    #[must_use]
+    pub fn resolve_ordinal(&self, ordinal: u16) -> Option<u64> {
+        let export = self.exports.iter().find(|e| e.ordinal == ordinal)?;
         self.base.checked_add(u64::from(export.rva))
     }
 }
@@ -123,10 +135,12 @@ mod tests {
                 ExportedSymbol {
                     name: "GetProcAddress".to_owned(),
                     rva: 0x1000,
+                    ordinal: 1,
                 },
                 ExportedSymbol {
                     name: "LoadLibraryA".to_owned(),
                     rva: 0x2000,
+                    ordinal: 2,
                 },
             ],
         }
@@ -138,6 +152,14 @@ mod tests {
         assert_eq!(m.resolve("GetProcAddress"), Some(0x1_8000_1000));
         assert_eq!(m.resolve("LoadLibraryA"), Some(0x1_8000_2000));
         assert_eq!(m.resolve("NoSuchSymbol"), None);
+    }
+
+    #[test]
+    fn resolve_ordinal_binds_by_export_ordinal() {
+        let m = kernel32();
+        assert_eq!(m.resolve_ordinal(1), Some(0x1_8000_1000)); // GetProcAddress
+        assert_eq!(m.resolve_ordinal(2), Some(0x1_8000_2000)); // LoadLibraryA
+        assert_eq!(m.resolve_ordinal(99), None);
     }
 
     #[test]
@@ -195,6 +217,7 @@ mod tests {
             exports: vec![ExportedSymbol {
                 name: "f".to_owned(),
                 rva: 1,
+                ordinal: 1,
             }],
         };
         assert_eq!(m.resolve("f"), None);
