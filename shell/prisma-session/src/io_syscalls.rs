@@ -11,7 +11,13 @@ use std::io::{Read, Write};
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::fd_table::{FdEntry, FdTable};
-use prisma_runtime::guest_structs::{Iovec, Stat, Timespec};
+use prisma_runtime::guest_structs::{Iovec, PollFd, Stat, Timespec};
+
+/// `poll` event bits we model: data-to-read, space-to-write, and the
+/// invalid-fd error the kernel reports for a closed descriptor.
+const POLLIN: i16 = 0x001;
+const POLLOUT: i16 = 0x004;
+const POLLNVAL: i16 = 0x020;
 
 /// `S_IFREG` — the `st_mode` bit marking a regular file.
 const S_IFREG: u32 = 0o100_000;
@@ -267,6 +273,63 @@ pub fn fstat(fds: &FdTable, mem: &mut GuestRegion, fd: i32, statbuf: u64) -> Res
     };
     mem.write(statbuf, &stat.to_guest_bytes())
         .map_err(IoError::Fault)
+}
+
+/// The events ready on `fd` from those `events` requested. In this model a
+/// regular file is always ready to read and write, stdin is readable, and
+/// stdout/stderr are writable; a closed fd is `POLLNVAL`. A negative fd is the
+/// caller's job to skip (the kernel ignores it).
+fn poll_revents(fds: &FdTable, fd: i32, events: i16) -> i16 {
+    match fds.get(fd) {
+        None => POLLNVAL,
+        Some(FdEntry::File(_)) => events & (POLLIN | POLLOUT),
+        Some(FdEntry::Stdin) => events & POLLIN,
+        Some(FdEntry::Stdout | FdEntry::Stderr) => events & POLLOUT,
+    }
+}
+
+/// `poll(fds, nfds, timeout)`: for each `pollfd` in the guest array, compute the
+/// ready `revents`, write them back, and return how many entries are ready.
+///
+/// Readiness is immediate in this model — regular files and the standard streams
+/// are always ready in their natural direction — so `timeout` never causes a
+/// block (a real blocking wait needs pipe/socket support that does not exist
+/// yet). A negative fd is skipped with `revents = 0`, per the kernel.
+///
+/// # Errors
+/// [`IoError::Invalid`] if `nfds * sizeof(pollfd)` overflows, [`IoError::Fault`]
+/// if the array is not accessible guest memory.
+pub fn poll(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    array_ptr: u64,
+    nfds: u32,
+) -> Result<usize, IoError> {
+    let count = nfds as usize;
+    let array_len = count.checked_mul(PollFd::SIZE).ok_or(IoError::Invalid)?;
+    // Own a copy so the `revents` can be written back after the read borrow ends.
+    let array = mem
+        .read(array_ptr, array_len)
+        .map_err(IoError::Fault)?
+        .to_vec();
+
+    let mut ready = 0usize;
+    let mut out = Vec::with_capacity(array_len);
+    for i in 0..count {
+        let mut pfd = PollFd::from_guest_bytes(&array[i * PollFd::SIZE..])
+            .ok_or(IoError::Fault(RangeError::Unmapped))?;
+        pfd.revents = if pfd.fd < 0 {
+            0
+        } else {
+            poll_revents(fds, pfd.fd, pfd.events)
+        };
+        if pfd.revents != 0 {
+            ready += 1;
+        }
+        out.extend_from_slice(&pfd.to_guest_bytes());
+    }
+    mem.write(array_ptr, &out).map_err(IoError::Fault)?;
+    Ok(ready)
 }
 
 /// `ftruncate(fd, length)`: set the size of the file behind `fd` to `length`
@@ -548,7 +611,9 @@ pub fn preadv(
 
 #[cfg(test)]
 mod tests {
-    use super::{fstat, ftruncate, pread, preadv, pwrite, pwritev, readv, write, writev, IoError};
+    use super::{
+        fstat, ftruncate, poll, pread, preadv, pwrite, pwritev, readv, write, writev, IoError,
+    };
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::fd_table::{FdEntry, FdTable};
@@ -1084,5 +1149,56 @@ mod tests {
 
         drop(fds);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn poll_reports_readiness_per_fd() {
+        use prisma_runtime::guest_structs::PollFd;
+        const POLLIN: i16 = 0x1;
+        const POLLOUT: i16 = 0x4;
+        const POLLNVAL: i16 = 0x20;
+        let fds = FdTable::new();
+        // Three pollfds at guest 0x1000: stdin(POLLIN), stdout(POLLOUT), an
+        // unopen fd 9 (POLLNVAL), plus a negative fd that must be skipped.
+        let entries = [
+            PollFd {
+                fd: 0,
+                events: POLLIN | POLLOUT,
+                revents: 0,
+            },
+            PollFd {
+                fd: 1,
+                events: POLLIN | POLLOUT,
+                revents: 0,
+            },
+            PollFd {
+                fd: 9,
+                events: POLLIN,
+                revents: 0,
+            },
+            PollFd {
+                fd: -1,
+                events: POLLIN,
+                revents: 0,
+            },
+        ];
+        let mut buf = [0u8; 64];
+        for (i, e) in entries.iter().enumerate() {
+            buf[i * 8..i * 8 + 8].copy_from_slice(&e.to_guest_bytes());
+        }
+        let mut mem = region(&mut buf);
+        // Three fds are ready (stdin readable, stdout writable, fd 9 invalid);
+        // the negative fd is not counted.
+        assert_eq!(poll(&fds, &mut mem, 0x1000, 4).unwrap(), 3);
+
+        let rd = |i: usize| {
+            PollFd::from_guest_bytes(mem.read(0x1000 + (i as u64) * 8, 8).unwrap())
+                .unwrap()
+                .revents
+        };
+        assert_eq!(rd(0), POLLIN); // stdin: only the readable half
+        assert_eq!(rd(1), POLLOUT); // stdout: only the writable half
+        assert_eq!(rd(2), POLLNVAL); // unopen fd
+        assert_eq!(rd(3), 0); // negative fd skipped
     }
 }
