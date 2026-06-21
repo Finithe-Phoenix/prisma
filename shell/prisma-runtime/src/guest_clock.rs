@@ -6,7 +6,7 @@
 //! `SystemTime` into the guest structs. Writing the result into guest memory is
 //! the caller's job (it owns the out-pointer and its range check).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::guest_structs::{Timespec, Timeval};
 
@@ -46,6 +46,16 @@ pub fn realtime_timeval() -> Timeval {
     }
 }
 
+/// `CLOCK_MONOTONIC` as a guest `timespec`: time elapsed since `start`.
+///
+/// A steady clock with no wall-clock epoch (it never jumps backwards on an NTP
+/// step). `clock_gettime(CLOCK_MONOTONIC)` reports time since an arbitrary fixed
+/// point, so the caller holds `start` as that reference (process/session start).
+#[must_use]
+pub fn monotonic_timespec(start: Instant) -> Timespec {
+    Timespec::from_duration(start.elapsed())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{realtime_timespec, realtime_timeval};
@@ -75,5 +85,19 @@ mod tests {
         let ts = realtime_timespec();
         let tv = realtime_timeval();
         assert!((tv.sec - ts.sec).abs() <= 1);
+    }
+
+    #[test]
+    fn monotonic_is_nonnegative_and_never_goes_backwards() {
+        use super::monotonic_timespec;
+        use std::time::Instant;
+        let start = Instant::now();
+        let a = monotonic_timespec(start);
+        let b = monotonic_timespec(start);
+        // Elapsed time only grows, so the later sample is >= the earlier one.
+        assert!((b.sec, b.nsec) >= (a.sec, a.nsec));
+        // A monotonic clock is never negative.
+        assert!(a.sec >= 0 && a.nsec >= 0);
+        assert!((0..1_000_000_000).contains(&a.nsec));
     }
 }
