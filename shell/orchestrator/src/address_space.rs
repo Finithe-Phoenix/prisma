@@ -214,7 +214,7 @@ pub enum AddressSpaceError {
 }
 
 /// Why a guest pointer range failed validation (each maps to a guest `EFAULT`).
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
 pub enum RangeError {
     #[error("range start + length overflows the address space")]
     Overflow,

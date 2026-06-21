@@ -8,6 +8,8 @@
 //! translation. The dispatcher owns the guest-PC stepping (which is why
 //! `CpuStateFrame` has no `RIP`); this crate is just the wiring + ownership.
 
+pub mod guest_io;
+
 use std::collections::HashSet;
 
 use prisma_cache::TranslationCache;
