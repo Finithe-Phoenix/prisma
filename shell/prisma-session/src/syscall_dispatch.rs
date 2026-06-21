@@ -40,6 +40,7 @@ mod nr {
     pub const GETTIMEOFDAY: u64 = 96;
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
+    pub const SET_TID_ADDRESS: u64 = 218;
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
@@ -254,6 +255,11 @@ pub fn dispatch(
         // getpid / gettid: the guest runs inside the host process, so the host
         // pid is the correct answer; a single-threaded guest has tid == pid.
         nr::GETPID | nr::GETTID => i64::from(std::process::id()),
+        // set_tid_address(tidptr): the kernel records `tidptr` as the thread's
+        // clear_child_tid (cleared + futex-woken on thread exit) and returns the
+        // caller's tid. With no thread teardown yet, honouring clear_child_tid is
+        // a no-op; the contract that matters to glibc startup is the tid return.
+        nr::SET_TID_ADDRESS => i64::from(std::process::id()),
         // sched_yield: relinquish the CPU to the host scheduler, then succeed.
         // Always returns 0 (it cannot fail in the Linux ABI).
         nr::SCHED_YIELD => {
@@ -437,6 +443,36 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_SCHED_YIELD, [u64::MAX; 6]),
             0
+        );
+    }
+
+    #[test]
+    fn set_tid_address_returns_the_tid() {
+        const SYS_SET_TID_ADDRESS: u64 = 218;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        let pid = i64::from(std::process::id());
+        // Returns the caller's tid (== pid here); the tidptr arg is recorded as
+        // clear_child_tid (a no-op until thread teardown) and never faults.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SET_TID_ADDRESS,
+                [0x1000, 0, 0, 0, 0, 0]
+            ),
+            pid
+        );
+        // A wild tidptr is still fine — we do not dereference it.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SET_TID_ADDRESS,
+                [u64::MAX, 0, 0, 0, 0, 0]
+            ),
+            pid
         );
     }
 
