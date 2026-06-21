@@ -8,6 +8,8 @@
 //! translation. The dispatcher owns the guest-PC stepping (which is why
 //! `CpuStateFrame` has no `RIP`); this crate is just the wiring + ownership.
 
+use std::collections::HashSet;
+
 use prisma_cache::TranslationCache;
 use prisma_orchestrator::load_pe::{load_pe, LoadError};
 use prisma_orchestrator::module_table::ModuleTable;
@@ -108,6 +110,46 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Translate the statically-reachable control-flow graph from the entry
+    /// point, returning the guest PCs of the blocks translated (in visit order).
+    ///
+    /// A worklist walk (RFC 0017 M2): translate the block at a PC, enqueue its
+    /// static successors (relative branch/call targets + fall-through), and
+    /// repeat, skipping already-seen PCs and stopping at `max_blocks`. Dynamic
+    /// transfers (indirect jump/call, return) contribute no static successors,
+    /// so the walk follows only what is known ahead of execution. Translating is
+    /// pure (no ARM64 needed), so this runs on any host.
+    pub fn translate_reachable(&mut self, max_blocks: usize) -> Vec<u64> {
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut queue: Vec<u64> = vec![self.image.entry_pc];
+        let mut translated: Vec<u64> = Vec::new();
+
+        while let Some(pc) = queue.pop() {
+            if translated.len() >= max_blocks {
+                break;
+            }
+            if !seen.insert(pc) {
+                continue;
+            }
+            let Some(bytes) = fetch_window(&self.image, pc) else {
+                continue; // PC outside the mapped image
+            };
+            let Ok(block) = self.translator.translate_block(pc, &bytes, MAX_INSNS) else {
+                continue; // undecodable / unlowerable at this PC
+            };
+            translated.push(pc);
+            for &succ in &block.successors {
+                if !seen.contains(&succ) {
+                    queue.push(succ);
+                }
+            }
+        }
+
+        translated
+    }
+}
+
 /// Read up to [`FETCH_WINDOW`] bytes of the mapped image starting at `guest_pc`.
 /// `None` if the address is below the image base or past its end.
 fn fetch_window(image: &MappedImage, guest_pc: u64) -> Option<Vec<u8>> {
@@ -184,5 +226,35 @@ mod tests {
         assert!(block.is_some(), "a mapped entry PC should translate");
         // An unmapped PC yields nothing rather than panicking.
         assert!(s.translate_at(0x9_9999_0000).is_none());
+    }
+
+    /// A PE whose .text is file-backed with `code`, mapped at the entry RVA.
+    fn pe_with_code(code: &[u8]) -> Vec<u8> {
+        let mut buf = minimal_pe();
+        let opt = 64 + 4 + 20;
+        let sec = opt + 240;
+        let raw_off = u32::try_from(buf.len()).unwrap();
+        buf[sec + 16..sec + 20].copy_from_slice(&(code.len() as u32).to_le_bytes());
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes());
+        buf.extend_from_slice(code);
+        buf
+    }
+
+    #[test]
+    fn translate_reachable_walks_from_entry_until_a_return() {
+        // mov rax, rcx ; ret  -> one block, RET is a dynamic transfer
+        // (no static successor), so the walk visits exactly the entry block.
+        let code = [0x48u8, 0x89, 0xC8, 0xC3];
+        let mut s = Session::load(&pe_with_code(&code), &ModuleTable::new()).expect("load");
+        let visited = s.translate_reachable(16);
+        assert_eq!(visited, vec![s.entry_pc()]);
+    }
+
+    #[test]
+    fn translate_reachable_is_bounded_and_terminates() {
+        // Even on a zero-filled image the walk respects max_blocks and halts.
+        let mut s = Session::load(&minimal_pe(), &ModuleTable::new()).expect("load");
+        let visited = s.translate_reachable(8);
+        assert!(visited.len() <= 8);
     }
 }
