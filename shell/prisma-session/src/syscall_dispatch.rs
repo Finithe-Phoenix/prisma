@@ -72,6 +72,8 @@ mod nr {
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const SET_ROBUST_LIST: u64 = 273;
+    pub const MEMBARRIER: u64 = 324;
     pub const SCHED_SETAFFINITY: u64 = 203;
     pub const SCHED_GETAFFINITY: u64 = 204;
     pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
@@ -620,6 +622,29 @@ pub fn dispatch(
         // caller's tid. With no thread teardown yet, honouring clear_child_tid is
         // a no-op; the contract that matters to glibc startup is the tid return.
         nr::SET_TID_ADDRESS => i64::from(std::process::id()),
+        // set_robust_list(head, len): the kernel records the per-thread robust
+        // futex list head for cleanup at thread exit. glibc calls this at startup
+        // even single-threaded; with no thread teardown the list is never walked,
+        // so honouring it is a no-op that must still succeed. `len` must be the
+        // size of a `robust_list_head` (24 bytes on x86-64) or it is EINVAL.
+        nr::SET_ROBUST_LIST => {
+            if args[1] == 24 {
+                0
+            } else {
+                errno::EINVAL
+            }
+        }
+        // membarrier(cmd, flags): MEMBARRIER_CMD_QUERY (0) reports the supported
+        // command set as a bitmask. The single-thread model has no cross-thread
+        // ordering to enforce, so no commands are advertised (mask 0), and any
+        // specific command request is EINVAL (consistent with the empty set).
+        nr::MEMBARRIER => {
+            if args[0] == 0 {
+                0
+            } else {
+                errno::EINVAL
+            }
+        }
         // sched_yield: relinquish the CPU to the host scheduler, then succeed.
         // Always returns 0 (it cannot fail in the Linux ABI).
         nr::SCHED_YIELD => {
@@ -1331,6 +1356,45 @@ mod tests {
                 SYS_SCHED_SETPARAM,
                 [0, 0x1000, 0, 0, 0, 0]
             ),
+            -22
+        );
+    }
+
+    #[test]
+    fn thread_init_compat_syscalls_route() {
+        const SYS_SET_ROBUST_LIST: u64 = 273;
+        const SYS_MEMBARRIER: u64 = 324;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // set_robust_list(head, len=24) -> 0 (accepted no-op).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SET_ROBUST_LIST,
+                [0x1000, 24, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // A wrong len -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SET_ROBUST_LIST,
+                [0x1000, 16, 0, 0, 0, 0]
+            ),
+            -22
+        );
+        // membarrier(MEMBARRIER_CMD_QUERY=0, 0) -> 0 (empty supported set).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_MEMBARRIER, [0, 0, 0, 0, 0, 0]),
+            0
+        );
+        // membarrier of an actual command -> -EINVAL (not advertised).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_MEMBARRIER, [1, 0, 0, 0, 0, 0]),
             -22
         );
     }
