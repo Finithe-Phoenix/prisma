@@ -11,9 +11,11 @@
 use std::collections::HashSet;
 
 use prisma_cache::TranslationCache;
-use prisma_orchestrator::load_pe::{load_pe, LoadError};
+use prisma_orchestrator::address_space::AddressSpaceError;
+use prisma_orchestrator::guest_layout::{layout_sections, GuestLayout};
+use prisma_orchestrator::load_pe::{load_pe_with_image, LoadError};
 use prisma_orchestrator::module_table::ModuleTable;
-use prisma_orchestrator::pe_loader::MappedImage;
+use prisma_orchestrator::pe_loader::{MappedImage, PeImage};
 use prisma_runtime::dispatcher::DispatchRunOutcome;
 use prisma_runtime::{Dispatcher, SmcGuard};
 use prisma_translator::{BlockTranslation, Translator};
@@ -35,6 +37,7 @@ const MAX_INSNS: usize = 1024;
 /// cache and translator) drops; the guest [`MappedImage`] frees its bytes on
 /// drop. Dropping a `Session` releases all of it — nothing survives a restart.
 pub struct Session {
+    pe_image: PeImage,
     image: MappedImage,
     translator: Translator,
     cache: TranslationCache,
@@ -46,14 +49,23 @@ impl Session {
     /// Load `file` against `modules` and build a session ready to run from the
     /// image's entry point.
     pub fn load(file: &[u8], modules: &ModuleTable) -> Result<Self, LoadError> {
-        let image = load_pe(file, modules)?;
+        let (pe_image, image) = load_pe_with_image(file, modules)?;
         Ok(Self {
+            pe_image,
             image,
             translator: Translator::new(),
             cache: TranslationCache::new(),
             guard: SmcGuard::new(),
             dispatcher: Dispatcher::new(),
         })
+    }
+
+    /// Build the guest W^X address space — each PE section mapped at its own
+    /// protection (`.text` RX, `.data` RW, ...) plus an initial-thread stack
+    /// based at `stack_base`. This is the memory model execution runs against:
+    /// code pages not writable, data pages not executable.
+    pub fn layout(&self, stack_base: u64) -> Result<GuestLayout, AddressSpaceError> {
+        layout_sections(&self.pe_image, &self.image, stack_base)
     }
 
     /// Guest virtual address execution begins at.
@@ -256,5 +268,16 @@ mod tests {
         let mut s = Session::load(&minimal_pe(), &ModuleTable::new()).expect("load");
         let visited = s.translate_reachable(8);
         assert!(visited.len() <= 8);
+    }
+
+    #[test]
+    fn layout_maps_the_section_and_a_stack() {
+        let s = Session::load(&minimal_pe(), &ModuleTable::new()).expect("load");
+        let gl = s.layout(0x2_0000_0000).expect("layout");
+        // The .text section is mapped at the entry, and a stack alongside it.
+        let (text, _) = gl.space.translate(s.entry_pc()).expect("entry mapped");
+        assert_eq!(text.name, ".text");
+        let (stack, _) = gl.space.translate(gl.stack.top - 1).expect("stack mapped");
+        assert_eq!(stack.name, "stack");
     }
 }
