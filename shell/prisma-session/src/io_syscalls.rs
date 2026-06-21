@@ -192,6 +192,22 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
     }
 }
 
+/// `ftruncate(fd, length)`: set the size of the file behind `fd` to `length`
+/// bytes — shrinking discards the tail, growing extends with zeros. A negative
+/// length is `EINVAL`; the standard streams are not regular files (`EINVAL`).
+///
+/// # Errors
+/// [`IoError::Invalid`] for a negative length or a non-file fd,
+/// [`IoError::BadFd`] for an unopen fd, [`IoError::Host`] if the host resize
+/// fails.
+pub fn ftruncate(fds: &FdTable, fd: i32, length: i64) -> Result<(), IoError> {
+    let len = u64::try_from(length).map_err(|_| IoError::Invalid)?;
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => file.set_len(len).map_err(IoError::Host),
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Err(IoError::Invalid),
+    }
+}
+
 /// Read into `buf` from `file` starting at byte `offset`, without relying on (or
 /// preserving) the file's own cursor. Uses the platform's positional read.
 #[cfg(unix)]
@@ -385,7 +401,7 @@ pub fn readv(
 
 #[cfg(test)]
 mod tests {
-    use super::{pread, pwrite, readv, write, writev, IoError};
+    use super::{ftruncate, pread, pwrite, readv, write, writev, IoError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::fd_table::{FdEntry, FdTable};
@@ -773,6 +789,38 @@ mod tests {
             pread(&fds, &mut mem, 0, 0x1000, 1, 0),
             Err(IoError::Invalid)
         ));
+
+        drop(fds);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ftruncate_resizes_a_file_and_rejects_bad_inputs() {
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!("prisma_trunc_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create");
+            f.write_all(b"hello world").expect("seed"); // 11 bytes
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open rw");
+        let mut fds = FdTable::new();
+        let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+
+        // Shrink to 5 bytes.
+        ftruncate(&fds, fd, 5).expect("shrink");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 5);
+        // Grow to 20 (zero-extended).
+        ftruncate(&fds, fd, 20).expect("grow");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 20);
+
+        // A negative length is EINVAL; a non-file fd is EINVAL; an unopen fd EBADF.
+        assert!(matches!(ftruncate(&fds, fd, -1), Err(IoError::Invalid)));
+        assert!(matches!(ftruncate(&fds, 1, 0), Err(IoError::Invalid)));
+        assert!(matches!(ftruncate(&fds, 77, 0), Err(IoError::BadFd)));
 
         drop(fds);
         let _ = std::fs::remove_file(&path);
