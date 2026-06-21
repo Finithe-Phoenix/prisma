@@ -131,6 +131,34 @@ pub fn dup2(fds: &mut FdTable, oldfd: i32, newfd: i32) -> Result<i32, IoError> {
     }
 }
 
+/// `fsync(fd)`: flush a file's data and metadata to the host disk. The standard
+/// streams have nothing to durably sync, so it is a no-op for them (rather than
+/// the kernel's `EINVAL` — a benign relaxation a guest can only over-rely on).
+///
+/// # Errors
+/// [`IoError::BadFd`] if `fd` is not open, [`IoError::Host`] if the host sync
+/// fails.
+pub fn fsync(fds: &FdTable, fd: i32) -> Result<(), IoError> {
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => file.sync_all().map_err(IoError::Host),
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Ok(()),
+    }
+}
+
+/// `fdatasync(fd)`: flush a file's data (not necessarily its metadata) to the
+/// host disk. Like [`fsync`] but via `File::sync_data`; a no-op for the standard
+/// streams.
+///
+/// # Errors
+/// [`IoError::BadFd`] if `fd` is not open, [`IoError::Host`] if the host sync
+/// fails.
+pub fn fdatasync(fds: &FdTable, fd: i32) -> Result<(), IoError> {
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => file.sync_data().map_err(IoError::Host),
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{write, IoError};
@@ -285,5 +313,26 @@ mod tests {
         // dup/dup2 from an unopen source is EBADF.
         assert!(matches!(dup(&mut fds, 50), Err(IoError::BadFd)));
         assert!(matches!(dup2(&mut fds, 50, 8), Err(IoError::BadFd)));
+    }
+
+    #[test]
+    fn fsync_and_fdatasync_flush_a_file_and_noop_streams() {
+        use super::{fdatasync, fsync};
+        let path = std::env::temp_dir().join(format!("prisma_fsync_{}.tmp", std::process::id()));
+        let mut fds = FdTable::new();
+        {
+            let file = std::fs::File::create(&path).expect("create temp");
+            let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+            assert!(fsync(&fds, fd).is_ok());
+            assert!(fdatasync(&fds, fd).is_ok());
+            assert!(fds.close(fd));
+        }
+        // The standard streams are a successful no-op.
+        assert!(fsync(&fds, 1).is_ok());
+        assert!(fdatasync(&fds, 2).is_ok());
+        // An unopen fd is EBADF.
+        assert!(matches!(fsync(&fds, 77), Err(IoError::BadFd)));
+        assert!(matches!(fdatasync(&fds, 77), Err(IoError::BadFd)));
+        let _ = std::fs::remove_file(&path);
     }
 }
