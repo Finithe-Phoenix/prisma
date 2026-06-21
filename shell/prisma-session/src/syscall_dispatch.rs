@@ -22,9 +22,13 @@ use crate::time_syscalls::{self, TimeError};
 mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
+    pub const CLOSE: u64 = 3;
     pub const RT_SIGPROCMASK: u64 = 14;
+    pub const DUP: u64 = 32;
+    pub const DUP2: u64 = 33;
     pub const NANOSLEEP: u64 = 35;
     pub const GETTIMEOFDAY: u64 = 96;
+    pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
 }
@@ -129,6 +133,22 @@ pub fn dispatch(
                 Err(e) => io_errno(&e),
             }
         }
+        nr::CLOSE => match io_syscalls::close(&mut ctx.fds, arg_i32(args[0])) {
+            Ok(()) => 0,
+            Err(e) => io_errno(&e),
+        },
+        nr::DUP => match io_syscalls::dup(&mut ctx.fds, arg_i32(args[0])) {
+            Ok(fd) => i64::from(fd),
+            Err(e) => io_errno(&e),
+        },
+        nr::DUP2 => match io_syscalls::dup2(&mut ctx.fds, arg_i32(args[0]), arg_i32(args[1])) {
+            Ok(fd) => i64::from(fd),
+            Err(e) => io_errno(&e),
+        },
+        nr::TIME => match time_syscalls::time(mem, args[0]) {
+            Ok(secs) => secs,
+            Err(e) => time_errno(e),
+        },
         nr::NANOSLEEP => match time_syscalls::nanosleep_request(mem, args[0]) {
             Ok(duration) => {
                 std::thread::sleep(duration);
@@ -249,6 +269,43 @@ mod tests {
         let mut buf = [0u8; 8];
         let mut mem = region(&mut buf);
         assert_eq!(dispatch(&mut ctx, &mut mem, 9999, [0; 6]), -38);
+    }
+
+    #[test]
+    fn close_dup_dup2_route_to_the_fd_table() {
+        const SYS_CLOSE: u64 = 3;
+        const SYS_DUP: u64 = 32;
+        const SYS_DUP2: u64 = 33;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // dup(1) -> 3.
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_DUP, [1, 0, 0, 0, 0, 0]), 3);
+        // dup2(1, 9) -> 9.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_DUP2, [1, 9, 0, 0, 0, 0]),
+            9
+        );
+        // close(9) -> 0; closing it again -> -EBADF.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_CLOSE, [9, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_CLOSE, [9, 0, 0, 0, 0, 0]),
+            -9
+        );
+    }
+
+    #[test]
+    fn time_routes_and_returns_epoch_seconds() {
+        const SYS_TIME: u64 = 201;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // time(NULL) returns the seconds without writing.
+        let secs = dispatch(&mut ctx, &mut mem, SYS_TIME, [0, 0, 0, 0, 0, 0]);
+        assert!(secs > 1_600_000_000);
     }
 
     #[test]
