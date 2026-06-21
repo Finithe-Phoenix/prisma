@@ -18,6 +18,7 @@ pub mod sched_syscalls;
 pub mod sig_syscalls;
 pub mod syscall_dispatch;
 pub mod time_syscalls;
+pub mod tty_syscalls;
 
 use std::collections::HashSet;
 
