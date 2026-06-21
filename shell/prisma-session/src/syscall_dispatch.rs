@@ -23,6 +23,7 @@ mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
     pub const CLOSE: u64 = 3;
+    pub const LSEEK: u64 = 8;
     pub const RT_SIGPROCMASK: u64 = 14;
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
@@ -91,9 +92,17 @@ fn arg_usize(v: u64) -> usize {
     v as usize
 }
 
+#[allow(clippy::cast_possible_wrap)]
+fn arg_i64(v: u64) -> i64 {
+    // A signed 64-bit argument (e.g. an lseek offset): the register bits
+    // reinterpreted as `i64`, which is exactly the C ABI's `off_t`.
+    v as i64
+}
+
 fn io_errno(e: &IoError) -> i64 {
     match e {
         IoError::BadFd => errno::EBADF,
+        IoError::Invalid => errno::EINVAL,
         IoError::Fault(_) => errno::EFAULT,
         IoError::Host(_) => errno::EIO,
     }
@@ -141,6 +150,18 @@ pub fn dispatch(
             Ok(()) => 0,
             Err(e) => io_errno(&e),
         },
+        // lseek(fd, offset, whence): offset is signed; whence in args[2].
+        nr::LSEEK => {
+            match io_syscalls::lseek(
+                &ctx.fds,
+                arg_i32(args[0]),
+                arg_i64(args[1]),
+                arg_i32(args[2]),
+            ) {
+                Ok(pos) => i64::try_from(pos).unwrap_or(i64::MAX),
+                Err(e) => io_errno(&e),
+            }
+        }
         nr::DUP => match io_syscalls::dup(&mut ctx.fds, arg_i32(args[0])) {
             Ok(fd) => i64::from(fd),
             Err(e) => io_errno(&e),
@@ -230,6 +251,24 @@ mod tests {
 
     fn region(buf: &mut [u8]) -> GuestRegion<'_> {
         GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+    }
+
+    #[test]
+    fn lseek_routes_to_the_fd_table() {
+        const SYS_LSEEK: u64 = 8;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // lseek on stdout (fd 1) is not seekable -> -EBADF (-9).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_LSEEK, [1, 0, 0, 0, 0, 0]),
+            -9
+        );
+        // An unknown whence -> -EINVAL (-22), checked before the fd.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_LSEEK, [1, 0, 9, 0, 0, 0]),
+            -22
+        );
     }
 
     #[test]
