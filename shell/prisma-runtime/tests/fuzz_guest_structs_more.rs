@@ -1,0 +1,88 @@
+//! Property-fuzz the round-trip of the larger guest structs.
+//!
+//! The original `fuzz_guest_structs` covers the first four (iovec/timespec/
+//! timeval/winsize). This sweeps the rest — the records that decode untrusted
+//! guest bytes on the stat/poll/epoll/signal/fcntl paths — over arbitrary field
+//! values, pinning the same two invariants: `from_guest_bytes(to_guest_bytes(x))
+//! == Some(x)` for every field assignment, and a buffer shorter than `SIZE`
+//! decodes to `None` (never reads past the end).
+
+use prisma_runtime::guest_structs::{
+    EpollEvent, Flock, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec,
+};
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn termios_round_trips(
+        iflag in any::<u32>(), oflag in any::<u32>(), cflag in any::<u32>(),
+        lflag in any::<u32>(), line in any::<u8>(), cc in any::<[u8; 19]>(),
+    ) {
+        let t = Termios { iflag, oflag, cflag, lflag, line, cc };
+        prop_assert_eq!(Termios::from_guest_bytes(&t.to_guest_bytes()), Some(t));
+    }
+
+    #[test]
+    fn stat_round_trips(
+        dev in any::<u64>(), ino in any::<u64>(), nlink in any::<u64>(),
+        mode in any::<u32>(), uid in any::<u32>(), gid in any::<u32>(),
+        rdev in any::<u64>(), size in any::<i64>(), blksize in any::<i64>(),
+        blocks in any::<i64>(),
+        atime in (any::<i64>(), any::<i64>()), mtime in (any::<i64>(), any::<i64>()),
+        ctime in (any::<i64>(), any::<i64>()),
+    ) {
+        let st = Stat {
+            dev, ino, nlink, mode, uid, gid, rdev, size, blksize, blocks,
+            atime: Timespec { sec: atime.0, nsec: atime.1 },
+            mtime: Timespec { sec: mtime.0, nsec: mtime.1 },
+            ctime: Timespec { sec: ctime.0, nsec: ctime.1 },
+        };
+        prop_assert_eq!(Stat::from_guest_bytes(&st.to_guest_bytes()), Some(st));
+    }
+
+    #[test]
+    fn flock_round_trips(
+        typ in any::<i16>(), whence in any::<i16>(), start in any::<i64>(),
+        len in any::<i64>(), pid in any::<i32>(),
+    ) {
+        let fl = Flock { typ, whence, start, len, pid };
+        prop_assert_eq!(Flock::from_guest_bytes(&fl.to_guest_bytes()), Some(fl));
+    }
+
+    #[test]
+    fn pollfd_round_trips(fd in any::<i32>(), events in any::<i16>(), revents in any::<i16>()) {
+        let p = PollFd { fd, events, revents };
+        prop_assert_eq!(PollFd::from_guest_bytes(&p.to_guest_bytes()), Some(p));
+    }
+
+    #[test]
+    fn epoll_event_round_trips(events in any::<u32>(), data in any::<u64>()) {
+        let e = EpollEvent { events, data };
+        prop_assert_eq!(EpollEvent::from_guest_bytes(&e.to_guest_bytes()), Some(e));
+    }
+
+    #[test]
+    fn sigaltstack_round_trips(sp in any::<u64>(), flags in any::<i32>(), size in any::<u64>()) {
+        let ss = SigAltStack { sp, flags, size };
+        prop_assert_eq!(SigAltStack::from_guest_bytes(&ss.to_guest_bytes()), Some(ss));
+    }
+
+    #[test]
+    fn rlimit_round_trips(cur in any::<u64>(), max in any::<u64>()) {
+        let rl = Rlimit { cur, max };
+        prop_assert_eq!(Rlimit::from_guest_bytes(&rl.to_guest_bytes()), Some(rl));
+    }
+
+    /// A buffer one byte shorter than the wire size always decodes to `None`.
+    #[test]
+    fn one_byte_short_is_rejected(pad in any::<u8>()) {
+        let short = |n: usize| vec![pad; n - 1];
+        prop_assert!(Termios::from_guest_bytes(&short(Termios::SIZE)).is_none());
+        prop_assert!(Stat::from_guest_bytes(&short(Stat::SIZE)).is_none());
+        prop_assert!(Flock::from_guest_bytes(&short(Flock::SIZE)).is_none());
+        prop_assert!(PollFd::from_guest_bytes(&short(PollFd::SIZE)).is_none());
+        prop_assert!(EpollEvent::from_guest_bytes(&short(EpollEvent::SIZE)).is_none());
+        prop_assert!(SigAltStack::from_guest_bytes(&short(SigAltStack::SIZE)).is_none());
+        prop_assert!(Rlimit::from_guest_bytes(&short(Rlimit::SIZE)).is_none());
+    }
+}
