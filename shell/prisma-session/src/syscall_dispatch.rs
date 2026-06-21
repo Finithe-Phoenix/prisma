@@ -8,6 +8,7 @@
 //!
 //! Coverage grows as handlers land; an unrouted number returns `-ENOSYS`.
 
+use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use prisma_orchestrator::guest_memory::GuestRegion;
@@ -46,6 +47,7 @@ mod nr {
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const SCHED_GETAFFINITY: u64 = 204;
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
@@ -322,6 +324,31 @@ pub fn dispatch(
                 i64::from(me)
             } else {
                 errno::ESRCH
+            }
+        }
+        // sched_getaffinity(pid, cpusetsize, mask): write the guest's CPU
+        // affinity to the `mask` pointer. We model up to 64 host CPUs (a single
+        // u64 word), so `cpusetsize` must be at least 8 bytes (else EINVAL, as
+        // the kernel does when the buffer is smaller than its cpumask). pid 0 or
+        // self is the caller; any other pid is ESRCH. Returns the bytes written.
+        nr::SCHED_GETAFFINITY => {
+            let me = std::process::id();
+            let want = arg_i32(args[0]);
+            if want != 0 && !(want > 0 && want as u32 == me) {
+                errno::ESRCH
+            } else if arg_usize(args[1]) < 8 {
+                errno::EINVAL
+            } else {
+                let ncpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+                let mask: u64 = if ncpus >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << ncpus) - 1
+                };
+                match mem.write(args[2], &mask.to_le_bytes()) {
+                    Ok(()) => 8,
+                    Err(_) => errno::EFAULT,
+                }
             }
         }
         nr::GETTIMEOFDAY => match time_syscalls::gettimeofday(mem, args[0]) {
@@ -652,6 +679,58 @@ mod tests {
             0o077
         );
         assert_eq!(ctx.umask, 0o777);
+    }
+
+    #[test]
+    fn sched_getaffinity_writes_a_nonempty_cpu_mask() {
+        const SYS_SCHED_GETAFFINITY: u64 = 204;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        // sched_getaffinity(0, 8, mask=0x1000) writes 8 bytes and returns 8.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_GETAFFINITY,
+                [0, 8, 0x1000, 0, 0, 0]
+            ),
+            8
+        );
+        let mask = u64::from_le_bytes(mem.read(0x1000, 8).unwrap().try_into().unwrap());
+        // At least one CPU is online, so the mask has at least bit 0 set.
+        assert!(mask & 1 == 1);
+        assert!(mask != 0);
+        // A cpusetsize below the 8-byte model mask is -EINVAL.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_GETAFFINITY,
+                [0, 4, 0x1000, 0, 0, 0]
+            ),
+            -22
+        );
+        // Another process's affinity is -ESRCH.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_GETAFFINITY,
+                [999_999, 8, 0x1000, 0, 0, 0]
+            ),
+            -3
+        );
+        // A bad mask pointer is -EFAULT (buf is only 16 bytes from 0x1000).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_GETAFFINITY,
+                [0, 8, 0x100A, 0, 0, 0]
+            ),
+            -14
+        );
     }
 
     #[test]
