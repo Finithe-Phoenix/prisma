@@ -447,8 +447,8 @@ translator on a reference Linux ARM64 box.
 - [ ] F2-SY-032: Implement robust_futex structure translation. **(deferred — needs thread support)**
 - [x] F2-SY-033: Errno translation table — `SyscallError::to_errno` (-ENOSYS/-EFAULT/-EPERM/-EINTR) + `SyscallHandler::dispatch_raw` encoding the guest's `-errno`-in-`rax` return convention (`shell/prisma-runtime/src/syscall_handler.rs`). ARM64 Linux uses identical errno magnitudes; the work was the typed-error → ABI mapping.
 - [x] F2-SY-034: iovec struct translation — `Iovec` marshalling (`shell/prisma-runtime/src/guest_structs.rs`, 16-byte LE round-trip, short-buffer-safe).
-- [~] F2-SY-035: timespec / timeval / sigset_t struct translation. timespec + timeval done (`guest_structs.rs`, signed `time_t`, round-trip + bounds tests); sigset_t (kernel 8-byte mask) implemented as `guest_signal::Sigset` (in flight, PR #130).
-- [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ). **(trivially satisfied — same layout on ARM64)**
+- [x] F2-SY-035: timespec / timeval / sigset_t struct translation. timespec + timeval in `guest_structs.rs` (signed `time_t`, round-trip + bounds); sigset_t = `guest_signal::Sigset` (kernel 8-byte mask, set ops + rt_sigprocmask semantics, SIGKILL/SIGSTOP unblockable).
+- [~] F2-SY-036: termios / winsize for isatty / ioctl(TIOCGWINSZ). `Winsize` marshalling done (`guest_structs.rs`, 8-byte 4×u16 round-trip); termios (kernel `c_cc[NCCS]` struct) deferred until a tty handler needs it.
 - [x] F2-SY-037: Syscall fuzz harness (proptest over syscall numbers + args; `shell/prisma-runtime/tests/fuzz_syscall.rs` — deny-by-default-never-leaks + classify totality + never-panics).
 - [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
