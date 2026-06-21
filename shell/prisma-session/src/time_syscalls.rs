@@ -79,6 +79,27 @@ pub fn nanosleep_request(mem: &GuestRegion, req: u64) -> Result<Duration, TimeEr
     ts.to_duration().ok_or(TimeError::InvalidValue)
 }
 
+/// `clock_getres(clk_id, res)`: write the clock's resolution to the guest `res`
+/// `timespec`. A null `res` (address 0) just validates `clk_id` per the kernel.
+/// Both modelled clocks report a 1-nanosecond resolution (the high-res-timer
+/// granularity Linux advertises for CLOCK_REALTIME / CLOCK_MONOTONIC).
+///
+/// # Errors
+/// [`TimeError::UnknownClock`] for an unmodelled clock, [`TimeError::Fault`] if
+/// `res` is non-null and not writable guest memory.
+pub fn clock_getres(mem: &mut GuestRegion, clk_id: u64, res: u64) -> Result<(), TimeError> {
+    match clk_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => {}
+        other => return Err(TimeError::UnknownClock(other)),
+    }
+    if res == 0 {
+        return Ok(()); // null res: the clock id is validated, nothing to write
+    }
+    let resolution = Timespec { sec: 0, nsec: 1 };
+    mem.write(res, &resolution.to_guest_bytes())
+        .map_err(TimeError::Fault)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clock_gettime, gettimeofday, TimeError, CLOCK_MONOTONIC, CLOCK_REALTIME};
@@ -181,6 +202,32 @@ mod tests {
         assert_eq!(
             nanosleep_request(&mem, 0x1000),
             Err(TimeError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn clock_getres_reports_one_nanosecond_for_both_clocks() {
+        use super::clock_getres;
+        for clk in [CLOCK_REALTIME, CLOCK_MONOTONIC] {
+            let mut buf = [0xFFu8; 16];
+            let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+            clock_getres(&mut mem, clk, 0x1000).expect("res written");
+            let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
+            assert_eq!((ts.sec, ts.nsec), (0, 1));
+        }
+    }
+
+    #[test]
+    fn clock_getres_null_res_validates_the_clock_without_writing() {
+        use super::clock_getres;
+        let mut buf = [0u8; 16];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // Null res (0) with a known clock succeeds and writes nothing.
+        clock_getres(&mut mem, CLOCK_MONOTONIC, 0).expect("ok");
+        // An unknown clock is still EINVAL even with a null res.
+        assert_eq!(
+            clock_getres(&mut mem, 42, 0),
+            Err(TimeError::UnknownClock(42))
         );
     }
 
