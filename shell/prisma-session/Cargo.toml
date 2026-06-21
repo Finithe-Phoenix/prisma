@@ -10,3 +10,6 @@ prisma-translator = { path = "../prisma-translator" }
 prisma-runtime = { path = "../prisma-runtime" }
 prisma-cache = { path = "../prisma-cache" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
