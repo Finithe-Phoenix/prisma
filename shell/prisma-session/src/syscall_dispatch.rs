@@ -29,6 +29,7 @@ mod nr {
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
     pub const NANOSLEEP: u64 = 35;
+    pub const SCHED_YIELD: u64 = 24;
     pub const FSYNC: u64 = 74;
     pub const FDATASYNC: u64 = 75;
     pub const GETPID: u64 = 39;
@@ -253,6 +254,12 @@ pub fn dispatch(
         // getpid / gettid: the guest runs inside the host process, so the host
         // pid is the correct answer; a single-threaded guest has tid == pid.
         nr::GETPID | nr::GETTID => i64::from(std::process::id()),
+        // sched_yield: relinquish the CPU to the host scheduler, then succeed.
+        // Always returns 0 (it cannot fail in the Linux ABI).
+        nr::SCHED_YIELD => {
+            std::thread::yield_now();
+            0
+        }
         // getuid / geteuid / getgid / getegid: the host (Windows) has no POSIX
         // uid, so the guest is presented as a single unprivileged user. Real
         // and effective ids coincide — there is no setuid transition to model.
@@ -417,6 +424,20 @@ mod tests {
             // Real and effective ids coincide: the guest is one fixed user.
             assert_eq!(dispatch(&mut ctx, &mut mem, nr, [0; 6]), 1000);
         }
+    }
+
+    #[test]
+    fn sched_yield_succeeds() {
+        const SYS_SCHED_YIELD: u64 = 24;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // sched_yield ignores its arguments and always returns 0.
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_SCHED_YIELD, [0; 6]), 0);
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_SCHED_YIELD, [u64::MAX; 6]),
+            0
+        );
     }
 
     #[test]
