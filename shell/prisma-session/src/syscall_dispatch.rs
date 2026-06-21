@@ -29,6 +29,8 @@ mod nr {
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
+    pub const TKILL: u64 = 200;
+    pub const TGKILL: u64 = 234;
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
     pub const DUP3: u64 = 292;
@@ -278,6 +280,40 @@ pub fn dispatch(
             ) {
                 Ok(()) => 0,
                 Err(e) => sig_errno(e),
+            }
+        }
+        // tkill(tid, sig) / tgkill(tgid, tid, sig): send a signal to a thread.
+        // The guest is single-threaded, so the only valid target is itself
+        // (tid == pid, and for tgkill tgid == pid too); a non-positive id is
+        // EINVAL and any other id is ESRCH. The signal itself is validated and
+        // raised by send_signal.
+        nr::TKILL => {
+            let tid = arg_i32(args[0]);
+            let me = std::process::id();
+            if tid <= 0 {
+                errno::EINVAL
+            } else if tid as u32 != me {
+                errno::ESRCH
+            } else {
+                match sig_syscalls::send_signal(&mut ctx.signals, arg_u32(args[1])) {
+                    Ok(()) => 0,
+                    Err(e) => sig_errno(e),
+                }
+            }
+        }
+        nr::TGKILL => {
+            let tgid = arg_i32(args[0]);
+            let tid = arg_i32(args[1]);
+            let me = std::process::id();
+            if tgid <= 0 || tid <= 0 {
+                errno::EINVAL
+            } else if tgid as u32 != me || tid as u32 != me {
+                errno::ESRCH
+            } else {
+                match sig_syscalls::send_signal(&mut ctx.signals, arg_u32(args[2])) {
+                    Ok(()) => 0,
+                    Err(e) => sig_errno(e),
+                }
             }
         }
         nr::NANOSLEEP => match time_syscalls::nanosleep_request(mem, args[0]) {
@@ -887,6 +923,45 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_READV, [7, 0x1020, 2, 0, 0, 0]),
             -9
+        );
+    }
+
+    #[test]
+    fn tkill_and_tgkill_signal_the_guest_itself() {
+        const SYS_TKILL: u64 = 200;
+        const SYS_TGKILL: u64 = 234;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        let pid = u64::from(std::process::id());
+
+        // tkill(self, 11) raises signal 11 pending; returns 0.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_TKILL, [pid, 11, 0, 0, 0, 0]),
+            0
+        );
+        assert!(ctx.signals.pending_set().contains(11));
+        // tgkill(self, self, 17) raises 17.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_TGKILL, [pid, pid, 17, 0, 0, 0]),
+            0
+        );
+        assert!(ctx.signals.pending_set().contains(17));
+
+        // Another thread/process id is -ESRCH.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_TKILL, [pid + 1, 11, 0, 0, 0, 0]),
+            -3
+        );
+        // A non-positive id is -EINVAL.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_TKILL, [0, 11, 0, 0, 0, 0]),
+            -22
+        );
+        // An out-of-range signal is -EINVAL (from send_signal).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_TKILL, [pid, 99, 0, 0, 0, 0]),
+            -22
         );
     }
 
