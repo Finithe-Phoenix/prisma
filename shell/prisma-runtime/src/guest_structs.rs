@@ -285,9 +285,49 @@ impl SigAltStack {
     }
 }
 
+/// `struct rlimit` — the soft/hard resource limit pair `getrlimit` / `setrlimit`
+/// / `prlimit64` read and write.
+///
+/// Two 64-bit fields on x86-64 Linux, 16 bytes. `RLIM_INFINITY` is `u64::MAX`
+/// ("no limit").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rlimit {
+    /// Soft limit (`rlim_cur`): the value the kernel enforces.
+    pub cur: u64,
+    /// Hard limit (`rlim_max`): the ceiling the soft limit may be raised to.
+    pub max: u64,
+}
+
+impl Rlimit {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 16;
+
+    /// `RLIM_INFINITY` — the sentinel for "no limit".
+    pub const INFINITY: u64 = u64::MAX;
+
+    /// Decode one `rlimit` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            cur: u64::from_le_bytes(raw[0..8].try_into().ok()?),
+            max: u64::from_le_bytes(raw[8..16].try_into().ok()?),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..8].copy_from_slice(&self.cur.to_le_bytes());
+        out[8..16].copy_from_slice(&self.max.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, SigAltStack, Termios, Timespec, Timeval, Winsize};
+    use super::{Iovec, Rlimit, SigAltStack, Termios, Timespec, Timeval, Winsize};
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -416,5 +456,21 @@ mod tests {
         assert_eq!(SigAltStack::from_guest_bytes(&dirty), Some(ss));
         // A buffer one byte short is rejected.
         assert!(SigAltStack::from_guest_bytes(&[0u8; 23]).is_none());
+    }
+
+    #[test]
+    fn rlimit_round_trips_through_two_u64_fields() {
+        let rl = Rlimit {
+            cur: 1024 * 1024,
+            max: Rlimit::INFINITY,
+        };
+        let bytes = rl.to_guest_bytes();
+        assert_eq!(bytes.len(), Rlimit::SIZE);
+        // rlim_cur [0..8], rlim_max [8..16], little-endian.
+        assert_eq!(&bytes[0..8], &(1024u64 * 1024).to_le_bytes());
+        assert_eq!(&bytes[8..16], &u64::MAX.to_le_bytes());
+        assert_eq!(Rlimit::from_guest_bytes(&bytes), Some(rl));
+        // A buffer one byte short is rejected, not overrun.
+        assert!(Rlimit::from_guest_bytes(&[0u8; 15]).is_none());
     }
 }
