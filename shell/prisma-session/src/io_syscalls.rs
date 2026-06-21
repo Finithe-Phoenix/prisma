@@ -17,6 +17,8 @@ use prisma_runtime::fd_table::{FdEntry, FdTable};
 pub enum IoError {
     /// The fd is not open, or not valid for the operation — guest `EBADF`.
     BadFd,
+    /// An argument is out of range (e.g. an unknown `whence`) — guest `EINVAL`.
+    Invalid,
     /// The guest buffer pointer is not accessible — guest `EFAULT`.
     Fault(RangeError),
     /// The host write failed — surfaced as the guest errno by the caller.
@@ -156,6 +158,32 @@ pub fn fdatasync(fds: &FdTable, fd: i32) -> Result<(), IoError> {
     match fds.get(fd).ok_or(IoError::BadFd)? {
         FdEntry::File(file) => file.sync_data().map_err(IoError::Host),
         FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Ok(()),
+    }
+}
+
+/// `lseek(fd, offset, whence)`: reposition a file's offset, returning the new
+/// absolute offset. `whence` is SEEK_SET (0), SEEK_CUR (1), or SEEK_END (2).
+/// The standard streams are not seekable (`EBADF`).
+///
+/// # Errors
+/// [`IoError::Invalid`] for an unknown `whence` or a negative SEEK_SET offset,
+/// [`IoError::BadFd`] for an unopen fd or a non-seekable stream,
+/// [`IoError::Host`] if the host seek fails.
+pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, IoError> {
+    use std::io::{Seek, SeekFrom};
+    let from = match whence {
+        0 => SeekFrom::Start(u64::try_from(offset).map_err(|_| IoError::Invalid)?),
+        1 => SeekFrom::Current(offset),
+        2 => SeekFrom::End(offset),
+        _ => return Err(IoError::Invalid),
+    };
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => {
+            // `&File` implements `Seek`, so no mutable fd handle is needed.
+            let mut handle: &std::fs::File = file;
+            handle.seek(from).map_err(IoError::Host)
+        }
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Err(IoError::BadFd),
     }
 }
 
@@ -333,6 +361,30 @@ mod tests {
         // An unopen fd is EBADF.
         assert!(matches!(fsync(&fds, 77), Err(IoError::BadFd)));
         assert!(matches!(fdatasync(&fds, 77), Err(IoError::BadFd)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lseek_repositions_a_file_and_validates_whence() {
+        use super::lseek;
+        let path = std::env::temp_dir().join(format!("prisma_lseek_{}.tmp", std::process::id()));
+        std::fs::write(&path, b"0123456789").expect("seed");
+        let mut fds = FdTable::new();
+        {
+            let file = std::fs::File::open(&path).expect("open");
+            let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+            // SEEK_SET to 4, then SEEK_CUR +2 -> 6, SEEK_END -> 10.
+            assert_eq!(lseek(&fds, fd, 4, 0).unwrap(), 4);
+            assert_eq!(lseek(&fds, fd, 2, 1).unwrap(), 6);
+            assert_eq!(lseek(&fds, fd, 0, 2).unwrap(), 10);
+            // A negative SEEK_SET and an unknown whence are EINVAL.
+            assert!(matches!(lseek(&fds, fd, -1, 0), Err(IoError::Invalid)));
+            assert!(matches!(lseek(&fds, fd, 0, 9), Err(IoError::Invalid)));
+            assert!(fds.close(fd));
+        }
+        // Standard streams are not seekable; an unopen fd is EBADF.
+        assert!(matches!(lseek(&fds, 1, 0, 0), Err(IoError::BadFd)));
+        assert!(matches!(lseek(&fds, 88, 0, 0), Err(IoError::BadFd)));
         let _ = std::fs::remove_file(&path);
     }
 }
