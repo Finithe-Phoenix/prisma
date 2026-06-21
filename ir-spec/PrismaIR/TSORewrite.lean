@@ -244,5 +244,13 @@ theorem load_private_quiescent_sc (s : TSO) (t t' : Tid) (a : Addr)
   refine ⟨?_, load_private_fence_other s t t' a htt h⟩
   have hsb : s.sb t = [] := hq
   simp [TSO.load, hsb, sbLatest]
+
+/-- The barrier-elimination rewrite never grows a block: it only removes
+    fences, so the result is no longer than the input. A basic well-formedness
+    guarantee — the optimised block fits wherever the original did. -/
+theorem elimFences_length_le (l : List Op) :
+    (elimFences l).length ≤ l.length := by
+  rw [elimFences_eq_filter]
+  exact List.length_filter_le _ l
 end TSO
 end PrismaIR
