@@ -436,5 +436,34 @@ theorem adaptiveRewrite_tsoFree (l : List Op) :
   rw [adaptiveRewrite] at hop
   exact downgradeAccesses_tsoFree _ op hop
 
+/-- Downgrading leaves a non-TSO op unchanged: only the two TSO constructors are
+    rewritten, so a plain load/store or a fence is its own downgrade. -/
+theorem downgradeOp_id_of_not_tso (op : Op) (h : isTsoAccess op = false) :
+    downgradeOp op = op := by
+  cases op <;> simp_all [isTsoAccess, downgradeOp]
+
+/-- A list with no TSO access is left untouched by the downgrade pass (there is
+    nothing to relax) — the mirror of `elimFences_id_of_fenceFree`. -/
+theorem downgradeAccesses_id_of_tsoFree (l : List Op)
+    (h : ∀ op ∈ l, isTsoAccess op = false) : downgradeAccesses l = l := by
+  induction l with
+  | nil => rfl
+  | cons op r ih =>
+    have hop : isTsoAccess op = false := h op List.mem_cons_self
+    have hr : ∀ x ∈ r, isTsoAccess x = false := fun x hx => h x (List.mem_cons_of_mem op hx)
+    simp only [downgradeAccesses, List.map_cons, downgradeOp_id_of_not_tso op hop]
+    simp only [downgradeAccesses] at ih
+    rw [ih hr]
+
+/-- **The rewrite is non-destructive on a normal form.** A block that is already
+    fence-free and TSO-free — the classifier found nothing to optimise — is left
+    exactly as it was: `adaptiveRewrite l = l`. So the pass never gratuitously
+    rewrites already-optimal code, and (with `adaptiveRewrite_barFree` /
+    `adaptiveRewrite_tsoFree`) the rewrite's output is precisely such a fixpoint. -/
+theorem adaptiveRewrite_id_of_normal (l : List Op)
+    (hf : ∀ op ∈ l, isFence op = false) (ht : ∀ op ∈ l, isTsoAccess op = false) :
+    adaptiveRewrite l = l := by
+  rw [adaptiveRewrite, elimFences_id_of_fenceFree l hf, downgradeAccesses_id_of_tsoFree l ht]
+
 end TSO
 end PrismaIR
