@@ -18,6 +18,7 @@ use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 
 use crate::info_syscalls::{self, RusageError};
 use crate::io_syscalls::{self, GetcwdError, IoError};
+use crate::process_syscalls::{self, PrctlError, COMM_LEN};
 use crate::resource_syscalls::{self, RlimitError};
 use crate::sched_syscalls::{self, SchedError};
 use crate::sig_syscalls::{self, SigError};
@@ -79,6 +80,7 @@ mod nr {
     pub const SET_TID_ADDRESS: u64 = 218;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const MEMBARRIER: u64 = 324;
+    pub const PRCTL: u64 = 157;
     pub const SCHED_SETAFFINITY: u64 = 203;
     pub const SCHED_GETAFFINITY: u64 = 204;
     pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
@@ -154,6 +156,9 @@ pub struct SyscallContext {
     /// armed value across `setitimer`/`getitimer` round-trips so a guest reads
     /// back what it set.
     pub itimers: [ITimerval; 3],
+    /// The thread name (`prctl(PR_SET_NAME)` / `PR_GET_NAME`), NUL-padded. Empty
+    /// until the guest sets it.
+    pub comm: [u8; COMM_LEN],
 }
 
 impl SyscallContext {
@@ -173,6 +178,7 @@ impl SyscallContext {
                 size: 0,
             },
             itimers: [ZERO_ITIMERVAL; 3],
+            comm: [0u8; COMM_LEN],
         }
     }
 }
@@ -261,6 +267,13 @@ const fn sched_errno(e: &SchedError) -> i64 {
     match e {
         SchedError::InvalidParam => errno::EINVAL,
         SchedError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn prctl_errno(e: &PrctlError) -> i64 {
+    match e {
+        PrctlError::Unsupported => errno::EINVAL,
+        PrctlError::Fault(_) => errno::EFAULT,
     }
 }
 
@@ -665,6 +678,11 @@ pub fn dispatch(
         // Routing them (instead of -ENOSYS) lets glibc/malloc trimming and
         // memory-locking code paths proceed.
         nr::MADVISE | nr::MLOCK | nr::MUNLOCK | nr::MLOCKALL | nr::MUNLOCKALL => 0,
+        // prctl(option, arg2, ...): the modelled subset (thread name + dumpable).
+        nr::PRCTL => match process_syscalls::prctl(&mut ctx.comm, mem, arg_i32(args[0]), args[1]) {
+            Ok(v) => v,
+            Err(e) => prctl_errno(&e),
+        },
         // getuid / geteuid / getgid / getegid: the host (Windows) has no POSIX
         // uid, so the guest is presented as a single unprivileged user. Real
         // and effective ids coincide — there is no setuid transition to model.
@@ -1431,6 +1449,44 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn prctl_routes_set_and_get_name() {
+        const SYS_PRCTL: u64 = 157;
+        const PR_SET_NAME: u64 = 15;
+        const PR_GET_NAME: u64 = 16;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 64];
+        let mut mem = region(&mut buf);
+        mem.write(0x1000, b"task-x\0").unwrap();
+        // prctl(PR_SET_NAME, 0x1000) -> 0; the name is stored in the context.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_PRCTL,
+                [PR_SET_NAME, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(&ctx.comm[0..6], b"task-x");
+        // prctl(PR_GET_NAME, 0x1020) writes it back.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_PRCTL,
+                [PR_GET_NAME, 0x1020, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(&mem.read(0x1020, 6).unwrap(), b"task-x");
+        // An unmodelled option -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PRCTL, [1, 0, 0, 0, 0, 0]),
+            -22
+        );
     }
 
     #[test]
