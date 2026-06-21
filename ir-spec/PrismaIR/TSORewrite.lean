@@ -465,5 +465,36 @@ theorem adaptiveRewrite_id_of_normal (l : List Op)
     adaptiveRewrite l = l := by
   rw [adaptiveRewrite, elimFences_id_of_fenceFree l hf, downgradeAccesses_id_of_tsoFree l ht]
 
+/-- A block is in normal form when the classifier has nothing left to do: no
+    fence and no TSO-ordered access remains. -/
+def IsNormal (l : List Op) : Prop :=
+  (∀ op ∈ l, isFence op = false) ∧ (∀ op ∈ l, isTsoAccess op = false)
+
+/-- The adaptive rewrite output is fence-free: downgrading preserves the
+    fence-freedom `elimFences` establishes. -/
+theorem adaptiveRewrite_fenceFree (l : List Op) :
+    ∀ op ∈ adaptiveRewrite l, isFence op = false := by
+  rw [adaptiveRewrite]
+  exact downgradeAccesses_fenceFree _ (elimFences_fenceFree l)
+
+/-- The adaptive rewrite always lands in normal form — fence-free and TSO-free. -/
+theorem adaptiveRewrite_isNormal (l : List Op) : IsNormal (adaptiveRewrite l) :=
+  ⟨adaptiveRewrite_fenceFree l, adaptiveRewrite_tsoFree l⟩
+
+/-- **Fixpoint characterization — the suite's capstone.** A block is a fixpoint
+    of the adaptive rewrite *exactly* when it is already in normal form. (⇐) is
+    non-destructiveness on a normal form (`adaptiveRewrite_id_of_normal`); (⇒) is
+    that the rewrite always produces a normal form (`adaptiveRewrite_isNormal`),
+    so any fixpoint must already be one. This unifies the effectiveness
+    (barFree/tsoFree) and idempotence results into one iff. -/
+theorem adaptiveRewrite_fixpoint_iff_normal (l : List Op) :
+    adaptiveRewrite l = l ↔ IsNormal l := by
+  constructor
+  · intro h
+    have hn := adaptiveRewrite_isNormal l
+    rwa [h] at hn
+  · intro ⟨hf, ht⟩
+    exact adaptiveRewrite_id_of_normal l hf ht
+
 end TSO
 end PrismaIR
