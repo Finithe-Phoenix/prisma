@@ -40,6 +40,7 @@ pub mod cpuid_leaves;
 pub mod iat_patch;
 pub mod import_resolver;
 pub mod integrity;
+pub mod load_pe;
 pub mod module_table;
 pub mod pe_loader;
 pub mod registry;
