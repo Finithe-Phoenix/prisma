@@ -337,6 +337,30 @@ pub fn poll(
     Ok(ready)
 }
 
+/// `ppoll(fds, nfds, tmo, sigmask, sigsetsize)`: the modern `poll` that takes a
+/// `timespec` timeout and an optional signal mask. Readiness is immediate in
+/// this model, so the call never blocks; a non-null `tmo` pointer is still
+/// range-checked (a bad one is `EFAULT`) and the atomic `sigmask` is not applied
+/// (there is no blocking window for it to guard). Delegates the per-fd work to
+/// [`poll`].
+///
+/// # Errors
+/// [`IoError::Invalid`] for an `nfds` overflow, [`IoError::Fault`] if the `tmo`
+/// timespec or the pollfd array is not accessible guest memory.
+pub fn ppoll(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    array_ptr: u64,
+    nfds: u32,
+    tmo_ptr: u64,
+) -> Result<usize, IoError> {
+    if tmo_ptr != 0 {
+        // Validate the timeout struct is readable, even though we do not block.
+        mem.read(tmo_ptr, Timespec::SIZE).map_err(IoError::Fault)?;
+    }
+    poll(fds, mem, array_ptr, nfds)
+}
+
 /// `ftruncate(fd, length)`: set the size of the file behind `fd` to `length`
 /// bytes — shrinking discards the tail, growing extends with zeros. A negative
 /// length is `EINVAL`; the standard streams are not regular files (`EINVAL`).
@@ -617,7 +641,8 @@ pub fn preadv(
 #[cfg(test)]
 mod tests {
     use super::{
-        fstat, ftruncate, poll, pread, preadv, pwrite, pwritev, readv, write, writev, IoError,
+        fstat, ftruncate, poll, ppoll, pread, preadv, pwrite, pwritev, readv, write, writev,
+        IoError,
     };
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
@@ -1205,5 +1230,33 @@ mod tests {
         assert_eq!(rd(1), POLLOUT); // stdout: only the writable half
         assert_eq!(rd(2), POLLNVAL); // unopen fd
         assert_eq!(rd(3), 0); // negative fd skipped
+    }
+
+    #[test]
+    fn ppoll_validates_the_timeout_and_delegates_to_poll() {
+        use prisma_runtime::guest_structs::{PollFd, Timespec};
+        const POLLOUT: i16 = 0x4;
+        let fds = FdTable::new();
+        // One pollfd for stdout at 0x1000; a {1s,0} timeout struct at 0x1010.
+        let mut buf = [0u8; 64];
+        buf[0..8].copy_from_slice(
+            &PollFd {
+                fd: 1,
+                events: POLLOUT,
+                revents: 0,
+            }
+            .to_guest_bytes(),
+        );
+        buf[16..32].copy_from_slice(&Timespec { sec: 1, nsec: 0 }.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // ppoll with a valid timeout -> delegates to poll -> stdout is writable.
+        assert_eq!(ppoll(&fds, &mut mem, 0x1000, 1, 0x1010).unwrap(), 1);
+        // A null timeout is the "block forever" form — still works (non-blocking).
+        assert_eq!(ppoll(&fds, &mut mem, 0x1000, 1, 0).unwrap(), 1);
+        // A bad timeout pointer faults before the poll work.
+        assert!(matches!(
+            ppoll(&fds, &mut mem, 0x1000, 1, 0x103A),
+            Err(IoError::Fault(_))
+        ));
     }
 }
