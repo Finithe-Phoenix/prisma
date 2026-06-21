@@ -348,5 +348,42 @@ theorem adaptiveRewrite_length_le (l : List Op) :
     (adaptiveRewrite l).length ≤ l.length := by
   rw [adaptiveRewrite, downgradeAccesses_length]
   exact elimFences_length_le l
+
+/-- Downgrading preserves whether an op is a fence — it only relaxes the
+    memory-ordering of loads/stores, never adds or removes a fence. -/
+theorem isFence_downgradeOp (op : Op) : isFence (downgradeOp op) = isFence op := by
+  cases op <;> rfl
+
+/-- A fence-free list is left untouched by fence elimination (there is nothing
+    to remove). -/
+theorem elimFences_id_of_fenceFree (l : List Op)
+    (h : ∀ op ∈ l, isFence op = false) : elimFences l = l := by
+  induction l with
+  | nil => rfl
+  | cons op r ih =>
+    have hop : isFence op = false := h op List.mem_cons_self
+    have hr : ∀ x ∈ r, isFence x = false := fun x hx => h x (List.mem_cons_of_mem op hx)
+    simp [elimFences, hop, ih hr]
+
+/-- Downgrading a fence-free list stays fence-free (downgrade preserves fences). -/
+theorem downgradeAccesses_fenceFree (l : List Op)
+    (h : ∀ op ∈ l, isFence op = false) :
+    ∀ op ∈ downgradeAccesses l, isFence op = false := by
+  intro op hop
+  simp only [downgradeAccesses, List.mem_map] at hop
+  obtain ⟨op', hop', rfl⟩ := hop
+  rw [isFence_downgradeOp]
+  exact h op' hop'
+
+/-- The full adaptive rewrite is idempotent — it reaches a fixpoint in one pass,
+    so the pipeline never needs to iterate it. After the first pass the block is
+    fence-free (so the inner `elimFences` is a no-op) and already downgraded (so
+    the inner `downgradeAccesses` is a no-op). -/
+theorem adaptiveRewrite_idempotent (l : List Op) :
+    adaptiveRewrite (adaptiveRewrite l) = adaptiveRewrite l := by
+  unfold adaptiveRewrite
+  have hff : ∀ op ∈ downgradeAccesses (elimFences l), isFence op = false :=
+    downgradeAccesses_fenceFree _ (elimFences_fenceFree l)
+  rw [elimFences_id_of_fenceFree _ hff, downgradeAccesses_idempotent]
 end TSO
 end PrismaIR
