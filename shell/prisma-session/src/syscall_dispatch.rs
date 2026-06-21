@@ -1,0 +1,230 @@
+//! The guest syscall entry point.
+//!
+//! Routes an x86-64 Linux syscall number + its six register arguments to the
+//! right pointer-checked handler, and encodes the result the way the guest
+//! reads `rax`: the success value, or a negative errno on failure. The handlers
+//! own the memory safety (every guest pointer goes through a [`GuestRegion`]);
+//! this layer owns the routing and the kernel return convention.
+//!
+//! Coverage grows as handlers land; an unrouted number returns `-ENOSYS`.
+
+use std::time::Instant;
+
+use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_runtime::fd_table::FdTable;
+use prisma_runtime::guest_signal::SignalState;
+
+use crate::io_syscalls::{self, IoError};
+use crate::sig_syscalls::{self, SigError};
+use crate::time_syscalls::{self, TimeError};
+
+/// x86-64 Linux syscall numbers we route (`arch/x86/entry/syscalls/syscall_64.tbl`).
+mod nr {
+    pub const WRITE: u64 = 1;
+    pub const RT_SIGPROCMASK: u64 = 14;
+    pub const GETTIMEOFDAY: u64 = 96;
+    pub const CLOCK_GETTIME: u64 = 228;
+}
+
+/// Negative Linux errno values returned in `rax` on failure.
+mod errno {
+    pub const EIO: i64 = -5;
+    pub const EBADF: i64 = -9;
+    pub const EFAULT: i64 = -14;
+    pub const EINVAL: i64 = -22;
+    pub const ENOSYS: i64 = -38;
+}
+
+/// Per-thread state the syscall layer carries across calls: the fd table and the
+/// signal mask, plus the monotonic-clock reference. The guest memory region is
+/// passed per call (it is borrowed from the live address space).
+#[derive(Debug)]
+pub struct SyscallContext {
+    /// Open file descriptors.
+    pub fds: FdTable,
+    /// Blocked-signal mask + pending queue.
+    pub signals: SignalState,
+    /// `CLOCK_MONOTONIC` reference point (session start).
+    pub monotonic_start: Instant,
+}
+
+impl SyscallContext {
+    /// A fresh context: standard streams open, nothing blocked, monotonic clock
+    /// anchored now.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            fds: FdTable::new(),
+            signals: SignalState::new(),
+            monotonic_start: Instant::now(),
+        }
+    }
+}
+
+impl Default for SyscallContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn arg_i32(v: u64) -> i32 {
+    // The guest passes the value in a 64-bit register; the C ABI reads its low
+    // 32 bits as the `int` argument. Truncation is the intended semantics.
+    v as i32
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn arg_usize(v: u64) -> usize {
+    // `size_t`/`count` argument — the register value as a host index/length.
+    v as usize
+}
+
+fn io_errno(e: &IoError) -> i64 {
+    match e {
+        IoError::BadFd => errno::EBADF,
+        IoError::Fault(_) => errno::EFAULT,
+        IoError::Host(_) => errno::EIO,
+    }
+}
+
+const fn time_errno(e: TimeError) -> i64 {
+    match e {
+        TimeError::UnknownClock(_) | TimeError::InvalidValue => errno::EINVAL,
+        TimeError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn sig_errno(e: SigError) -> i64 {
+    match e {
+        SigError::BadHow(_) => errno::EINVAL,
+        SigError::Fault(_) => errno::EFAULT,
+    }
+}
+
+/// Dispatch one guest syscall, returning the value the guest reads in `rax`
+/// (the success result, or a negative errno). `mem` is the guest memory the
+/// pointer arguments resolve against.
+#[allow(clippy::cast_possible_wrap)]
+pub fn dispatch(
+    ctx: &mut SyscallContext,
+    mem: &mut GuestRegion,
+    number: u64,
+    args: [u64; 6],
+) -> i64 {
+    match number {
+        nr::WRITE => {
+            match io_syscalls::write(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_usize(args[2])) {
+                // A short/full write returns the byte count.
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        nr::RT_SIGPROCMASK => {
+            match sig_syscalls::rt_sigprocmask(
+                &mut ctx.signals,
+                mem,
+                arg_i32(args[0]),
+                args[1],
+                args[2],
+            ) {
+                Ok(()) => 0,
+                Err(e) => sig_errno(e),
+            }
+        }
+        nr::GETTIMEOFDAY => match time_syscalls::gettimeofday(mem, args[0]) {
+            Ok(()) => 0,
+            Err(e) => time_errno(e),
+        },
+        nr::CLOCK_GETTIME => {
+            match time_syscalls::clock_gettime(mem, args[0], args[1], ctx.monotonic_start) {
+                Ok(()) => 0,
+                Err(e) => time_errno(e),
+            }
+        }
+        _ => errno::ENOSYS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dispatch, SyscallContext};
+    use prisma_orchestrator::address_space::Protection;
+    use prisma_orchestrator::guest_memory::GuestRegion;
+    use prisma_runtime::guest_structs::Timespec;
+
+    const SYS_WRITE: u64 = 1;
+    const SYS_GETTIMEOFDAY: u64 = 96;
+    const SYS_CLOCK_GETTIME: u64 = 228;
+    const CLOCK_REALTIME: u64 = 0;
+
+    fn region(buf: &mut [u8]) -> GuestRegion<'_> {
+        GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+    }
+
+    #[test]
+    fn write_routes_and_returns_the_byte_count() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = *b"hello!!!";
+        let mut mem = region(&mut buf);
+        // write(1, 0x1000, 5) -> 5 (stdout, captured by the harness).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_WRITE, [1, 0x1000, 5, 0, 0, 0]),
+            5
+        );
+    }
+
+    #[test]
+    fn write_to_a_bad_fd_returns_negative_ebadf() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // fd 7 is not open -> -EBADF (-9).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_WRITE, [7, 0x1000, 1, 0, 0, 0]),
+            -9
+        );
+    }
+
+    #[test]
+    fn clock_gettime_routes_and_writes_the_guest_timespec() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_CLOCK_GETTIME,
+                [CLOCK_REALTIME, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
+        assert!(ts.sec > 1_600_000_000);
+    }
+
+    #[test]
+    fn an_out_of_range_pointer_returns_negative_efault() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8]; // too small for a 16-byte timeval
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_GETTIMEOFDAY,
+                [0x1000, 0, 0, 0, 0, 0]
+            ),
+            -14 // -EFAULT
+        );
+    }
+
+    #[test]
+    fn an_unrouted_syscall_is_negative_enosys() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        assert_eq!(dispatch(&mut ctx, &mut mem, 9999, [0; 6]), -38);
+    }
+}

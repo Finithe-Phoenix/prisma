@@ -11,6 +11,7 @@
 pub mod guest_io;
 pub mod io_syscalls;
 pub mod sig_syscalls;
+pub mod syscall_dispatch;
 pub mod time_syscalls;
 
 use std::collections::HashSet;
