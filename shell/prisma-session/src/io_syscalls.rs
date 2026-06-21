@@ -11,6 +11,11 @@ use std::io::{Read, Write};
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::fd_table::{FdEntry, FdTable};
+use prisma_runtime::guest_structs::Iovec;
+
+/// Kernel cap on the number of `iovec`s a single vectored call accepts
+/// (`IOV_MAX` / `UIO_MAXIOV` on Linux). A larger count is `EINVAL`.
+const IOV_MAX: usize = 1024;
 
 /// Why a file-I/O syscall failed (each maps to a guest errno).
 #[derive(Debug)]
@@ -187,15 +192,290 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
     }
 }
 
+/// Write `bytes` to the host resource behind `fd`, returning the count written.
+/// Shared by `writev`; mirrors the fd handling of [`write`]. Stdin is not
+/// writable (`EBADF`).
+fn write_bytes_to_fd(fds: &FdTable, fd: i32, bytes: &[u8]) -> Result<usize, IoError> {
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::Stdin => Err(IoError::BadFd),
+        FdEntry::Stdout => {
+            std::io::stdout().write_all(bytes).map_err(IoError::Host)?;
+            Ok(bytes.len())
+        }
+        FdEntry::Stderr => {
+            std::io::stderr().write_all(bytes).map_err(IoError::Host)?;
+            Ok(bytes.len())
+        }
+        FdEntry::File(file) => {
+            let mut handle: &std::fs::File = file;
+            handle.write_all(bytes).map_err(IoError::Host)?;
+            Ok(bytes.len())
+        }
+    }
+}
+
+/// Read and validate `iovcnt` guest `iovec`s from the array at `iov_ptr`. The
+/// array itself is range-checked through `mem`; a negative count or one past
+/// `IOV_MAX` is `EINVAL`. The named buffers are *not* validated here — the
+/// caller checks them in the direction it needs.
+fn read_iovecs(mem: &GuestRegion, iov_ptr: u64, iovcnt: i32) -> Result<Vec<Iovec>, IoError> {
+    let count = usize::try_from(iovcnt).map_err(|_| IoError::Invalid)?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if count > IOV_MAX {
+        return Err(IoError::Invalid);
+    }
+    let array_len = count.checked_mul(Iovec::SIZE).ok_or(IoError::Invalid)?;
+    let array = mem.read(iov_ptr, array_len).map_err(IoError::Fault)?;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let iov = Iovec::from_guest_bytes(&array[i * Iovec::SIZE..])
+            .ok_or(IoError::Fault(RangeError::Unmapped))?;
+        out.push(iov);
+    }
+    Ok(out)
+}
+
+/// `writev(fd, iov, iovcnt)`: gather the bytes from the guest buffers named by
+/// the `iovec` array (in order) and write them to `fd`, returning the total
+/// written. Every source buffer is read through the range-checked [`GuestRegion`].
+///
+/// # Errors
+/// [`IoError::Invalid`] for a bad `iovcnt`, [`IoError::Fault`] if the array or
+/// any buffer is not readable guest memory, [`IoError::BadFd`] for an unopen fd
+/// or stdin, [`IoError::Host`] on a host write failure.
+pub fn writev(
+    fds: &FdTable,
+    mem: &GuestRegion,
+    fd: i32,
+    iov_ptr: u64,
+    iovcnt: i32,
+) -> Result<usize, IoError> {
+    let iovs = read_iovecs(mem, iov_ptr, iovcnt)?;
+    let mut gathered = Vec::new();
+    for iov in &iovs {
+        let len = usize::try_from(iov.len).map_err(|_| IoError::Invalid)?;
+        let buf = mem.read(iov.base, len).map_err(IoError::Fault)?;
+        gathered.extend_from_slice(buf);
+    }
+    write_bytes_to_fd(fds, fd, &gathered)
+}
+
+/// `readv(fd, iov, iovcnt)`: read from `fd` and scatter the bytes into the guest
+/// buffers named by the `iovec` array (in order), returning the number read.
+///
+/// Every destination buffer is checked writable *before* the fd is read, so a
+/// bad buffer faults (`EFAULT`) without consuming input. Reading from a
+/// write-only stream (stdout/stderr) is `EBADF`.
+///
+/// # Errors
+/// [`IoError::Invalid`] for a bad `iovcnt` / overflowing total, [`IoError::Fault`]
+/// if the array or any buffer is not writable guest memory, [`IoError::BadFd`]
+/// for an unopen fd or stdout/stderr, [`IoError::Host`] on a host read failure.
+pub fn readv(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    fd: i32,
+    iov_ptr: u64,
+    iovcnt: i32,
+) -> Result<usize, IoError> {
+    let iovs = read_iovecs(mem, iov_ptr, iovcnt)?;
+    // Validate every destination is writable and total up the capacity first.
+    let mut total = 0usize;
+    for iov in &iovs {
+        let len = usize::try_from(iov.len).map_err(|_| IoError::Invalid)?;
+        mem.ensure_writable(iov.base, len).map_err(IoError::Fault)?;
+        total = total.checked_add(len).ok_or(IoError::Invalid)?;
+    }
+    // Pull up to `total` bytes off the fd into a host staging buffer.
+    let mut host = vec![0u8; total];
+    let nread = match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::Stdin => std::io::stdin().read(&mut host).map_err(IoError::Host)?,
+        FdEntry::Stdout | FdEntry::Stderr => return Err(IoError::BadFd),
+        FdEntry::File(file) => {
+            let mut handle: &std::fs::File = file;
+            handle.read(&mut host).map_err(IoError::Host)?
+        }
+    };
+    // Scatter the bytes actually read across the buffers, in order.
+    let mut off = 0usize;
+    for iov in &iovs {
+        if off >= nread {
+            break;
+        }
+        let take = usize::try_from(iov.len).unwrap_or(0).min(nread - off);
+        mem.write(iov.base, &host[off..off + take])
+            .map_err(IoError::Fault)?;
+        off += take;
+    }
+    Ok(nread)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{write, IoError};
+    use super::{readv, write, writev, IoError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::fd_table::{FdEntry, FdTable};
+    use prisma_runtime::guest_structs::Iovec;
 
     fn region(buf: &mut [u8]) -> GuestRegion<'_> {
         GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+    }
+
+    /// Lay an `iovec` array into `buf` at byte offset `off` (guest addr
+    /// `0x1000 + off`).
+    fn put_iovecs(buf: &mut [u8], off: usize, iovs: &[Iovec]) {
+        for (i, iov) in iovs.iter().enumerate() {
+            let at = off + i * Iovec::SIZE;
+            buf[at..at + Iovec::SIZE].copy_from_slice(&iov.to_guest_bytes());
+        }
+    }
+
+    #[test]
+    fn writev_gathers_buffers_in_order_to_stdout() {
+        let fds = FdTable::new();
+        let mut buf = [0u8; 64];
+        buf[0..3].copy_from_slice(b"foo");
+        buf[16..19].copy_from_slice(b"bar");
+        // iovec array at guest 0x1020 -> {0x1000,3}, {0x1010,3}.
+        put_iovecs(
+            &mut buf,
+            0x20,
+            &[
+                Iovec {
+                    base: 0x1000,
+                    len: 3,
+                },
+                Iovec {
+                    base: 0x1010,
+                    len: 3,
+                },
+            ],
+        );
+        let mem = region(&mut buf);
+        // writev(1, 0x1020, 2) gathers "foo"+"bar" -> 6 bytes to stdout.
+        assert_eq!(writev(&fds, &mem, 1, 0x1020, 2).unwrap(), 6);
+    }
+
+    #[test]
+    fn writev_rejects_bad_iovcnt() {
+        let fds = FdTable::new();
+        let mut buf = [0u8; 32];
+        let mem = region(&mut buf);
+        // Negative count and a count past IOV_MAX are both EINVAL.
+        assert!(matches!(
+            writev(&fds, &mem, 1, 0x1000, -1),
+            Err(IoError::Invalid)
+        ));
+        assert!(matches!(
+            writev(&fds, &mem, 1, 0x1000, 4096),
+            Err(IoError::Invalid)
+        ));
+    }
+
+    #[test]
+    fn writev_faults_on_an_out_of_range_buffer() {
+        let fds = FdTable::new();
+        let mut buf = [0u8; 32];
+        // One iovec pointing past the 32-byte region.
+        put_iovecs(
+            &mut buf,
+            0,
+            &[Iovec {
+                base: 0x9000,
+                len: 4,
+            }],
+        );
+        let mem = region(&mut buf);
+        assert!(matches!(
+            writev(&fds, &mem, 1, 0x1000, 1),
+            Err(IoError::Fault(_))
+        ));
+    }
+
+    #[test]
+    fn readv_validates_destinations_before_consuming_the_fd() {
+        // A read-only region: readv must fault on the write-into-guest check,
+        // never reaching (and blocking on) the fd.
+        let mut buf = [0u8; 32];
+        put_iovecs(
+            &mut buf,
+            0,
+            &[Iovec {
+                base: 0x1010,
+                len: 4,
+            }],
+        );
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadOnly, &mut buf);
+        let fds = FdTable::new();
+        assert!(matches!(
+            readv(&fds, &mut mem, 0, 0x1000, 1),
+            Err(IoError::Fault(RangeError::NotWritable))
+        ));
+    }
+
+    #[test]
+    fn writev_then_readv_round_trips_through_a_file() {
+        // Gather two buffers into a file, then scatter the file back into two
+        // different buffers — validates both directions end to end.
+        let path = std::env::temp_dir().join(format!("prisma_iov_{}.tmp", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("temp file");
+        let mut fds = FdTable::new();
+        let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+
+        let mut buf = [0u8; 128];
+        buf[0..3].copy_from_slice(b"foo"); // src1 @ 0x1000
+        buf[16..19].copy_from_slice(b"bar"); // src2 @ 0x1010
+        put_iovecs(
+            &mut buf,
+            0x20, // write-iovecs @ 0x1020
+            &[
+                Iovec {
+                    base: 0x1000,
+                    len: 3,
+                },
+                Iovec {
+                    base: 0x1010,
+                    len: 3,
+                },
+            ],
+        );
+        put_iovecs(
+            &mut buf,
+            0x60, // read-iovecs @ 0x1060 -> dst1 @ 0x1040, dst2 @ 0x1050
+            &[
+                Iovec {
+                    base: 0x1040,
+                    len: 3,
+                },
+                Iovec {
+                    base: 0x1050,
+                    len: 3,
+                },
+            ],
+        );
+        let mut mem = region(&mut buf);
+
+        assert_eq!(writev(&fds, &mem, fd, 0x1020, 2).unwrap(), 6);
+        // Rewind to the start, then scatter the file content back out.
+        super::lseek(&fds, fd, 0, 0).expect("rewind");
+        assert_eq!(readv(&fds, &mut mem, fd, 0x1060, 2).unwrap(), 6);
+
+        // dst1 got "foo", dst2 got "bar": gather+scatter preserved order.
+        assert_eq!(mem.read(0x1040, 3).unwrap(), b"foo");
+        assert_eq!(mem.read(0x1050, 3).unwrap(), b"bar");
+
+        // Resource discipline: drop the table (closes the host fd) then unlink.
+        drop(fds);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
