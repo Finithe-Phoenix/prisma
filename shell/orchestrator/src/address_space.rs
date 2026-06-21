@@ -175,6 +175,78 @@ impl AddressSpace {
         Ok(self.regions.remove(idx))
     }
 
+    /// The lowest base address at or above `min_addr` where `[base, base+len)`
+    /// fits without overlapping any existing mapping (first-fit). `None` if no
+    /// such gap exists below the top of the address space. This is the placement
+    /// search a hint-less `mmap` performs. Regions are sorted, so it is a single
+    /// walk over the gaps.
+    #[must_use]
+    pub fn find_free_range(&self, len: u64, min_addr: u64) -> Option<u64> {
+        if len == 0 {
+            return None;
+        }
+        let mut cursor = min_addr;
+        for r in &self.regions {
+            if r.end() <= cursor {
+                continue; // entirely below the cursor
+            }
+            // `r` is the next mapping at or above `cursor`; the gap before it is
+            // `[cursor, r.base)`.
+            if r.base >= cursor && r.base - cursor >= len {
+                return cursor.checked_add(len).map(|_| cursor);
+            }
+            cursor = cursor.max(r.end());
+        }
+        // No mapping above the cursor: the open range past the last region fits
+        // as long as it does not overflow the address space.
+        cursor.checked_add(len).map(|_| cursor)
+    }
+
+    /// Map an anonymous region of `len` bytes at the lowest free address at or
+    /// above `min_addr`, returning its base — the placement an anonymous `mmap`
+    /// without a fixed address makes. The region is owned by the address space
+    /// and released by [`AddressSpace::unmap`] (or `clear` on teardown).
+    ///
+    /// # Errors
+    /// [`AddressSpaceError::ZeroSize`] for `len == 0`, [`AddressSpaceError::
+    /// NoSpace`] if no free gap of `len` exists.
+    pub fn mmap_anon(
+        &mut self,
+        len: u64,
+        min_addr: u64,
+        prot: Protection,
+    ) -> Result<u64, AddressSpaceError> {
+        if len == 0 {
+            return Err(AddressSpaceError::ZeroSize);
+        }
+        let base = self
+            .find_free_range(len, min_addr)
+            .ok_or(AddressSpaceError::NoSpace { len })?;
+        self.map(base, len, prot, "mmap")?;
+        Ok(base)
+    }
+
+    /// Change the protection of the region based exactly at `base` (whole-region
+    /// `mprotect`; splitting a sub-range is deferred). Returns the prior
+    /// protection.
+    ///
+    /// # Errors
+    /// [`AddressSpaceError::NotMapped`] if no region begins at `base`.
+    pub fn mprotect(
+        &mut self,
+        base: u64,
+        prot: Protection,
+    ) -> Result<Protection, AddressSpaceError> {
+        let region = self
+            .regions
+            .iter_mut()
+            .find(|r| r.base == base)
+            .ok_or(AddressSpaceError::NotMapped(base))?;
+        let prev = region.prot;
+        region.prot = prot;
+        Ok(prev)
+    }
+
     /// Drop every mapping at once — used on container teardown so no guest
     /// mapping survives the restart.
     pub fn clear(&mut self) {
@@ -211,6 +283,9 @@ pub enum AddressSpaceError {
 
     #[error("no region mapped at {0:#x}")]
     NotMapped(u64),
+
+    #[error("no free address-space gap of {len:#x} bytes")]
+    NoSpace { len: u64 },
 }
 
 /// Why a guest pointer range failed validation (each maps to a guest `EFAULT`).
@@ -400,5 +475,69 @@ mod tests {
         assert!(!Protection::ReadWrite.is_executable());
         assert!(Protection::ReadWrite.is_writable());
         assert!(!Protection::ReadOnly.is_writable());
+    }
+
+    #[test]
+    fn find_free_range_uses_a_gap_then_the_open_tail() {
+        // .text [0x1000,0x2000), .data [0x3000,0x5000): a 0x1000 gap at 0x2000.
+        let s = space();
+        // With no floor the low gap [0, 0x1000) below .text fits first.
+        assert_eq!(s.find_free_range(0x1000, 0), Some(0));
+        // A floor at .text's base targets the mid gap [0x2000, 0x3000).
+        assert_eq!(s.find_free_range(0x1000, 0x1000), Some(0x2000));
+        // A request larger than the mid gap skips past .data to the open tail.
+        assert_eq!(s.find_free_range(0x4000, 0x1000), Some(0x5000));
+        // A floor above the gap also lands past the last region.
+        assert_eq!(s.find_free_range(0x1000, 0x4000), Some(0x5000));
+        // Zero length never has a placement.
+        assert_eq!(s.find_free_range(0, 0), None);
+    }
+
+    #[test]
+    fn mmap_anon_maps_at_the_first_free_address_and_unmaps_clean() {
+        let mut s = space();
+        let before = s.len();
+        // With a floor at .text's base, the first 0x1000 map fills the mid gap.
+        let base = s.mmap_anon(0x1000, 0x1000, Protection::ReadWrite).unwrap();
+        assert_eq!(base, 0x2000);
+        assert_eq!(s.len(), before + 1);
+        assert!(s.translate(0x2000).is_some());
+        // The mapping is writable (a guest write would be permitted).
+        s.validate_range(0x2000, 0x1000, true).unwrap();
+        // Unmapping releases it deterministically.
+        let region = s.unmap(base).unwrap();
+        assert_eq!(region.size, 0x1000);
+        assert!(s.translate(0x2000).is_none());
+        assert_eq!(s.len(), before);
+    }
+
+    #[test]
+    fn mmap_anon_reports_no_space_when_nothing_fits() {
+        let mut s = AddressSpace::new();
+        // One region covering the whole space leaves no gap for a 2-byte map at
+        // or above its base.
+        s.map(0, u64::MAX, Protection::ReadWrite, "all").unwrap();
+        assert_eq!(
+            s.mmap_anon(2, 0, Protection::ReadWrite),
+            Err(AddressSpaceError::NoSpace { len: 2 })
+        );
+    }
+
+    #[test]
+    fn mprotect_changes_a_region_protection_and_returns_the_prior() {
+        let mut s = space();
+        // .data starts read-write; flip it read-only and confirm a write now
+        // fails validation.
+        let prev = s.mprotect(0x3000, Protection::ReadOnly).unwrap();
+        assert_eq!(prev, Protection::ReadWrite);
+        assert_eq!(
+            s.validate_range(0x3000, 0x10, true),
+            Err(RangeError::NotWritable)
+        );
+        // An unmapped base is NotMapped.
+        assert_eq!(
+            s.mprotect(0x9000, Protection::ReadOnly),
+            Err(AddressSpaceError::NotMapped(0x9000))
+        );
     }
 }
