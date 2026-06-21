@@ -8,18 +8,46 @@
 
 use crate::module_table::ModuleTable;
 
-/// One import an image requests: a symbol from a named library.
+/// What an import binds to within its library: a name or an export ordinal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportKind {
+    /// Bind by exported name.
+    Name(String),
+    /// Bind by export ordinal (the import table carries no name).
+    Ordinal(u16),
+}
+
+impl ImportKind {
+    /// A display string for diagnostics: the name, or `#<ordinal>`.
+    fn display(&self) -> String {
+        match self {
+            Self::Name(n) => n.clone(),
+            Self::Ordinal(o) => format!("#{o}"),
+        }
+    }
+}
+
+/// One import an image requests from a named library, by name or by ordinal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportRequest {
     pub library: String,
-    pub symbol: String,
+    pub kind: ImportKind,
 }
 
 impl ImportRequest {
+    /// An import bound by exported name.
     pub fn new(library: impl Into<String>, symbol: impl Into<String>) -> Self {
         Self {
             library: library.into(),
-            symbol: symbol.into(),
+            kind: ImportKind::Name(symbol.into()),
+        }
+    }
+
+    /// An import bound by export ordinal.
+    pub fn by_ordinal(library: impl Into<String>, ordinal: u16) -> Self {
+        Self {
+            library: library.into(),
+            kind: ImportKind::Ordinal(ordinal),
         }
     }
 }
@@ -45,16 +73,18 @@ pub fn resolve_imports(
 ) -> Result<Vec<ResolvedImport>, ImportError> {
     let mut resolved = Vec::with_capacity(requests.len());
     for req in requests {
-        let address =
-            table
-                .resolve(&req.library, &req.symbol)
-                .ok_or_else(|| ImportError::Unresolved {
-                    library: req.library.clone(),
-                    symbol: req.symbol.clone(),
-                })?;
+        let module = table.get(&req.library);
+        let address = match &req.kind {
+            ImportKind::Name(name) => module.and_then(|m| m.resolve(name)),
+            ImportKind::Ordinal(ordinal) => module.and_then(|m| m.resolve_ordinal(*ordinal)),
+        }
+        .ok_or_else(|| ImportError::Unresolved {
+            library: req.library.clone(),
+            symbol: req.kind.display(),
+        })?;
         resolved.push(ResolvedImport {
             library: req.library.clone(),
-            symbol: req.symbol.clone(),
+            symbol: req.kind.display(),
             address,
         });
     }
@@ -134,6 +164,26 @@ mod tests {
             Err(ImportError::Unresolved {
                 library: "user32.dll".to_owned(),
                 symbol: "MessageBoxA".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolves_an_import_by_ordinal() {
+        let reqs = [ImportRequest::by_ordinal("kernel32.dll", 2)];
+        let resolved = resolve_imports(&reqs, &table()).expect("ordinal resolves");
+        assert_eq!(resolved[0].address, 0x1_8000_2000); // ExitProcess @ ordinal 2
+        assert_eq!(resolved[0].symbol, "#2");
+    }
+
+    #[test]
+    fn unresolved_ordinal_is_reported() {
+        let reqs = [ImportRequest::by_ordinal("kernel32.dll", 99)];
+        assert_eq!(
+            resolve_imports(&reqs, &table()),
+            Err(ImportError::Unresolved {
+                library: "kernel32.dll".to_owned(),
+                symbol: "#99".to_owned(),
             })
         );
     }
