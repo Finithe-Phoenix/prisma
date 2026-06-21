@@ -48,6 +48,7 @@ mod nr {
     pub const FCNTL: u64 = 72;
     pub const GETCWD: u64 = 79;
     pub const GETCPU: u64 = 309;
+    pub const SYSINFO: u64 = 99;
     pub const GETRLIMIT: u64 = 97;
     pub const GETRUSAGE: u64 = 98;
     pub const SETRLIMIT: u64 = 160;
@@ -427,6 +428,11 @@ pub fn dispatch(
         },
         // getcpu(cpu, node, tcache): report CPU 0 / node 0; tcache is ignored.
         nr::GETCPU => match info_syscalls::getcpu(mem, args[0], args[1]) {
+            Ok(()) => 0,
+            Err(_) => errno::EFAULT,
+        },
+        // sysinfo(buf): write system stats (real uptime, synthetic memory).
+        nr::SYSINFO => match info_syscalls::sysinfo(mem, args[0], ctx.monotonic_start) {
             Ok(()) => 0,
             Err(_) => errno::EFAULT,
         },
@@ -1145,6 +1151,29 @@ mod tests {
         // A bad pointer faults: -EFAULT (-14).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETCPU, [0x9000, 0, 0, 0, 0, 0]),
+            -14
+        );
+    }
+
+    #[test]
+    fn sysinfo_routes_and_writes_synthetic_stats() {
+        use prisma_runtime::guest_structs::Sysinfo;
+        const SYS_SYSINFO: u64 = 99;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; Sysinfo::SIZE];
+        let mut mem = region(&mut buf);
+        // sysinfo(0x1000) -> 0; totalram (offset 32) is the synthetic 2 GiB.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_SYSINFO, [0x1000, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            &mem.read(0x1000, Sysinfo::SIZE).unwrap()[32..40],
+            &(2u64 * 1024 * 1024 * 1024).to_le_bytes()
+        );
+        // A bad pointer faults: -EFAULT (-14).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_SYSINFO, [0x9000, 0, 0, 0, 0, 0]),
             -14
         );
     }
