@@ -25,6 +25,8 @@ mod nr {
     pub const WRITE: u64 = 1;
     pub const READV: u64 = 19;
     pub const WRITEV: u64 = 20;
+    pub const PREAD64: u64 = 17;
+    pub const PWRITE64: u64 = 18;
     pub const CLOSE: u64 = 3;
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
@@ -209,6 +211,33 @@ pub fn dispatch(
         }
         nr::WRITEV => {
             match io_syscalls::writev(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_i32(args[2])) {
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        // pread64/pwrite64(fd, buf, count, offset): positional I/O at args[3].
+        nr::PREAD64 => {
+            match io_syscalls::pread(
+                &ctx.fds,
+                mem,
+                arg_i32(args[0]),
+                args[1],
+                arg_usize(args[2]),
+                args[3],
+            ) {
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        nr::PWRITE64 => {
+            match io_syscalls::pwrite(
+                &ctx.fds,
+                mem,
+                arg_i32(args[0]),
+                args[1],
+                arg_usize(args[2]),
+                args[3],
+            ) {
                 Ok(n) => n as i64,
                 Err(e) => io_errno(&e),
             }
@@ -963,6 +992,51 @@ mod tests {
             dispatch(&mut ctx, &mut mem, SYS_TKILL, [pid, 99, 0, 0, 0, 0]),
             -22
         );
+    }
+
+    #[test]
+    fn pread64_and_pwrite64_route_with_their_offset() {
+        use prisma_runtime::fd_table::FdEntry;
+        use std::io::Write as _;
+        const SYS_PREAD64: u64 = 17;
+        const SYS_PWRITE64: u64 = 18;
+        let path = std::env::temp_dir().join(format!("prisma_disp_pio_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create");
+            f.write_all(b"hello world").expect("seed");
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open");
+        let mut ctx = SyscallContext::new();
+        let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
+
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        // pread64(fd, 0x1000, 5, 6) reads "world" -> 5.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PREAD64, [fd, 0x1000, 5, 6, 0, 0]),
+            5
+        );
+        assert_eq!(mem.read(0x1000, 5).unwrap(), b"world");
+        // pwrite64(fd, 0x1008, 2, 0) writes "XY" at offset 0 -> 2.
+        buf[8..10].copy_from_slice(b"XY");
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PWRITE64, [fd, 0x1008, 2, 0, 0, 0]),
+            2
+        );
+        // pread64 on a non-seekable stream (stdin) -> -EINVAL.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PREAD64, [0, 0x1000, 1, 0, 0, 0]),
+            -22
+        );
+
+        // Resource discipline: drop the table (closes the fd) then unlink.
+        ctx.fds = prisma_runtime::fd_table::FdTable::new();
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
