@@ -8,7 +8,7 @@
 //! kernel rule that SIGKILL/SIGSTOP can never be blocked.
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::guest_signal::{SigAction, SignalState, SigprocmaskHow, Sigset};
 use prisma_runtime::guest_structs::SigAltStack;
 
@@ -37,7 +37,7 @@ pub enum SigError {
 /// [`SigError::Fault`] if a non-null `set`/`oldset` is not accessible.
 pub fn rt_sigprocmask(
     state: &mut SignalState,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     how: i32,
     set_addr: u64,
     oldset_addr: u64,
@@ -69,7 +69,7 @@ pub fn rt_sigprocmask(
 /// [`SigError::Fault`] if `set` is not writable guest memory.
 pub fn rt_sigpending(
     state: &SignalState,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     set_addr: u64,
 ) -> Result<(), SigError> {
     mem.write(set_addr, &state.pending_set().to_guest_bytes())
@@ -89,7 +89,7 @@ pub fn rt_sigpending(
 /// [`SigError::Fault`] if a non-null `act`/`oldact` is not accessible.
 pub fn rt_sigaction(
     state: &mut SignalState,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     sig: u32,
     act_addr: u64,
     oldact_addr: u64,
@@ -151,7 +151,7 @@ pub fn send_signal(state: &mut SignalState, sig: u32) -> Result<(), SigError> {
 /// [`SigError::Fault`] if a non-null `ss`/`old_ss` is not accessible guest
 /// memory.
 pub fn sigaltstack(
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     ss_ptr: u64,
     old_ss_ptr: u64,
     current: SigAltStack,
