@@ -14,6 +14,7 @@ use std::time::Instant;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_signal::SignalState;
+use prisma_runtime::guest_structs::SigAltStack;
 
 use crate::io_syscalls::{self, IoError};
 use crate::sig_syscalls::{self, SigError};
@@ -34,6 +35,7 @@ mod nr {
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
+    pub const SIGALTSTACK: u64 = 131;
     pub const TKILL: u64 = 200;
     pub const TGKILL: u64 = 234;
     pub const DUP: u64 = 32;
@@ -111,6 +113,8 @@ pub struct SyscallContext {
     /// File-mode creation mask (`umask`): the bits cleared from the mode of files
     /// the guest creates. The conventional default is `0o022`.
     pub umask: u32,
+    /// The alternate signal stack (`sigaltstack`); disabled by default.
+    pub altstack: SigAltStack,
 }
 
 impl SyscallContext {
@@ -123,6 +127,12 @@ impl SyscallContext {
             signals: SignalState::new(),
             monotonic_start: Instant::now(),
             umask: 0o022,
+            // SS_DISABLE (flags = 2): no alternate stack installed yet.
+            altstack: SigAltStack {
+                sp: 0,
+                flags: 2,
+                size: 0,
+            },
         }
     }
 }
@@ -354,6 +364,15 @@ pub fn dispatch(
                 Err(e) => sig_errno(e),
             }
         }
+        // sigaltstack(ss, old_ss): report/install the alternate signal stack,
+        // threading the per-session `altstack` through the pure handler.
+        nr::SIGALTSTACK => match sig_syscalls::sigaltstack(mem, args[0], args[1], ctx.altstack) {
+            Ok(next) => {
+                ctx.altstack = next;
+                0
+            }
+            Err(e) => sig_errno(e),
+        },
         // tkill(tid, sig) / tgkill(tgid, tid, sig): send a signal to a thread.
         // The guest is single-threaded, so the only valid target is itself
         // (tid == pid, and for tgkill tgid == pid too); a non-positive id is
@@ -1234,6 +1253,50 @@ mod tests {
 
         ctx.fds = prisma_runtime::fd_table::FdTable::new();
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sigaltstack_routes_and_persists_the_alt_stack() {
+        use prisma_runtime::guest_structs::SigAltStack;
+        const SYS_SIGALTSTACK: u64 = 131;
+        let mut ctx = SyscallContext::new();
+        // A new alt-stack at guest 0x1000.
+        let new = SigAltStack {
+            sp: 0x1_4000_6000,
+            flags: 0,
+            size: 0x4000,
+        };
+        let mut buf = [0u8; 64];
+        buf[0..24].copy_from_slice(&new.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // sigaltstack(ss=0x1000, old_ss=0x1020): install new, report old.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SIGALTSTACK,
+                [0x1000, 0x1020, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // old_ss holds the previous (disabled, flags=2) alt-stack.
+        let old = SigAltStack::from_guest_bytes(&buf[0x20..0x20 + 24]).unwrap();
+        assert_eq!(old.flags, 2);
+        // The new alt-stack persisted in the context.
+        assert_eq!(ctx.altstack, new);
+        // A query-only call (ss=0) reports the now-installed stack.
+        let mut buf2 = [0u8; 32];
+        let mut mem2 = region(&mut buf2);
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem2,
+                SYS_SIGALTSTACK,
+                [0, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(SigAltStack::from_guest_bytes(&buf2[0..24]).unwrap(), new);
     }
 
     #[test]
