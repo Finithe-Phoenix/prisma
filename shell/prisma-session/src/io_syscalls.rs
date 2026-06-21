@@ -11,7 +11,22 @@ use std::io::{Read, Write};
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::fd_table::{FdEntry, FdTable};
-use prisma_runtime::guest_structs::{Iovec, PollFd, Stat, Timespec};
+use prisma_runtime::guest_structs::{Flock, Iovec, PollFd, Stat, Timespec};
+
+/// `fcntl` commands we model.
+const F_GETFD: i32 = 1;
+const F_SETFD: i32 = 2;
+const F_GETFL: i32 = 3;
+const F_SETFL: i32 = 4;
+const F_GETLK: i32 = 5;
+const F_SETLK: i32 = 6;
+const F_SETLKW: i32 = 7;
+/// `O_RDWR` — the access mode `F_GETFL` reports (the fd table does not track the
+/// guest's open flags, so a read/write file is the honest default).
+const O_RDWR: i64 = 2;
+/// `F_UNLCK` — the `l_type` `F_GETLK` reports: no conflicting lock exists in the
+/// single-process model.
+const F_UNLCK: i16 = 2;
 
 /// `poll` event bits we model: data-to-read, space-to-write, and the
 /// invalid-fd error the kernel reports for a closed descriptor.
@@ -202,6 +217,52 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
             handle.seek(from).map_err(IoError::Host)
         }
         FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Err(IoError::BadFd),
+    }
+}
+
+/// `fcntl(fd, cmd, arg)`: the descriptor-control multiplexer. The subset modelled
+/// here returns the value the guest reads in `rax`:
+///
+/// * `F_GETFD`/`F_SETFD` — the close-on-exec flag is not tracked, so getting it
+///   is `0` and setting it is an accepted no-op;
+/// * `F_GETFL` — the open flags are not tracked, so a read/write file (`O_RDWR`)
+///   is reported; `F_SETFL` is an accepted no-op;
+/// * `F_GETLK` — reads the `flock` request at `arg`, reports `F_UNLCK` (no
+///   conflicting lock can exist for the single-process guest), and writes it
+///   back; `F_SETLK`/`F_SETLKW` always succeed for the same reason.
+///
+/// Any other command is `EINVAL`. `fd` must be open.
+///
+/// # Errors
+/// [`IoError::BadFd`] for an unopen fd, [`IoError::Invalid`] for an unmodelled
+/// command, [`IoError::Fault`] if a lock command's `arg` pointer is not
+/// accessible guest memory.
+pub fn fcntl(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    fd: i32,
+    cmd: i32,
+    arg: u64,
+) -> Result<i64, IoError> {
+    if !fds.is_open(fd) {
+        return Err(IoError::BadFd);
+    }
+    match cmd {
+        F_GETFD => Ok(0),
+        F_SETFD | F_SETFL => Ok(0),
+        F_GETFL => Ok(O_RDWR),
+        F_SETLK | F_SETLKW => Ok(0),
+        F_GETLK => {
+            let bytes = mem.read(arg, Flock::SIZE).map_err(IoError::Fault)?;
+            let mut lk =
+                Flock::from_guest_bytes(bytes).ok_or(IoError::Fault(RangeError::Unmapped))?;
+            // No other process can hold a conflicting lock.
+            lk.typ = F_UNLCK;
+            mem.write(arg, &lk.to_guest_bytes())
+                .map_err(IoError::Fault)?;
+            Ok(0)
+        }
+        _ => Err(IoError::Invalid),
     }
 }
 
@@ -641,7 +702,7 @@ pub fn preadv(
 #[cfg(test)]
 mod tests {
     use super::{
-        fstat, ftruncate, poll, ppoll, pread, preadv, pwrite, pwritev, readv, write, writev,
+        fcntl, fstat, ftruncate, poll, ppoll, pread, preadv, pwrite, pwritev, readv, write, writev,
         IoError,
     };
     use prisma_orchestrator::address_space::{Protection, RangeError};
@@ -1257,6 +1318,53 @@ mod tests {
         assert!(matches!(
             ppoll(&fds, &mut mem, 0x1000, 1, 0x103A),
             Err(IoError::Fault(_))
+        ));
+    }
+
+    #[test]
+    fn fcntl_handles_descriptor_flags_and_locks() {
+        use prisma_runtime::guest_structs::Flock;
+        const F_GETFD: i32 = 1;
+        const F_SETFD: i32 = 2;
+        const F_GETFL: i32 = 3;
+        const F_GETLK: i32 = 5;
+        const F_SETLK: i32 = 6;
+        const F_WRLCK: i16 = 1;
+        const F_UNLCK: i16 = 2;
+        let fds = FdTable::new();
+        let mut buf = [0u8; 64];
+        let mut mem = region(&mut buf);
+
+        // Flag commands on stdout (fd 1).
+        assert_eq!(fcntl(&fds, &mut mem, 1, F_GETFD, 0).unwrap(), 0); // no CLOEXEC
+        assert_eq!(fcntl(&fds, &mut mem, 1, F_SETFD, 1).unwrap(), 0); // accepted
+        assert_eq!(fcntl(&fds, &mut mem, 1, F_GETFL, 0).unwrap(), 2); // O_RDWR
+
+        // F_SETLK always succeeds for the single-process guest.
+        assert_eq!(fcntl(&fds, &mut mem, 1, F_SETLK, 0x1000).unwrap(), 0);
+
+        // F_GETLK reports F_UNLCK regardless of the requested lock type.
+        let req = Flock {
+            typ: F_WRLCK,
+            whence: 0,
+            start: 0,
+            len: 0,
+            pid: 0,
+        };
+        buf[0..32].copy_from_slice(&req.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        assert_eq!(fcntl(&fds, &mut mem, 1, F_GETLK, 0x1000).unwrap(), 0);
+        let got = Flock::from_guest_bytes(mem.read(0x1000, Flock::SIZE).unwrap()).unwrap();
+        assert_eq!(got.typ, F_UNLCK);
+
+        // An unopen fd is EBADF; an unknown command is EINVAL.
+        assert!(matches!(
+            fcntl(&fds, &mut mem, 9, F_GETFD, 0),
+            Err(IoError::BadFd)
+        ));
+        assert!(matches!(
+            fcntl(&fds, &mut mem, 1, 999, 0),
+            Err(IoError::Invalid)
         ));
     }
 }
