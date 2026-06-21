@@ -16,6 +16,7 @@ use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_signal::SignalState;
 use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 
+use crate::fs_syscalls::{self, FstatfsError};
 use crate::info_syscalls::{self, RusageError};
 use crate::io_syscalls::{self, GetcwdError, IoError};
 use crate::process_syscalls::{self, PrctlError, COMM_LEN};
@@ -81,6 +82,8 @@ mod nr {
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const MEMBARRIER: u64 = 324;
     pub const PRCTL: u64 = 157;
+    pub const STATFS: u64 = 137;
+    pub const FSTATFS: u64 = 138;
     pub const SCHED_SETAFFINITY: u64 = 203;
     pub const SCHED_GETAFFINITY: u64 = 204;
     pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
@@ -274,6 +277,13 @@ const fn prctl_errno(e: &PrctlError) -> i64 {
     match e {
         PrctlError::Unsupported => errno::EINVAL,
         PrctlError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn fstatfs_errno(e: &FstatfsError) -> i64 {
+    match e {
+        FstatfsError::BadFd => errno::EBADF,
+        FstatfsError::Fault(_) => errno::EFAULT,
     }
 }
 
@@ -682,6 +692,16 @@ pub fn dispatch(
         nr::PRCTL => match process_syscalls::prctl(&mut ctx.comm, mem, arg_i32(args[0]), args[1]) {
             Ok(v) => v,
             Err(e) => prctl_errno(&e),
+        },
+        // statfs(path, buf): write synthetic filesystem stats; bad buf is EFAULT.
+        nr::STATFS => match fs_syscalls::statfs(mem, args[1]) {
+            Ok(()) => 0,
+            Err(_) => errno::EFAULT,
+        },
+        // fstatfs(fd, buf): validate the fd, then write synthetic stats.
+        nr::FSTATFS => match fs_syscalls::fstatfs(&ctx.fds, mem, arg_i32(args[0]), args[1]) {
+            Ok(()) => 0,
+            Err(e) => fstatfs_errno(&e),
         },
         // getuid / geteuid / getgid / getegid: the host (Windows) has no POSIX
         // uid, so the guest is presented as a single unprivileged user. Real
@@ -1486,6 +1506,35 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_PRCTL, [1, 0, 0, 0, 0, 0]),
             -22
+        );
+    }
+
+    #[test]
+    fn statfs_syscalls_route() {
+        use prisma_runtime::guest_structs::Statfs;
+        const SYS_STATFS: u64 = 137;
+        const SYS_FSTATFS: u64 = 138;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; Statfs::SIZE];
+        let mut mem = region(&mut buf);
+        // statfs(path, buf) -> 0; f_bsize (word 1) reads back as 4096.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_STATFS, [0x2000, 0x1000, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            &mem.read(0x1000, Statfs::SIZE).unwrap()[8..16],
+            &4096u64.to_le_bytes()
+        );
+        // fstatfs(1, buf) on the open stdout -> 0.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSTATFS, [1, 0x1000, 0, 0, 0, 0]),
+            0
+        );
+        // fstatfs on an unopened fd -> -EBADF (-9).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSTATFS, [99, 0x1000, 0, 0, 0, 0]),
+            -9
         );
     }
 
