@@ -413,9 +413,49 @@ impl Stat {
     }
 }
 
+/// `struct pollfd { int fd; short events; short revents; }` — the per-fd request
+/// element `poll` / `ppoll` read (`fd`, `events`) and write back (`revents`).
+///
+/// 8 bytes on x86-64 Linux: a 32-bit fd then two 16-bit event masks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PollFd {
+    /// File descriptor to poll (a negative fd is ignored by the kernel).
+    pub fd: i32,
+    /// Requested events (`POLLIN`/`POLLOUT`/… bitmask).
+    pub events: i16,
+    /// Returned events the kernel fills in.
+    pub revents: i16,
+}
+
+impl PollFd {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 8;
+
+    /// Decode one `pollfd` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            fd: i32::from_le_bytes(raw[0..4].try_into().ok()?),
+            events: i16::from_le_bytes(raw[4..6].try_into().ok()?),
+            revents: i16::from_le_bytes(raw[6..8].try_into().ok()?),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..4].copy_from_slice(&self.fd.to_le_bytes());
+        out[4..6].copy_from_slice(&self.events.to_le_bytes());
+        out[6..8].copy_from_slice(&self.revents.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval, Winsize};
+    use super::{Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval, Winsize};
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -600,5 +640,30 @@ mod tests {
         assert_eq!(Stat::from_guest_bytes(&bytes), Some(st));
         // A buffer one byte short is rejected, not overrun.
         assert!(Stat::from_guest_bytes(&[0u8; 143]).is_none());
+    }
+
+    #[test]
+    fn pollfd_round_trips_through_fd_and_event_masks() {
+        // POLLIN = 0x1, POLLOUT = 0x4.
+        let p = PollFd {
+            fd: 7,
+            events: 0x1 | 0x4,
+            revents: 0,
+        };
+        let bytes = p.to_guest_bytes();
+        assert_eq!(bytes.len(), PollFd::SIZE);
+        // fd [0..4], events [4..6], revents [6..8], little-endian.
+        assert_eq!(&bytes[0..4], &7i32.to_le_bytes());
+        assert_eq!(&bytes[4..6], &5i16.to_le_bytes());
+        assert_eq!(PollFd::from_guest_bytes(&bytes), Some(p));
+        // A negative fd (ignored by poll) round-trips faithfully.
+        let neg = PollFd {
+            fd: -1,
+            events: 0,
+            revents: 0,
+        };
+        assert_eq!(PollFd::from_guest_bytes(&neg.to_guest_bytes()), Some(neg));
+        // A buffer one byte short is rejected.
+        assert!(PollFd::from_guest_bytes(&[0u8; 7]).is_none());
     }
 }
