@@ -52,9 +52,138 @@ impl GuestSignalQueue {
     }
 }
 
+/// SIGKILL — never blockable.
+const SIGKILL: u32 = 9;
+/// SIGSTOP — never blockable.
+const SIGSTOP: u32 = 19;
+
+/// A guest signal mask — the kernel `sigset_t`.
+///
+/// On x86-64 Linux this is a single 64-bit word with one bit per signal (`sig`
+/// occupies bit `sig - 1`, for `sig` in `1..=64`). Used by `rt_sigprocmask` /
+/// `rt_sigaction` to track which signals are blocked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Sigset(u64);
+
+/// How an `rt_sigprocmask` call combines its argument with the current mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigprocmaskHow {
+    /// `SIG_BLOCK` (0): add the argument's signals to the blocked set.
+    Block,
+    /// `SIG_UNBLOCK` (1): remove the argument's signals from the blocked set.
+    Unblock,
+    /// `SIG_SETMASK` (2): replace the blocked set with the argument.
+    SetMask,
+}
+
+impl SigprocmaskHow {
+    /// Decode the raw `how` argument, or `None` (guest `EINVAL`) if unknown.
+    #[must_use]
+    pub const fn from_raw(how: i32) -> Option<Self> {
+        match how {
+            0 => Some(Self::Block),
+            1 => Some(Self::Unblock),
+            2 => Some(Self::SetMask),
+            _ => None,
+        }
+    }
+}
+
+impl Sigset {
+    /// On-wire size of the kernel `sigset_t` in guest memory.
+    pub const SIZE: usize = 8;
+
+    /// The empty mask (nothing blocked).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Construct from a raw 64-bit bitmask.
+    #[must_use]
+    pub const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    /// The raw 64-bit bitmask.
+    #[must_use]
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+
+    /// The bit for `sig`, or `None` if `sig` is outside `1..=64`.
+    const fn bit(sig: u32) -> Option<u64> {
+        if matches!(sig, 1..=64) {
+            Some(1u64 << (sig - 1))
+        } else {
+            None
+        }
+    }
+
+    /// Whether `sig` is in the set.
+    #[must_use]
+    pub const fn contains(self, sig: u32) -> bool {
+        match Self::bit(sig) {
+            Some(b) => self.0 & b != 0,
+            None => false,
+        }
+    }
+
+    /// Add `sig`; returns `false` (no-op) if `sig` is out of range.
+    pub fn insert(&mut self, sig: u32) -> bool {
+        match Self::bit(sig) {
+            Some(b) => {
+                self.0 |= b;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove `sig`; returns `false` (no-op) if `sig` is out of range.
+    pub fn remove(&mut self, sig: u32) -> bool {
+        match Self::bit(sig) {
+            Some(b) => {
+                self.0 &= !b;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Decode a `sigset_t` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self(u64::from_le_bytes(raw.try_into().ok()?)))
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        self.0.to_le_bytes()
+    }
+
+    /// Apply an `rt_sigprocmask` operation against `arg`. SIGKILL and SIGSTOP
+    /// can never be blocked, so they are masked out of the resulting blocked
+    /// set regardless of the request (kernel behaviour — the call succeeds but
+    /// the two signals stay deliverable).
+    pub fn apply(&mut self, how: SigprocmaskHow, arg: Self) {
+        match how {
+            SigprocmaskHow::Block => self.0 |= arg.0,
+            SigprocmaskHow::Unblock => self.0 &= !arg.0,
+            SigprocmaskHow::SetMask => self.0 = arg.0,
+        }
+        // SIGKILL / SIGSTOP are never blockable.
+        if let (Some(k), Some(s)) = (Self::bit(SIGKILL), Self::bit(SIGSTOP)) {
+            self.0 &= !(k | s);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::GuestSignalQueue;
+    use super::{GuestSignalQueue, SigprocmaskHow, Sigset};
 
     #[test]
     fn queue_roundtrip() {
@@ -67,5 +196,72 @@ mod tests {
         assert_eq!(q.pop(), Some(12));
         assert!(q.is_empty());
         assert_eq!(q.drain(), 0);
+    }
+
+    #[test]
+    fn sigset_membership_and_bounds() {
+        let mut s = Sigset::empty();
+        assert!(!s.contains(11));
+        assert!(s.insert(11)); // SIGSEGV
+        assert!(s.contains(11));
+        assert!(s.remove(11));
+        assert!(!s.contains(11));
+        // Out-of-range signals are rejected, not silently aliased.
+        assert!(!s.insert(0));
+        assert!(!s.insert(65));
+        assert!(!s.contains(0));
+    }
+
+    #[test]
+    fn sigset_round_trips_through_eight_le_bytes() {
+        let mut s = Sigset::empty();
+        s.insert(1); // bit 0
+        s.insert(64); // bit 63
+        let bytes = s.to_guest_bytes();
+        assert_eq!(bytes.len(), Sigset::SIZE);
+        assert_eq!(bytes[0] & 1, 1); // signal 1 -> bit 0 of byte 0
+        assert_eq!(bytes[7] & 0x80, 0x80); // signal 64 -> bit 7 of byte 7
+        assert_eq!(Sigset::from_guest_bytes(&bytes), Some(s));
+        assert!(Sigset::from_guest_bytes(&[0u8; 7]).is_none());
+    }
+
+    #[test]
+    fn sigprocmask_how_decodes_and_rejects_unknown() {
+        assert_eq!(SigprocmaskHow::from_raw(0), Some(SigprocmaskHow::Block));
+        assert_eq!(SigprocmaskHow::from_raw(1), Some(SigprocmaskHow::Unblock));
+        assert_eq!(SigprocmaskHow::from_raw(2), Some(SigprocmaskHow::SetMask));
+        assert_eq!(SigprocmaskHow::from_raw(3), None);
+    }
+
+    #[test]
+    fn sigprocmask_block_unblock_setmask() {
+        let mut mask = Sigset::empty();
+        let mut arg = Sigset::empty();
+        arg.insert(11);
+        arg.insert(12);
+        mask.apply(SigprocmaskHow::Block, arg);
+        assert!(mask.contains(11) && mask.contains(12));
+        let mut one = Sigset::empty();
+        one.insert(11);
+        mask.apply(SigprocmaskHow::Unblock, one);
+        assert!(!mask.contains(11) && mask.contains(12));
+        mask.apply(SigprocmaskHow::SetMask, Sigset::empty());
+        assert_eq!(mask, Sigset::empty());
+    }
+
+    #[test]
+    fn sigkill_and_sigstop_can_never_be_blocked() {
+        let mut mask = Sigset::empty();
+        let mut arg = Sigset::empty();
+        arg.insert(9); // SIGKILL
+        arg.insert(19); // SIGSTOP
+        arg.insert(15); // SIGTERM (blockable)
+        mask.apply(SigprocmaskHow::Block, arg);
+        assert!(!mask.contains(9), "SIGKILL must stay deliverable");
+        assert!(!mask.contains(19), "SIGSTOP must stay deliverable");
+        assert!(mask.contains(15));
+        // Even SetMask cannot install them.
+        mask.apply(SigprocmaskHow::SetMask, arg);
+        assert!(!mask.contains(9) && !mask.contains(19));
     }
 }
