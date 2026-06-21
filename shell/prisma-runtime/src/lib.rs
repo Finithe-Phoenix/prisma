@@ -41,6 +41,7 @@ pub mod signal_handler;
 pub mod smc_guard;
 pub mod syscall_handler;
 pub mod teb;
+pub mod windows_string;
 
 pub use dispatcher::Dispatcher;
 pub use host_features::HostFeatures;
