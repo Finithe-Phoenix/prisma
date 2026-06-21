@@ -61,9 +61,27 @@ pub fn getrusage(mem: &mut GuestRegion, who: i32, usage: u64) -> Result<(), Rusa
         .map_err(RusageError::Fault)
 }
 
+/// `getcpu(cpu, node, tcache)`: report the CPU and NUMA node the caller is
+/// running on. The session presents a single NUMA node, so it always reports
+/// CPU 0 / node 0; each out pointer is optional (skipped when null). The legacy
+/// `tcache` argument is unused on modern Linux and ignored here.
+///
+/// # Errors
+/// [`RangeError`] if a non-null `cpu`/`node` pointer is not writable guest
+/// memory (guest `EFAULT`).
+pub fn getcpu(mem: &mut GuestRegion, cpu: u64, node: u64) -> Result<(), RangeError> {
+    if cpu != 0 {
+        mem.write(cpu, &0u32.to_le_bytes())?;
+    }
+    if node != 0 {
+        mem.write(node, &0u32.to_le_bytes())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{getrusage, uname, RusageError, GUEST_UTSNAME};
+    use super::{getcpu, getrusage, uname, RusageError, GUEST_UTSNAME};
     use prisma_orchestrator::address_space::Protection;
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::guest_structs::{Rusage, Utsname};
@@ -120,5 +138,35 @@ mod tests {
             getrusage(&mut mem, 0, 0x1000),
             Err(RusageError::Fault(_))
         ));
+    }
+
+    #[test]
+    fn getcpu_reports_cpu_zero_node_zero() {
+        let mut buf = [0xffu8; 8];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // cpu at 0x1000, node at 0x1004.
+        getcpu(&mut mem, 0x1000, 0x1004).expect("write ok");
+        assert_eq!(mem.read(0x1000, 4).unwrap(), &0u32.to_le_bytes());
+        assert_eq!(mem.read(0x1004, 4).unwrap(), &0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn getcpu_skips_null_pointers() {
+        let mut buf = [0xffu8; 4];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // Both null: nothing written, still succeeds.
+        getcpu(&mut mem, 0, 0).expect("ok");
+        assert_eq!(mem.read(0x1000, 4).unwrap(), &[0xff; 4]);
+        // Only node requested: cpu pointer (null) is skipped.
+        getcpu(&mut mem, 0, 0x1000).expect("ok");
+        assert_eq!(mem.read(0x1000, 4).unwrap(), &0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn getcpu_faults_on_an_unwritable_pointer() {
+        let mut buf = [0u8; 4];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // 0x9000 is outside the mapped region.
+        assert!(getcpu(&mut mem, 0x9000, 0).is_err());
     }
 }
