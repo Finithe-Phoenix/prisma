@@ -312,5 +312,33 @@ theorem downgradeAccesses_idempotent (l : List Op) :
   apply List.map_congr_left
   intro op _
   cases op <;> rfl
+
+/-! ### F1-LN-016 capstone — the full adaptive rewrite
+
+  The complete TSO-adaptive rewrite is both halves: drop the fences the
+  classifier proved unnecessary, then relax the TSO accesses it proved
+  thread-local. -/
+
+/-- The full TSO-adaptive rewrite: eliminate provable fences, then downgrade
+    provable TSO accesses to plain. -/
+def adaptiveRewrite (l : List Op) : List Op := downgradeAccesses (elimFences l)
+
+/-- **Capstone.** The full adaptive rewrite preserves the projected model block
+    modulo bar removal: composing the downgrade bridge (`projBlock_downgrade`,
+    which leaves the projection untouched) with the fence-elim bridge
+    (`projBlock_elimFences`, which deletes exactly the bars), the result is the
+    original block with its bars gone — every load/store at its resolved
+    address/value preserved in order. So both halves together carry the M2/M3
+    observable-equivalence conclusion to the real rewrite. -/
+theorem projBlock_adaptiveRewrite (ρ : Ref → Addr) (σ : Ref → Val) (l : List Op) :
+    projBlock ρ σ (adaptiveRewrite l) = (projBlock ρ σ l).filter (fun m => ! isBar m) := by
+  rw [adaptiveRewrite, projBlock_downgrade, projBlock_elimFences]
+
+/-- The full rewrite is bar-free: after it, the projected block has no `bar`. -/
+theorem adaptiveRewrite_barFree (ρ : Ref → Addr) (σ : Ref → Val) (l : List Op) :
+    ∀ m ∈ projBlock ρ σ (adaptiveRewrite l), isBar m = false := by
+  intro m hm
+  rw [projBlock_adaptiveRewrite] at hm
+  simpa using (List.mem_filter.mp hm).2
 end TSO
 end PrismaIR
