@@ -7,7 +7,7 @@
 //! Pointers are checked through a [`GuestRegion`].
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::fd_table::{FdEntry, FdTable};
 use prisma_runtime::guest_structs::{Termios, Winsize};
 
@@ -78,7 +78,7 @@ fn default_termios() -> Termios {
 /// fd or an unmodelled request, [`IoctlError::Fault`] for a bad pointer.
 pub fn ioctl(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     request: u64,
     argp: u64,
