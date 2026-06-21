@@ -23,6 +23,26 @@ pub const CLOCK_REALTIME: u64 = 0;
 /// `CLOCK_MONOTONIC` clock id (Linux): steady time since a fixed reference.
 pub const CLOCK_MONOTONIC: u64 = 1;
 
+/// `CLOCK_PROCESS_CPUTIME_ID` (2): per-process CPU time. Not tracked, so it is
+/// approximated by the monotonic elapsed run time (exact for a CPU-bound
+/// single-threaded program).
+pub const CLOCK_PROCESS_CPUTIME_ID: u64 = 2;
+/// `CLOCK_THREAD_CPUTIME_ID` (3): per-thread CPU time; same approximation.
+pub const CLOCK_THREAD_CPUTIME_ID: u64 = 3;
+/// `CLOCK_MONOTONIC_RAW` (4): monotonic, NTP-unadjusted — same source here.
+pub const CLOCK_MONOTONIC_RAW: u64 = 4;
+/// `CLOCK_REALTIME_COARSE` (5): low-resolution wall clock.
+pub const CLOCK_REALTIME_COARSE: u64 = 5;
+/// `CLOCK_MONOTONIC_COARSE` (6): low-resolution monotonic clock.
+pub const CLOCK_MONOTONIC_COARSE: u64 = 6;
+/// `CLOCK_BOOTTIME` (7): monotonic including suspend — same as monotonic here
+/// (the emulator never suspends).
+pub const CLOCK_BOOTTIME: u64 = 7;
+
+/// The resolution (in nanoseconds) the two `*_COARSE` clocks report — the
+/// conventional 4 ms tick (`CONFIG_HZ=250`). The precise clocks report 1 ns.
+const COARSE_RES_NS: i64 = 4_000_000;
+
 /// Why a time syscall failed (each maps to a guest errno).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeError {
@@ -49,8 +69,14 @@ pub fn clock_gettime(
     monotonic_start: Instant,
 ) -> Result<(), TimeError> {
     let ts = match clk_id {
-        CLOCK_REALTIME => realtime_timespec(),
-        CLOCK_MONOTONIC => monotonic_timespec(monotonic_start),
+        CLOCK_REALTIME | CLOCK_REALTIME_COARSE => realtime_timespec(),
+        CLOCK_MONOTONIC
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_MONOTONIC_COARSE
+        | CLOCK_BOOTTIME
+        // CPU-time clocks are not tracked; approximate by elapsed run time.
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID => monotonic_timespec(monotonic_start),
         other => return Err(TimeError::UnknownClock(other)),
     };
     mem.write(tp, &ts.to_guest_bytes())
@@ -97,8 +123,10 @@ pub fn clock_nanosleep_request(
     clk_id: u64,
     req: u64,
 ) -> Result<Duration, TimeError> {
+    // Only the sleepable clocks are valid for clock_nanosleep; the COARSE / RAW
+    // and CPU-time clocks are EINVAL here, as in the kernel.
     match clk_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC => {}
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME => {}
         other => return Err(TimeError::UnknownClock(other)),
     }
     nanosleep_request(mem, req)
@@ -113,14 +141,20 @@ pub fn clock_nanosleep_request(
 /// [`TimeError::UnknownClock`] for an unmodelled clock, [`TimeError::Fault`] if
 /// `res` is non-null and not writable guest memory.
 pub fn clock_getres(mem: &mut GuestRegion, clk_id: u64, res: u64) -> Result<(), TimeError> {
-    match clk_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC => {}
+    let nsec = match clk_id {
+        CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => COARSE_RES_NS,
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_BOOTTIME
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID => 1,
         other => return Err(TimeError::UnknownClock(other)),
-    }
+    };
     if res == 0 {
         return Ok(()); // null res: the clock id is validated, nothing to write
     }
-    let resolution = Timespec { sec: 0, nsec: 1 };
+    let resolution = Timespec { sec: 0, nsec };
     mem.write(res, &resolution.to_guest_bytes())
         .map_err(TimeError::Fault)
 }
@@ -217,8 +251,9 @@ pub fn getitimer(
 #[cfg(test)]
 mod tests {
     use super::{
-        clock_gettime, getitimer, gettimeofday, setitimer, times, TimeError, CLOCK_MONOTONIC,
-        CLOCK_REALTIME,
+        clock_getres, clock_gettime, clock_nanosleep_request, getitimer, gettimeofday, setitimer,
+        times, TimeError, CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
+        CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE,
     };
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
@@ -486,6 +521,63 @@ mod tests {
         assert_eq!(
             times(&mut mem, 0x1018, start),
             Err(TimeError::Fault(RangeError::Unmapped))
+        );
+    }
+
+    #[test]
+    fn clock_gettime_accepts_the_extended_clock_ids() {
+        let start = Instant::now();
+        // COARSE / BOOTTIME / CPUTIME all sample successfully (no UnknownClock).
+        for clk in [
+            CLOCK_REALTIME_COARSE,
+            CLOCK_MONOTONIC_COARSE,
+            CLOCK_BOOTTIME,
+            CLOCK_PROCESS_CPUTIME_ID,
+        ] {
+            let mut buf = [0u8; 16];
+            let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+            clock_gettime(&mut mem, clk, 0x1000, start).expect("sampled");
+            let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
+            assert!(ts.sec >= 0 && (0..1_000_000_000).contains(&ts.nsec));
+        }
+        // An id past the modelled set is still rejected.
+        let mut buf = [0u8; 16];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        assert_eq!(
+            clock_gettime(&mut mem, 99, 0x1000, start),
+            Err(TimeError::UnknownClock(99))
+        );
+    }
+
+    #[test]
+    fn clock_getres_reports_coarse_resolution_for_coarse_clocks() {
+        let mut buf = [0u8; 16];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // A COARSE clock reports the 4 ms tick.
+        clock_getres(&mut mem, CLOCK_MONOTONIC_COARSE, 0x1000).expect("ok");
+        let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
+        assert_eq!((ts.sec, ts.nsec), (0, 4_000_000));
+        // A precise clock reports 1 ns.
+        clock_getres(&mut mem, CLOCK_REALTIME, 0x1000).expect("ok");
+        let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
+        assert_eq!((ts.sec, ts.nsec), (0, 1));
+    }
+
+    #[test]
+    fn clock_nanosleep_accepts_boottime_but_not_coarse() {
+        let mut buf = [0u8; 16];
+        let mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // a {0,0} request on BOOTTIME parses to an instant sleep.
+        assert_eq!(
+            clock_nanosleep_request(&mem, CLOCK_BOOTTIME, 0x1000)
+                .unwrap()
+                .as_nanos(),
+            0
+        );
+        // a COARSE clock is not valid for clock_nanosleep.
+        assert_eq!(
+            clock_nanosleep_request(&mem, CLOCK_MONOTONIC_COARSE, 0x1000),
+            Err(TimeError::UnknownClock(CLOCK_MONOTONIC_COARSE))
         );
     }
 }
