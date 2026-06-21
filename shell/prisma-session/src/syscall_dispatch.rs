@@ -38,6 +38,7 @@ mod nr {
     pub const GETEUID: u64 = 107;
     pub const GETEGID: u64 = 108;
     pub const GETPGRP: u64 = 111;
+    pub const GETPGID: u64 = 121;
     pub const GETSID: u64 = 124;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const RT_SIGPENDING: u64 = 127;
@@ -276,10 +277,11 @@ pub fn dispatch(
         // getpgrp: the calling process's group id. Our lone guest is its own
         // process-group leader, so its pgid is its pid.
         nr::GETPGRP => i64::from(std::process::id()),
-        // getsid(pid): the session id of `pid` (0 = the caller). The lone guest
-        // is its own session leader, so its sid is its pid; any other pid does
-        // not exist in our single-process model -> ESRCH.
-        nr::GETSID => {
+        // getsid(pid) / getpgid(pid): the session / process-group id of `pid`
+        // (0 = the caller). The lone guest leads both its session and its group,
+        // so each equals its pid; any other pid does not exist in our
+        // single-process model -> ESRCH.
+        nr::GETSID | nr::GETPGID => {
             let me = std::process::id();
             let want = arg_i32(args[0]);
             if want == 0 || (want > 0 && want as u32 == me) {
@@ -536,6 +538,39 @@ mod tests {
         let other = u64::from(pid).wrapping_add(1);
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETSID, [other, 0, 0, 0, 0, 0]),
+            -3
+        );
+    }
+
+    #[test]
+    fn getpgid_mirrors_getsid_for_self_and_others() {
+        const SYS_GETPGID: u64 = 121;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        let pid = std::process::id();
+        // getpgid(0) and getpgid(self) -> own group id (== pid, the leader).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETPGID, [0, 0, 0, 0, 0, 0]),
+            i64::from(pid)
+        );
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_GETPGID,
+                [u64::from(pid), 0, 0, 0, 0, 0]
+            ),
+            i64::from(pid)
+        );
+        // Any other pid -> -ESRCH (-3): no such process here.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_GETPGID,
+                [u64::from(pid).wrapping_add(1), 0, 0, 0, 0, 0]
+            ),
             -3
         );
     }
