@@ -453,9 +453,48 @@ impl PollFd {
     }
 }
 
+/// `struct epoll_event { uint32_t events; epoll_data_t data; }` — the event
+/// descriptor `epoll_ctl` registers and `epoll_wait` returns.
+///
+/// On x86-64 Linux the struct is `__packed`, so it is 12 bytes (a 32-bit event
+/// mask immediately followed by the 64-bit user data, no alignment padding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpollEvent {
+    /// Event mask (`EPOLLIN`/`EPOLLOUT`/… bits).
+    pub events: u32,
+    /// Opaque user data the kernel echoes back on `epoll_wait`.
+    pub data: u64,
+}
+
+impl EpollEvent {
+    /// On-wire size in guest memory (packed: 4-byte mask + 8-byte data).
+    pub const SIZE: usize = 12;
+
+    /// Decode one `epoll_event` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            events: u32::from_le_bytes(raw[0..4].try_into().ok()?),
+            data: u64::from_le_bytes(raw[4..12].try_into().ok()?),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..4].copy_from_slice(&self.events.to_le_bytes());
+        out[4..12].copy_from_slice(&self.data.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval, Winsize};
+    use super::{
+        EpollEvent, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval, Winsize,
+    };
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -665,5 +704,22 @@ mod tests {
         assert_eq!(PollFd::from_guest_bytes(&neg.to_guest_bytes()), Some(neg));
         // A buffer one byte short is rejected.
         assert!(PollFd::from_guest_bytes(&[0u8; 7]).is_none());
+    }
+
+    #[test]
+    fn epoll_event_round_trips_packed() {
+        // EPOLLIN = 0x1, EPOLLOUT = 0x4.
+        let e = EpollEvent {
+            events: 0x1 | 0x4,
+            data: 0xDEAD_BEEF_0000_0001,
+        };
+        let bytes = e.to_guest_bytes();
+        assert_eq!(bytes.len(), EpollEvent::SIZE);
+        // events [0..4], data [4..12] — packed, the data is NOT 8-byte aligned.
+        assert_eq!(&bytes[0..4], &5u32.to_le_bytes());
+        assert_eq!(&bytes[4..12], &0xDEAD_BEEF_0000_0001u64.to_le_bytes());
+        assert_eq!(EpollEvent::from_guest_bytes(&bytes), Some(e));
+        // A buffer one byte short is rejected, not overrun.
+        assert!(EpollEvent::from_guest_bytes(&[0u8; 11]).is_none());
     }
 }
