@@ -33,6 +33,7 @@ mod nr {
     pub const CLOSE: u64 = 3;
     pub const FSTAT: u64 = 5;
     pub const POLL: u64 = 7;
+    pub const PPOLL: u64 = 271;
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
@@ -297,6 +298,12 @@ pub fn dispatch(
         // poll(fds, nfds, timeout): readiness is immediate in this model, so the
         // timeout (args[2]) is unused and the call never blocks.
         nr::POLL => match io_syscalls::poll(&ctx.fds, mem, args[0], arg_u32(args[1])) {
+            Ok(n) => n as i64,
+            Err(e) => io_errno(&e),
+        },
+        // ppoll(fds, nfds, tmo, sigmask, sigsetsize): the tmo timespec (args[2])
+        // is range-checked but unused; sigmask/sigsetsize are ignored.
+        nr::PPOLL => match io_syscalls::ppoll(&ctx.fds, mem, args[0], arg_u32(args[1]), args[2]) {
             Ok(n) => n as i64,
             Err(e) => io_errno(&e),
         },
@@ -1343,6 +1350,36 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_POLL, [0x1000, 0, 0, 0, 0, 0]),
             0
+        );
+    }
+
+    #[test]
+    fn ppoll_routes_and_honours_the_timeout_pointer() {
+        use prisma_runtime::guest_structs::{PollFd, Timespec};
+        const SYS_PPOLL: u64 = 271;
+        const POLLOUT: i16 = 0x4;
+        let mut ctx = SyscallContext::new();
+        // A pollfd for stdout at 0x1000; a {0,0} timeout at 0x1010.
+        let mut buf = [0u8; 64];
+        buf[0..8].copy_from_slice(
+            &PollFd {
+                fd: 1,
+                events: POLLOUT,
+                revents: 0,
+            }
+            .to_guest_bytes(),
+        );
+        buf[16..32].copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // ppoll(0x1000, 1, tmo=0x1010, sigmask=0, sigsetsize=0) -> 1 ready.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PPOLL, [0x1000, 1, 0x1010, 0, 0, 0]),
+            1
+        );
+        // A bad timeout pointer is -EFAULT (the timespec is range-checked).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PPOLL, [0x1000, 1, 0x103A, 0, 0, 0]),
+            -14
         );
     }
 
