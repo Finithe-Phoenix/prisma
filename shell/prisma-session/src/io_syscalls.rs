@@ -14,6 +14,8 @@ use prisma_runtime::fd_table::{FdEntry, FdTable};
 use prisma_runtime::guest_structs::{Flock, Iovec, PollFd, Stat, Timespec};
 
 /// `fcntl` commands we model.
+const F_DUPFD: i32 = 0;
+const F_DUPFD_CLOEXEC: i32 = 1030;
 const F_GETFD: i32 = 1;
 const F_SETFD: i32 = 2;
 const F_GETFL: i32 = 3;
@@ -238,7 +240,7 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
 /// command, [`IoError::Fault`] if a lock command's `arg` pointer is not
 /// accessible guest memory.
 pub fn fcntl(
-    fds: &FdTable,
+    fds: &mut FdTable,
     mem: &mut GuestRegion,
     fd: i32,
     cmd: i32,
@@ -248,6 +250,18 @@ pub fn fcntl(
         return Err(IoError::BadFd);
     }
     match cmd {
+        // F_DUPFD / F_DUPFD_CLOEXEC: duplicate fd onto the lowest free fd >= arg
+        // (close-on-exec is not modelled, so the CLOEXEC variant is the same).
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            let min_fd = arg as i32;
+            if min_fd < 0 {
+                return Err(IoError::Invalid);
+            }
+            fds.dup_from(fd, min_fd)
+                .map(i64::from)
+                .ok_or(IoError::BadFd)
+        }
         F_GETFD => Ok(0),
         F_SETFD | F_SETFL => Ok(0),
         F_GETFL => Ok(O_RDWR),
@@ -1329,19 +1343,29 @@ mod tests {
         const F_GETFL: i32 = 3;
         const F_GETLK: i32 = 5;
         const F_SETLK: i32 = 6;
+        const F_DUPFD: i32 = 0;
         const F_WRLCK: i16 = 1;
         const F_UNLCK: i16 = 2;
-        let fds = FdTable::new();
+        let mut fds = FdTable::new();
         let mut buf = [0u8; 64];
         let mut mem = region(&mut buf);
 
         // Flag commands on stdout (fd 1).
-        assert_eq!(fcntl(&fds, &mut mem, 1, F_GETFD, 0).unwrap(), 0); // no CLOEXEC
-        assert_eq!(fcntl(&fds, &mut mem, 1, F_SETFD, 1).unwrap(), 0); // accepted
-        assert_eq!(fcntl(&fds, &mut mem, 1, F_GETFL, 0).unwrap(), 2); // O_RDWR
+        assert_eq!(fcntl(&mut fds, &mut mem, 1, F_GETFD, 0).unwrap(), 0); // no CLOEXEC
+        assert_eq!(fcntl(&mut fds, &mut mem, 1, F_SETFD, 1).unwrap(), 0); // accepted
+        assert_eq!(fcntl(&mut fds, &mut mem, 1, F_GETFL, 0).unwrap(), 2); // O_RDWR
+
+        // F_DUPFD(1, 10) duplicates stdout onto the lowest free fd >= 10.
+        assert_eq!(fcntl(&mut fds, &mut mem, 1, F_DUPFD, 10).unwrap(), 10);
+        assert!(fds.is_open(10));
+        // A negative floor is -EINVAL.
+        assert!(matches!(
+            fcntl(&mut fds, &mut mem, 1, F_DUPFD, u64::MAX),
+            Err(IoError::Invalid)
+        ));
 
         // F_SETLK always succeeds for the single-process guest.
-        assert_eq!(fcntl(&fds, &mut mem, 1, F_SETLK, 0x1000).unwrap(), 0);
+        assert_eq!(fcntl(&mut fds, &mut mem, 1, F_SETLK, 0x1000).unwrap(), 0);
 
         // F_GETLK reports F_UNLCK regardless of the requested lock type.
         let req = Flock {
@@ -1353,17 +1377,17 @@ mod tests {
         };
         buf[0..32].copy_from_slice(&req.to_guest_bytes());
         let mut mem = region(&mut buf);
-        assert_eq!(fcntl(&fds, &mut mem, 1, F_GETLK, 0x1000).unwrap(), 0);
+        assert_eq!(fcntl(&mut fds, &mut mem, 1, F_GETLK, 0x1000).unwrap(), 0);
         let got = Flock::from_guest_bytes(mem.read(0x1000, Flock::SIZE).unwrap()).unwrap();
         assert_eq!(got.typ, F_UNLCK);
 
         // An unopen fd is EBADF; an unknown command is EINVAL.
         assert!(matches!(
-            fcntl(&fds, &mut mem, 9, F_GETFD, 0),
+            fcntl(&mut fds, &mut mem, 9, F_GETFD, 0),
             Err(IoError::BadFd)
         ));
         assert!(matches!(
-            fcntl(&fds, &mut mem, 1, 999, 0),
+            fcntl(&mut fds, &mut mem, 1, 999, 0),
             Err(IoError::Invalid)
         ));
     }
