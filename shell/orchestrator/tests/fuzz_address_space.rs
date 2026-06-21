@@ -140,3 +140,62 @@ proptest! {
         prop_assert!(space.is_empty());
     }
 }
+
+proptest! {
+    /// The allocator's load-bearing invariant: when `mmap_anon` succeeds it
+    /// places the new region in genuinely free space — every region stays
+    /// pairwise non-overlapping and the returned base is mapped + writable end
+    /// to end. (Bounded inputs so a free gap actually exists.)
+    #[test]
+    fn mmap_anon_never_aliases(
+        maps in prop::collection::vec((0u64..0x1_0000, 1u64..0x1000), 0..16),
+        len in 1u64..0x1000,
+        min_addr in 0u64..0x1_0000,
+    ) {
+        let mut space = build(&maps);
+        if let Ok(base) = space.mmap_anon(len, min_addr, Protection::ReadWrite) {
+            prop_assert!(base >= min_addr);
+            space.validate_range(base, len, true).expect("mmap_anon region usable");
+            let regions = space.regions();
+            for (i, a) in regions.iter().enumerate() {
+                for b in &regions[i + 1..] {
+                    prop_assert!(a.end() <= b.base || b.end() <= a.base);
+                }
+            }
+        }
+    }
+
+    /// When `find_free_range` returns a base, `[base, base+len)` overlaps no
+    /// existing region — the reported placement is genuinely free.
+    #[test]
+    fn find_free_range_result_is_free(
+        maps in prop::collection::vec((0u64..0x1_0000, 1u64..0x1000), 0..16),
+        len in 1u64..0x1000,
+        min_addr in 0u64..0x1_0000,
+    ) {
+        let space = build(&maps);
+        if let Some(base) = space.find_free_range(len, min_addr) {
+            prop_assert!(base >= min_addr);
+            let end = base.checked_add(len).expect("bounded inputs do not overflow");
+            for r in space.regions() {
+                prop_assert!(end <= r.base || r.end() <= base);
+            }
+        }
+    }
+
+    /// `mprotect` changes only a region's protection, never the set of regions
+    /// or their bounds.
+    #[test]
+    fn mprotect_preserves_layout(
+        maps in prop::collection::vec((0u64..0x1_0000, 1u64..0x1000), 0..16),
+    ) {
+        let mut space = build(&maps);
+        let before: Vec<(u64, u64)> = space.regions().iter().map(|r| (r.base, r.size)).collect();
+        let bases: Vec<u64> = before.iter().map(|&(b, _)| b).collect();
+        for base in bases {
+            prop_assert!(space.mprotect(base, Protection::ReadWriteExecute).is_ok());
+        }
+        let after: Vec<(u64, u64)> = space.regions().iter().map(|r| (r.base, r.size)).collect();
+        prop_assert_eq!(before, after);
+    }
+}
