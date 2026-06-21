@@ -16,8 +16,9 @@ use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_signal::SignalState;
 use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 
-use crate::info_syscalls;
+use crate::info_syscalls::{self, RusageError};
 use crate::io_syscalls::{self, GetcwdError, IoError};
+use crate::resource_syscalls::{self, RlimitError};
 use crate::sig_syscalls::{self, SigError};
 use crate::time_syscalls::{self, TimeError};
 
@@ -46,6 +47,10 @@ mod nr {
     pub const DUP3: u64 = 292;
     pub const FCNTL: u64 = 72;
     pub const GETCWD: u64 = 79;
+    pub const GETRLIMIT: u64 = 97;
+    pub const GETRUSAGE: u64 = 98;
+    pub const SETRLIMIT: u64 = 160;
+    pub const PRLIMIT64: u64 = 302;
     pub const NANOSLEEP: u64 = 35;
     pub const SCHED_YIELD: u64 = 24;
     pub const FSYNC: u64 = 74;
@@ -219,6 +224,20 @@ const fn sig_errno(e: SigError) -> i64 {
     match e {
         SigError::BadHow(_) | SigError::BadSignal(_) => errno::EINVAL,
         SigError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn rusage_errno(e: &RusageError) -> i64 {
+    match e {
+        RusageError::InvalidWho => errno::EINVAL,
+        RusageError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn rlimit_errno(e: &RlimitError) -> i64 {
+    match e {
+        RlimitError::InvalidResource => errno::EINVAL,
+        RlimitError::Fault(_) => errno::EFAULT,
     }
 }
 
@@ -400,6 +419,30 @@ pub fn dispatch(
             Err(GetcwdError::Range) => errno::ERANGE,
             Err(GetcwdError::Fault(_)) => errno::EFAULT,
         },
+        // getrusage(who, usage): report the (all-zero) resource counters.
+        nr::GETRUSAGE => match info_syscalls::getrusage(mem, arg_i32(args[0]), args[1]) {
+            Ok(()) => 0,
+            Err(e) => rusage_errno(&e),
+        },
+        // getrlimit(resource, rlim): write the session's fixed limit.
+        nr::GETRLIMIT => match resource_syscalls::getrlimit(mem, arg_u32(args[0]), args[1]) {
+            Ok(()) => 0,
+            Err(e) => rlimit_errno(&e),
+        },
+        // setrlimit(resource, rlim): the limits are fixed, so the new value is
+        // accepted (and range-checked) but not stored — prlimit64 with no old.
+        nr::SETRLIMIT => match resource_syscalls::prlimit64(mem, arg_u32(args[0]), args[1], 0) {
+            Ok(()) => 0,
+            Err(e) => rlimit_errno(&e),
+        },
+        // prlimit64(pid, resource, new, old): report old, accept-without-storing
+        // new. pid is ignored (single-process model).
+        nr::PRLIMIT64 => {
+            match resource_syscalls::prlimit64(mem, arg_u32(args[1]), args[2], args[3]) {
+                Ok(()) => 0,
+                Err(e) => rlimit_errno(&e),
+            }
+        }
         // times(buf): write the process tms (zeroed CPU fields) and return the
         // elapsed wall-clock ticks since the session started.
         nr::TIMES => match time_syscalls::times(mem, args[0], ctx.monotonic_start) {
@@ -1013,6 +1056,70 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETCWD, [0x1000, 1, 0, 0, 0, 0]),
             -34
+        );
+    }
+
+    #[test]
+    fn getrusage_routes_and_writes_zeroed_counters() {
+        use prisma_runtime::guest_structs::Rusage;
+        const SYS_GETRUSAGE: u64 = 98;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0xffu8; Rusage::SIZE];
+        let mut mem = region(&mut buf);
+        // getrusage(RUSAGE_SELF=0, 0x1000) -> 0; the struct is zeroed.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETRUSAGE, [0, 0x1000, 0, 0, 0, 0]),
+            0
+        );
+        assert!(mem
+            .read(0x1000, Rusage::SIZE)
+            .unwrap()
+            .iter()
+            .all(|&b| b == 0));
+        // An unknown who -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETRUSAGE, [5, 0x1000, 0, 0, 0, 0]),
+            -22
+        );
+    }
+
+    #[test]
+    fn rlimit_syscalls_route_and_report_fixed_limits() {
+        use prisma_runtime::guest_structs::Rlimit;
+        const SYS_GETRLIMIT: u64 = 97;
+        const SYS_PRLIMIT64: u64 = 302;
+        const RLIMIT_NOFILE: u64 = 7;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 2 * Rlimit::SIZE];
+        let mut mem = region(&mut buf);
+        // getrlimit(RLIMIT_NOFILE, 0x1000) -> 0; soft 1024 lands at the front.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_GETRLIMIT,
+                [RLIMIT_NOFILE, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let r = Rlimit::from_guest_bytes(mem.read(0x1000, Rlimit::SIZE).unwrap()).unwrap();
+        assert_eq!((r.cur, r.max), (1024, 4096));
+        // prlimit64(pid, RLIMIT_NOFILE, new=0, old=0x1010) -> 0; old written.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_PRLIMIT64,
+                [0, RLIMIT_NOFILE, 0, 0x1010, 0, 0]
+            ),
+            0
+        );
+        let o = Rlimit::from_guest_bytes(mem.read(0x1010, Rlimit::SIZE).unwrap()).unwrap();
+        assert_eq!((o.cur, o.max), (1024, 4096));
+        // An out-of-range resource -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETRLIMIT, [16, 0x1000, 0, 0, 0, 0]),
+            -22
         );
     }
 
