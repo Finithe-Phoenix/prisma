@@ -27,6 +27,8 @@ mod nr {
     pub const WRITEV: u64 = 20;
     pub const PREAD64: u64 = 17;
     pub const PWRITE64: u64 = 18;
+    pub const PREADV: u64 = 295;
+    pub const PWRITEV: u64 = 296;
     pub const CLOSE: u64 = 3;
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
@@ -237,6 +239,34 @@ pub fn dispatch(
                 arg_i32(args[0]),
                 args[1],
                 arg_usize(args[2]),
+                args[3],
+            ) {
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        // preadv/pwritev(fd, iov, iovcnt, offset): vectored positional I/O. On
+        // x86-64 the full offset is in args[3] (the pos_h split is unused).
+        nr::PREADV => {
+            match io_syscalls::preadv(
+                &ctx.fds,
+                mem,
+                arg_i32(args[0]),
+                args[1],
+                arg_i32(args[2]),
+                args[3],
+            ) {
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        nr::PWRITEV => {
+            match io_syscalls::pwritev(
+                &ctx.fds,
+                mem,
+                arg_i32(args[0]),
+                args[1],
+                arg_i32(args[2]),
                 args[3],
             ) {
                 Ok(n) => n as i64,
@@ -1086,6 +1116,76 @@ mod tests {
             dispatch(&mut ctx, &mut mem, SYS_FTRUNCATE, [1, 0, 0, 0, 0, 0]),
             -22
         );
+
+        ctx.fds = prisma_runtime::fd_table::FdTable::new();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn preadv_and_pwritev_route_with_their_offset() {
+        use prisma_runtime::fd_table::FdEntry;
+        use prisma_runtime::guest_structs::Iovec;
+        const SYS_PREADV: u64 = 295;
+        const SYS_PWRITEV: u64 = 296;
+        let path = std::env::temp_dir().join(format!("prisma_disp_pv_{}.tmp", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("temp file");
+        let mut ctx = SyscallContext::new();
+        let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
+
+        let mut buf = [0u8; 128];
+        buf[0..3].copy_from_slice(b"foo");
+        buf[16..19].copy_from_slice(b"bar");
+        for (at, iov) in [
+            (
+                0x20,
+                Iovec {
+                    base: 0x1000,
+                    len: 3,
+                },
+            ),
+            (
+                0x30,
+                Iovec {
+                    base: 0x1010,
+                    len: 3,
+                },
+            ),
+            (
+                0x60,
+                Iovec {
+                    base: 0x1040,
+                    len: 3,
+                },
+            ),
+            (
+                0x70,
+                Iovec {
+                    base: 0x1050,
+                    len: 3,
+                },
+            ),
+        ] {
+            buf[at..at + 16].copy_from_slice(&iov.to_guest_bytes());
+        }
+        let mut mem = region(&mut buf);
+        // pwritev at offset 8 gathers "foobar" -> 6.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PWRITEV, [fd, 0x1020, 2, 8, 0, 0]),
+            6
+        );
+        // preadv at offset 8 scatters it back into dst1/dst2.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_PREADV, [fd, 0x1060, 2, 8, 0, 0]),
+            6
+        );
+        assert_eq!(mem.read(0x1040, 3).unwrap(), b"foo");
+        assert_eq!(mem.read(0x1050, 3).unwrap(), b"bar");
 
         ctx.fds = prisma_runtime::fd_table::FdTable::new();
         let _ = std::fs::remove_file(&path);
