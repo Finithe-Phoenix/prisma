@@ -25,7 +25,9 @@ use std::collections::HashSet;
 
 use prisma_cache::TranslationCache;
 use prisma_orchestrator::address_space::AddressSpaceError;
-use prisma_orchestrator::guest_layout::{layout_sections, GuestLayout};
+use prisma_orchestrator::guest_layout::{
+    backed_layout_sections, layout_sections, BackedGuestLayout, GuestLayout,
+};
 use prisma_orchestrator::load_pe::{load_pe_with_image, LoadError};
 use prisma_orchestrator::module_table::ModuleTable;
 use prisma_orchestrator::pe_loader::{MappedImage, PeImage};
@@ -79,6 +81,17 @@ impl Session {
     /// code pages not writable, data pages not executable.
     pub fn layout(&self, stack_base: u64) -> Result<GuestLayout, AddressSpaceError> {
         layout_sections(&self.pe_image, &self.image, stack_base)
+    }
+
+    /// Build the *byte-backed* guest address space — each section's content
+    /// copied into its own region (W^X) plus a zeroed stack — the memory a run
+    /// loop executes against and that `brk`/`mmap` can grow (RFC 0019). The
+    /// byte-backed counterpart of [`Session::layout`].
+    ///
+    /// # Errors
+    /// [`AddressSpaceError`] if a section base overflows or any mapping overlaps.
+    pub fn backed_layout(&self, stack_base: u64) -> Result<BackedGuestLayout, AddressSpaceError> {
+        backed_layout_sections(&self.pe_image, &self.image, stack_base)
     }
 
     /// Guest virtual address execution begins at.
@@ -327,5 +340,22 @@ mod tests {
         assert_eq!(text.name, ".text");
         let (stack, _) = gl.space.translate(gl.stack.top - 1).expect("stack mapped");
         assert_eq!(stack.name, "stack");
+    }
+
+    #[test]
+    fn backed_layout_gives_readable_code_and_a_writable_stack() {
+        let s = Session::load(
+            &pe_with_code(&[0x48, 0x89, 0xC8, 0xC3]),
+            &ModuleTable::new(),
+        )
+        .expect("load");
+        let mut bl = s.backed_layout(0x2_0000_0000).expect("backed layout");
+        // The entry's code bytes are actually present in the byte-backed space.
+        assert_eq!(
+            bl.space.read(s.entry_pc(), 4).unwrap(),
+            &[0x48, 0x89, 0xC8, 0xC3]
+        );
+        // The stack region (top is the RSP seed) is writable.
+        assert!(bl.space.write(bl.stack_top - 8, &[0u8; 8]).is_ok());
     }
 }
