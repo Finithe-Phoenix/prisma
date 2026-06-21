@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::guest_clock::{monotonic_timespec, realtime_timespec, realtime_timeval};
 use prisma_runtime::guest_structs::{ITimerval, Timespec, Tms};
 
@@ -63,7 +63,7 @@ pub enum TimeError {
 /// [`TimeError::UnknownClock`] for an unmodelled clock, [`TimeError::Fault`] if
 /// `tp` is not writable guest memory.
 pub fn clock_gettime(
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     clk_id: u64,
     tp: u64,
     monotonic_start: Instant,
@@ -88,7 +88,7 @@ pub fn clock_gettime(
 ///
 /// # Errors
 /// [`TimeError::Fault`] if `tv` is not writable guest memory.
-pub fn gettimeofday(mem: &mut GuestRegion, tv: u64) -> Result<(), TimeError> {
+pub fn gettimeofday(mem: &mut impl GuestMem, tv: u64) -> Result<(), TimeError> {
     mem.write(tv, &realtime_timeval().to_guest_bytes())
         .map_err(TimeError::Fault)
 }
@@ -102,7 +102,7 @@ pub fn gettimeofday(mem: &mut GuestRegion, tv: u64) -> Result<(), TimeError> {
 /// [`TimeError::Fault`] if `req` is not readable guest memory,
 /// [`TimeError::InvalidValue`] if the `timespec` is negative or out of range
 /// (the kernel's `EINVAL` for `nanosleep`).
-pub fn nanosleep_request(mem: &GuestRegion, req: u64) -> Result<Duration, TimeError> {
+pub fn nanosleep_request(mem: &impl GuestMem, req: u64) -> Result<Duration, TimeError> {
     let bytes = mem.read(req, Timespec::SIZE).map_err(TimeError::Fault)?;
     let ts = Timespec::from_guest_bytes(bytes).ok_or(TimeError::Fault(RangeError::Unmapped))?;
     ts.to_duration().ok_or(TimeError::InvalidValue)
@@ -119,7 +119,7 @@ pub fn nanosleep_request(mem: &GuestRegion, req: u64) -> Result<Duration, TimeEr
 /// `req` is unreadable, [`TimeError::InvalidValue`] for a negative/overflowing
 /// interval.
 pub fn clock_nanosleep_request(
-    mem: &GuestRegion,
+    mem: &impl GuestMem,
     clk_id: u64,
     req: u64,
 ) -> Result<Duration, TimeError> {
@@ -140,7 +140,7 @@ pub fn clock_nanosleep_request(
 /// # Errors
 /// [`TimeError::UnknownClock`] for an unmodelled clock, [`TimeError::Fault`] if
 /// `res` is non-null and not writable guest memory.
-pub fn clock_getres(mem: &mut GuestRegion, clk_id: u64, res: u64) -> Result<(), TimeError> {
+pub fn clock_getres(mem: &mut impl GuestMem, clk_id: u64, res: u64) -> Result<(), TimeError> {
     let nsec = match clk_id {
         CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => COARSE_RES_NS,
         CLOCK_REALTIME
@@ -165,7 +165,7 @@ pub fn clock_getres(mem: &mut GuestRegion, clk_id: u64, res: u64) -> Result<(), 
 ///
 /// # Errors
 /// [`TimeError::Fault`] if `tloc` is non-null and not writable guest memory.
-pub fn time(mem: &mut GuestRegion, tloc: u64) -> Result<i64, TimeError> {
+pub fn time(mem: &mut impl GuestMem, tloc: u64) -> Result<i64, TimeError> {
     let secs = realtime_timespec().sec;
     if tloc != 0 {
         mem.write(tloc, &secs.to_le_bytes())
@@ -188,7 +188,7 @@ pub fn time(mem: &mut GuestRegion, tloc: u64) -> Result<i64, TimeError> {
 /// # Errors
 /// [`TimeError::Fault`] if a non-null `new`/`old` is not accessible guest memory.
 pub fn setitimer(
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     new_ptr: u64,
     old_ptr: u64,
     current: ITimerval,
@@ -218,7 +218,11 @@ pub fn setitimer(
 ///
 /// # Errors
 /// [`TimeError::Fault`] if a non-null `buf` is not writable guest memory.
-pub fn times(mem: &mut GuestRegion, buf: u64, monotonic_start: Instant) -> Result<i64, TimeError> {
+pub fn times(
+    mem: &mut impl GuestMem,
+    buf: u64,
+    monotonic_start: Instant,
+) -> Result<i64, TimeError> {
     if buf != 0 {
         let tms = Tms {
             utime: 0,
@@ -240,7 +244,7 @@ pub fn times(mem: &mut GuestRegion, buf: u64, monotonic_start: Instant) -> Resul
 /// # Errors
 /// [`TimeError::Fault`] if `curr` is not writable guest memory.
 pub fn getitimer(
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     curr_ptr: u64,
     current: ITimerval,
 ) -> Result<(), TimeError> {
