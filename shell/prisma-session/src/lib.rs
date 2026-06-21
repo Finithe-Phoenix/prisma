@@ -9,6 +9,7 @@
 //! `CpuStateFrame` has no `RIP`); this crate is just the wiring + ownership.
 
 pub mod guest_io;
+pub mod info_syscalls;
 pub mod io_syscalls;
 pub mod sig_syscalls;
 pub mod syscall_dispatch;
