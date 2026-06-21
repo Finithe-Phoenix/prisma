@@ -182,9 +182,68 @@ impl Winsize {
     }
 }
 
+/// `struct termios` — the terminal attributes `ioctl(TCGETS/TCSETS)` and
+/// `tcgetattr`/`tcsetattr` read and write.
+///
+/// The x86-64 Linux layout is four 32-bit mode words, the 8-bit line
+/// discipline, and the 19-byte control-char array (`NCCS`), 36 bytes with no
+/// trailing padding. F2-SY-036.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Termios {
+    /// Input modes (`c_iflag`).
+    pub iflag: u32,
+    /// Output modes (`c_oflag`).
+    pub oflag: u32,
+    /// Control modes (`c_cflag`).
+    pub cflag: u32,
+    /// Local modes (`c_lflag`).
+    pub lflag: u32,
+    /// Line discipline (`c_line`).
+    pub line: u8,
+    /// Control characters (`c_cc[NCCS]`).
+    pub cc: [u8; Self::NCCS],
+}
+
+impl Termios {
+    /// Number of control characters (`NCCS` on x86-64 Linux).
+    pub const NCCS: usize = 19;
+
+    /// On-wire size in guest memory (4×u32 + u8 + 19-byte `c_cc`).
+    pub const SIZE: usize = 36;
+
+    /// Decode one `termios` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        let mut cc = [0u8; Self::NCCS];
+        cc.copy_from_slice(&raw[17..36]);
+        Some(Self {
+            iflag: u32::from_le_bytes(raw[0..4].try_into().ok()?),
+            oflag: u32::from_le_bytes(raw[4..8].try_into().ok()?),
+            cflag: u32::from_le_bytes(raw[8..12].try_into().ok()?),
+            lflag: u32::from_le_bytes(raw[12..16].try_into().ok()?),
+            line: raw[16],
+            cc,
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..4].copy_from_slice(&self.iflag.to_le_bytes());
+        out[4..8].copy_from_slice(&self.oflag.to_le_bytes());
+        out[8..12].copy_from_slice(&self.cflag.to_le_bytes());
+        out[12..16].copy_from_slice(&self.lflag.to_le_bytes());
+        out[16] = self.line;
+        out[17..36].copy_from_slice(&self.cc);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, Timespec, Timeval, Winsize};
+    use super::{Iovec, Termios, Timespec, Timeval, Winsize};
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -262,5 +321,33 @@ mod tests {
         assert_eq!(&bytes[2..4], &80u16.to_le_bytes());
         assert_eq!(Winsize::from_guest_bytes(&bytes), Some(ws));
         assert!(Winsize::from_guest_bytes(&[0u8; 7]).is_none());
+    }
+
+    #[test]
+    fn termios_round_trips_through_its_36_byte_layout() {
+        let mut cc = [0u8; Termios::NCCS];
+        // A few representative control chars (VINTR=^C, VEOF=^D, VMIN, VTIME).
+        cc[0] = 3;
+        cc[4] = 4;
+        cc[6] = 1;
+        cc[5] = 0;
+        let t = Termios {
+            iflag: 0x0000_0500,
+            oflag: 0x0000_0005,
+            cflag: 0x0000_00bf,
+            lflag: 0x0000_8a3b,
+            line: 0,
+            cc,
+        };
+        let bytes = t.to_guest_bytes();
+        assert_eq!(bytes.len(), Termios::SIZE);
+        // Field offsets: four LE u32 mode words, then c_line, then c_cc.
+        assert_eq!(&bytes[0..4], &0x0000_0500u32.to_le_bytes());
+        assert_eq!(&bytes[12..16], &0x0000_8a3bu32.to_le_bytes());
+        assert_eq!(bytes[16], 0); // c_line
+        assert_eq!(&bytes[17..36], &cc);
+        assert_eq!(Termios::from_guest_bytes(&bytes), Some(t));
+        // A buffer one byte short is rejected, not overrun.
+        assert!(Termios::from_guest_bytes(&[0u8; 35]).is_none());
     }
 }
