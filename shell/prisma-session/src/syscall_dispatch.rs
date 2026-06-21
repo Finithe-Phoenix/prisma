@@ -24,6 +24,7 @@ mod nr {
     pub const WRITE: u64 = 1;
     pub const CLOSE: u64 = 3;
     pub const LSEEK: u64 = 8;
+    pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
@@ -99,6 +100,12 @@ fn arg_i64(v: u64) -> i64 {
     v as i64
 }
 
+#[allow(clippy::cast_possible_truncation)]
+fn arg_u32(v: u64) -> u32 {
+    // An unsigned 32-bit argument (e.g. a signal number) — the low 32 bits.
+    v as u32
+}
+
 fn io_errno(e: &IoError) -> i64 {
     match e {
         IoError::BadFd => errno::EBADF,
@@ -117,7 +124,7 @@ const fn time_errno(e: TimeError) -> i64 {
 
 const fn sig_errno(e: SigError) -> i64 {
     match e {
-        SigError::BadHow(_) => errno::EINVAL,
+        SigError::BadHow(_) | SigError::BadSignal(_) => errno::EINVAL,
         SigError::Fault(_) => errno::EFAULT,
     }
 }
@@ -186,6 +193,19 @@ pub fn dispatch(
             Ok(()) => 0,
             Err(e) => sig_errno(e),
         },
+        // rt_sigaction(sig, act, oldact).
+        nr::RT_SIGACTION => {
+            match sig_syscalls::rt_sigaction(
+                &mut ctx.signals,
+                mem,
+                arg_u32(args[0]),
+                args[1],
+                args[2],
+            ) {
+                Ok(()) => 0,
+                Err(e) => sig_errno(e),
+            }
+        }
         nr::NANOSLEEP => match time_syscalls::nanosleep_request(mem, args[0]) {
             Ok(duration) => {
                 std::thread::sleep(duration);
@@ -251,6 +271,29 @@ mod tests {
 
     fn region(buf: &mut [u8]) -> GuestRegion<'_> {
         GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+    }
+
+    #[test]
+    fn rt_sigaction_routes_and_rejects_sigkill() {
+        const SYS_RT_SIGACTION: u64 = 13;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 32];
+        let mut mem = region(&mut buf);
+        // rt_sigaction(SIGKILL=9, act=0x1000, oldact=0) -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_RT_SIGACTION,
+                [9, 0x1000, 0, 0, 0, 0]
+            ),
+            -22
+        );
+        // A valid signal with null act/oldact is a no-op success (0).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_RT_SIGACTION, [11, 0, 0, 0, 0, 0]),
+            0
+        );
     }
 
     #[test]
