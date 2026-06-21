@@ -43,6 +43,26 @@ A new crate **`prisma-session`** depending on `orchestrator`,
 Per the repo rule, this dependency fan-in is justified here and nowhere else:
 the session is the top of the shell, the composition root.
 
+### The execution-loop seam already exists
+
+`prisma-runtime::dispatcher::run_with_adapters(entry_pc, fetch, translate,
+cache, guard)` is the seam (its own doc calls it "the migration seam that later
+grows into `Dispatcher::run()`"). It drives the
+fetch → cache-probe → translate → install loop and owns the guest-PC stepping —
+which is why `CpuStateFrame` carries no `RIP`: the PC lives in the dispatcher,
+not the register frame. So the session does **not** write a new loop; it supplies
+two adapters and calls the existing one:
+
+- a **`Fetch`** adapter (`guest_pc -> Option<Vec<u8>>`) reading from the
+  `MappedImage` `load_pe` produced;
+- a **`Translate`** adapter (`guest_pc, bytes -> Option<Vec<u8>>`) delegating to
+  `prisma-translator::Translator::translate_block` (decode → optimize → lower →
+  cache).
+
+This keeps the cross-crate surface tiny: the session is mostly two trait impls
+plus ownership/teardown, and the heavy lifting stays in the layers that already
+exist and are tested.
+
 ### Execution loop
 
 ```
