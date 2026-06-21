@@ -22,6 +22,17 @@ impl GuestThread {
         frame
     }
 
+    /// Initial state with the thread's TEB wired in: like [`Self::initial`] but
+    /// also points `gs_base` at `teb_addr`, so the guest's `gs:[...]` accesses
+    /// (stack bounds, SEH, the Self/PEB pointers) reach the TEB the loader
+    /// materialised — the x64 convention is `GS` = the TEB base.
+    #[must_use]
+    pub fn with_teb(stack_top: u64, teb_addr: u64) -> CpuStateFrame {
+        let mut frame = Self::initial(stack_top);
+        frame.gs_base = teb_addr;
+        frame
+    }
+
     /// Reserve `bytes` on the guest stack, returning the new RSP (the lowest
     /// address of the reserved region). Saturating at 0 — a stack that would
     /// underflow the address space is clamped rather than wrapped, so a caller
@@ -66,6 +77,18 @@ mod tests {
                 assert_eq!(r, 0, "gpr[{i}] should start zero");
             }
         }
+    }
+
+    #[test]
+    fn with_teb_points_gs_base_at_the_teb_and_keeps_rsp() {
+        let frame = GuestThread::with_teb(0x2_0010_0000, 0x7_0000);
+        assert_eq!(frame.gs_base, 0x7_0000, "gs_base must point at the TEB");
+        // RSP is still seeded exactly as initial() would.
+        assert_eq!(
+            frame.gpr[gpr::RSP],
+            GuestThread::initial(0x2_0010_0000).gpr[gpr::RSP]
+        );
+        assert_eq!(frame.gpr[gpr::RSP] % 16, 0);
     }
 
     #[test]
