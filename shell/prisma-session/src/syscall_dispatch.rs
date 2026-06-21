@@ -34,6 +34,7 @@ mod nr {
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
+    pub const CLOCK_NANOSLEEP: u64 = 230;
 }
 
 /// Negative Linux errno values returned in `rax` on failure.
@@ -171,6 +172,16 @@ pub fn dispatch(
             }
             Err(e) => time_errno(e),
         },
+        // clock_nanosleep(clk_id, flags, req, rem): the request is args[2].
+        nr::CLOCK_NANOSLEEP => {
+            match time_syscalls::clock_nanosleep_request(mem, args[0], args[2]) {
+                Ok(duration) => {
+                    std::thread::sleep(duration);
+                    0
+                }
+                Err(e) => time_errno(e),
+            }
+        }
         nr::CLOCK_GETRES => match time_syscalls::clock_getres(mem, args[0], args[1]) {
             Ok(()) => 0,
             Err(e) => time_errno(e),
@@ -344,6 +355,36 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_FSYNC, [9, 0, 0, 0, 0, 0]),
             -9
+        );
+    }
+
+    #[test]
+    fn clock_nanosleep_routes_a_zero_request_immediately() {
+        const SYS_CLOCK_NANOSLEEP: u64 = 230;
+        const CLOCK_MONOTONIC: u64 = 1;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // clock_nanosleep(MONOTONIC, flags=0, req=0x1000, rem=0) -> 0 instantly.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_CLOCK_NANOSLEEP,
+                [CLOCK_MONOTONIC, 0, 0x1000, 0, 0, 0]
+            ),
+            0
+        );
+        // An unknown clock -> -EINVAL.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_CLOCK_NANOSLEEP,
+                [42, 0, 0x1000, 0, 0, 0]
+            ),
+            -22
         );
     }
 
