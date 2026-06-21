@@ -40,6 +40,26 @@ pub struct BlockTranslation {
     /// True if the block ended on a control-transfer instruction (rather than
     /// the byte budget, instruction cap, or a mid-run decode failure).
     pub ended_at_terminator: bool,
+    /// Statically-known successor guest PCs: the relative-branch/call targets
+    /// and fall-through of the terminator (or just the fall-through PC if the
+    /// block ended without one). Empty for a dynamic transfer (indirect
+    /// jump/call, return) whose target is only known at run time. The
+    /// run loop walks these to translate the reachable CFG ahead of execution.
+    pub successors: Vec<u64>,
+}
+
+/// Statically-known successor guest PCs of a terminating instruction's `op`.
+///
+/// Relative branches and calls carry their targets in the IR; an indirect
+/// jump/call, a return, or a block-indexed jump is a dynamic transfer with no
+/// statically-known successor (empty), to be resolved at run time.
+fn static_successors(op: &Op) -> Vec<u64> {
+    match op {
+        Op::JumpRel(j) => vec![j.target_guest_pc],
+        Op::CondJumpRel(c) => vec![c.target_guest_pc, c.fallthrough_guest_pc],
+        Op::CallRel(c) => vec![c.target_guest_pc, c.return_guest_pc],
+        _ => Vec::new(),
+    }
 }
 
 /// Whether `op` transfers control and therefore ends a basic block.
@@ -152,6 +172,7 @@ impl Translator {
         let mut pc = guest_addr;
         let mut instruction_count = 0usize;
         let mut ended_at_terminator = false;
+        let mut successors: Vec<u64> = Vec::new();
 
         while offset < bytes.len() && instruction_count < max_insns {
             let decoded = match decode_one_at(bytes, offset, pc) {
@@ -185,10 +206,17 @@ impl Translator {
             instruction_count += 1;
             offset += decoded.bytes_consumed;
             pc = pc.wrapping_add(decoded.bytes_consumed as u64);
-            if decoded.stmts.iter().any(|s| is_terminator(&s.op)) {
+            if let Some(term) = decoded.stmts.iter().find(|s| is_terminator(&s.op)) {
+                successors = static_successors(&term.op);
                 ended_at_terminator = true;
                 break;
             }
+        }
+
+        if !ended_at_terminator && instruction_count > 0 {
+            // Block ended on the cap / exhausted bytes: its only successor is
+            // the fall-through PC after the last instruction.
+            successors = vec![pc];
         }
 
         Ok(BlockTranslation {
@@ -196,6 +224,7 @@ impl Translator {
             instruction_count,
             guest_bytes: offset,
             ended_at_terminator,
+            successors,
         })
     }
 
@@ -224,6 +253,7 @@ impl Translator {
         let mut pc = guest_addr;
         let mut instruction_count = 0usize;
         let mut ended_at_terminator = false;
+        let mut successors: Vec<u64> = Vec::new();
         // Next free SSA ref: every instruction's refs are shifted above all
         // refs already placed in the block so names never collide.
         let mut base: u32 = 0;
@@ -267,10 +297,15 @@ impl Translator {
             pc = pc.wrapping_add(decoded.bytes_consumed as u64);
             base = local_max.saturating_add(1);
 
-            if decoded.stmts.iter().any(|s| is_terminator(&s.op)) {
+            if let Some(term) = decoded.stmts.iter().find(|s| is_terminator(&s.op)) {
+                successors = static_successors(&term.op);
                 ended_at_terminator = true;
                 break;
             }
+        }
+
+        if !ended_at_terminator && instruction_count > 0 {
+            successors = vec![pc];
         }
 
         let func = Function {
@@ -291,6 +326,7 @@ impl Translator {
             instruction_count,
             guest_bytes: offset,
             ended_at_terminator,
+            successors,
         })
     }
 
@@ -388,6 +424,40 @@ mod tests {
     const MOV_RAX_RCX: &[u8] = &[0x48, 0x89, 0xC8];
     // add rax, 0x10 (REX.W 83 /0 ib)
     const ADD_RAX_IMM8: &[u8] = &[0x48, 0x83, 0xC0, 0x10];
+
+    #[test]
+    fn static_successors_extracts_relative_targets() {
+        use prisma_ir::{CallRel, JumpRel, Op, Return};
+        assert_eq!(
+            static_successors(&Op::JumpRel(JumpRel {
+                target_guest_pc: 0x1234
+            })),
+            vec![0x1234]
+        );
+        // A call's successors are the callee and the return site.
+        assert_eq!(
+            static_successors(&Op::CallRel(CallRel {
+                target_guest_pc: 0x2000,
+                return_guest_pc: 0x1005,
+            })),
+            vec![0x2000, 0x1005]
+        );
+        // A return is a dynamic transfer: no static successor.
+        assert!(static_successors(&Op::Return(Return)).is_empty());
+    }
+
+    #[test]
+    fn straight_line_block_successor_is_the_fall_through_pc() {
+        // Two non-terminator instructions, no control transfer: the single
+        // successor is the PC just past the block.
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(ADD_RAX_IMM8);
+        let mut t = Translator::new();
+        let block = t.translate_block(0x4_0000, &prog, 64).expect("translate");
+        assert!(!block.ended_at_terminator);
+        assert_eq!(block.successors, vec![0x4_0000 + prog.len() as u64]);
+    }
 
     #[test]
     fn translate_emits_code_and_reports_guest_size() {
