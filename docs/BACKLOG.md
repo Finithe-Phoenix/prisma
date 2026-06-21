@@ -449,7 +449,7 @@ translator on a reference Linux ARM64 box.
 - [ ] F2-SY-034: iovec struct translation. **(trivially satisfied — same LP64 layout on ARM64)**
 - [ ] F2-SY-035: timespec / timeval / sigset_t struct translation. **(trivially satisfied — same layout on ARM64)**
 - [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ). **(trivially satisfied — same layout on ARM64)**
-- [ ] F2-SY-037: Syscall fuzz harness (AFL++ over syscall numbers + args).
+- [x] F2-SY-037: Syscall fuzz harness (proptest over syscall numbers + args; `shell/prisma-runtime/tests/fuzz_syscall.rs` — deny-by-default-never-leaks + classify totality + never-panics).
 - [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
 ### F2-IR — IR for full x86_64
