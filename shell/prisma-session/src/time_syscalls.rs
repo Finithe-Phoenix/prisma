@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::guest_clock::{monotonic_timespec, realtime_timespec, realtime_timeval};
-use prisma_runtime::guest_structs::{ITimerval, Timespec};
+use prisma_runtime::guest_structs::{ITimerval, Timespec, Tms};
+
+/// Clock ticks per second (`sysconf(_SC_CLK_TCK)`) — the unit `times` reports in.
+const CLK_TCK: i64 = 100;
 
 /// `CLOCK_REALTIME` clock id (Linux): wall-clock time.
 pub const CLOCK_REALTIME: u64 = 0;
@@ -171,6 +174,32 @@ pub fn setitimer(
     Ok(current)
 }
 
+/// `times(buf)`: write the process CPU times to the guest `tms` at `buf` (when
+/// non-null) and return the elapsed real time in clock ticks since the session
+/// started (`monotonic_start`).
+///
+/// Per-process user/system CPU time is not tracked in this model, so the `tms`
+/// fields are reported as zero; the return value is the meaningful part a shell
+/// uses for wall-clock timing.
+///
+/// # Errors
+/// [`TimeError::Fault`] if a non-null `buf` is not writable guest memory.
+pub fn times(mem: &mut GuestRegion, buf: u64, monotonic_start: Instant) -> Result<i64, TimeError> {
+    if buf != 0 {
+        let tms = Tms {
+            utime: 0,
+            stime: 0,
+            cutime: 0,
+            cstime: 0,
+        };
+        mem.write(buf, &tms.to_guest_bytes())
+            .map_err(TimeError::Fault)?;
+    }
+    let elapsed = monotonic_timespec(monotonic_start);
+    // sec * CLK_TCK + nsec / (1e9 / CLK_TCK); for CLK_TCK = 100 that is nsec/1e7.
+    Ok(elapsed.sec * CLK_TCK + elapsed.nsec / 10_000_000)
+}
+
 /// `getitimer(which, curr)`: write the selected interval timer to the guest
 /// `curr` pointer.
 ///
@@ -188,12 +217,12 @@ pub fn getitimer(
 #[cfg(test)]
 mod tests {
     use super::{
-        clock_gettime, getitimer, gettimeofday, setitimer, TimeError, CLOCK_MONOTONIC,
+        clock_gettime, getitimer, gettimeofday, setitimer, times, TimeError, CLOCK_MONOTONIC,
         CLOCK_REALTIME,
     };
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
-    use prisma_runtime::guest_structs::{ITimerval, Timespec, Timeval};
+    use prisma_runtime::guest_structs::{ITimerval, Timespec, Timeval, Tms};
     use std::time::Instant;
 
     const AFTER_2020: i64 = 1_600_000_000;
@@ -437,6 +466,25 @@ mod tests {
         // A too-short old region (only 8 bytes from 0x1018) is EFAULT.
         assert_eq!(
             setitimer(&mut mem, 0, 0x1018, current),
+            Err(TimeError::Fault(RangeError::Unmapped))
+        );
+    }
+
+    #[test]
+    fn times_zeroes_cpu_and_returns_elapsed_ticks() {
+        let start = Instant::now();
+        let mut buf = [0u8; 32];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // times(buf) -> a non-negative tick count; the tms CPU fields are zeroed.
+        let ticks = times(&mut mem, 0x1000, start).expect("ok");
+        assert!(ticks >= 0);
+        let tms = Tms::from_guest_bytes(mem.read(0x1000, 32).unwrap()).unwrap();
+        assert_eq!((tms.utime, tms.stime, tms.cutime, tms.cstime), (0, 0, 0, 0));
+        // A null buf still returns the tick count without writing.
+        assert!(times(&mut mem, 0, start).unwrap() >= 0);
+        // A bad buf pointer is EFAULT (only 8 bytes from 0x1018, need 32).
+        assert_eq!(
+            times(&mut mem, 0x1018, start),
             Err(TimeError::Fault(RangeError::Unmapped))
         );
     }
