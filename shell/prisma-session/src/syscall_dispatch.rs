@@ -56,6 +56,11 @@ mod nr {
     pub const PRLIMIT64: u64 = 302;
     pub const NANOSLEEP: u64 = 35;
     pub const SCHED_YIELD: u64 = 24;
+    pub const MADVISE: u64 = 28;
+    pub const MLOCK: u64 = 149;
+    pub const MUNLOCK: u64 = 150;
+    pub const MLOCKALL: u64 = 151;
+    pub const MUNLOCKALL: u64 = 152;
     pub const FSYNC: u64 = 74;
     pub const FDATASYNC: u64 = 75;
     pub const FTRUNCATE: u64 = 77;
@@ -651,6 +656,15 @@ pub fn dispatch(
             std::thread::yield_now();
             0
         }
+        // Advisory memory syscalls the session honours as no-ops:
+        //  - madvise(addr, len, advice): the advice is non-binding, so ignoring
+        //    it and reporting success is a faithful kernel behaviour.
+        //  - mlock/munlock/mlockall/munlockall: the guest runs in a single,
+        //    non-paged address space, so its pages are always resident — locking
+        //    is already satisfied and unlocking has nothing to undo.
+        // Routing them (instead of -ENOSYS) lets glibc/malloc trimming and
+        // memory-locking code paths proceed.
+        nr::MADVISE | nr::MLOCK | nr::MUNLOCK | nr::MLOCKALL | nr::MUNLOCKALL => 0,
         // getuid / geteuid / getgid / getegid: the host (Windows) has no POSIX
         // uid, so the guest is presented as a single unprivileged user. Real
         // and effective ids coincide — there is no setuid transition to model.
@@ -1397,6 +1411,26 @@ mod tests {
             dispatch(&mut ctx, &mut mem, SYS_MEMBARRIER, [1, 0, 0, 0, 0, 0]),
             -22
         );
+    }
+
+    #[test]
+    fn advisory_memory_syscalls_succeed_as_noops() {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // madvise(28), mlock(149), munlock(150), mlockall(151), munlockall(152)
+        // all succeed (0), even with wild addr/len — they are no-ops.
+        for number in [28u64, 149, 150, 151, 152] {
+            assert_eq!(
+                dispatch(
+                    &mut ctx,
+                    &mut mem,
+                    number,
+                    [0xDEAD_BEEF, u64::MAX, 4, 0, 0, 0]
+                ),
+                0
+            );
+        }
     }
 
     #[test]
