@@ -136,6 +136,24 @@ impl FdTable {
         true
     }
 
+    /// `fcntl(F_DUPFD)`: duplicate `oldfd` onto the lowest free fd that is at or
+    /// above `min_fd`, returning the new fd. `None` for an unopen `oldfd`, a
+    /// failed host `dup`, a negative `min_fd`, or no fd in representable range.
+    pub fn dup_from(&mut self, oldfd: i32, min_fd: i32) -> Option<i32> {
+        let entry = self.get(oldfd)?.try_clone().ok()?;
+        let start = usize::try_from(min_fd).ok()?;
+        // Lowest free slot at or above `start`, extending the table if needed.
+        let idx = (start..self.entries.len())
+            .find(|&i| self.entries[i].is_none())
+            .unwrap_or_else(|| self.entries.len().max(start));
+        let fd = i32::try_from(idx).ok()?;
+        if idx >= self.entries.len() {
+            self.entries.resize_with(idx + 1, || None);
+        }
+        self.entries[idx] = Some(entry);
+        Some(fd)
+    }
+
     /// Number of currently-open fds.
     #[must_use]
     pub fn open_count(&self) -> usize {
