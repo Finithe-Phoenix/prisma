@@ -14,7 +14,7 @@ use prisma_orchestrator::module_table::ModuleTable;
 use prisma_orchestrator::pe_loader::MappedImage;
 use prisma_runtime::dispatcher::DispatchRunOutcome;
 use prisma_runtime::{Dispatcher, SmcGuard};
-use prisma_translator::Translator;
+use prisma_translator::{BlockTranslation, Translator};
 
 /// How many guest bytes a single fetch hands the translator. The translator
 /// decodes until a block terminator (or its own instruction cap) within this
@@ -94,6 +94,18 @@ impl Session {
         // on a miss, install the translation (M1 is a single step).
         dispatcher.run_with_callbacks(cache, guard, entry, 1, fetch, translate)
     }
+
+    /// Translate the straight-line block at `guest_pc` to ARM64, or `None` if
+    /// the PC is unmapped or its bytes don't translate. The per-block primitive
+    /// the run loop drives; unlike [`Session::step_entry`] it does not touch the
+    /// dispatcher cache, so it is a pure query of "what does this PC translate
+    /// to" usable on any host.
+    pub fn translate_at(&mut self, guest_pc: u64) -> Option<BlockTranslation> {
+        let bytes = fetch_window(&self.image, guest_pc)?;
+        self.translator
+            .translate_block(guest_pc, &bytes, MAX_INSNS)
+            .ok()
+    }
 }
 
 /// Read up to [`FETCH_WINDOW`] bytes of the mapped image starting at `guest_pc`.
@@ -162,5 +174,15 @@ mod tests {
         // 8 bytes before the end -> exactly 8 bytes, not a page.
         let near_end = s.fetch(0x1_4000_0000 + 0x10000 - 8).expect("mapped");
         assert_eq!(near_end.len(), 8);
+    }
+
+    #[test]
+    fn translate_at_resolves_a_mapped_pc_and_rejects_an_unmapped_one() {
+        let mut s = Session::load(&minimal_pe(), &ModuleTable::new()).expect("load");
+        // The entry PC is mapped, so a block translates (its bytes decode).
+        let block = s.translate_at(s.entry_pc());
+        assert!(block.is_some(), "a mapped entry PC should translate");
+        // An unmapped PC yields nothing rather than panicking.
+        assert!(s.translate_at(0x9_9999_0000).is_none());
     }
 }
