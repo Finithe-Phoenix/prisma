@@ -62,6 +62,44 @@ fn static_successors(op: &Op) -> Vec<u64> {
     }
 }
 
+/// The static successor guest PCs of the straight-line block at `guest_addr`,
+/// found by DECODING only — no optimization or lowering.
+///
+/// This walks the control-flow graph independently of whether the backend can
+/// yet lower the block (e.g. a relative-branch terminator that
+/// [`Translator::translate_block`] would reject): CFG discovery only needs the
+/// decoded terminator's targets. Returns the terminator's static successors, or
+/// the fall-through PC if the block ran to the cap/end without one, or empty if
+/// nothing decoded.
+#[must_use]
+pub fn decode_block_successors(guest_addr: u64, bytes: &[u8], max_insns: usize) -> Vec<u64> {
+    let mut offset = 0usize;
+    let mut pc = guest_addr;
+    let mut count = 0usize;
+    while offset < bytes.len() && count < max_insns {
+        let Ok(decoded) = decode_one_at(bytes, offset, pc) else {
+            break;
+        };
+        let Some(end) = offset.checked_add(decoded.bytes_consumed) else {
+            break;
+        };
+        if end > bytes.len() {
+            break; // decoder over-ran the buffer (truncated instruction)
+        }
+        if let Some(term) = decoded.stmts.iter().find(|s| is_terminator(&s.op)) {
+            return static_successors(&term.op);
+        }
+        offset = end;
+        pc = pc.wrapping_add(decoded.bytes_consumed as u64);
+        count += 1;
+    }
+    if count > 0 {
+        vec![pc] // fall-through: the PC after the last decoded instruction
+    } else {
+        Vec::new()
+    }
+}
+
 /// Whether `op` transfers control and therefore ends a basic block.
 fn is_terminator(op: &Op) -> bool {
     matches!(
@@ -424,6 +462,20 @@ mod tests {
     const MOV_RAX_RCX: &[u8] = &[0x48, 0x89, 0xC8];
     // add rax, 0x10 (REX.W 83 /0 ib)
     const ADD_RAX_IMM8: &[u8] = &[0x48, 0x83, 0xC0, 0x10];
+
+    #[test]
+    fn decode_block_successors_follows_a_jmp_without_lowering() {
+        // EB 0E = JMP +0x0E -> targets guest_addr + 2 + 0x0E. Decoding alone
+        // finds the target even though the lowerer cannot yet lower JumpRel.
+        let succ = decode_block_successors(0x4_0000, &[0xEB, 0x0E], 64);
+        assert_eq!(succ, vec![0x4_0000 + 2 + 0x0E]);
+        // A straight-line run with no terminator falls through to the next PC.
+        let mut prog = Vec::new();
+        prog.extend_from_slice(MOV_RAX_RCX);
+        prog.extend_from_slice(ADD_RAX_IMM8);
+        let fall = decode_block_successors(0x4_0000, &prog, 64);
+        assert_eq!(fall, vec![0x4_0000 + prog.len() as u64]);
+    }
 
     #[test]
     fn static_successors_extracts_relative_targets() {

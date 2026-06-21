@@ -18,7 +18,7 @@ use prisma_orchestrator::module_table::ModuleTable;
 use prisma_orchestrator::pe_loader::{MappedImage, PeImage};
 use prisma_runtime::dispatcher::DispatchRunOutcome;
 use prisma_runtime::{Dispatcher, SmcGuard};
-use prisma_translator::{BlockTranslation, Translator};
+use prisma_translator::{decode_block_successors, BlockTranslation, Translator};
 
 /// How many guest bytes a single fetch hands the translator. The translator
 /// decodes until a block terminator (or its own instruction cap) within this
@@ -159,6 +159,41 @@ impl Session {
         }
 
         translated
+    }
+
+    /// Discover the statically-reachable block PCs from the entry by DECODING
+    /// only — independent of whether the backend can lower each block.
+    ///
+    /// Unlike [`Session::translate_reachable`], this does not require a block to
+    /// translate (lower) to follow its successors, so it walks the whole CFG
+    /// even across terminators the lowerer cannot yet emit (relative branches).
+    /// It is the CFG-discovery counterpart: returns the reachable block PCs in
+    /// visit order, bounded by `max_blocks`, deduped against a seen-set so a
+    /// self- or back-edge terminates.
+    pub fn reachable_blocks(&self, max_blocks: usize) -> Vec<u64> {
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut queue: Vec<u64> = vec![self.image.entry_pc];
+        let mut reached: Vec<u64> = Vec::new();
+
+        while let Some(pc) = queue.pop() {
+            if reached.len() >= max_blocks {
+                break;
+            }
+            if !seen.insert(pc) {
+                continue;
+            }
+            let Some(bytes) = fetch_window(&self.image, pc) else {
+                continue; // PC outside the mapped image
+            };
+            reached.push(pc);
+            for succ in decode_block_successors(pc, &bytes, MAX_INSNS) {
+                if !seen.contains(&succ) {
+                    queue.push(succ);
+                }
+            }
+        }
+
+        reached
     }
 }
 
