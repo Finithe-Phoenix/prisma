@@ -11,7 +11,14 @@ use std::io::{Read, Write};
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::fd_table::{FdEntry, FdTable};
-use prisma_runtime::guest_structs::Iovec;
+use prisma_runtime::guest_structs::{Iovec, Stat, Timespec};
+
+/// `S_IFREG` — the `st_mode` bit marking a regular file.
+const S_IFREG: u32 = 0o100_000;
+/// `S_IFCHR` — the `st_mode` bit marking a character device (the std streams).
+const S_IFCHR: u32 = 0o020_000;
+/// The uid/gid `fstat` reports — the single unprivileged guest user.
+const GUEST_ID: u32 = 1000;
 
 /// Kernel cap on the number of `iovec`s a single vectored call accepts
 /// (`IOV_MAX` / `UIO_MAXIOV` on Linux). A larger count is `EINVAL`.
@@ -190,6 +197,76 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
         }
         FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Err(IoError::BadFd),
     }
+}
+
+/// A `SystemTime` as a guest `timespec` (seconds + nanos since the Unix epoch);
+/// times before the epoch or that fail to read clamp to zero.
+fn systime_to_timespec(t: std::io::Result<std::time::SystemTime>) -> Timespec {
+    let dur = t
+        .ok()
+        .and_then(|st| st.duration_since(std::time::UNIX_EPOCH).ok())
+        .unwrap_or_default();
+    Timespec {
+        sec: i64::try_from(dur.as_secs()).unwrap_or(i64::MAX),
+        nsec: i64::from(dur.subsec_nanos()),
+    }
+}
+
+/// Map host file metadata to the guest `stat`. The host is not POSIX, so mode,
+/// ownership and block accounting are synthesised: a regular file with mode
+/// `0644`, the single guest user, and 512-byte blocks.
+fn stat_from_metadata(m: &std::fs::Metadata) -> Stat {
+    let size = i64::try_from(m.len()).unwrap_or(i64::MAX);
+    Stat {
+        dev: 0,
+        ino: 0,
+        nlink: 1,
+        mode: S_IFREG | 0o644,
+        uid: GUEST_ID,
+        gid: GUEST_ID,
+        rdev: 0,
+        size,
+        blksize: 512,
+        blocks: (size + 511) / 512,
+        atime: systime_to_timespec(m.accessed()),
+        mtime: systime_to_timespec(m.modified()),
+        ctime: systime_to_timespec(m.created()),
+    }
+}
+
+/// The `stat` reported for a standard stream — a character device, no size.
+fn stat_for_stream() -> Stat {
+    Stat {
+        dev: 0,
+        ino: 0,
+        nlink: 1,
+        mode: S_IFCHR | 0o620,
+        uid: GUEST_ID,
+        gid: GUEST_ID,
+        rdev: 0,
+        size: 0,
+        blksize: 1024,
+        blocks: 0,
+        atime: Timespec { sec: 0, nsec: 0 },
+        mtime: Timespec { sec: 0, nsec: 0 },
+        ctime: Timespec { sec: 0, nsec: 0 },
+    }
+}
+
+/// `fstat(fd, statbuf)`: fill the guest `stat` at `statbuf` with the metadata of
+/// the file (or character device) behind `fd`. The struct is written through the
+/// range-checked [`GuestRegion`].
+///
+/// # Errors
+/// [`IoError::BadFd`] for an unopen fd, [`IoError::Fault`] if `statbuf` is not
+/// writable guest memory, [`IoError::Host`] if reading the host metadata fails.
+pub fn fstat(fds: &FdTable, mem: &mut GuestRegion, fd: i32, statbuf: u64) -> Result<(), IoError> {
+    let stat = match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => stat_from_metadata(&file.metadata().map_err(IoError::Host)?),
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => stat_for_stream(),
+    };
+    mem.write(statbuf, &stat.to_guest_bytes())
+        .map_err(IoError::Fault)
 }
 
 /// `ftruncate(fd, length)`: set the size of the file behind `fd` to `length`
@@ -471,7 +548,7 @@ pub fn preadv(
 
 #[cfg(test)]
 mod tests {
-    use super::{ftruncate, pread, preadv, pwrite, pwritev, readv, write, writev, IoError};
+    use super::{fstat, ftruncate, pread, preadv, pwrite, pwritev, readv, write, writev, IoError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::fd_table::{FdEntry, FdTable};
@@ -960,6 +1037,49 @@ mod tests {
         assert!(matches!(
             pwritev(&fds, &mem, 1, 0x1020, 2, 0),
             Err(IoError::Invalid)
+        ));
+
+        drop(fds);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fstat_reports_file_and_stream_metadata() {
+        use prisma_runtime::guest_structs::Stat;
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!("prisma_fstat_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create");
+            f.write_all(b"hello world").expect("seed"); // 11 bytes
+        }
+        let file = std::fs::File::open(&path).expect("open");
+        let mut fds = FdTable::new();
+        let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+
+        let mut buf = [0u8; 160];
+        let mut mem = region(&mut buf);
+        // fstat the file: size 11, regular-file mode bit, link count 1.
+        fstat(&fds, &mut mem, fd, 0x1000).expect("fstat file");
+        let st = Stat::from_guest_bytes(mem.read(0x1000, Stat::SIZE).unwrap()).unwrap();
+        assert_eq!(st.size, 11);
+        assert_eq!(st.mode & 0o170_000, 0o100_000); // S_IFREG
+        assert_eq!(st.nlink, 1);
+        assert_eq!(st.blocks, 1); // ceil(11/512)
+
+        // fstat stdout: a character device, no size.
+        fstat(&fds, &mut mem, 1, 0x1000).expect("fstat stream");
+        let stream = Stat::from_guest_bytes(mem.read(0x1000, Stat::SIZE).unwrap()).unwrap();
+        assert_eq!(stream.mode & 0o170_000, 0o020_000); // S_IFCHR
+        assert_eq!(stream.size, 0);
+
+        // A bad statbuf pointer is EFAULT; an unopen fd is EBADF.
+        assert!(matches!(
+            fstat(&fds, &mut mem, fd, 0x1090),
+            Err(IoError::Fault(_))
+        ));
+        assert!(matches!(
+            fstat(&fds, &mut mem, 88, 0x1000),
+            Err(IoError::BadFd)
         ));
 
         drop(fds);
