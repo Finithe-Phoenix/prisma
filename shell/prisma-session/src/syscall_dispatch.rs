@@ -28,6 +28,7 @@ mod nr {
     pub const RT_SIGPROCMASK: u64 = 14;
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
+    pub const DUP3: u64 = 292;
     pub const NANOSLEEP: u64 = 35;
     pub const SCHED_YIELD: u64 = 24;
     pub const FSYNC: u64 = 74;
@@ -64,6 +65,11 @@ mod errno {
 /// host is Windows (no POSIX credentials), so the guest runs as a fixed
 /// unprivileged user — the conventional non-root id a Linux desktop assigns.
 const GUEST_UID: i64 = 1000;
+
+/// The only flag `dup3` accepts (`O_CLOEXEC`, octal 02000000 on x86-64 Linux).
+/// We do not model close-on-exec yet, but accepting the flag — and rejecting any
+/// other bit — keeps the ABI faithful.
+const O_CLOEXEC: i32 = 0o2_000_000;
 
 /// Per-thread state the syscall layer carries across calls: the fd table and the
 /// signal mask, plus the monotonic-clock reference. The guest memory region is
@@ -194,6 +200,22 @@ pub fn dispatch(
             Ok(fd) => i64::from(fd),
             Err(e) => io_errno(&e),
         },
+        // dup3(oldfd, newfd, flags): like dup2, but the kernel rejects
+        // oldfd == newfd (dup2 returns newfd unchanged there) and any flag bit
+        // other than O_CLOEXEC -> EINVAL.
+        nr::DUP3 => {
+            let oldfd = arg_i32(args[0]);
+            let newfd = arg_i32(args[1]);
+            let flags = arg_i32(args[2]);
+            if oldfd == newfd || (flags & !O_CLOEXEC) != 0 {
+                errno::EINVAL
+            } else {
+                match io_syscalls::dup2(&mut ctx.fds, oldfd, newfd) {
+                    Ok(fd) => i64::from(fd),
+                    Err(e) => io_errno(&e),
+                }
+            }
+        }
         nr::TIME => match time_syscalls::time(mem, args[0]) {
             Ok(secs) => secs,
             Err(e) => time_errno(e),
@@ -573,6 +595,31 @@ mod tests {
             ),
             -3
         );
+    }
+
+    #[test]
+    fn dup3_requires_distinct_fds_and_valid_flags() {
+        const SYS_DUP3: u64 = 292;
+        const O_CLOEXEC: u64 = 0o2_000_000;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // dup3(1, 1, 0): oldfd == newfd -> -EINVAL (dup2 would allow it).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_DUP3, [1, 1, 0, 0, 0, 0]),
+            -22
+        );
+        // dup3(1, 9, <bad flag>) -> -EINVAL before any fd work.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_DUP3, [1, 9, 0x1, 0, 0, 0]),
+            -22
+        );
+        // dup3(1, 9, O_CLOEXEC) -> 9 (stdout duplicated onto fd 9).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_DUP3, [1, 9, O_CLOEXEC, 0, 0, 0]),
+            9
+        );
+        assert!(ctx.fds.is_open(9));
     }
 
     #[test]
