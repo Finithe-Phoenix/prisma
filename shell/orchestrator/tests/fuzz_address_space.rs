@@ -72,6 +72,59 @@ proptest! {
         }
     }
 
+    /// The load-bearing safety property of the syscall boundary: if
+    /// `validate_range` accepts a non-empty range, then EVERY byte of it is
+    /// mapped — an unmapped byte can never slip through to a host dereference.
+    /// Bounded bases/sizes/probe so accepted ranges actually occur.
+    #[test]
+    fn validate_range_ok_implies_every_byte_mapped(
+        maps in prop::collection::vec((0u64..0x4000, 0u64..0x1000), 0..16),
+        addr in 0u64..0x4000,
+        len in 0u64..0x800,
+        need_write in any::<bool>(),
+    ) {
+        let space = build(&maps);
+        if space.validate_range(addr, len, need_write).is_ok() {
+            // Every byte in [addr, addr+len) resolves (no gap, no overrun).
+            for off in 0..len {
+                let byte = addr + off; // no overflow: Ok implies addr+len didn't wrap
+                let (region, _) = space.translate(byte)
+                    .expect("validate_range Ok but a byte is unmapped");
+                if need_write {
+                    prop_assert!(region.prot.is_writable());
+                }
+            }
+        }
+    }
+
+    /// Contrapositive headline: an unmapped start address is never accepted for
+    /// a non-empty range, whatever the permission flag.
+    #[test]
+    fn validate_range_rejects_unmapped_start(
+        maps in prop::collection::vec((0u64..0x4000, 0u64..0x1000), 0..16),
+        addr in 0u64..0x8000,
+        len in 1u64..0x800,
+    ) {
+        let space = build(&maps);
+        if space.translate(addr).is_none() {
+            prop_assert!(space.validate_range(addr, len, false).is_err());
+        }
+    }
+
+    /// A zero-length range dereferences nothing and is always valid; and
+    /// `validate_range` never panics on arbitrary inputs.
+    #[test]
+    fn validate_range_zero_len_ok_and_never_panics(
+        maps in prop::collection::vec((any::<u64>(), any::<u64>()), 0..16),
+        addr in any::<u64>(),
+        len in any::<u64>(),
+        need_write in any::<bool>(),
+    ) {
+        let space = build(&maps);
+        prop_assert!(space.validate_range(addr, 0, need_write).is_ok());
+        let _ = space.validate_range(addr, len, need_write); // must not panic
+    }
+
     /// Unmapping every region in turn drains the space to empty and never
     /// panics; each unmap removes exactly one region.
     #[test]
