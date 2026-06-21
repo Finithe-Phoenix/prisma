@@ -7,6 +7,8 @@
 //! and testable anywhere. Each type round-trips through exactly its on-wire
 //! size, and decoding rejects a short buffer rather than reading past it.
 
+use std::time::Duration;
+
 /// `struct iovec { void *iov_base; size_t iov_len; }` — the scatter/gather
 /// element for `readv`/`writev`. 16 bytes on x86-64 Linux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +75,31 @@ impl Timespec {
         out[0..8].copy_from_slice(&self.sec.to_le_bytes());
         out[8..16].copy_from_slice(&self.nsec.to_le_bytes());
         out
+    }
+
+    /// This `timespec` as a host [`Duration`] — the form `nanosleep` /
+    /// `clock_nanosleep` sleep for. `None` if either field is negative (a
+    /// `Duration` cannot represent time before zero) or the nanoseconds do not
+    /// fit a `u32` (a malformed request the kernel would reject as `EINVAL`).
+    #[must_use]
+    pub fn to_duration(self) -> Option<Duration> {
+        if self.sec < 0 || self.nsec < 0 {
+            return None;
+        }
+        let sec = u64::try_from(self.sec).ok()?;
+        let nsec = u32::try_from(self.nsec).ok()?;
+        Some(Duration::new(sec, nsec))
+    }
+
+    /// A host [`Duration`] as a `timespec`, for reporting a clock value back to
+    /// the guest. Seconds beyond `i64::MAX` saturate (they cannot occur for a
+    /// real clock).
+    #[must_use]
+    pub fn from_duration(d: Duration) -> Self {
+        Self {
+            sec: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+            nsec: i64::from(d.subsec_nanos()),
+        }
     }
 }
 
@@ -191,6 +218,22 @@ mod tests {
         // time_t is signed: a pre-epoch timestamp must survive the round trip.
         let ts = Timespec { sec: -42, nsec: -1 };
         assert_eq!(Timespec::from_guest_bytes(&ts.to_guest_bytes()), Some(ts));
+    }
+
+    #[test]
+    fn timespec_duration_conversions() {
+        use std::time::Duration;
+        // 5.5 seconds.
+        let ts = Timespec {
+            sec: 5,
+            nsec: 500_000_000,
+        };
+        assert_eq!(ts.to_duration(), Some(Duration::new(5, 500_000_000)));
+        // Round trip through Duration.
+        assert_eq!(Timespec::from_duration(ts.to_duration().unwrap()), ts);
+        // A negative request has no Duration (the kernel would reject it).
+        assert_eq!(Timespec { sec: -1, nsec: 0 }.to_duration(), None);
+        assert_eq!(Timespec { sec: 0, nsec: -1 }.to_duration(), None);
     }
 
     #[test]
