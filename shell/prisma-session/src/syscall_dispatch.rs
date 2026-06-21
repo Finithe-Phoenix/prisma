@@ -37,6 +37,7 @@ mod nr {
     pub const GETGID: u64 = 104;
     pub const GETEUID: u64 = 107;
     pub const GETEGID: u64 = 108;
+    pub const GETPGRP: u64 = 111;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
@@ -270,6 +271,9 @@ pub fn dispatch(
         // uid, so the guest is presented as a single unprivileged user. Real
         // and effective ids coincide — there is no setuid transition to model.
         nr::GETUID | nr::GETEUID | nr::GETGID | nr::GETEGID => GUEST_UID,
+        // getpgrp: the calling process's group id. Our lone guest is its own
+        // process-group leader, so its pgid is its pid.
+        nr::GETPGRP => i64::from(std::process::id()),
         nr::GETTIMEOFDAY => match time_syscalls::gettimeofday(mem, args[0]) {
             Ok(()) => 0,
             Err(e) => time_errno(e),
@@ -472,6 +476,22 @@ mod tests {
                 SYS_SET_TID_ADDRESS,
                 [u64::MAX, 0, 0, 0, 0, 0]
             ),
+            pid
+        );
+    }
+
+    #[test]
+    fn getpgrp_returns_the_pid_as_the_group_leader() {
+        const SYS_GETPGRP: u64 = 111;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // The lone guest is its own process-group leader: pgid == pid.
+        let pid = i64::from(std::process::id());
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_GETPGRP, [0; 6]), pid);
+        // It takes no arguments, so garbage registers change nothing.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETPGRP, [u64::MAX; 6]),
             pid
         );
     }
