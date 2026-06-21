@@ -30,6 +30,7 @@ mod nr {
     pub const PREADV: u64 = 295;
     pub const PWRITEV: u64 = 296;
     pub const CLOSE: u64 = 3;
+    pub const FSTAT: u64 = 5;
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
@@ -274,6 +275,11 @@ pub fn dispatch(
             }
         }
         nr::CLOSE => match io_syscalls::close(&mut ctx.fds, arg_i32(args[0])) {
+            Ok(()) => 0,
+            Err(e) => io_errno(&e),
+        },
+        // fstat(fd, statbuf): write the file metadata to the guest stat pointer.
+        nr::FSTAT => match io_syscalls::fstat(&ctx.fds, mem, arg_i32(args[0]), args[1]) {
             Ok(()) => 0,
             Err(e) => io_errno(&e),
         },
@@ -1186,6 +1192,45 @@ mod tests {
         );
         assert_eq!(mem.read(0x1040, 3).unwrap(), b"foo");
         assert_eq!(mem.read(0x1050, 3).unwrap(), b"bar");
+
+        ctx.fds = prisma_runtime::fd_table::FdTable::new();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fstat_routes_and_writes_the_guest_stat() {
+        use prisma_runtime::fd_table::FdEntry;
+        use prisma_runtime::guest_structs::Stat;
+        use std::io::Write as _;
+        const SYS_FSTAT: u64 = 5;
+        let path =
+            std::env::temp_dir().join(format!("prisma_disp_fstat_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create");
+            f.write_all(b"hello world").expect("seed"); // 11 bytes
+        }
+        let file = std::fs::File::open(&path).expect("open");
+        let mut ctx = SyscallContext::new();
+        let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
+
+        let mut buf = [0u8; 160];
+        let mut mem = region(&mut buf);
+        // fstat(fd, 0x1000) -> 0, writes the stat with size 11.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSTAT, [fd, 0x1000, 0, 0, 0, 0]),
+            0
+        );
+        let st = Stat::from_guest_bytes(mem.read(0x1000, Stat::SIZE).unwrap()).unwrap();
+        assert_eq!(st.size, 11);
+        // A bad statbuf pointer is -EFAULT; an unopen fd is -EBADF.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSTAT, [fd, 0x1090, 0, 0, 0, 0]),
+            -14
+        );
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSTAT, [88, 0x1000, 0, 0, 0, 0]),
+            -9
+        );
 
         ctx.fds = prisma_runtime::fd_table::FdTable::new();
         let _ = std::fs::remove_file(&path);
