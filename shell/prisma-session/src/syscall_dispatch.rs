@@ -32,6 +32,7 @@ mod nr {
     pub const PWRITEV: u64 = 296;
     pub const CLOSE: u64 = 3;
     pub const FSTAT: u64 = 5;
+    pub const POLL: u64 = 7;
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
     pub const RT_SIGPROCMASK: u64 = 14;
@@ -291,6 +292,12 @@ pub fn dispatch(
         // fstat(fd, statbuf): write the file metadata to the guest stat pointer.
         nr::FSTAT => match io_syscalls::fstat(&ctx.fds, mem, arg_i32(args[0]), args[1]) {
             Ok(()) => 0,
+            Err(e) => io_errno(&e),
+        },
+        // poll(fds, nfds, timeout): readiness is immediate in this model, so the
+        // timeout (args[2]) is unused and the call never blocks.
+        nr::POLL => match io_syscalls::poll(&ctx.fds, mem, args[0], arg_u32(args[1])) {
+            Ok(n) => n as i64,
             Err(e) => io_errno(&e),
         },
         // lseek(fd, offset, whence): offset is signed; whence in args[2].
@@ -1297,6 +1304,46 @@ mod tests {
             0
         );
         assert_eq!(SigAltStack::from_guest_bytes(&buf2[0..24]).unwrap(), new);
+    }
+
+    #[test]
+    fn poll_routes_and_reports_ready_fds() {
+        use prisma_runtime::guest_structs::PollFd;
+        const SYS_POLL: u64 = 7;
+        const POLLIN: i16 = 0x1;
+        const POLLOUT: i16 = 0x4;
+        let mut ctx = SyscallContext::new();
+        // Two pollfds at guest 0x1000: stdin(POLLIN), stdout(POLLOUT).
+        let mut buf = [0u8; 32];
+        buf[0..8].copy_from_slice(
+            &PollFd {
+                fd: 0,
+                events: POLLIN,
+                revents: 0,
+            }
+            .to_guest_bytes(),
+        );
+        buf[8..16].copy_from_slice(
+            &PollFd {
+                fd: 1,
+                events: POLLOUT,
+                revents: 0,
+            }
+            .to_guest_bytes(),
+        );
+        let mut mem = region(&mut buf);
+        // poll(0x1000, 2, timeout=0) -> 2 ready; timeout ignored.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_POLL, [0x1000, 2, 0, 0, 0, 0]),
+            2
+        );
+        let p0 = PollFd::from_guest_bytes(mem.read(0x1000, 8).unwrap()).unwrap();
+        assert_eq!(p0.revents, POLLIN);
+        // nfds == 0 reports nothing ready.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_POLL, [0x1000, 0, 0, 0, 0, 0]),
+            0
+        );
     }
 
     #[test]
