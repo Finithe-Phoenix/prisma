@@ -17,7 +17,7 @@ use prisma_runtime::guest_signal::SignalState;
 use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 
 use crate::info_syscalls;
-use crate::io_syscalls::{self, IoError};
+use crate::io_syscalls::{self, GetcwdError, IoError};
 use crate::sig_syscalls::{self, SigError};
 use crate::time_syscalls::{self, TimeError};
 
@@ -45,6 +45,7 @@ mod nr {
     pub const DUP2: u64 = 33;
     pub const DUP3: u64 = 292;
     pub const FCNTL: u64 = 72;
+    pub const GETCWD: u64 = 79;
     pub const NANOSLEEP: u64 = 35;
     pub const SCHED_YIELD: u64 = 24;
     pub const FSYNC: u64 = 74;
@@ -84,6 +85,7 @@ mod errno {
     pub const EBADF: i64 = -9;
     pub const EFAULT: i64 = -14;
     pub const EINVAL: i64 = -22;
+    pub const ERANGE: i64 = -34;
     pub const ENOSYS: i64 = -38;
 }
 
@@ -390,6 +392,13 @@ pub fn dispatch(
         nr::UNAME => match info_syscalls::uname(mem, args[0]) {
             Ok(()) => 0,
             Err(_) => errno::EFAULT,
+        },
+        // getcwd(buf, size): write the cwd path; ERANGE if the buffer is too
+        // small, EFAULT if it is unwritable. Returns the path length incl. NUL.
+        nr::GETCWD => match io_syscalls::getcwd(mem, args[0], args[1] as usize) {
+            Ok(n) => i64::try_from(n).unwrap_or(errno::EINVAL),
+            Err(GetcwdError::Range) => errno::ERANGE,
+            Err(GetcwdError::Fault(_)) => errno::EFAULT,
         },
         // times(buf): write the process tms (zeroed CPU fields) and return the
         // elapsed wall-clock ticks since the session started.
@@ -985,6 +994,25 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_UNAME, [0x9000, 0, 0, 0, 0, 0]),
             -14
+        );
+    }
+
+    #[test]
+    fn getcwd_routes_writes_root_and_reports_erange() {
+        const SYS_GETCWD: u64 = 79;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        // getcwd(buf, 16) -> 2 ("/" + NUL); the bytes land in guest memory.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETCWD, [0x1000, 16, 0, 0, 0, 0]),
+            2
+        );
+        assert_eq!(mem.read(0x1000, 2).unwrap(), b"/\0");
+        // A 1-byte buffer cannot hold "/" + NUL -> -ERANGE (-34).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETCWD, [0x1000, 1, 0, 0, 0, 0]),
+            -34
         );
     }
 
