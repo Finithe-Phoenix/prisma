@@ -9,6 +9,7 @@
 //! `CpuStateFrame` has no `RIP`); this crate is just the wiring + ownership.
 
 pub mod guest_io;
+pub mod sig_syscalls;
 pub mod time_syscalls;
 
 use std::collections::HashSet;
