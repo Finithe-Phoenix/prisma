@@ -16,6 +16,7 @@ use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_signal::SignalState;
 use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 
+use crate::info_syscalls;
 use crate::io_syscalls::{self, IoError};
 use crate::sig_syscalls::{self, SigError};
 use crate::time_syscalls::{self, TimeError};
@@ -70,6 +71,7 @@ mod nr {
     pub const TIMES: u64 = 100;
     pub const SETITIMER: u64 = 38;
     pub const GETITIMER: u64 = 36;
+    pub const UNAME: u64 = 63;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
     pub const CLOCK_NANOSLEEP: u64 = 230;
@@ -383,6 +385,11 @@ pub fn dispatch(
         nr::TIME => match time_syscalls::time(mem, args[0]) {
             Ok(secs) => secs,
             Err(e) => time_errno(e),
+        },
+        // uname(buf): write the system identification; a bad pointer is EFAULT.
+        nr::UNAME => match info_syscalls::uname(mem, args[0]) {
+            Ok(()) => 0,
+            Err(_) => errno::EFAULT,
         },
         // times(buf): write the process tms (zeroed CPU fields) and return the
         // elapsed wall-clock ticks since the session started.
@@ -958,6 +965,26 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_FCNTL, [9, F_GETFD, 0, 0, 0, 0]),
             -9
+        );
+    }
+
+    #[test]
+    fn uname_routes_and_writes_the_identity() {
+        use prisma_runtime::guest_structs::Utsname;
+        const SYS_UNAME: u64 = 63;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; Utsname::SIZE];
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_UNAME, [0x1000, 0, 0, 0, 0, 0]),
+            0
+        );
+        // sysname field reads back as "Linux".
+        assert_eq!(&mem.read(0x1000, 5).unwrap(), b"Linux");
+        // A bad pointer faults: -EFAULT (-14).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_UNAME, [0x9000, 0, 0, 0, 0, 0]),
+            -14
         );
     }
 
