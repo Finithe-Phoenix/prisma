@@ -9,7 +9,7 @@
 use std::io::{Read, Write};
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::fd_table::{FdEntry, FdTable};
 use prisma_runtime::guest_structs::{Flock, Iovec, PollFd, Stat, Timespec};
 
@@ -72,7 +72,7 @@ pub enum IoError {
 /// the underlying host write fails.
 pub fn write(
     fds: &FdTable,
-    mem: &GuestRegion,
+    mem: &impl GuestMem,
     fd: i32,
     buf: u64,
     count: usize,
@@ -110,7 +110,7 @@ pub fn write(
 /// [`IoError::Host`] if the underlying host read fails.
 pub fn read(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     buf: u64,
     count: usize,
@@ -241,7 +241,7 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
 /// accessible guest memory.
 pub fn fcntl(
     fds: &mut FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     cmd: i32,
     arg: u64,
@@ -341,7 +341,7 @@ fn stat_for_stream() -> Stat {
 /// # Errors
 /// [`IoError::BadFd`] for an unopen fd, [`IoError::Fault`] if `statbuf` is not
 /// writable guest memory, [`IoError::Host`] if reading the host metadata fails.
-pub fn fstat(fds: &FdTable, mem: &mut GuestRegion, fd: i32, statbuf: u64) -> Result<(), IoError> {
+pub fn fstat(fds: &FdTable, mem: &mut impl GuestMem, fd: i32, statbuf: u64) -> Result<(), IoError> {
     let stat = match fds.get(fd).ok_or(IoError::BadFd)? {
         FdEntry::File(file) => stat_from_metadata(&file.metadata().map_err(IoError::Host)?),
         FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => stat_for_stream(),
@@ -376,7 +376,7 @@ fn poll_revents(fds: &FdTable, fd: i32, events: i16) -> i16 {
 /// if the array is not accessible guest memory.
 pub fn poll(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     array_ptr: u64,
     nfds: u32,
 ) -> Result<usize, IoError> {
@@ -424,7 +424,7 @@ pub fn poll(
 /// timespec or the pollfd array is not accessible guest memory.
 pub fn ppoll(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     array_ptr: u64,
     nfds: u32,
     tmo_ptr: u64,
@@ -485,7 +485,7 @@ fn pwrite_file(file: &std::fs::File, bytes: &[u8], offset: u64) -> std::io::Resu
 /// [`IoError::Host`] if the host read fails.
 pub fn pread(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     buf: u64,
     count: usize,
@@ -510,7 +510,7 @@ pub fn pread(
 /// [`IoError::Host`] if the host write fails.
 pub fn pwrite(
     fds: &FdTable,
-    mem: &GuestRegion,
+    mem: &impl GuestMem,
     fd: i32,
     buf: u64,
     count: usize,
@@ -549,7 +549,7 @@ fn write_bytes_to_fd(fds: &FdTable, fd: i32, bytes: &[u8]) -> Result<usize, IoEr
 /// array itself is range-checked through `mem`; a negative count or one past
 /// `IOV_MAX` is `EINVAL`. The named buffers are *not* validated here — the
 /// caller checks them in the direction it needs.
-fn read_iovecs(mem: &GuestRegion, iov_ptr: u64, iovcnt: i32) -> Result<Vec<Iovec>, IoError> {
+fn read_iovecs(mem: &impl GuestMem, iov_ptr: u64, iovcnt: i32) -> Result<Vec<Iovec>, IoError> {
     let count = usize::try_from(iovcnt).map_err(|_| IoError::Invalid)?;
     if count == 0 {
         return Ok(Vec::new());
@@ -578,7 +578,7 @@ fn read_iovecs(mem: &GuestRegion, iov_ptr: u64, iovcnt: i32) -> Result<Vec<Iovec
 /// or stdin, [`IoError::Host`] on a host write failure.
 pub fn writev(
     fds: &FdTable,
-    mem: &GuestRegion,
+    mem: &impl GuestMem,
     fd: i32,
     iov_ptr: u64,
     iovcnt: i32,
@@ -606,7 +606,7 @@ pub fn writev(
 /// for an unopen fd or stdout/stderr, [`IoError::Host`] on a host read failure.
 pub fn readv(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     iov_ptr: u64,
     iovcnt: i32,
@@ -653,7 +653,7 @@ pub fn readv(
 /// [`IoError::Host`] on a host write failure.
 pub fn pwritev(
     fds: &FdTable,
-    mem: &GuestRegion,
+    mem: &impl GuestMem,
     fd: i32,
     iov_ptr: u64,
     iovcnt: i32,
@@ -682,7 +682,7 @@ pub fn pwritev(
 /// for an unopen fd, [`IoError::Host`] on a host read failure.
 pub fn preadv(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     iov_ptr: u64,
     iovcnt: i32,
@@ -733,7 +733,7 @@ pub enum GetcwdError {
 /// # Errors
 /// [`GetcwdError::Range`] if `size` cannot hold the path plus its NUL,
 /// [`GetcwdError::Fault`] if `buf` is not writable guest memory.
-pub fn getcwd(mem: &mut GuestRegion, buf: u64, size: usize) -> Result<usize, GetcwdError> {
+pub fn getcwd(mem: &mut impl GuestMem, buf: u64, size: usize) -> Result<usize, GetcwdError> {
     let needed = CWD.len() + 1; // path bytes + the trailing NUL
     if size < needed {
         return Err(GetcwdError::Range);
