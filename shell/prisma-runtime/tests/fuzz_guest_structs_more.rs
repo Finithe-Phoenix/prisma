@@ -8,8 +8,8 @@
 //! decodes to `None` (never reads past the end).
 
 use prisma_runtime::guest_structs::{
-    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SigAltStack, Stat, Sysinfo, Termios,
-    Timespec, Timeval, Tms,
+    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SchedParam, SigAltStack, Stat, Sysinfo,
+    Termios, Timespec, Timeval, Tms,
 };
 use proptest::prelude::*;
 
@@ -134,6 +134,12 @@ proptest! {
         prop_assert!(b[108..112].iter().all(|&x| x == 0));
     }
 
+    #[test]
+    fn sched_param_round_trips(priority in any::<i32>()) {
+        let p = SchedParam { priority };
+        prop_assert_eq!(SchedParam::from_guest_bytes(&p.to_guest_bytes()), Some(p));
+    }
+
     /// A buffer one byte shorter than the wire size always decodes to `None`.
     #[test]
     fn one_byte_short_is_rejected(pad in any::<u8>()) {
@@ -147,5 +153,6 @@ proptest! {
         prop_assert!(Rlimit::from_guest_bytes(&short(Rlimit::SIZE)).is_none());
         prop_assert!(ITimerval::from_guest_bytes(&short(ITimerval::SIZE)).is_none());
         prop_assert!(Tms::from_guest_bytes(&short(Tms::SIZE)).is_none());
+        prop_assert!(SchedParam::from_guest_bytes(&short(SchedParam::SIZE)).is_none());
     }
 }
