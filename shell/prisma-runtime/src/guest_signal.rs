@@ -59,6 +59,16 @@ impl GuestSignalQueue {
     pub const fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
+
+    /// The queued signals collected into a [`Sigset`] mask (order is lost —
+    /// `rt_sigpending` reports a set, not a sequence).
+    fn to_sigset(&self) -> Sigset {
+        let mut set = Sigset::empty();
+        for &sig in &self.pending {
+            set.insert(sig);
+        }
+        set
+    }
 }
 
 /// SIGKILL — never blockable.
@@ -237,6 +247,13 @@ impl SignalState {
     pub const fn pending_count(&self) -> usize {
         self.pending.len()
     }
+
+    /// The set of currently-pending signals as a mask — what `rt_sigpending`
+    /// reports (each raised-but-undelivered signal sets its bit).
+    #[must_use]
+    pub fn pending_set(&self) -> Sigset {
+        self.pending.to_sigset()
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +343,17 @@ mod tests {
         st.set_mask(SigprocmaskHow::Unblock, block11);
         assert_eq!(st.next_deliverable(), Some(11));
         assert_eq!(st.pending_count(), 0);
+    }
+
+    #[test]
+    fn pending_set_reports_every_queued_signal() {
+        let mut st = SignalState::new();
+        assert_eq!(st.pending_set(), Sigset::empty());
+        st.raise(11);
+        st.raise(17);
+        let set = st.pending_set();
+        assert!(set.contains(11) && set.contains(17));
+        assert!(!set.contains(12));
     }
 
     #[test]
