@@ -7,7 +7,7 @@
 //! a [`GuestRegion`].
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 
 /// `prctl` options we model.
 const PR_SET_DUMPABLE: i32 = 4;
@@ -41,7 +41,7 @@ pub enum PrctlError {
 /// if a name pointer is not accessible guest memory.
 pub fn prctl(
     comm: &mut [u8; COMM_LEN],
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     option: i32,
     arg2: u64,
 ) -> Result<i64, PrctlError> {
