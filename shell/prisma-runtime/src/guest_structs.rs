@@ -676,11 +676,108 @@ impl Utsname {
     }
 }
 
+/// `struct rusage` — the resource-usage counters `getrusage(2)`/`wait4` report.
+///
+/// The x86-64 Linux layout is two `timeval`s (user + system CPU time) followed
+/// by fourteen `long` counters, 144 bytes. The session does not account
+/// per-process resource use yet, so a reported `rusage` is all zero ([`Rusage::
+/// ZERO`]); this type preserves the wire layout the guest reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rusage {
+    /// User-mode CPU time (`ru_utime`).
+    pub utime: Timeval,
+    /// Kernel-mode CPU time (`ru_stime`).
+    pub stime: Timeval,
+    /// Maximum resident set size (`ru_maxrss`).
+    pub maxrss: i64,
+    /// Integral shared memory size (`ru_ixrss`).
+    pub ixrss: i64,
+    /// Integral unshared data size (`ru_idrss`).
+    pub idrss: i64,
+    /// Integral unshared stack size (`ru_isrss`).
+    pub isrss: i64,
+    /// Page reclaims, soft page faults (`ru_minflt`).
+    pub minflt: i64,
+    /// Page faults, hard (`ru_majflt`).
+    pub majflt: i64,
+    /// Swaps (`ru_nswap`).
+    pub nswap: i64,
+    /// Block input operations (`ru_inblock`).
+    pub inblock: i64,
+    /// Block output operations (`ru_oublock`).
+    pub oublock: i64,
+    /// IPC messages sent (`ru_msgsnd`).
+    pub msgsnd: i64,
+    /// IPC messages received (`ru_msgrcv`).
+    pub msgrcv: i64,
+    /// Signals received (`ru_nsignals`).
+    pub nsignals: i64,
+    /// Voluntary context switches (`ru_nvcsw`).
+    pub nvcsw: i64,
+    /// Involuntary context switches (`ru_nivcsw`).
+    pub nivcsw: i64,
+}
+
+impl Rusage {
+    /// On-wire size in guest memory (two `timeval`s + fourteen `long`s).
+    pub const SIZE: usize = Timeval::SIZE * 2 + 14 * 8;
+
+    /// An all-zero `rusage` — the honest value when no accounting is modelled.
+    pub const ZERO: Self = Self {
+        utime: Timeval { sec: 0, usec: 0 },
+        stime: Timeval { sec: 0, usec: 0 },
+        maxrss: 0,
+        ixrss: 0,
+        idrss: 0,
+        isrss: 0,
+        minflt: 0,
+        majflt: 0,
+        nswap: 0,
+        inblock: 0,
+        oublock: 0,
+        msgsnd: 0,
+        msgrcv: 0,
+        nsignals: 0,
+        nvcsw: 0,
+        nivcsw: 0,
+    };
+
+    /// Encode to the guest wire form: the two `timeval`s then the fourteen
+    /// little-endian `long` counters.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..16].copy_from_slice(&self.utime.to_guest_bytes());
+        out[16..32].copy_from_slice(&self.stime.to_guest_bytes());
+        let longs = [
+            self.maxrss,
+            self.ixrss,
+            self.idrss,
+            self.isrss,
+            self.minflt,
+            self.majflt,
+            self.nswap,
+            self.inblock,
+            self.oublock,
+            self.msgsnd,
+            self.msgrcv,
+            self.nsignals,
+            self.nvcsw,
+            self.nivcsw,
+        ];
+        for (i, v) in longs.iter().enumerate() {
+            let base = 32 + i * 8;
+            out[base..base + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec,
-        Timeval, Tms, Utsname, Winsize,
+        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, Rusage, SigAltStack, Stat, Termios,
+        Timespec, Timeval, Tms, Utsname, Winsize,
     };
 
     #[test]
@@ -975,6 +1072,22 @@ mod tests {
         assert_eq!(&bytes[24..32], &3i64.to_le_bytes()); // tms_cstime
         assert_eq!(Tms::from_guest_bytes(&bytes), Some(t));
         assert!(Tms::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn rusage_zero_encodes_to_144_zero_bytes_with_the_right_layout() {
+        let bytes = Rusage::ZERO.to_guest_bytes();
+        assert_eq!(bytes.len(), 144);
+        assert!(bytes.iter().all(|&b| b == 0));
+        // A non-zero counter lands at its field offset: ru_majflt is the 6th
+        // long after the two timevals -> offset 32 + 5*8.
+        let r = Rusage {
+            majflt: 7,
+            ..Rusage::ZERO
+        };
+        let b = r.to_guest_bytes();
+        let off = 32 + 5 * 8;
+        assert_eq!(&b[off..off + 8], &7i64.to_le_bytes());
     }
 
     #[test]
