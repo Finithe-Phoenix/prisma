@@ -252,5 +252,65 @@ theorem elimFences_length_le (l : List Op) :
     (elimFences l).length ≤ l.length := by
   rw [elimFences_eq_filter]
   exact List.length_filter_le _ l
+
+/-! ### Access-downgrade rewrite — IR-level bridge
+
+  The second half of the adaptive rewrite: when the classifier proves a region
+  single-threaded, its TSO-ordered loads/stores relax to plain ones. The model
+  soundness lives above (`WritePrivate`, `private_step_stable`, ...); this is the
+  IR-list rewrite and its projection bridge, parallel to `elimFences`. -/
+
+/-- Is this a TSO-ordered memory access? The downgrade rewrite's target. -/
+def isTsoAccess : Op → Bool
+  | Op.loadMemTSO _ _    => true
+  | Op.storeMemTSO _ _ _ => true
+  | _                    => false
+
+/-- Downgrade one op: a TSO load/store becomes its plain counterpart with the
+    same operands; every other op is unchanged. -/
+def downgradeOp : Op → Op
+  | Op.loadMemTSO a s    => Op.loadMem a s
+  | Op.storeMemTSO a v s => Op.storeMem a v s
+  | op                   => op
+
+/-- The access-downgrade rewrite on an IR instruction list. A `map`, so order
+    and length are preserved. -/
+def downgradeAccesses (l : List Op) : List Op := l.map downgradeOp
+
+/-- The downgrade preserves the memory-model projection: a plain load/store and
+    its TSO counterpart resolve to the same model `load`/`store` under ρ/σ. -/
+theorem downgradeOp_proj (ρ : Ref → Addr) (σ : Ref → Val) (op : Op) :
+    proj ρ σ (downgradeOp op) = proj ρ σ op := by
+  cases op <;> rfl
+
+/-- The downgrade rewrites in place — it neither grows nor shrinks a block. -/
+theorem downgradeAccesses_length (l : List Op) :
+    (downgradeAccesses l).length = l.length := by
+  simp [downgradeAccesses]
+
+/-- IR-level soundness bridge for the access-downgrade rewrite (parallel to
+    `projBlock_elimFences`): downgrading TSO accesses to plain leaves the
+    projected model block — every load/store at its resolved address/value, in
+    order — completely unchanged, so the TSO observable-equivalence results carry
+    over to the real downgrade. -/
+theorem projBlock_downgrade (ρ : Ref → Addr) (σ : Ref → Val) (l : List Op) :
+    projBlock ρ σ (downgradeAccesses l) = projBlock ρ σ l := by
+  induction l with
+  | nil => rfl
+  | cons op r ih =>
+    simp only [downgradeAccesses, List.map_cons, projBlock, List.filterMap_cons,
+               downgradeOp_proj ρ σ op] at ih ⊢
+    cases proj ρ σ op with
+    | none => exact ih
+    | some m => rw [ih]
+
+/-- Downgrading is idempotent: a plain access is already its own downgrade, so a
+    second pass is a no-op (the rewrite reaches a fixpoint immediately). -/
+theorem downgradeAccesses_idempotent (l : List Op) :
+    downgradeAccesses (downgradeAccesses l) = downgradeAccesses l := by
+  simp only [downgradeAccesses, List.map_map]
+  apply List.map_congr_left
+  intro op _
+  cases op <;> rfl
 end TSO
 end PrismaIR
