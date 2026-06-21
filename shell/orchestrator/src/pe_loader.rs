@@ -29,6 +29,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::address_space::Protection;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PeMachine {
     I386,   // 0x014C
@@ -56,6 +58,33 @@ pub struct PeSection {
     pub raw_data_size: u32,
     pub raw_data_offset: u32,
     pub characteristics: u32,
+}
+
+/// `IMAGE_SCN_MEM_EXECUTE` — the section may be executed.
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+/// `IMAGE_SCN_MEM_WRITE` — the section may be written.
+const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+impl PeSection {
+    /// The guest [`Protection`] this section's `characteristics` ask for, so
+    /// the loader can map each section with its own page permissions instead of
+    /// a blanket RWX — the basis for enforcing W^X (a section that is both
+    /// writable and executable is honoured as declared here, but a real mapper
+    /// should split or refuse it; see the W^X policy in the runtime).
+    ///
+    /// `IMAGE_SCN_MEM_READ` is implied for any mapped section, so protection is
+    /// decided by the execute and write bits.
+    #[must_use]
+    pub const fn protection(&self) -> Protection {
+        let exec = self.characteristics & IMAGE_SCN_MEM_EXECUTE != 0;
+        let write = self.characteristics & IMAGE_SCN_MEM_WRITE != 0;
+        match (exec, write) {
+            (true, true) => Protection::ReadWriteExecute,
+            (true, false) => Protection::ReadExecute,
+            (false, true) => Protection::ReadWrite,
+            (false, false) => Protection::ReadOnly,
+        }
+    }
 }
 
 /// One imported symbol: by name (with its hint dropped) or by ordinal.
@@ -1101,5 +1130,25 @@ mod tests {
             parse_exports(&img, &buf),
             Err(PeError::ExportRvaUnmapped(0xDEAD_BEEF))
         ));
+    }
+
+    #[test]
+    fn section_protection_maps_execute_and_write_bits() {
+        let mut s = PeSection {
+            name: *b".text   ",
+            virtual_size: 0,
+            virtual_address: 0,
+            raw_data_size: 0,
+            raw_data_offset: 0,
+            characteristics: 0,
+        };
+        s.characteristics = IMAGE_SCN_MEM_EXECUTE;
+        assert_eq!(s.protection(), Protection::ReadExecute);
+        s.characteristics = IMAGE_SCN_MEM_WRITE;
+        assert_eq!(s.protection(), Protection::ReadWrite);
+        s.characteristics = IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE;
+        assert_eq!(s.protection(), Protection::ReadWriteExecute);
+        s.characteristics = 0;
+        assert_eq!(s.protection(), Protection::ReadOnly);
     }
 }
