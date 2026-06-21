@@ -6,7 +6,7 @@
 //! [`GuestRegion`], so a bad address is a guest `EFAULT`.
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::guest_structs::Rlimit;
 
 /// Resource selectors (`<asm-generic/resource.h>`, identical on x86-64 Linux).
@@ -58,7 +58,7 @@ pub enum RlimitError {
 /// # Errors
 /// [`RlimitError::InvalidResource`] for an unknown resource,
 /// [`RlimitError::Fault`] if `rlim` is not writable guest memory.
-pub fn getrlimit(mem: &mut GuestRegion, resource: u32, rlim: u64) -> Result<(), RlimitError> {
+pub fn getrlimit(mem: &mut impl GuestMem, resource: u32, rlim: u64) -> Result<(), RlimitError> {
     if resource >= RLIMIT_NLIMITS {
         return Err(RlimitError::InvalidResource);
     }
@@ -78,7 +78,7 @@ pub fn getrlimit(mem: &mut GuestRegion, resource: u32, rlim: u64) -> Result<(), 
 /// [`RlimitError::Fault`] if either non-null pointer is not accessible guest
 /// memory.
 pub fn prlimit64(
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     resource: u32,
     new_limit: u64,
     old_limit: u64,
