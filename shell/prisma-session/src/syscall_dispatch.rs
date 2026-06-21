@@ -75,6 +75,10 @@ mod nr {
     pub const SCHED_GETAFFINITY: u64 = 204;
     pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
     pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
+    pub const GETPRIORITY: u64 = 140;
+    pub const SETPRIORITY: u64 = 141;
+    pub const SCHED_SETSCHEDULER: u64 = 144;
+    pub const SCHED_GETSCHEDULER: u64 = 145;
     pub const TIME: u64 = 201;
     pub const TIMES: u64 = 100;
     pub const SETITIMER: u64 = 38;
@@ -630,6 +634,38 @@ pub fn dispatch(
             1 | 2 => 1,
             _ => errno::EINVAL,
         },
+        // getpriority(which, who): report the default nice value (0). The session
+        // does not model per-process nice levels. `which` must be PRIO_PROCESS
+        // (0) / PRIO_PGRP (1) / PRIO_USER (2). NB: the raw syscall returns the
+        // nice value directly (glibc maps it to 20-nice).
+        nr::GETPRIORITY => {
+            if args[0] > 2 {
+                errno::EINVAL
+            } else {
+                0
+            }
+        }
+        // setpriority(which, who, prio): accepted (not stored — nice is not
+        // modelled) for a valid `which`.
+        nr::SETPRIORITY => {
+            if args[0] > 2 {
+                errno::EINVAL
+            } else {
+                0
+            }
+        }
+        // sched_getscheduler(pid): the only policy the session models is
+        // SCHED_OTHER (0).
+        nr::SCHED_GETSCHEDULER => 0,
+        // sched_setscheduler(pid, policy, param): only SCHED_OTHER is accepted;
+        // any other policy is EINVAL (the param is not consulted for OTHER).
+        nr::SCHED_SETSCHEDULER => {
+            if arg_i32(args[1]) == 0 {
+                0
+            } else {
+                errno::EINVAL
+            }
+        }
         // umask(mask): install `mask & 0o777` as the file-mode creation mask and
         // return the previous one. Always succeeds.
         nr::UMASK => {
@@ -1175,6 +1211,62 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_SYSINFO, [0x9000, 0, 0, 0, 0, 0]),
             -14
+        );
+    }
+
+    #[test]
+    fn priority_and_scheduler_policy_syscalls_route() {
+        const SYS_GETPRIORITY: u64 = 140;
+        const SYS_SETPRIORITY: u64 = 141;
+        const SYS_SCHED_SETSCHEDULER: u64 = 144;
+        const SYS_SCHED_GETSCHEDULER: u64 = 145;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // getpriority(PRIO_PROCESS=0, 0) -> 0 (default nice).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETPRIORITY, [0, 0, 0, 0, 0, 0]),
+            0
+        );
+        // An out-of-range `which` (3) -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETPRIORITY, [3, 0, 0, 0, 0, 0]),
+            -22
+        );
+        // setpriority(PRIO_USER=2, who, prio) -> 0 (accepted, not stored).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_SETPRIORITY, [2, 100, 5, 0, 0, 0]),
+            0
+        );
+        // sched_getscheduler(pid) -> SCHED_OTHER (0).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_GETSCHEDULER,
+                [0, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // sched_setscheduler(pid, SCHED_OTHER=0, param) -> 0.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETSCHEDULER,
+                [0, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // sched_setscheduler with SCHED_FIFO=1 -> -EINVAL (-22).
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETSCHEDULER,
+                [0, 1, 0, 0, 0, 0]
+            ),
+            -22
         );
     }
 
