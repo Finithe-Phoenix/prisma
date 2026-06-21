@@ -8,8 +8,8 @@
 //! decodes to `None` (never reads past the end).
 
 use prisma_runtime::guest_structs::{
-    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SchedParam, SigAltStack, Stat, Sysinfo,
-    Termios, Timespec, Timeval, Tms,
+    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SchedParam, SigAltStack, Stat, Statfs,
+    Sysinfo, Termios, Timespec, Timeval, Tms,
 };
 use proptest::prelude::*;
 
@@ -132,6 +132,30 @@ proptest! {
         prop_assert_eq!(&b[32..40], &totalram.to_le_bytes());
         prop_assert!(b[82..88].iter().all(|&x| x == 0));
         prop_assert!(b[108..112].iter().all(|&x| x == 0));
+    }
+
+    /// `Statfs` is encode-only; `f_type` lands @0 and `f_bavail` @32 for
+    /// arbitrary values, sized exactly at `SIZE`, with the four spare words zero.
+    #[test]
+    fn statfs_encodes_at_known_offsets(f_type in any::<u64>(), bavail in any::<u64>()) {
+        let s = Statfs {
+            f_type,
+            bsize: 4096,
+            blocks: 0,
+            bfree: 0,
+            bavail,
+            files: 0,
+            ffree: 0,
+            fsid: 0,
+            namelen: 255,
+            frsize: 4096,
+            flags: 0,
+        };
+        let b = s.to_guest_bytes();
+        prop_assert_eq!(b.len(), Statfs::SIZE);
+        prop_assert_eq!(&b[0..8], &f_type.to_le_bytes());
+        prop_assert_eq!(&b[32..40], &bavail.to_le_bytes());
+        prop_assert!(b[88..120].iter().all(|&x| x == 0));
     }
 
     #[test]
