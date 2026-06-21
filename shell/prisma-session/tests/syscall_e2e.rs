@@ -26,7 +26,12 @@ fn an_io_and_time_sequence_persists_fd_state_and_writes_memory() {
     let mut ctx = SyscallContext::new();
     let mut buf = [0u8; 64];
     buf[..5].copy_from_slice(b"hello");
-    let mut mem = { let mut s = BackedAddressSpace::new(); s.map_with_bytes(0x1000, &buf, Protection::ReadWrite).unwrap(); s };
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
 
     // write(1, "hello", 5) -> 5 (stdout, captured by the harness).
     assert_eq!(
@@ -73,7 +78,12 @@ fn blocking_a_signal_then_querying_pending_round_trips_through_state() {
     let mut block = Sigset::empty();
     block.insert(11);
     buf[0..8].copy_from_slice(&block.to_guest_bytes());
-    let mut mem = { let mut s = BackedAddressSpace::new(); s.map_with_bytes(0x1000, &buf, Protection::ReadWrite).unwrap(); s };
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
 
     // rt_sigprocmask(SIG_BLOCK, set=0x1000, oldset=0) -> 0: the mask persists.
     assert_eq!(

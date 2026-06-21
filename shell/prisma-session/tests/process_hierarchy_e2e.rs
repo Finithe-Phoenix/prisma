@@ -22,7 +22,8 @@ const ESRCH: i64 = -3;
 
 fn region(buf: &[u8]) -> BackedAddressSpace {
     let mut s = BackedAddressSpace::new();
-    s.map_with_bytes(0x1000, buf, Protection::ReadWrite).unwrap();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite)
+        .unwrap();
     s
 }
 

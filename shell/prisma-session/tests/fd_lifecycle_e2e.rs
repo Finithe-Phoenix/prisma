@@ -20,7 +20,8 @@ const O_CLOEXEC: u64 = 0o2_000_000;
 
 fn region(buf: &[u8]) -> BackedAddressSpace {
     let mut s = BackedAddressSpace::new();
-    s.map_with_bytes(0x1000, buf, Protection::ReadWrite).unwrap();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite)
+        .unwrap();
     s
 }
 

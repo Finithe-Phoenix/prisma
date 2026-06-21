@@ -17,7 +17,12 @@ const ENOSYS: i64 = -38;
 fn dispatch_never_panics_over_the_low_syscall_range() {
     let mut ctx = SyscallContext::new();
     let buf = [0u8; 64];
-    let mut mem = { let mut s = BackedAddressSpace::new(); s.map_with_bytes(0x1000, &buf, Protection::ReadWrite).unwrap(); s };
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
     // A pointer into the zeroed region for pointer args; fd-shaped args (4096)
     // are harmlessly unopen, so no syscall blocks or grows unbounded.
     for number in 0u64..512 {
@@ -29,7 +34,12 @@ fn dispatch_never_panics_over_the_low_syscall_range() {
 fn dispatch_never_panics_on_extreme_args() {
     let mut ctx = SyscallContext::new();
     let buf = [0u8; 16];
-    let mut mem = { let mut s = BackedAddressSpace::new(); s.map_with_bytes(0x1000, &buf, Protection::ReadWrite).unwrap(); s };
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
     // Wild pointers / counts: every handler must fault (EFAULT/EBADF), not panic.
     for number in [0u64, 1, 3, 14, 96, 228, 229] {
         let _ = dispatch(
@@ -51,7 +61,12 @@ fn dispatch_never_panics_on_extreme_args() {
 fn unrouted_numbers_return_negative_enosys() {
     let mut ctx = SyscallContext::new();
     let buf = [0u8; 16];
-    let mut mem = { let mut s = BackedAddressSpace::new(); s.map_with_bytes(0x1000, &buf, Protection::ReadWrite).unwrap(); s };
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
     for number in [400u64, 1000, 65_535, u64::MAX, 9999] {
         assert_eq!(dispatch(&mut ctx, &mut mem, number, [0; 6]), ENOSYS);
     }
