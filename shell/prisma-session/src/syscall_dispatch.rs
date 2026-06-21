@@ -47,6 +47,7 @@ mod nr {
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const SCHED_SETAFFINITY: u64 = 203;
     pub const SCHED_GETAFFINITY: u64 = 204;
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
@@ -73,6 +74,18 @@ const GUEST_UID: i64 = 1000;
 /// We do not model close-on-exec yet, but accepting the flag — and rejecting any
 /// other bit — keeps the ABI faithful.
 const O_CLOEXEC: i32 = 0o2_000_000;
+
+/// The CPU-affinity mask the guest sees: the low `available_parallelism` bits
+/// set, capped at 64 CPUs (a single `u64` word). Shared by `sched_getaffinity`
+/// (reported) and `sched_setaffinity` (the set of CPUs a request may select).
+fn online_cpu_mask() -> u64 {
+    let ncpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    if ncpus >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << ncpus) - 1
+    }
+}
 
 /// Per-thread state the syscall layer carries across calls: the fd table and the
 /// signal mask, plus the monotonic-clock reference. The guest memory region is
@@ -339,14 +352,37 @@ pub fn dispatch(
             } else if arg_usize(args[1]) < 8 {
                 errno::EINVAL
             } else {
-                let ncpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
-                let mask: u64 = if ncpus >= 64 {
-                    u64::MAX
-                } else {
-                    (1u64 << ncpus) - 1
-                };
-                match mem.write(args[2], &mask.to_le_bytes()) {
+                match mem.write(args[2], &online_cpu_mask().to_le_bytes()) {
                     Ok(()) => 8,
+                    Err(_) => errno::EFAULT,
+                }
+            }
+        }
+        // sched_setaffinity(pid, cpusetsize, mask): read the requested CPU mask
+        // and accept it if it selects at least one online CPU (else EINVAL, as
+        // the kernel does). Affinity is advisory in our model — the guest runs
+        // on every available CPU regardless — so a valid request is a no-op
+        // success. pid 0/self is the caller; any other pid is ESRCH.
+        nr::SCHED_SETAFFINITY => {
+            let me = std::process::id();
+            let want = arg_i32(args[0]);
+            let size = arg_usize(args[1]);
+            if want != 0 && !(want > 0 && want as u32 == me) {
+                errno::ESRCH
+            } else if size == 0 {
+                errno::EINVAL
+            } else {
+                let n = size.min(8);
+                match mem.read(args[2], n) {
+                    Ok(bytes) => {
+                        let mut raw = [0u8; 8];
+                        raw[..n].copy_from_slice(bytes);
+                        if u64::from_le_bytes(raw) & online_cpu_mask() == 0 {
+                            errno::EINVAL // the mask selects no online CPU
+                        } else {
+                            0
+                        }
+                    }
                     Err(_) => errno::EFAULT,
                 }
             }
@@ -730,6 +766,75 @@ mod tests {
                 [0, 8, 0x100A, 0, 0, 0]
             ),
             -14
+        );
+    }
+
+    #[test]
+    fn sched_setaffinity_accepts_a_valid_mask_and_rejects_an_empty_one() {
+        const SYS_SCHED_SETAFFINITY: u64 = 203;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 16];
+        // A mask selecting CPU 0 (bit 0) at guest 0x1000.
+        buf[0] = 1;
+        let mut mem = region(&mut buf);
+        // sched_setaffinity(0, 8, 0x1000) accepts (CPU 0 is online) -> 0.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETAFFINITY,
+                [0, 8, 0x1000, 0, 0, 0]
+            ),
+            0
+        );
+        // A zero cpusetsize is -EINVAL.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETAFFINITY,
+                [0, 0, 0x1000, 0, 0, 0]
+            ),
+            -22
+        );
+        // Another process is -ESRCH.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETAFFINITY,
+                [999_999, 8, 0x1000, 0, 0, 0]
+            ),
+            -3
+        );
+        // A bad mask pointer is -EFAULT.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETAFFINITY,
+                [0, 8, 0x100A, 0, 0, 0]
+            ),
+            -14
+        );
+    }
+
+    #[test]
+    fn sched_setaffinity_rejects_an_empty_mask() {
+        const SYS_SCHED_SETAFFINITY: u64 = 203;
+        let mut ctx = SyscallContext::new();
+        // An all-zero mask selects no CPU at all -> -EINVAL, independent of how
+        // many CPUs the host has.
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETAFFINITY,
+                [0, 8, 0x1000, 0, 0, 0]
+            ),
+            -22
         );
     }
 
