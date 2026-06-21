@@ -256,6 +256,9 @@ impl SigAction {
 pub struct SignalState {
     pending: GuestSignalQueue,
     blocked: Sigset,
+    /// Non-default dispositions registered via `rt_sigaction`; an absent signal
+    /// is `SIG_DFL`. Keyed by signal number (1..=64).
+    actions: std::collections::HashMap<u32, SigAction>,
 }
 
 impl SignalState {
@@ -299,6 +302,29 @@ impl SignalState {
     #[must_use]
     pub fn pending_set(&self) -> Sigset {
         self.pending.to_sigset()
+    }
+
+    /// The disposition registered for `sig` (the default `SIG_DFL` action if
+    /// none was set), or `None` if `sig` is outside the valid `1..=64` range.
+    /// What `rt_sigaction` reports in its `oldact` out-argument.
+    #[must_use]
+    pub fn action(&self, sig: u32) -> Option<SigAction> {
+        if matches!(sig, 1..=64) {
+            Some(self.actions.get(&sig).copied().unwrap_or_default())
+        } else {
+            None
+        }
+    }
+
+    /// Register `act` as the disposition for `sig`. Returns `false` (no change)
+    /// for a signal outside `1..=64` or for SIGKILL/SIGSTOP, whose disposition
+    /// the kernel never lets a process change.
+    pub fn set_action(&mut self, sig: u32, act: SigAction) -> bool {
+        if !matches!(sig, 1..=64) || sig == SIGKILL || sig == SIGSTOP {
+            return false;
+        }
+        self.actions.insert(sig, act);
+        true
     }
 }
 
@@ -459,5 +485,28 @@ mod tests {
         assert_eq!(SigAction::from_guest_bytes(&bytes), Some(act));
         // A short buffer is rejected, not read past.
         assert!(SigAction::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn signal_state_stores_and_reports_dispositions() {
+        let mut st = SignalState::new();
+        // Unset signal reports SIG_DFL (the default action).
+        assert_eq!(st.action(11), Some(SigAction::default()));
+        let act = SigAction {
+            handler: 0x1_4000_5000,
+            flags: 4,
+            restorer: 0,
+            mask: Sigset::empty(),
+        };
+        assert!(st.set_action(11, act));
+        assert_eq!(st.action(11), Some(act));
+        // SIGKILL/SIGSTOP dispositions can never be changed.
+        assert!(!st.set_action(9, act));
+        assert!(!st.set_action(19, act));
+        assert_eq!(st.action(9), Some(SigAction::default()));
+        // Out-of-range signals have no disposition.
+        assert!(st.action(0).is_none());
+        assert!(st.action(65).is_none());
+        assert!(!st.set_action(65, act));
     }
 }
