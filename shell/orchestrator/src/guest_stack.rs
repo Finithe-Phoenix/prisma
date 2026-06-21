@@ -30,8 +30,10 @@ impl GuestStack {
 }
 
 /// Map a `size`-byte read/write stack at `base` into `space`, returning its
-/// descriptor. Fails (via the address space) on a zero size, an overflow, or
-/// an overlap with an existing mapping — the stack must not alias the image.
+/// descriptor.
+///
+/// Fails (via the address space) on a zero size, an overflow, or an overlap
+/// with an existing mapping — the stack must not alias the image.
 pub fn map_stack(
     space: &mut AddressSpace,
     base: u64,
