@@ -71,13 +71,16 @@ impl BackedAddressSpace {
         }
     }
 
-    /// Map `len` zeroed bytes at `base` with `prot`. Rejects a zero length, an
-    /// address-space overflow, and any overlap with an existing mapping.
-    ///
-    /// # Errors
-    /// [`AddressSpaceError::ZeroSize`], [`AddressSpaceError::Overflow`], or
-    /// [`AddressSpaceError::Overlap`].
-    pub fn map(&mut self, base: u64, len: u64, prot: Protection) -> Result<(), AddressSpaceError> {
+    /// Insert a region with the given backing `bytes`, rejecting an empty
+    /// region, an address-space overflow, and any overlap. The shared core of
+    /// [`map`](Self::map) and [`map_with_bytes`](Self::map_with_bytes).
+    fn insert_region(
+        &mut self,
+        base: u64,
+        prot: Protection,
+        bytes: Vec<u8>,
+    ) -> Result<(), AddressSpaceError> {
+        let len = bytes.len() as u64;
         if len == 0 {
             return Err(AddressSpaceError::ZeroSize);
         }
@@ -90,17 +93,36 @@ impl BackedAddressSpace {
                 existing: r.base,
             });
         }
-        let size = usize::try_from(len).map_err(|_| AddressSpaceError::Overflow(base, len))?;
         let idx = self.regions.partition_point(|r| r.base < base);
-        self.regions.insert(
-            idx,
-            MemRegion {
-                base,
-                prot,
-                bytes: vec![0u8; size],
-            },
-        );
+        self.regions.insert(idx, MemRegion { base, prot, bytes });
         Ok(())
+    }
+
+    /// Map `len` zeroed bytes at `base` with `prot`. Rejects a zero length, an
+    /// address-space overflow, and any overlap with an existing mapping.
+    ///
+    /// # Errors
+    /// [`AddressSpaceError::ZeroSize`], [`AddressSpaceError::Overflow`], or
+    /// [`AddressSpaceError::Overlap`].
+    pub fn map(&mut self, base: u64, len: u64, prot: Protection) -> Result<(), AddressSpaceError> {
+        let size = usize::try_from(len).map_err(|_| AddressSpaceError::Overflow(base, len))?;
+        self.insert_region(base, prot, vec![0u8; size])
+    }
+
+    /// Map a region at `base` initialised with `bytes` (size = `bytes.len()`) —
+    /// how the PE loader installs a section's contents into the guest space.
+    /// Same rejection rules as [`map`](Self::map).
+    ///
+    /// # Errors
+    /// [`AddressSpaceError::ZeroSize`], [`AddressSpaceError::Overflow`], or
+    /// [`AddressSpaceError::Overlap`].
+    pub fn map_with_bytes(
+        &mut self,
+        base: u64,
+        bytes: &[u8],
+        prot: Protection,
+    ) -> Result<(), AddressSpaceError> {
+        self.insert_region(base, prot, bytes.to_vec())
     }
 
     /// Unmap the region based exactly at `base`, dropping its bytes. Explicit,
@@ -153,6 +175,29 @@ impl BackedAddressSpace {
             return Err(RangeError::Unmapped);
         }
         r.bytes[off..end].copy_from_slice(src);
+        Ok(())
+    }
+
+    /// Validate that `[addr, addr+len)` is a writable range within a single
+    /// region, without copying — the `read`-before-`write` guard a syscall like
+    /// `read(2)` uses so a bad destination faults before any bytes are consumed.
+    /// Mirrors [`crate::guest_memory::GuestRegion::ensure_writable`].
+    ///
+    /// # Errors
+    /// [`RangeError::Unmapped`] if `addr` is unmapped or the range runs off the
+    /// region, [`RangeError::Overflow`] on a `usize` wrap, or
+    /// [`RangeError::NotWritable`] if the covering region is read-only.
+    pub fn ensure_writable(&self, addr: u64, len: usize) -> Result<(), RangeError> {
+        let i = self.region_idx(addr).ok_or(RangeError::Unmapped)?;
+        let r = &self.regions[i];
+        if !r.prot.is_writable() {
+            return Err(RangeError::NotWritable);
+        }
+        let off = usize::try_from(addr - r.base).map_err(|_| RangeError::Overflow)?;
+        let end = off.checked_add(len).ok_or(RangeError::Overflow)?;
+        if end > r.bytes.len() {
+            return Err(RangeError::Unmapped);
+        }
         Ok(())
     }
 
@@ -349,6 +394,35 @@ mod tests {
         let prev = s.mprotect(0x3000, Protection::ReadOnly).unwrap();
         assert_eq!(prev, Protection::ReadWrite);
         assert_eq!(s.write(0x3000, &[1]), Err(RangeError::NotWritable));
+    }
+
+    #[test]
+    fn map_with_bytes_installs_section_content() {
+        let mut s = BackedAddressSpace::new();
+        // Install a ".rodata"-like section with real bytes at a fixed base.
+        s.map_with_bytes(0x4_0000, &[0xDE, 0xAD, 0xBE, 0xEF], Protection::ReadOnly)
+            .unwrap();
+        assert_eq!(s.read(0x4_0000, 4).unwrap(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+        // It is read-only: a write faults.
+        assert_eq!(s.write(0x4_0000, &[0]), Err(RangeError::NotWritable));
+        // Empty content is rejected (zero-size region).
+        assert!(matches!(
+            s.map_with_bytes(0x5_0000, &[], Protection::ReadWrite),
+            Err(AddressSpaceError::ZeroSize)
+        ));
+    }
+
+    #[test]
+    fn ensure_writable_matches_write_acceptance_without_copying() {
+        let s = space(); // .text RX [0x1000,0x2000), .data RW [0x3000,0x5000)
+                         // A writable range inside .data validates.
+        assert!(s.ensure_writable(0x3000, 0x10).is_ok());
+        // Read-only .text is NotWritable.
+        assert_eq!(s.ensure_writable(0x1000, 1), Err(RangeError::NotWritable));
+        // A range running off the region end is Unmapped, not a host overrun.
+        assert_eq!(s.ensure_writable(0x4ffc, 8), Err(RangeError::Unmapped));
+        // An unmapped address is Unmapped.
+        assert_eq!(s.ensure_writable(0x9000, 1), Err(RangeError::Unmapped));
     }
 
     #[test]
