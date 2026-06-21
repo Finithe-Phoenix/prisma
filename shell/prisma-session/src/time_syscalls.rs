@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::guest_clock::{monotonic_timespec, realtime_timespec, realtime_timeval};
-use prisma_runtime::guest_structs::Timespec;
+use prisma_runtime::guest_structs::{ITimerval, Timespec};
 
 /// `CLOCK_REALTIME` clock id (Linux): wall-clock time.
 pub const CLOCK_REALTIME: u64 = 0;
@@ -137,12 +137,63 @@ pub fn time(mem: &mut GuestRegion, tloc: u64) -> Result<i64, TimeError> {
     Ok(secs)
 }
 
+/// `setitimer(which, new, old)`: report the current interval timer to `old`
+/// (when non-null) and install the one at `new` (when non-null), returning the
+/// timer in effect afterwards. Both pointers go through the range-checked
+/// [`GuestRegion`].
+///
+/// The handler is pure in the timer state — the caller owns the three timers
+/// (REAL/VIRTUAL/PROF), passing the selected one as `current` and storing the
+/// returned value — so it stays decoupled from where that state lives. The timer
+/// is *stored* but not yet armed for delivery (that needs the signal-delivery
+/// loop); `getitimer` reports back exactly what was stored.
+///
+/// # Errors
+/// [`TimeError::Fault`] if a non-null `new`/`old` is not accessible guest memory.
+pub fn setitimer(
+    mem: &mut GuestRegion,
+    new_ptr: u64,
+    old_ptr: u64,
+    current: ITimerval,
+) -> Result<ITimerval, TimeError> {
+    if old_ptr != 0 {
+        mem.write(old_ptr, &current.to_guest_bytes())
+            .map_err(TimeError::Fault)?;
+    }
+    if new_ptr != 0 {
+        let bytes = mem
+            .read(new_ptr, ITimerval::SIZE)
+            .map_err(TimeError::Fault)?;
+        let next =
+            ITimerval::from_guest_bytes(bytes).ok_or(TimeError::Fault(RangeError::Unmapped))?;
+        return Ok(next);
+    }
+    Ok(current)
+}
+
+/// `getitimer(which, curr)`: write the selected interval timer to the guest
+/// `curr` pointer.
+///
+/// # Errors
+/// [`TimeError::Fault`] if `curr` is not writable guest memory.
+pub fn getitimer(
+    mem: &mut GuestRegion,
+    curr_ptr: u64,
+    current: ITimerval,
+) -> Result<(), TimeError> {
+    mem.write(curr_ptr, &current.to_guest_bytes())
+        .map_err(TimeError::Fault)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{clock_gettime, gettimeofday, TimeError, CLOCK_MONOTONIC, CLOCK_REALTIME};
+    use super::{
+        clock_gettime, getitimer, gettimeofday, setitimer, TimeError, CLOCK_MONOTONIC,
+        CLOCK_REALTIME,
+    };
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
-    use prisma_runtime::guest_structs::{Timespec, Timeval};
+    use prisma_runtime::guest_structs::{ITimerval, Timespec, Timeval};
     use std::time::Instant;
 
     const AFTER_2020: i64 = 1_600_000_000;
@@ -339,6 +390,54 @@ mod tests {
         assert_eq!(
             time(&mut mem, 0x1000),
             Err(TimeError::Fault(RangeError::NotWritable))
+        );
+    }
+
+    #[test]
+    fn setitimer_reports_old_and_installs_new_and_getitimer_reads_back() {
+        let mut buf = [0u8; 96];
+        // A new timer at guest 0x1000: reload 1.0s, first expiry 0.5s.
+        let new = ITimerval {
+            interval: Timeval { sec: 1, usec: 0 },
+            value: Timeval {
+                sec: 0,
+                usec: 500_000,
+            },
+        };
+        buf[0..32].copy_from_slice(&new.to_guest_bytes());
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // The currently-disarmed timer.
+        let current = ITimerval {
+            interval: Timeval { sec: 0, usec: 0 },
+            value: Timeval { sec: 0, usec: 0 },
+        };
+        // setitimer(new=0x1000, old=0x1020): install new, report old (disarmed).
+        let installed = setitimer(&mut mem, 0x1000, 0x1020, current).expect("ok");
+        assert_eq!(installed, new);
+        let old = ITimerval::from_guest_bytes(&buf[0x20..0x20 + 32]).unwrap();
+        assert_eq!(old, current);
+
+        // getitimer reads the installed timer back into a fresh region.
+        let mut buf2 = [0u8; 32];
+        let mut mem2 = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf2);
+        getitimer(&mut mem2, 0x1000, installed).expect("read");
+        assert_eq!(ITimerval::from_guest_bytes(&buf2).unwrap(), new);
+    }
+
+    #[test]
+    fn setitimer_null_new_keeps_current_and_bad_pointer_faults() {
+        let current = ITimerval {
+            interval: Timeval { sec: 2, usec: 0 },
+            value: Timeval { sec: 1, usec: 0 },
+        };
+        let mut buf = [0u8; 32];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // Both null: nothing reported/installed — current is unchanged.
+        assert_eq!(setitimer(&mut mem, 0, 0, current).unwrap(), current);
+        // A too-short old region (only 8 bytes from 0x1018) is EFAULT.
+        assert_eq!(
+            setitimer(&mut mem, 0, 0x1018, current),
+            Err(TimeError::Fault(RangeError::Unmapped))
         );
     }
 }
