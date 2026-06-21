@@ -411,5 +411,30 @@ theorem adaptiveRewrite_eq_downgrade_first (l : List Op) :
     adaptiveRewrite l = elimFences (downgradeAccesses l) := by
   rw [adaptiveRewrite, elimFences_downgrade_comm]
 
+/-- Downgrading an op always yields a non-TSO access: the two TSO constructors
+    become their plain counterparts, and every other op was already non-TSO. -/
+theorem isTsoAccess_downgradeOp (op : Op) : isTsoAccess (downgradeOp op) = false := by
+  cases op <;> rfl
+
+/-- After the downgrade pass, no TSO-ordered access remains. -/
+theorem downgradeAccesses_tsoFree (l : List Op) :
+    ∀ op ∈ downgradeAccesses l, isTsoAccess op = false := by
+  intro op hop
+  simp only [downgradeAccesses, List.mem_map] at hop
+  obtain ⟨op', _, rfl⟩ := hop
+  exact isTsoAccess_downgradeOp op'
+
+/-- **Downgrade effectiveness — the mirror of `elimFences_barFree`.** After the
+    full adaptive rewrite, no TSO-ordered load/store survives: the downgrade half
+    relaxed every one to a plain access. Together with `adaptiveRewrite_barFree`
+    (no `bar` survives), this shows the rewrite achieves its goal on *both* axes —
+    fences gone and TSO accesses relaxed — so the ARM64 it emits needs neither a
+    `dmb` nor an acquire/release for the proven-thread-local region. -/
+theorem adaptiveRewrite_tsoFree (l : List Op) :
+    ∀ op ∈ adaptiveRewrite l, isTsoAccess op = false := by
+  intro op hop
+  rw [adaptiveRewrite] at hop
+  exact downgradeAccesses_tsoFree _ op hop
+
 end TSO
 end PrismaIR
