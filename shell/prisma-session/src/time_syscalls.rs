@@ -7,11 +7,12 @@
 //! rather than an out-of-bounds host write. This is where the memory-safety
 //! primitive, the clock sampler, and the struct marshalling compose.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::guest_clock::{monotonic_timespec, realtime_timespec, realtime_timeval};
+use prisma_runtime::guest_structs::Timespec;
 
 /// `CLOCK_REALTIME` clock id (Linux): wall-clock time.
 pub const CLOCK_REALTIME: u64 = 0;
@@ -24,6 +25,8 @@ pub const CLOCK_MONOTONIC: u64 = 1;
 pub enum TimeError {
     /// The clock id is not one we model — guest `EINVAL`.
     UnknownClock(u64),
+    /// A `timespec` field is out of range (negative / overflowing) — `EINVAL`.
+    InvalidValue,
     /// The out-pointer is not writable guest memory — guest `EFAULT`.
     Fault(RangeError),
 }
@@ -59,6 +62,21 @@ pub fn clock_gettime(
 pub fn gettimeofday(mem: &mut GuestRegion, tv: u64) -> Result<(), TimeError> {
     mem.write(tv, &realtime_timeval().to_guest_bytes())
         .map_err(TimeError::Fault)
+}
+
+/// `nanosleep(req, rem)`: read the requested sleep interval from the guest `req`
+/// `timespec` and return it as a host [`Duration`] for the caller to sleep on.
+/// The `rem` out-pointer (time remaining on an interrupted sleep) is the
+/// caller's to fill; this parses and validates the request.
+///
+/// # Errors
+/// [`TimeError::Fault`] if `req` is not readable guest memory,
+/// [`TimeError::InvalidValue`] if the `timespec` is negative or out of range
+/// (the kernel's `EINVAL` for `nanosleep`).
+pub fn nanosleep_request(mem: &GuestRegion, req: u64) -> Result<Duration, TimeError> {
+    let bytes = mem.read(req, Timespec::SIZE).map_err(TimeError::Fault)?;
+    let ts = Timespec::from_guest_bytes(bytes).ok_or(TimeError::Fault(RangeError::Unmapped))?;
+    ts.to_duration().ok_or(TimeError::InvalidValue)
 }
 
 #[cfg(test)]
@@ -131,6 +149,49 @@ mod tests {
         assert_eq!(
             gettimeofday(&mut mem, 0x1000),
             Err(TimeError::Fault(RangeError::NotWritable))
+        );
+    }
+
+    #[test]
+    fn nanosleep_parses_a_valid_request_into_a_duration() {
+        use super::nanosleep_request;
+        use std::time::Duration;
+        // 1.5 seconds as a guest timespec at 0x1000.
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(
+            &Timespec {
+                sec: 1,
+                nsec: 500_000_000,
+            }
+            .to_guest_bytes(),
+        );
+        let mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        assert_eq!(
+            nanosleep_request(&mem, 0x1000).unwrap(),
+            Duration::new(1, 500_000_000)
+        );
+    }
+
+    #[test]
+    fn nanosleep_rejects_a_negative_request_as_einval() {
+        use super::nanosleep_request;
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&Timespec { sec: -1, nsec: 0 }.to_guest_bytes());
+        let mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        assert_eq!(
+            nanosleep_request(&mem, 0x1000),
+            Err(TimeError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn nanosleep_with_an_unreadable_request_is_efault() {
+        use super::nanosleep_request;
+        let mut buf = [0u8; 8]; // too short for a 16-byte timespec
+        let mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        assert_eq!(
+            nanosleep_request(&mem, 0x1000),
+            Err(TimeError::Fault(RangeError::Unmapped))
         );
     }
 }
