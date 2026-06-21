@@ -490,10 +490,64 @@ impl EpollEvent {
     }
 }
 
+/// `struct flock` — the byte-range lock record `fcntl(F_GETLK/F_SETLK/F_SETLKW)`
+/// reads and writes.
+///
+/// The x86-64 Linux layout is 32 bytes: the 16-bit `l_type` and `l_whence`, then
+/// (after 4 bytes of alignment padding) the 64-bit `l_start` and `l_len`, and a
+/// 32-bit `l_pid` (with 4 trailing padding bytes). The reserved bytes are
+/// written zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Flock {
+    /// Lock type (`l_type`): F_RDLCK / F_WRLCK / F_UNLCK.
+    pub typ: i16,
+    /// How `l_start` is interpreted (`l_whence`): SEEK_SET/CUR/END.
+    pub whence: i16,
+    /// Starting offset of the lock (`l_start`).
+    pub start: i64,
+    /// Number of bytes locked (`l_len`); 0 means to end-of-file.
+    pub len: i64,
+    /// PID of the lock holder (`l_pid`), set by `F_GETLK`.
+    pub pid: i32,
+}
+
+impl Flock {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 32;
+
+    /// Decode one `flock` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            typ: i16::from_le_bytes(raw[0..2].try_into().ok()?),
+            whence: i16::from_le_bytes(raw[2..4].try_into().ok()?),
+            // raw[4..8] is alignment padding, ignored.
+            start: i64::from_le_bytes(raw[8..16].try_into().ok()?),
+            len: i64::from_le_bytes(raw[16..24].try_into().ok()?),
+            pid: i32::from_le_bytes(raw[24..28].try_into().ok()?),
+            // raw[28..32] is trailing padding, ignored.
+        })
+    }
+
+    /// Encode to the guest wire form. The alignment/trailing padding is zero.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..2].copy_from_slice(&self.typ.to_le_bytes());
+        out[2..4].copy_from_slice(&self.whence.to_le_bytes());
+        out[8..16].copy_from_slice(&self.start.to_le_bytes());
+        out[16..24].copy_from_slice(&self.len.to_le_bytes());
+        out[24..28].copy_from_slice(&self.pid.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EpollEvent, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval, Winsize,
+        EpollEvent, Flock, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval,
+        Winsize,
     };
 
     #[test]
@@ -721,5 +775,34 @@ mod tests {
         assert_eq!(EpollEvent::from_guest_bytes(&bytes), Some(e));
         // A buffer one byte short is rejected, not overrun.
         assert!(EpollEvent::from_guest_bytes(&[0u8; 11]).is_none());
+    }
+
+    #[test]
+    fn flock_round_trips_through_its_padded_layout() {
+        // F_WRLCK = 1, SEEK_SET = 0.
+        let fl = Flock {
+            typ: 1,
+            whence: 0,
+            start: 4096,
+            len: 0, // to EOF
+            pid: 1234,
+        };
+        let bytes = fl.to_guest_bytes();
+        assert_eq!(bytes.len(), Flock::SIZE);
+        // l_type [0..2], l_whence [2..4], l_start [8..16], l_pid [24..28].
+        assert_eq!(&bytes[0..2], &1i16.to_le_bytes());
+        assert_eq!(&bytes[8..16], &4096i64.to_le_bytes());
+        assert_eq!(&bytes[24..28], &1234i32.to_le_bytes());
+        // Alignment and trailing padding are zero.
+        assert_eq!(&bytes[4..8], &[0u8; 4]);
+        assert_eq!(&bytes[28..32], &[0u8; 4]);
+        assert_eq!(Flock::from_guest_bytes(&bytes), Some(fl));
+        // Decoding ignores whatever sits in the padding.
+        let mut dirty = bytes;
+        dirty[4..8].copy_from_slice(&[0xCC; 4]);
+        dirty[28..32].copy_from_slice(&[0xCC; 4]);
+        assert_eq!(Flock::from_guest_bytes(&dirty), Some(fl));
+        // A buffer one byte short is rejected.
+        assert!(Flock::from_guest_bytes(&[0u8; 31]).is_none());
     }
 }
