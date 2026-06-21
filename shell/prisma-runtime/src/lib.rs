@@ -38,6 +38,7 @@ pub mod jit_buffer_pool;
 pub mod jit_memory;
 pub mod nt_status;
 pub mod peb;
+pub mod process_parameters;
 pub mod signal_handler;
 pub mod smc_guard;
 pub mod syscall_handler;
