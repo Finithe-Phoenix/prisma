@@ -40,6 +40,7 @@ mod nr {
     pub const SCHED_YIELD: u64 = 24;
     pub const FSYNC: u64 = 74;
     pub const FDATASYNC: u64 = 75;
+    pub const FTRUNCATE: u64 = 77;
     pub const GETPID: u64 = 39;
     pub const GETUID: u64 = 102;
     pub const GETGID: u64 = 104;
@@ -291,6 +292,12 @@ pub fn dispatch(
             Err(e) => io_errno(&e),
         },
         nr::FDATASYNC => match io_syscalls::fdatasync(&ctx.fds, arg_i32(args[0])) {
+            Ok(()) => 0,
+            Err(e) => io_errno(&e),
+        },
+        // ftruncate(fd, length): resize the file (length is a signed off_t).
+        nr::FTRUNCATE => match io_syscalls::ftruncate(&ctx.fds, arg_i32(args[0]), arg_i64(args[1]))
+        {
             Ok(()) => 0,
             Err(e) => io_errno(&e),
         },
@@ -1035,6 +1042,51 @@ mod tests {
         );
 
         // Resource discipline: drop the table (closes the fd) then unlink.
+        ctx.fds = prisma_runtime::fd_table::FdTable::new();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ftruncate_routes_to_a_file_resize() {
+        use prisma_runtime::fd_table::FdEntry;
+        use std::io::Write as _;
+        const SYS_FTRUNCATE: u64 = 77;
+        let path =
+            std::env::temp_dir().join(format!("prisma_disp_trunc_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create");
+            f.write_all(b"hello world").expect("seed");
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open");
+        let mut ctx = SyscallContext::new();
+        let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+
+        // ftruncate(fd, 4) -> 0, file shrinks to 4 bytes.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FTRUNCATE, [fd, 4, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 4);
+        // A negative length is -EINVAL; stdout (1) is not a regular file -> -EINVAL.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_FTRUNCATE,
+                [fd, u64::MAX, 0, 0, 0, 0]
+            ),
+            -22
+        );
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FTRUNCATE, [1, 0, 0, 0, 0, 0]),
+            -22
+        );
+
         ctx.fds = prisma_runtime::fd_table::FdTable::new();
         let _ = std::fs::remove_file(&path);
     }
