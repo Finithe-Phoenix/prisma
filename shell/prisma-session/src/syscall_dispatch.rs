@@ -43,6 +43,7 @@ mod nr {
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
     pub const DUP3: u64 = 292;
+    pub const FCNTL: u64 = 72;
     pub const NANOSLEEP: u64 = 35;
     pub const SCHED_YIELD: u64 = 24;
     pub const FSYNC: u64 = 74;
@@ -366,6 +367,19 @@ pub fn dispatch(
                 }
             }
         }
+        // fcntl(fd, cmd, arg): F_DUPFD/-CLOEXEC duplicate onto a floor, the
+        // descriptor/status-flag and advisory-lock commands round-trip in the
+        // single-process model. The handler validates the fd and cmd.
+        nr::FCNTL => match io_syscalls::fcntl(
+            &mut ctx.fds,
+            mem,
+            arg_i32(args[0]),
+            arg_i32(args[1]),
+            args[2],
+        ) {
+            Ok(v) => v,
+            Err(e) => io_errno(&e),
+        },
         nr::TIME => match time_syscalls::time(mem, args[0]) {
             Ok(secs) => secs,
             Err(e) => time_errno(e),
@@ -924,6 +938,27 @@ mod tests {
             9
         );
         assert!(ctx.fds.is_open(9));
+    }
+
+    #[test]
+    fn fcntl_routes_dupfd_and_reports_ebadf_for_unopen() {
+        const SYS_FCNTL: u64 = 72;
+        const F_DUPFD: u64 = 0;
+        const F_GETFD: u64 = 1;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // fcntl(1, F_DUPFD, 10): duplicate stdout onto the lowest fd >= 10.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FCNTL, [1, F_DUPFD, 10, 0, 0, 0]),
+            10
+        );
+        assert!(ctx.fds.is_open(10));
+        // fcntl on an unopen fd is -EBADF (-9), before any cmd dispatch.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FCNTL, [9, F_GETFD, 0, 0, 0, 0]),
+            -9
+        );
     }
 
     #[test]
