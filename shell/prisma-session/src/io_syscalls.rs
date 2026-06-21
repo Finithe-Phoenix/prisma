@@ -713,11 +713,43 @@ pub fn preadv(
     Ok(nread)
 }
 
+/// The working directory the session reports. No per-process cwd is tracked yet,
+/// so the guest always sees the single root.
+const CWD: &[u8] = b"/";
+
+/// Why `getcwd` failed (each maps to a guest errno at routing time).
+#[derive(Debug)]
+pub enum GetcwdError {
+    /// The buffer is smaller than the path plus its NUL terminator — `ERANGE`.
+    Range,
+    /// The buffer is not writable guest memory — guest `EFAULT`.
+    Fault(RangeError),
+}
+
+/// `getcwd(buf, size)`: write the current working directory as a
+/// NUL-terminated path into the guest buffer at `buf`, returning its length
+/// including the terminator (the Linux `getcwd` return convention).
+///
+/// # Errors
+/// [`GetcwdError::Range`] if `size` cannot hold the path plus its NUL,
+/// [`GetcwdError::Fault`] if `buf` is not writable guest memory.
+pub fn getcwd(mem: &mut GuestRegion, buf: u64, size: usize) -> Result<usize, GetcwdError> {
+    let needed = CWD.len() + 1; // path bytes + the trailing NUL
+    if size < needed {
+        return Err(GetcwdError::Range);
+    }
+    let mut out = Vec::with_capacity(needed);
+    out.extend_from_slice(CWD);
+    out.push(0);
+    mem.write(buf, &out).map_err(GetcwdError::Fault)?;
+    Ok(needed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        fcntl, fstat, ftruncate, poll, ppoll, pread, preadv, pwrite, pwritev, readv, write, writev,
-        IoError,
+        fcntl, fstat, ftruncate, getcwd, poll, ppoll, pread, preadv, pwrite, pwritev, readv, write,
+        writev, GetcwdError, IoError,
     };
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
@@ -1389,6 +1421,38 @@ mod tests {
         assert!(matches!(
             fcntl(&mut fds, &mut mem, 1, 999, 0),
             Err(IoError::Invalid)
+        ));
+    }
+
+    #[test]
+    fn getcwd_writes_a_nul_terminated_root_path() {
+        let mut buf = [0xffu8; 16];
+        let mut mem = region(&mut buf);
+        // getcwd(buf, 16) -> 2 (the path "/" plus its NUL).
+        let n = getcwd(&mut mem, 0x1000, 16).expect("write ok");
+        assert_eq!(n, 2);
+        assert_eq!(mem.read(0x1000, 2).unwrap(), b"/\0");
+    }
+
+    #[test]
+    fn getcwd_reports_erange_when_the_buffer_is_too_small() {
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        // Need 2 bytes ("/" + NUL); a 1-byte buffer is ERANGE, nothing written.
+        assert!(matches!(
+            getcwd(&mut mem, 0x1000, 1),
+            Err(GetcwdError::Range)
+        ));
+    }
+
+    #[test]
+    fn getcwd_faults_on_an_unwritable_pointer() {
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        // A pointer outside the mapped region faults rather than writing OOB.
+        assert!(matches!(
+            getcwd(&mut mem, 0x9000, 16),
+            Err(GetcwdError::Fault(_))
         ));
     }
 }
