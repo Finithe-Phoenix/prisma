@@ -6,7 +6,7 @@
 //! checked through a [`GuestRegion`].
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_structs::Statfs;
 
@@ -46,7 +46,7 @@ fn synthetic_statfs() -> Statfs {
 ///
 /// # Errors
 /// [`RangeError`] if `buf` is not writable guest memory (guest `EFAULT`).
-pub fn statfs(mem: &mut GuestRegion, buf: u64) -> Result<(), RangeError> {
+pub fn statfs(mem: &mut impl GuestMem, buf: u64) -> Result<(), RangeError> {
     mem.write(buf, &synthetic_statfs().to_guest_bytes())
 }
 
@@ -67,7 +67,7 @@ pub enum FstatfsError {
 /// is not writable guest memory.
 pub fn fstatfs(
     fds: &FdTable,
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     fd: i32,
     buf: u64,
 ) -> Result<(), FstatfsError> {
