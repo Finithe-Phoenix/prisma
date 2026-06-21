@@ -12,6 +12,7 @@ pub mod guest_io;
 pub mod info_syscalls;
 pub mod io_syscalls;
 pub mod resource_syscalls;
+pub mod sched_syscalls;
 pub mod sig_syscalls;
 pub mod syscall_dispatch;
 pub mod time_syscalls;

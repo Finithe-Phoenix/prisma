@@ -837,11 +837,42 @@ impl Sysinfo {
     }
 }
 
+/// `struct sched_param { int sched_priority; }` — the scheduling parameter
+/// `sched_getparam`/`sched_setparam` exchange.
+///
+/// A single 32-bit priority; the kernel copies exactly `sizeof` (4 bytes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchedParam {
+    /// Static priority (`sched_priority`). For `SCHED_OTHER` this is always 0.
+    pub priority: i32,
+}
+
+impl SchedParam {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 4;
+
+    /// Decode one `sched_param` from the front of `bytes`, or `None` if too
+    /// short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            priority: i32::from_le_bytes(raw[0..4].try_into().ok()?),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        self.priority.to_le_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, Rusage, SigAltStack, Stat, Sysinfo,
-        Termios, Timespec, Timeval, Tms, Utsname, Winsize,
+        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, Rusage, SchedParam, SigAltStack, Stat,
+        Sysinfo, Termios, Timespec, Timeval, Tms, Utsname, Winsize,
     };
 
     #[test]
@@ -1136,6 +1167,16 @@ mod tests {
         assert_eq!(&bytes[24..32], &3i64.to_le_bytes()); // tms_cstime
         assert_eq!(Tms::from_guest_bytes(&bytes), Some(t));
         assert!(Tms::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn sched_param_round_trips_a_priority() {
+        let p = SchedParam { priority: -7 };
+        let b = p.to_guest_bytes();
+        assert_eq!(b.len(), SchedParam::SIZE);
+        assert_eq!(&b, &(-7i32).to_le_bytes());
+        assert_eq!(SchedParam::from_guest_bytes(&b), Some(p));
+        assert!(SchedParam::from_guest_bytes(&[0u8; 3]).is_none());
     }
 
     #[test]
