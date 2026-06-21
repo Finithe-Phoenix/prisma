@@ -23,6 +23,8 @@ use crate::time_syscalls::{self, TimeError};
 mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
+    pub const READV: u64 = 19;
+    pub const WRITEV: u64 = 20;
     pub const CLOSE: u64 = 3;
     pub const LSEEK: u64 = 8;
     pub const RT_SIGACTION: u64 = 13;
@@ -192,6 +194,19 @@ pub fn dispatch(
         nr::WRITE => {
             match io_syscalls::write(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_usize(args[2])) {
                 // A short/full write returns the byte count.
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        // readv/writev(fd, iov, iovcnt): scatter/gather across the iovec array.
+        nr::READV => {
+            match io_syscalls::readv(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_i32(args[2])) {
+                Ok(n) => n as i64,
+                Err(e) => io_errno(&e),
+            }
+        }
+        nr::WRITEV => {
+            match io_syscalls::writev(&ctx.fds, mem, arg_i32(args[0]), args[1], arg_i32(args[2])) {
                 Ok(n) => n as i64,
                 Err(e) => io_errno(&e),
             }
@@ -407,7 +422,7 @@ mod tests {
     use prisma_orchestrator::address_space::Protection;
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::guest_signal::Sigset;
-    use prisma_runtime::guest_structs::Timespec;
+    use prisma_runtime::guest_structs::{Iovec, Timespec};
 
     const SYS_READ: u64 = 0;
     const SYS_WRITE: u64 = 1;
@@ -835,6 +850,43 @@ mod tests {
                 [0, 8, 0x1000, 0, 0, 0]
             ),
             -22
+        );
+    }
+
+    #[test]
+    fn readv_and_writev_route_through_the_dispatcher() {
+        const SYS_READV: u64 = 19;
+        const SYS_WRITEV: u64 = 20;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 64];
+        buf[0..3].copy_from_slice(b"foo");
+        buf[16..19].copy_from_slice(b"bar");
+        // iovec array at guest 0x1020 -> {0x1000,3}, {0x1010,3}.
+        buf[0x20..0x30].copy_from_slice(
+            &Iovec {
+                base: 0x1000,
+                len: 3,
+            }
+            .to_guest_bytes(),
+        );
+        buf[0x30..0x40].copy_from_slice(
+            &Iovec {
+                base: 0x1010,
+                len: 3,
+            }
+            .to_guest_bytes(),
+        );
+        let mut mem = region(&mut buf);
+        // writev(1, 0x1020, 2) gathers "foo"+"bar" -> 6 bytes to stdout.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_WRITEV, [1, 0x1020, 2, 0, 0, 0]),
+            6
+        );
+        // readv from an unopen fd validates the (writable) dest buffers, then
+        // faults on the fd lookup -> -EBADF, never blocking.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_READV, [7, 0x1020, 2, 0, 0, 0]),
+            -9
         );
     }
 
