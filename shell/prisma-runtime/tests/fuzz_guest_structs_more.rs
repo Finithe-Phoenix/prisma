@@ -8,8 +8,8 @@
 //! decodes to `None` (never reads past the end).
 
 use prisma_runtime::guest_structs::{
-    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SigAltStack, Stat, Termios, Timespec,
-    Timeval, Tms,
+    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SigAltStack, Stat, Sysinfo, Termios,
+    Timespec, Timeval, Tms,
 };
 use proptest::prelude::*;
 
@@ -106,6 +106,32 @@ proptest! {
         prop_assert_eq!(b.len(), Rusage::SIZE);
         prop_assert_eq!(&b[0..8], &utime_sec.to_le_bytes());
         prop_assert_eq!(&b[32..40], &maxrss.to_le_bytes());
+    }
+
+    /// `Sysinfo` is encode-only; `uptime` lands @0 and `totalram` @32 for
+    /// arbitrary values, sized exactly at `SIZE`, with the alignment gaps zero.
+    #[test]
+    fn sysinfo_encodes_at_known_offsets(uptime in any::<i64>(), totalram in any::<u64>()) {
+        let si = Sysinfo {
+            uptime,
+            loads: [0; 3],
+            totalram,
+            freeram: 0,
+            sharedram: 0,
+            bufferram: 0,
+            totalswap: 0,
+            freeswap: 0,
+            procs: 0,
+            totalhigh: 0,
+            freehigh: 0,
+            mem_unit: 1,
+        };
+        let b = si.to_guest_bytes();
+        prop_assert_eq!(b.len(), Sysinfo::SIZE);
+        prop_assert_eq!(&b[0..8], &uptime.to_le_bytes());
+        prop_assert_eq!(&b[32..40], &totalram.to_le_bytes());
+        prop_assert!(b[82..88].iter().all(|&x| x == 0));
+        prop_assert!(b[108..112].iter().all(|&x| x == 0));
     }
 
     /// A buffer one byte shorter than the wire size always decodes to `None`.
