@@ -31,8 +31,10 @@ mod nr {
     pub const NANOSLEEP: u64 = 35;
     pub const FSYNC: u64 = 74;
     pub const FDATASYNC: u64 = 75;
+    pub const GETPID: u64 = 39;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const RT_SIGPENDING: u64 = 127;
+    pub const GETTID: u64 = 186;
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
@@ -239,6 +241,9 @@ pub fn dispatch(
                 Err(e) => sig_errno(e),
             }
         }
+        // getpid / gettid: the guest runs inside the host process, so the host
+        // pid is the correct answer; a single-threaded guest has tid == pid.
+        nr::GETPID | nr::GETTID => i64::from(std::process::id()),
         nr::GETTIMEOFDAY => match time_syscalls::gettimeofday(mem, args[0]) {
             Ok(()) => 0,
             Err(e) => time_errno(e),
@@ -370,6 +375,20 @@ mod tests {
             ),
             -14 // -EFAULT
         );
+    }
+
+    #[test]
+    fn getpid_and_gettid_return_the_host_pid() {
+        const SYS_GETPID: u64 = 39;
+        const SYS_GETTID: u64 = 186;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        let pid = i64::from(std::process::id());
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_GETPID, [0; 6]), pid);
+        // A single-threaded guest's tid equals its pid.
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_GETTID, [0; 6]), pid);
+        assert!(pid > 0);
     }
 
     #[test]
