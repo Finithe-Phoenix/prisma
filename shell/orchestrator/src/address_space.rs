@@ -247,6 +247,43 @@ impl AddressSpace {
         Ok(prev)
     }
 
+    /// Resize the region based exactly at `base` to `new_size` bytes in place —
+    /// the primitive `brk` uses to grow or shrink the program heap. Growing must
+    /// not collide with the next mapping; shrinking always succeeds. `new_size`
+    /// of 0 is rejected (unmap the region instead).
+    ///
+    /// # Errors
+    /// [`AddressSpaceError::ZeroSize`] for `new_size == 0`,
+    /// [`AddressSpaceError::NotMapped`] if no region begins at `base`,
+    /// [`AddressSpaceError::Overflow`] if `base + new_size` wraps,
+    /// [`AddressSpaceError::Overlap`] if growing would collide with the next
+    /// mapping.
+    pub fn resize_region(&mut self, base: u64, new_size: u64) -> Result<(), AddressSpaceError> {
+        if new_size == 0 {
+            return Err(AddressSpaceError::ZeroSize);
+        }
+        let idx = self
+            .regions
+            .iter()
+            .position(|r| r.base == base)
+            .ok_or(AddressSpaceError::NotMapped(base))?;
+        let new_end = base
+            .checked_add(new_size)
+            .ok_or(AddressSpaceError::Overflow(base, new_size))?;
+        // Regions are sorted, so only the immediate successor can be collided
+        // with when growing; shrinking can never overlap.
+        if let Some(next) = self.regions.get(idx + 1) {
+            if new_end > next.base {
+                return Err(AddressSpaceError::Overlap {
+                    base,
+                    existing: next.base,
+                });
+            }
+        }
+        self.regions[idx].size = new_size;
+        Ok(())
+    }
+
     /// Drop every mapping at once — used on container teardown so no guest
     /// mapping survives the restart.
     pub fn clear(&mut self) {
@@ -520,6 +557,32 @@ mod tests {
         assert_eq!(
             s.mmap_anon(2, 0, Protection::ReadWrite),
             Err(AddressSpaceError::NoSpace { len: 2 })
+        );
+    }
+
+    #[test]
+    fn resize_region_grows_into_a_gap_shrinks_freely_and_rejects_collision() {
+        // .text [0x1000,0x2000), .data [0x3000,0x5000): a 0x1000 gap at 0x2000.
+        let mut s = space();
+        // Grow .text into the gap (up to 0x2000 of size) -> no collision.
+        s.resize_region(0x1000, 0x2000).unwrap();
+        assert_eq!(s.translate(0x2fff).unwrap().0.name, ".text");
+        // Growing one byte further would collide with .data at 0x3000.
+        assert_eq!(
+            s.resize_region(0x1000, 0x2001),
+            Err(AddressSpaceError::Overlap {
+                base: 0x1000,
+                existing: 0x3000
+            })
+        );
+        // Shrinking always succeeds and frees the tail.
+        s.resize_region(0x1000, 0x800).unwrap();
+        assert!(s.translate(0x1800).is_none());
+        // Zero size is rejected; an unmapped base is NotMapped.
+        assert_eq!(s.resize_region(0x1000, 0), Err(AddressSpaceError::ZeroSize));
+        assert_eq!(
+            s.resize_region(0x9000, 0x10),
+            Err(AddressSpaceError::NotMapped(0x9000))
         );
     }
 
