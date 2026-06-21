@@ -399,9 +399,79 @@ pub fn readv(
     Ok(nread)
 }
 
+/// `pwritev(fd, iov, iovcnt, offset)`: vectored positional write — gather the
+/// guest buffers and write them to `fd` at the absolute `offset`, without using
+/// the file cursor. Only regular files are positional (`EINVAL` otherwise).
+///
+/// # Errors
+/// [`IoError::Invalid`] for a bad `iovcnt` or a non-file fd, [`IoError::Fault`]
+/// if the array or a buffer is unreadable, [`IoError::BadFd`] for an unopen fd,
+/// [`IoError::Host`] on a host write failure.
+pub fn pwritev(
+    fds: &FdTable,
+    mem: &GuestRegion,
+    fd: i32,
+    iov_ptr: u64,
+    iovcnt: i32,
+    offset: u64,
+) -> Result<usize, IoError> {
+    let iovs = read_iovecs(mem, iov_ptr, iovcnt)?;
+    let mut gathered = Vec::new();
+    for iov in &iovs {
+        let len = usize::try_from(iov.len).map_err(|_| IoError::Invalid)?;
+        let buf = mem.read(iov.base, len).map_err(IoError::Fault)?;
+        gathered.extend_from_slice(buf);
+    }
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => pwrite_file(file, &gathered, offset).map_err(IoError::Host),
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Err(IoError::Invalid),
+    }
+}
+
+/// `preadv(fd, iov, iovcnt, offset)`: vectored positional read — read from `fd`
+/// at the absolute `offset` and scatter into the guest buffers, without using
+/// the file cursor. Destinations are validated writable before the fd is read.
+///
+/// # Errors
+/// [`IoError::Invalid`] for a bad `iovcnt`/overflow or a non-file fd,
+/// [`IoError::Fault`] if the array or a buffer is not writable, [`IoError::BadFd`]
+/// for an unopen fd, [`IoError::Host`] on a host read failure.
+pub fn preadv(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    fd: i32,
+    iov_ptr: u64,
+    iovcnt: i32,
+    offset: u64,
+) -> Result<usize, IoError> {
+    let iovs = read_iovecs(mem, iov_ptr, iovcnt)?;
+    let mut total = 0usize;
+    for iov in &iovs {
+        let len = usize::try_from(iov.len).map_err(|_| IoError::Invalid)?;
+        mem.ensure_writable(iov.base, len).map_err(IoError::Fault)?;
+        total = total.checked_add(len).ok_or(IoError::Invalid)?;
+    }
+    let mut host = vec![0u8; total];
+    let nread = match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => pread_file(file, &mut host, offset).map_err(IoError::Host)?,
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => return Err(IoError::Invalid),
+    };
+    let mut off = 0usize;
+    for iov in &iovs {
+        if off >= nread {
+            break;
+        }
+        let take = usize::try_from(iov.len).unwrap_or(0).min(nread - off);
+        mem.write(iov.base, &host[off..off + take])
+            .map_err(IoError::Fault)?;
+        off += take;
+    }
+    Ok(nread)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ftruncate, pread, pwrite, readv, write, writev, IoError};
+    use super::{ftruncate, pread, preadv, pwrite, pwritev, readv, write, writev, IoError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::fd_table::{FdEntry, FdTable};
@@ -821,6 +891,76 @@ mod tests {
         assert!(matches!(ftruncate(&fds, fd, -1), Err(IoError::Invalid)));
         assert!(matches!(ftruncate(&fds, 1, 0), Err(IoError::Invalid)));
         assert!(matches!(ftruncate(&fds, 77, 0), Err(IoError::BadFd)));
+
+        drop(fds);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pwritev_then_preadv_round_trip_at_an_offset() {
+        use prisma_runtime::guest_structs::Iovec;
+        let path = std::env::temp_dir().join(format!("prisma_pv_{}.tmp", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("temp file");
+        let mut fds = FdTable::new();
+        let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+
+        let mut buf = [0u8; 128];
+        buf[0..3].copy_from_slice(b"foo");
+        buf[16..19].copy_from_slice(b"bar");
+        // write-iovecs @ 0x1020 -> {0x1000,3},{0x1010,3}; read-iovecs @ 0x1060
+        // -> {0x1040,3},{0x1050,3}.
+        for (at, iov) in [
+            (
+                0x20,
+                Iovec {
+                    base: 0x1000,
+                    len: 3,
+                },
+            ),
+            (
+                0x30,
+                Iovec {
+                    base: 0x1010,
+                    len: 3,
+                },
+            ),
+            (
+                0x60,
+                Iovec {
+                    base: 0x1040,
+                    len: 3,
+                },
+            ),
+            (
+                0x70,
+                Iovec {
+                    base: 0x1050,
+                    len: 3,
+                },
+            ),
+        ] {
+            buf[at..at + 16].copy_from_slice(&iov.to_guest_bytes());
+        }
+        let mut mem = region(&mut buf);
+
+        // pwritev at offset 4 gathers "foobar" -> 6 bytes written at offset 4.
+        assert_eq!(pwritev(&fds, &mem, fd, 0x1020, 2, 4).unwrap(), 6);
+        // preadv at offset 4 scatters it back into dst1/dst2.
+        assert_eq!(preadv(&fds, &mut mem, fd, 0x1060, 2, 4).unwrap(), 6);
+        assert_eq!(mem.read(0x1040, 3).unwrap(), b"foo");
+        assert_eq!(mem.read(0x1050, 3).unwrap(), b"bar");
+
+        // A non-file fd is EINVAL (positional ops need a regular file).
+        assert!(matches!(
+            pwritev(&fds, &mem, 1, 0x1020, 2, 0),
+            Err(IoError::Invalid)
+        ));
 
         drop(fds);
         let _ = std::fs::remove_file(&path);
