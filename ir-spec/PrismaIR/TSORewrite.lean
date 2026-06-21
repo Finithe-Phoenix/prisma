@@ -496,5 +496,17 @@ theorem adaptiveRewrite_fixpoint_iff_normal (l : List Op) :
   · intro ⟨hf, ht⟩
     exact adaptiveRewrite_id_of_normal l hf ht
 
+/-- **Memory operations are preserved exactly.** Filtering the bars out of the
+    rewritten block's projection gives back precisely the original block's
+    non-bar projection — every load/store survives, at its resolved
+    address/value, in program order. This is the clean statement of observable
+    equivalence the M2/M3 results hinge on: the rewrite changes *only* the bars,
+    nothing about the memory accesses. -/
+theorem adaptiveRewrite_preserves_memops (ρ : Ref → Addr) (σ : Ref → Val) (l : List Op) :
+    (projBlock ρ σ (adaptiveRewrite l)).filter (fun m => ! isBar m)
+      = (projBlock ρ σ l).filter (fun m => ! isBar m) := by
+  rw [projBlock_adaptiveRewrite]
+  simp [List.filter_filter, Bool.and_self]
+
 end TSO
 end PrismaIR
