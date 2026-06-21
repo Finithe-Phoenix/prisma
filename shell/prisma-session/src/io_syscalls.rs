@@ -306,6 +306,11 @@ pub fn poll(
     nfds: u32,
 ) -> Result<usize, IoError> {
     let count = nfds as usize;
+    if count == 0 {
+        // nfds == 0 never dereferences the array pointer (the poll(NULL, 0, ...)
+        // idiom), so nothing is ready.
+        return Ok(0);
+    }
     let array_len = count.checked_mul(PollFd::SIZE).ok_or(IoError::Invalid)?;
     // Own a copy so the `revents` can be written back after the read borrow ends.
     let array = mem
