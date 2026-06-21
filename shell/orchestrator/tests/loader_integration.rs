@@ -20,10 +20,12 @@ fn kernel32() -> LoadedModule {
             ExportedSymbol {
                 name: "GetProcAddress".to_owned(),
                 rva: 0x1000,
+                ordinal: 1,
             },
             ExportedSymbol {
                 name: "ExitProcess".to_owned(),
                 rva: 0x2000,
+                ordinal: 2,
             },
         ],
     }

@@ -74,7 +74,7 @@ proptest! {
         table.insert(LoadedModule {
             name: lib.clone(),
             base,
-            exports: vec![ExportedSymbol { name: sym.clone(), rva }],
+            exports: vec![ExportedSymbol { name: sym.clone(), rva, ordinal: 0 }],
         }).unwrap();
 
         prop_assert_eq!(table.resolve(&lib, &sym), Some(base + u64::from(rva)));
