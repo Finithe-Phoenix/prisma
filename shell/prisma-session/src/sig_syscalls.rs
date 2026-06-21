@@ -113,9 +113,31 @@ pub fn rt_sigaction(
     Ok(())
 }
 
+/// Deliver signal `sig` to the (single, self) guest process — the primitive
+/// behind `tkill` / `tgkill` / `kill` directed at the guest itself. `sig` `0` is
+/// the kill family's existence-probe no-op (no signal is sent); a number outside
+/// `1..=64` is rejected. A valid signal is marked pending for later delivery.
+///
+/// The caller (dispatcher) is responsible for resolving the target pid/tid and
+/// answering `ESRCH` for anything other than the guest itself; this owns only
+/// the signal-number validation and the raise.
+///
+/// # Errors
+/// [`SigError::BadSignal`] if `sig` is out of the `1..=64` range.
+pub fn send_signal(state: &mut SignalState, sig: u32) -> Result<(), SigError> {
+    if sig == 0 {
+        return Ok(());
+    }
+    if !(1..=64).contains(&sig) {
+        return Err(SigError::BadSignal(sig));
+    }
+    state.raise(sig);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{rt_sigprocmask, SigError};
+    use super::{rt_sigprocmask, send_signal, SigError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::guest_signal::{SigAction, SignalState, Sigset};
@@ -268,5 +290,31 @@ mod tests {
             rt_sigaction(&mut st, &mut mem, 11, 0x1010, 0),
             Err(SigError::Fault(RangeError::Unmapped))
         );
+    }
+
+    #[test]
+    fn send_signal_raises_a_valid_signal_pending() {
+        let mut st = SignalState::new();
+        // A normal signal becomes pending.
+        send_signal(&mut st, 11).expect("valid signal");
+        assert!(st.pending_set().contains(11));
+        // SIGKILL can be *sent* (only blocking/recatching it is forbidden).
+        send_signal(&mut st, 9).expect("sigkill is sendable");
+        assert!(st.pending_set().contains(9));
+        // A second signal accumulates without disturbing the first.
+        send_signal(&mut st, 17).expect("another");
+        assert!(st.pending_set().contains(11) && st.pending_set().contains(17));
+    }
+
+    #[test]
+    fn send_signal_zero_is_a_noop_and_out_of_range_is_einval() {
+        let mut st = SignalState::new();
+        // sig 0 is the existence-probe: it sends nothing.
+        send_signal(&mut st, 0).expect("sig 0 is a no-op");
+        assert_eq!(st.pending_count(), 0);
+        // Signals past the 64-signal range are rejected.
+        assert_eq!(send_signal(&mut st, 65), Err(SigError::BadSignal(65)));
+        assert_eq!(send_signal(&mut st, 1000), Err(SigError::BadSignal(1000)));
+        assert_eq!(st.pending_count(), 0);
     }
 }
