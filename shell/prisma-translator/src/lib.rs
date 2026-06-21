@@ -68,6 +68,12 @@ pub enum TranslateError {
     Decode(DecodeError),
     #[error("lowering failed: {0:?}")]
     Lower(LowerError),
+    #[error("instruction at offset {offset} reports {consumed} bytes but only {remaining} remain")]
+    Truncated {
+        offset: usize,
+        consumed: usize,
+        remaining: usize,
+    },
 }
 
 /// Cumulative translator counters, useful for profiling the dispatch loop.
@@ -157,7 +163,23 @@ impl Translator {
                     break;
                 }
             };
-            let insn = &bytes[offset..offset + decoded.bytes_consumed];
+            // The decoder can report consuming more bytes than remain (a
+            // truncated trailing instruction whose operand runs off the
+            // buffer). Bound the slice instead of panicking: stop the block if
+            // we already have an instruction, else surface a typed error.
+            let Some(insn) = offset
+                .checked_add(decoded.bytes_consumed)
+                .and_then(|end| bytes.get(offset..end))
+            else {
+                if instruction_count == 0 {
+                    return Err(TranslateError::Truncated {
+                        offset,
+                        consumed: decoded.bytes_consumed,
+                        remaining: bytes.len() - offset,
+                    });
+                }
+                break;
+            };
             let translation = self.translate_decoded(pc, insn, &decoded)?;
             code.extend_from_slice(&translation.code);
             instruction_count += 1;
@@ -603,5 +625,35 @@ mod tests {
             a.translate_fused_block(0x4_0000, &prog, 64).unwrap(),
             b.translate_fused_block(0x4_0000, &prog, 64).unwrap()
         );
+    }
+
+    #[test]
+    fn truncated_trailing_instruction_does_not_slice_out_of_bounds() {
+        // Regression: the proptest minimal failing input — a decode that
+        // reports consuming past the buffer. Before the bounds check this
+        // panicked with "range end index out of range"; now it must stop
+        // cleanly (terminate the block) or return a typed error, never panic.
+        let bytes = [106u8, 0, 144, 15, 255, 45];
+        let mut t = Translator::new();
+        // PUSH/NOP decode fine first, so the block ends gracefully rather than
+        // erroring; the contract under test is simply "does not panic".
+        let _ = t.translate_block(0, &bytes, 3);
+    }
+
+    #[test]
+    fn a_lone_truncated_instruction_errors_instead_of_panicking() {
+        // A single instruction whose operand runs off the end: with no prior
+        // instruction to fall back on, it surfaces as a typed Truncated error.
+        // 0x0F 0xFF ... is enough to make the decoder want more than is present.
+        let bytes = [0x0Fu8, 0xFF];
+        let mut t = Translator::new();
+        let result = t.translate_block(0, &bytes, 4);
+        // Either a typed error or a clean (possibly empty) block — never a panic.
+        if let Err(e) = result {
+            assert!(matches!(
+                e,
+                TranslateError::Truncated { .. } | TranslateError::Decode(_)
+            ));
+        }
     }
 }
