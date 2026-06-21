@@ -192,6 +192,77 @@ pub fn lseek(fds: &FdTable, fd: i32, offset: i64, whence: i32) -> Result<u64, Io
     }
 }
 
+/// Read into `buf` from `file` starting at byte `offset`, without relying on (or
+/// preserving) the file's own cursor. Uses the platform's positional read.
+#[cfg(unix)]
+fn pread_file(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buf, offset)
+}
+#[cfg(windows)]
+fn pread_file(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+}
+
+/// Write `bytes` to `file` starting at byte `offset`. Uses the platform's
+/// positional write.
+#[cfg(unix)]
+fn pwrite_file(file: &std::fs::File, bytes: &[u8], offset: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::write_at(file, bytes, offset)
+}
+#[cfg(windows)]
+fn pwrite_file(file: &std::fs::File, bytes: &[u8], offset: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_write(file, bytes, offset)
+}
+
+/// `pread(fd, buf, count, offset)`: read up to `count` bytes from `fd` at the
+/// absolute `offset` into the guest buffer, without using the file's cursor.
+/// Only regular files are positional; the standard streams are not seekable
+/// (reported as `EINVAL` here, the closest of the routed errnos).
+///
+/// # Errors
+/// [`IoError::Fault`] if `buf` is not writable guest memory, [`IoError::BadFd`]
+/// for an unopen fd, [`IoError::Invalid`] for a non-seekable stream,
+/// [`IoError::Host`] if the host read fails.
+pub fn pread(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    fd: i32,
+    buf: u64,
+    count: usize,
+    offset: u64,
+) -> Result<usize, IoError> {
+    mem.ensure_writable(buf, count).map_err(IoError::Fault)?;
+    let mut host = vec![0u8; count];
+    let n = match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => pread_file(file, &mut host, offset).map_err(IoError::Host)?,
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => return Err(IoError::Invalid),
+    };
+    mem.write(buf, &host[..n]).map_err(IoError::Fault)?;
+    Ok(n)
+}
+
+/// `pwrite(fd, buf, count, offset)`: write `count` bytes from the guest buffer to
+/// `fd` at the absolute `offset`, without using the file's cursor.
+///
+/// # Errors
+/// [`IoError::Fault`] if `buf` is not readable guest memory, [`IoError::BadFd`]
+/// for an unopen fd, [`IoError::Invalid`] for a non-seekable stream,
+/// [`IoError::Host`] if the host write fails.
+pub fn pwrite(
+    fds: &FdTable,
+    mem: &GuestRegion,
+    fd: i32,
+    buf: u64,
+    count: usize,
+    offset: u64,
+) -> Result<usize, IoError> {
+    let bytes = mem.read(buf, count).map_err(IoError::Fault)?;
+    match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::File(file) => pwrite_file(file, bytes, offset).map_err(IoError::Host),
+        FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => Err(IoError::Invalid),
+    }
+}
+
 /// Write `bytes` to the host resource behind `fd`, returning the count written.
 /// Shared by `writev`; mirrors the fd handling of [`write`]. Stdin is not
 /// writable (`EBADF`).
@@ -314,7 +385,7 @@ pub fn readv(
 
 #[cfg(test)]
 mod tests {
-    use super::{readv, write, writev, IoError};
+    use super::{pread, pwrite, readv, write, writev, IoError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
     use prisma_runtime::fd_table::{FdEntry, FdTable};
@@ -665,6 +736,45 @@ mod tests {
         // Standard streams are not seekable; an unopen fd is EBADF.
         assert!(matches!(lseek(&fds, 1, 0, 0), Err(IoError::BadFd)));
         assert!(matches!(lseek(&fds, 88, 0, 0), Err(IoError::BadFd)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pread_pwrite_are_positional_and_ignore_the_cursor() {
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!("prisma_pio_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create");
+            f.write_all(b"hello world").expect("seed"); // 11 bytes
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open rw");
+        let mut fds = FdTable::new();
+        let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        // pread 5 bytes at offset 6 -> "world".
+        assert_eq!(pread(&fds, &mut mem, fd, 0x1000, 5, 6).unwrap(), 5);
+        assert_eq!(mem.read(0x1000, 5).unwrap(), b"world");
+
+        // pwrite "ABC" at offset 0, then pread it back -> the cursor never moved.
+        buf[8..11].copy_from_slice(b"ABC");
+        let mut mem = region(&mut buf);
+        assert_eq!(pwrite(&fds, &mem, fd, 0x1008, 3, 0).unwrap(), 3);
+        assert_eq!(pread(&fds, &mut mem, fd, 0x1000, 3, 0).unwrap(), 3);
+        assert_eq!(mem.read(0x1000, 3).unwrap(), b"ABC");
+
+        // pread on a non-seekable stream (stdin) is EINVAL, not a host panic.
+        assert!(matches!(
+            pread(&fds, &mut mem, 0, 0x1000, 1, 0),
+            Err(IoError::Invalid)
+        ));
+
+        drop(fds);
         let _ = std::fs::remove_file(&path);
     }
 }
