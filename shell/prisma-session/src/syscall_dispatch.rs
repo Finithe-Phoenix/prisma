@@ -47,6 +47,7 @@ mod nr {
     pub const DUP3: u64 = 292;
     pub const FCNTL: u64 = 72;
     pub const GETCWD: u64 = 79;
+    pub const GETCPU: u64 = 309;
     pub const GETRLIMIT: u64 = 97;
     pub const GETRUSAGE: u64 = 98;
     pub const SETRLIMIT: u64 = 160;
@@ -423,6 +424,11 @@ pub fn dispatch(
         nr::GETRUSAGE => match info_syscalls::getrusage(mem, arg_i32(args[0]), args[1]) {
             Ok(()) => 0,
             Err(e) => rusage_errno(&e),
+        },
+        // getcpu(cpu, node, tcache): report CPU 0 / node 0; tcache is ignored.
+        nr::GETCPU => match info_syscalls::getcpu(mem, args[0], args[1]) {
+            Ok(()) => 0,
+            Err(_) => errno::EFAULT,
         },
         // getrlimit(resource, rlim): write the session's fixed limit.
         nr::GETRLIMIT => match resource_syscalls::getrlimit(mem, arg_u32(args[0]), args[1]) {
@@ -1120,6 +1126,26 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETRLIMIT, [16, 0x1000, 0, 0, 0, 0]),
             -22
+        );
+    }
+
+    #[test]
+    fn getcpu_routes_and_reports_zero_zero() {
+        const SYS_GETCPU: u64 = 309;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0xffu8; 8];
+        let mut mem = region(&mut buf);
+        // getcpu(cpu=0x1000, node=0x1004, tcache=0) -> 0; both report 0.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETCPU, [0x1000, 0x1004, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(mem.read(0x1000, 4).unwrap(), &0u32.to_le_bytes());
+        assert_eq!(mem.read(0x1004, 4).unwrap(), &0u32.to_le_bytes());
+        // A bad pointer faults: -EFAULT (-14).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETCPU, [0x9000, 0, 0, 0, 0, 0]),
+            -14
         );
     }
 
