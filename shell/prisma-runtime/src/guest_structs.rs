@@ -241,9 +241,53 @@ impl Termios {
     }
 }
 
+/// `struct sigaltstack` / `stack_t` — the alternate signal stack `sigaltstack`
+/// reads and writes.
+///
+/// The x86-64 Linux layout is the 64-bit `ss_sp` pointer, the 32-bit `ss_flags`
+/// (followed by 4 bytes of padding to align the next field), and the 64-bit
+/// `ss_size`, 24 bytes total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigAltStack {
+    /// Base of the alternate stack (`ss_sp`).
+    pub sp: u64,
+    /// Flags (`ss_flags`): SS_ONSTACK / SS_DISABLE / SS_AUTODISARM.
+    pub flags: i32,
+    /// Size of the alternate stack in bytes (`ss_size`).
+    pub size: u64,
+}
+
+impl SigAltStack {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 24;
+
+    /// Decode one `stack_t` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            sp: u64::from_le_bytes(raw[0..8].try_into().ok()?),
+            flags: i32::from_le_bytes(raw[8..12].try_into().ok()?),
+            // raw[12..16] is alignment padding, ignored.
+            size: u64::from_le_bytes(raw[16..24].try_into().ok()?),
+        })
+    }
+
+    /// Encode to the guest wire form. The 4 padding bytes after `ss_flags` are
+    /// written as zero.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..8].copy_from_slice(&self.sp.to_le_bytes());
+        out[8..12].copy_from_slice(&self.flags.to_le_bytes());
+        out[16..24].copy_from_slice(&self.size.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, Termios, Timespec, Timeval, Winsize};
+    use super::{Iovec, SigAltStack, Termios, Timespec, Timeval, Winsize};
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -349,5 +393,28 @@ mod tests {
         assert_eq!(Termios::from_guest_bytes(&bytes), Some(t));
         // A buffer one byte short is rejected, not overrun.
         assert!(Termios::from_guest_bytes(&[0u8; 35]).is_none());
+    }
+
+    #[test]
+    fn sigaltstack_round_trips_and_keeps_flags_padding_clean() {
+        let ss = SigAltStack {
+            sp: 0x1_4000_8000,
+            flags: 1, // SS_ONSTACK
+            size: 0x2000,
+        };
+        let bytes = ss.to_guest_bytes();
+        assert_eq!(bytes.len(), SigAltStack::SIZE);
+        // ss_sp [0..8], ss_flags [8..12], padding [12..16] is zero, ss_size [16..24].
+        assert_eq!(&bytes[0..8], &0x1_4000_8000u64.to_le_bytes());
+        assert_eq!(&bytes[8..12], &1i32.to_le_bytes());
+        assert_eq!(&bytes[12..16], &[0u8; 4]);
+        assert_eq!(&bytes[16..24], &0x2000u64.to_le_bytes());
+        assert_eq!(SigAltStack::from_guest_bytes(&bytes), Some(ss));
+        // Decoding ignores whatever sits in the padding bytes.
+        let mut dirty = bytes;
+        dirty[12..16].copy_from_slice(&[0xAA; 4]);
+        assert_eq!(SigAltStack::from_guest_bytes(&dirty), Some(ss));
+        // A buffer one byte short is rejected.
+        assert!(SigAltStack::from_guest_bytes(&[0u8; 23]).is_none());
     }
 }
