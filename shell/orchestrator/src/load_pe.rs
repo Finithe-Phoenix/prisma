@@ -14,10 +14,9 @@ use crate::pe_loader::{self, ImportSymbol, MappedImage, PeError};
 /// Load `file` against the already-loaded `modules`, returning the mapped,
 /// relocated, import-bound image.
 ///
-/// Ordinal imports are skipped for now (ordinal-based export resolution is not
-/// modelled yet) rather than bound to a guessed address; a name import that
+/// Imports bind by name or by ordinal against the module table. An import that
 /// cannot be resolved fails the whole load (`LoadError::Import`) instead of
-/// leaving a dangling slot.
+/// leaving a dangling slot the guest would crash on later.
 pub fn load_pe(file: &[u8], modules: &ModuleTable) -> Result<MappedImage, LoadError> {
     let img = pe_loader::parse(file)?;
     let mut mapped = pe_loader::map_image(&img, file)?;
@@ -32,11 +31,10 @@ pub fn load_pe(file: &[u8], modules: &ModuleTable) -> Result<MappedImage, LoadEr
     let mut patches: Vec<IatPatch> = Vec::new();
     for imp in &imports {
         for (index, sym) in imp.symbols.iter().enumerate() {
-            let name = match sym {
-                ImportSymbol::Name(n) => n,
-                ImportSymbol::Ordinal(_) => continue,
-            };
-            let request = [ImportRequest::new(imp.dll.clone(), name.clone())];
+            let request = [match sym {
+                ImportSymbol::Name(n) => ImportRequest::new(imp.dll.clone(), n.clone()),
+                ImportSymbol::Ordinal(o) => ImportRequest::by_ordinal(imp.dll.clone(), *o),
+            }];
             let resolved = resolve_imports(&request, modules)?;
             let slot_rva =
                 imp.iat_slot_rva(index, thunk_width)
