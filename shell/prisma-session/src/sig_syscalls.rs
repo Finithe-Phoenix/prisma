@@ -58,6 +58,20 @@ pub fn rt_sigprocmask(
     Ok(())
 }
 
+/// `rt_sigpending(set)`: write the set of currently-pending (raised but not yet
+/// delivered) signals to the guest `set` pointer.
+///
+/// # Errors
+/// [`SigError::Fault`] if `set` is not writable guest memory.
+pub fn rt_sigpending(
+    state: &SignalState,
+    mem: &mut GuestRegion,
+    set_addr: u64,
+) -> Result<(), SigError> {
+    mem.write(set_addr, &state.pending_set().to_guest_bytes())
+        .map_err(SigError::Fault)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{rt_sigprocmask, SigError};
@@ -138,6 +152,32 @@ mod tests {
         // oldset at 0x100A leaves only 6 bytes — too short for an 8-byte mask.
         assert_eq!(
             rt_sigprocmask(&mut st, &mut mem, SIG_BLOCK, 0x1000, 0x100A),
+            Err(SigError::Fault(RangeError::Unmapped))
+        );
+    }
+
+    #[test]
+    fn rt_sigpending_writes_the_pending_set() {
+        use super::rt_sigpending;
+        let mut st = SignalState::new();
+        st.raise(11);
+        st.raise(17);
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        rt_sigpending(&st, &mut mem, 0x1000).expect("write ok");
+        let reported = Sigset::from_guest_bytes(&buf).unwrap();
+        assert!(reported.contains(11) && reported.contains(17));
+        assert!(!reported.contains(12));
+    }
+
+    #[test]
+    fn rt_sigpending_to_a_bad_pointer_is_efault() {
+        use super::rt_sigpending;
+        let st = SignalState::new();
+        let mut buf = [0u8; 4]; // too short for an 8-byte mask
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            rt_sigpending(&st, &mut mem, 0x1000),
             Err(SigError::Fault(RangeError::Unmapped))
         );
     }
