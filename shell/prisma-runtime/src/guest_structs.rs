@@ -110,9 +110,54 @@ impl Timeval {
     }
 }
 
+/// The terminal size filled by `ioctl(TIOCGWINSZ)`.
+///
+/// `struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; }` —
+/// four 16-bit fields, 8 bytes on x86-64 Linux. The pixel fields are usually
+/// zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Winsize {
+    /// Rows (character cells).
+    pub row: u16,
+    /// Columns (character cells).
+    pub col: u16,
+    /// Width in pixels (0 when unknown).
+    pub xpixel: u16,
+    /// Height in pixels (0 when unknown).
+    pub ypixel: u16,
+}
+
+impl Winsize {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 8;
+
+    /// Decode one `winsize` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            row: u16::from_le_bytes(raw[0..2].try_into().ok()?),
+            col: u16::from_le_bytes(raw[2..4].try_into().ok()?),
+            xpixel: u16::from_le_bytes(raw[4..6].try_into().ok()?),
+            ypixel: u16::from_le_bytes(raw[6..8].try_into().ok()?),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..2].copy_from_slice(&self.row.to_le_bytes());
+        out[2..4].copy_from_slice(&self.col.to_le_bytes());
+        out[4..6].copy_from_slice(&self.xpixel.to_le_bytes());
+        out[6..8].copy_from_slice(&self.ypixel.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Iovec, Timespec, Timeval};
+    use super::{Iovec, Timespec, Timeval, Winsize};
 
     #[test]
     fn iovec_round_trips_through_exact_layout() {
@@ -157,5 +202,22 @@ mod tests {
         let mut buf = [0u8; 32];
         buf[0] = 7;
         assert_eq!(Iovec::from_guest_bytes(&buf).map(|iv| iv.base), Some(7));
+    }
+
+    #[test]
+    fn winsize_round_trips_through_four_u16_fields() {
+        let ws = Winsize {
+            row: 24,
+            col: 80,
+            xpixel: 0,
+            ypixel: 0,
+        };
+        let bytes = ws.to_guest_bytes();
+        assert_eq!(bytes.len(), Winsize::SIZE);
+        // row in [0..2], col in [2..4], little-endian.
+        assert_eq!(&bytes[0..2], &24u16.to_le_bytes());
+        assert_eq!(&bytes[2..4], &80u16.to_le_bytes());
+        assert_eq!(Winsize::from_guest_bytes(&bytes), Some(ws));
+        assert!(Winsize::from_guest_bytes(&[0u8; 7]).is_none());
     }
 }
