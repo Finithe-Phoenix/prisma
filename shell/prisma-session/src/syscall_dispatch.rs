@@ -63,6 +63,8 @@ mod nr {
     pub const SET_TID_ADDRESS: u64 = 218;
     pub const SCHED_SETAFFINITY: u64 = 203;
     pub const SCHED_GETAFFINITY: u64 = 204;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
@@ -472,6 +474,20 @@ pub fn dispatch(
         // uid, so the guest is presented as a single unprivileged user. Real
         // and effective ids coincide — there is no setuid transition to model.
         nr::GETUID | nr::GETEUID | nr::GETGID | nr::GETEGID => GUEST_UID,
+        // sched_get_priority_max/min(policy): the real-time policies
+        // (SCHED_FIFO=1, SCHED_RR=2) span 1..=99; the normal policies
+        // (SCHED_OTHER=0, SCHED_BATCH=3, SCHED_IDLE=5) have a fixed priority 0.
+        // An unknown policy is EINVAL.
+        nr::SCHED_GET_PRIORITY_MAX => match arg_i32(args[0]) {
+            0 | 3 | 5 => 0,
+            1 | 2 => 99,
+            _ => errno::EINVAL,
+        },
+        nr::SCHED_GET_PRIORITY_MIN => match arg_i32(args[0]) {
+            0 | 3 | 5 => 0,
+            1 | 2 => 1,
+            _ => errno::EINVAL,
+        },
         // umask(mask): install `mask & 0o777` as the file-mode creation mask and
         // return the previous one. Always succeeds.
         nr::UMASK => {
@@ -1380,6 +1396,29 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_PPOLL, [0x1000, 1, 0x103A, 0, 0, 0]),
             -14
+        );
+    }
+
+    #[test]
+    fn sched_priority_bounds_match_the_policy() {
+        const SYS_MAX: u64 = 146;
+        const SYS_MIN: u64 = 147;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // SCHED_OTHER (0): a normal process has a fixed priority 0.
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_MAX, [0, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_MIN, [0, 0, 0, 0, 0, 0]), 0);
+        // SCHED_FIFO (1) / SCHED_RR (2): real-time priorities span 1..=99.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_MAX, [1, 0, 0, 0, 0, 0]),
+            99
+        );
+        assert_eq!(dispatch(&mut ctx, &mut mem, SYS_MIN, [2, 0, 0, 0, 0, 0]), 1);
+        // An unknown policy is -EINVAL.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_MAX, [42, 0, 0, 0, 0, 0]),
+            -22
         );
     }
 
