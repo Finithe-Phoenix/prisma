@@ -131,6 +131,38 @@ impl AddressSpace {
         }
     }
 
+    /// Validate that the whole guest range `[addr, addr+len)` is mapped — and,
+    /// when `need_write`, writable — before the host dereferences a guest
+    /// pointer argument. A buffer that runs off the end of its mapping, crosses
+    /// an unmapped hole, wraps the address space, or points at read-only memory
+    /// for a write must be rejected as a guest `EFAULT`, never let the host read
+    /// or write out of bounds. A zero-length range is vacuously valid (nothing
+    /// is dereferenced). The range may legitimately span several *contiguous*
+    /// regions, so the check walks region by region rather than demanding one.
+    ///
+    /// # Errors
+    /// [`RangeError::Overflow`] if `addr + len` wraps, [`RangeError::Unmapped`]
+    /// if any byte of the range is not mapped, [`RangeError::NotWritable`] if
+    /// `need_write` and any covering region is read-only.
+    pub fn validate_range(&self, addr: u64, len: u64, need_write: bool) -> Result<(), RangeError> {
+        if len == 0 {
+            return Ok(());
+        }
+        let end = addr.checked_add(len).ok_or(RangeError::Overflow)?;
+        let mut cursor = addr;
+        while cursor < end {
+            let (region, _) = self.translate(cursor).ok_or(RangeError::Unmapped)?;
+            if need_write && !region.prot.is_writable() {
+                return Err(RangeError::NotWritable);
+            }
+            // Regions are disjoint and sorted; jump to this region's end. A gap
+            // before `end` makes the next translate fail (Unmapped); a
+            // contiguous neighbour continues the walk.
+            cursor = region.end();
+        }
+        Ok(())
+    }
+
     /// Unmap the region based exactly at `base`, returning it. Explicit
     /// teardown: releasing guest memory drops the bookkeeping deterministically
     /// rather than leaking it across a restart.
@@ -181,6 +213,19 @@ pub enum AddressSpaceError {
     NotMapped(u64),
 }
 
+/// Why a guest pointer range failed validation (each maps to a guest `EFAULT`).
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RangeError {
+    #[error("range start + length overflows the address space")]
+    Overflow,
+
+    #[error("range covers unmapped guest memory")]
+    Unmapped,
+
+    #[error("range requires write permission but covers read-only memory")]
+    NotWritable,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +270,70 @@ mod tests {
         assert!(s.translate(0x0500).is_none()); // below the first region
         assert!(s.translate(0x2000).is_none()); // in the gap between regions
         assert!(s.translate(0x2fff).is_none()); // just below .data
+    }
+
+    #[test]
+    fn validate_range_accepts_in_bounds_and_rejects_overruns() {
+        let s = space();
+        // Fully inside .data, read.
+        assert_eq!(s.validate_range(0x3000, 0x100, false), Ok(()));
+        // Whole of .data, write (it is RW).
+        assert_eq!(s.validate_range(0x3000, 0x2000, true), Ok(()));
+        // Runs one byte off the end of .data into unmapped space.
+        assert_eq!(
+            s.validate_range(0x4000, 0x1001, false),
+            Err(RangeError::Unmapped)
+        );
+        // Starts in the gap between regions.
+        assert_eq!(
+            s.validate_range(0x2000, 0x10, false),
+            Err(RangeError::Unmapped)
+        );
+        // Spans .text -> gap (the second byte-run is unmapped).
+        assert_eq!(
+            s.validate_range(0x1f00, 0x200, false),
+            Err(RangeError::Unmapped)
+        );
+    }
+
+    #[test]
+    fn validate_range_enforces_write_permission() {
+        let s = space();
+        // .text is ReadExecute — readable but not writable.
+        assert_eq!(s.validate_range(0x1000, 0x10, false), Ok(()));
+        assert_eq!(
+            s.validate_range(0x1000, 0x10, true),
+            Err(RangeError::NotWritable)
+        );
+    }
+
+    #[test]
+    fn validate_range_handles_zero_length_and_overflow() {
+        let s = space();
+        // Zero length dereferences nothing — vacuously valid even when unmapped.
+        assert_eq!(s.validate_range(0x9999_9999, 0, true), Ok(()));
+        // addr + len wrapping the address space is rejected, not wrapped.
+        assert_eq!(
+            s.validate_range(u64::MAX, 2, false),
+            Err(RangeError::Overflow)
+        );
+    }
+
+    #[test]
+    fn validate_range_spans_contiguous_regions() {
+        let mut s = AddressSpace::new();
+        s.map(0x1000, 0x1000, Protection::ReadWrite, "a").unwrap();
+        s.map(0x2000, 0x1000, Protection::ReadWrite, "b").unwrap(); // contiguous
+                                                                    // A buffer straddling the a|b boundary is valid: no gap, both writable.
+        assert_eq!(s.validate_range(0x1800, 0x1000, true), Ok(()));
+        // If the second region were read-only the write must fail.
+        let mut ro = AddressSpace::new();
+        ro.map(0x1000, 0x1000, Protection::ReadWrite, "a").unwrap();
+        ro.map(0x2000, 0x1000, Protection::ReadOnly, "b").unwrap();
+        assert_eq!(
+            ro.validate_range(0x1800, 0x1000, true),
+            Err(RangeError::NotWritable)
+        );
     }
 
     #[test]
