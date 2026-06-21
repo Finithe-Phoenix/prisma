@@ -377,6 +377,27 @@ impl ExecPool {
     pub fn is_empty(&self) -> bool {
         self.buffers.is_empty()
     }
+
+    /// Total page-rounded bytes of executable memory the pool currently holds.
+    ///
+    /// The W^X byte-budget the resource-discipline clause accounts for; drops to
+    /// zero once [`ExecPool::clear`] releases the buffers.
+    #[must_use]
+    pub fn mapped_bytes(&self) -> usize {
+        self.buffers.iter().map(ExecBuffer::capacity).sum()
+    }
+
+    /// Explicitly release every installed buffer now, unmapping all W^X memory.
+    ///
+    /// The eviction / shutdown release path the resource-discipline clause
+    /// requires — a restart must free executable mappings deterministically
+    /// rather than trust process exit. Each [`ExecBuffer`]'s `Drop` runs here,
+    /// so its `munmap` / `VirtualFree` happens before this returns. Any
+    /// [`ExecAllocation::entry`] handed out earlier is dangling afterward and
+    /// must not be called.
+    pub fn clear(&mut self) {
+        self.buffers.clear();
+    }
 }
 
 /// Minimal JIT buffer wrapper.
@@ -492,6 +513,29 @@ mod tests {
         let mut pool = ExecPool::new(64);
         assert!(pool.add(&[]).is_none());
         assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn clear_releases_all_buffers_and_zeroes_accounting() {
+        // Resource-discipline clause: an explicit shutdown/eviction release path
+        // that frees the W^X mappings deterministically (not via process exit).
+        let mut pool = ExecPool::new(64);
+        pool.add(&[0x90, 0xC3]).expect("install a"); // nop;ret
+        pool.add(&[0x90, 0xC3]).expect("install b");
+        assert_eq!(pool.len(), 2);
+        // Two page-rounded buffers are accounted for.
+        assert!(pool.mapped_bytes() >= 2 * 4096);
+        assert_eq!(pool.mapped_bytes() % 4096, 0);
+
+        // Explicit release: every ExecBuffer::drop (hence munmap/VirtualFree)
+        // runs, so both length and the mapped-byte budget fall to zero.
+        pool.clear();
+        assert!(pool.is_empty());
+        assert_eq!(pool.mapped_bytes(), 0);
+
+        // The pool is reusable after an explicit release.
+        pool.add(&[0x90, 0xC3]).expect("install after clear");
+        assert_eq!(pool.len(), 1);
     }
 
     // Install two functions in the pool and call both through their handles.
