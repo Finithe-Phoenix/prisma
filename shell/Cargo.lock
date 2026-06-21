@@ -399,6 +399,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prisma-session"
+version = "0.1.0"
+dependencies = [
+ "prisma-cache",
+ "prisma-runtime",
+ "prisma-translator",
+ "prisma_orchestrator",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "prisma-translator"
 version = "0.1.0"
 dependencies = [
