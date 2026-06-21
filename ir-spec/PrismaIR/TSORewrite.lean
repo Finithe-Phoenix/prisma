@@ -385,5 +385,31 @@ theorem adaptiveRewrite_idempotent (l : List Op) :
   have hff : ∀ op ∈ downgradeAccesses (elimFences l), isFence op = false :=
     downgradeAccesses_fenceFree _ (elimFences_fenceFree l)
   rw [elimFences_id_of_fenceFree _ hff, downgradeAccesses_idempotent]
+
+/-- The two adaptive-rewrite halves commute: eliminating fences then downgrading
+    accesses equals downgrading then eliminating. Fence elimination is a `filter`
+    on `isFence` and the downgrade is a `map` that preserves `isFence`
+    (`isFence_downgradeOp`), so neither reorders the other's decisions. -/
+theorem elimFences_downgrade_comm (l : List Op) :
+    elimFences (downgradeAccesses l) = downgradeAccesses (elimFences l) := by
+  induction l with
+  | nil => rfl
+  | cons op r ih =>
+    simp only [downgradeAccesses, List.map_cons, elimFences, isFence_downgradeOp]
+    cases h : isFence op with
+    | true => simpa [h, downgradeAccesses] using ih
+    | false =>
+      simp only [h, Bool.false_eq_true, if_false, List.map_cons]
+      simp only [downgradeAccesses] at ih
+      rw [ih]
+
+/-- **Order-independence.** The full adaptive rewrite may equally run the
+    downgrade half first: `adaptiveRewrite` (fences-then-downgrade) equals
+    downgrade-then-fences. So the pass scheduler is free to order the two halves
+    either way — the optimised block is the same. -/
+theorem adaptiveRewrite_eq_downgrade_first (l : List Op) :
+    adaptiveRewrite l = elimFences (downgradeAccesses l) := by
+  rw [adaptiveRewrite, elimFences_downgrade_comm]
+
 end TSO
 end PrismaIR
