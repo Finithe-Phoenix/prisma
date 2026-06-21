@@ -79,6 +79,28 @@ pub fn nanosleep_request(mem: &GuestRegion, req: u64) -> Result<Duration, TimeEr
     ts.to_duration().ok_or(TimeError::InvalidValue)
 }
 
+/// `clock_nanosleep(clk_id, flags, req, rem)`: like [`nanosleep_request`] but for
+/// a specific clock — validate `clk_id` (only CLOCK_REALTIME / CLOCK_MONOTONIC
+/// are modelled), then read and validate the requested interval, returning it as
+/// a host [`Duration`] for the caller to sleep on. The relative-vs-absolute
+/// `flags` and the `rem` out-pointer are the caller's to honour.
+///
+/// # Errors
+/// [`TimeError::UnknownClock`] for an unmodelled clock, [`TimeError::Fault`] if
+/// `req` is unreadable, [`TimeError::InvalidValue`] for a negative/overflowing
+/// interval.
+pub fn clock_nanosleep_request(
+    mem: &GuestRegion,
+    clk_id: u64,
+    req: u64,
+) -> Result<Duration, TimeError> {
+    match clk_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => {}
+        other => return Err(TimeError::UnknownClock(other)),
+    }
+    nanosleep_request(mem, req)
+}
+
 /// `clock_getres(clk_id, res)`: write the clock's resolution to the guest `res`
 /// `timespec`. A null `res` (address 0) just validates `clk_id` per the kernel.
 /// Both modelled clocks report a 1-nanosecond resolution (the high-res-timer
@@ -276,6 +298,37 @@ mod tests {
         let secs = time(&mut mem, 0).expect("null tloc ok");
         assert!(secs > AFTER_2020);
         assert_eq!(buf, [0u8; 8]); // nothing written
+    }
+
+    #[test]
+    fn clock_nanosleep_validates_the_clock_then_the_request() {
+        use super::clock_nanosleep_request;
+        use std::time::Duration;
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&Timespec { sec: 2, nsec: 0 }.to_guest_bytes());
+        let mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // A known clock + valid request -> the duration.
+        assert_eq!(
+            clock_nanosleep_request(&mem, CLOCK_MONOTONIC, 0x1000).unwrap(),
+            Duration::new(2, 0)
+        );
+        // An unknown clock is EINVAL (checked before the request is read).
+        assert_eq!(
+            clock_nanosleep_request(&mem, 42, 0x1000),
+            Err(TimeError::UnknownClock(42))
+        );
+    }
+
+    #[test]
+    fn clock_nanosleep_rejects_a_negative_request() {
+        use super::clock_nanosleep_request;
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&Timespec { sec: -1, nsec: 0 }.to_guest_bytes());
+        let mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        assert_eq!(
+            clock_nanosleep_request(&mem, CLOCK_REALTIME, 0x1000),
+            Err(TimeError::InvalidValue)
+        );
     }
 
     #[test]
