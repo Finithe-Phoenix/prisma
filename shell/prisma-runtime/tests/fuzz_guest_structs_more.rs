@@ -8,7 +8,8 @@
 //! decodes to `None` (never reads past the end).
 
 use prisma_runtime::guest_structs::{
-    EpollEvent, Flock, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec,
+    EpollEvent, Flock, ITimerval, PollFd, Rlimit, Rusage, SigAltStack, Stat, Termios, Timespec,
+    Timeval, Tms,
 };
 use proptest::prelude::*;
 
@@ -73,6 +74,40 @@ proptest! {
         prop_assert_eq!(Rlimit::from_guest_bytes(&rl.to_guest_bytes()), Some(rl));
     }
 
+    #[test]
+    fn itimerval_round_trips(
+        interval in (any::<i64>(), any::<i64>()), value in (any::<i64>(), any::<i64>()),
+    ) {
+        let it = ITimerval {
+            interval: Timeval { sec: interval.0, usec: interval.1 },
+            value: Timeval { sec: value.0, usec: value.1 },
+        };
+        prop_assert_eq!(ITimerval::from_guest_bytes(&it.to_guest_bytes()), Some(it));
+    }
+
+    #[test]
+    fn tms_round_trips(
+        utime in any::<i64>(), stime in any::<i64>(),
+        cutime in any::<i64>(), cstime in any::<i64>(),
+    ) {
+        let t = Tms { utime, stime, cutime, cstime };
+        prop_assert_eq!(Tms::from_guest_bytes(&t.to_guest_bytes()), Some(t));
+    }
+
+    /// `Rusage` is encode-only (the kernel writes it, the guest reads it). For
+    /// arbitrary fields, encoding never panics, produces exactly `SIZE` bytes,
+    /// and lands a field at its known offset (`ru_utime.sec` @0, `ru_maxrss` @32).
+    #[test]
+    fn rusage_encodes_at_known_offsets(
+        utime_sec in any::<i64>(), maxrss in any::<i64>(),
+    ) {
+        let r = Rusage { utime: Timeval { sec: utime_sec, usec: 0 }, maxrss, ..Rusage::ZERO };
+        let b = r.to_guest_bytes();
+        prop_assert_eq!(b.len(), Rusage::SIZE);
+        prop_assert_eq!(&b[0..8], &utime_sec.to_le_bytes());
+        prop_assert_eq!(&b[32..40], &maxrss.to_le_bytes());
+    }
+
     /// A buffer one byte shorter than the wire size always decodes to `None`.
     #[test]
     fn one_byte_short_is_rejected(pad in any::<u8>()) {
@@ -84,5 +119,7 @@ proptest! {
         prop_assert!(EpollEvent::from_guest_bytes(&short(EpollEvent::SIZE)).is_none());
         prop_assert!(SigAltStack::from_guest_bytes(&short(SigAltStack::SIZE)).is_none());
         prop_assert!(Rlimit::from_guest_bytes(&short(Rlimit::SIZE)).is_none());
+        prop_assert!(ITimerval::from_guest_bytes(&short(ITimerval::SIZE)).is_none());
+        prop_assert!(Tms::from_guest_bytes(&short(Tms::SIZE)).is_none());
     }
 }
