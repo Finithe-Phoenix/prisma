@@ -95,6 +95,42 @@ pub fn read(
     Ok(n)
 }
 
+/// `close(fd)`: close `fd`, releasing its host resource (a `File`'s descriptor
+/// is closed deterministically here, per the resource-discipline clause).
+///
+/// # Errors
+/// [`IoError::BadFd`] if `fd` was not open.
+pub fn close(fds: &mut FdTable, fd: i32) -> Result<(), IoError> {
+    if fds.close(fd) {
+        Ok(())
+    } else {
+        Err(IoError::BadFd)
+    }
+}
+
+/// `dup(oldfd)`: duplicate `oldfd` onto the lowest free fd, returning the new fd.
+///
+/// # Errors
+/// [`IoError::BadFd`] if `oldfd` is not open, the host `dup` fails, or no fd is
+/// free.
+pub fn dup(fds: &mut FdTable, oldfd: i32) -> Result<i32, IoError> {
+    fds.dup(oldfd).ok_or(IoError::BadFd)
+}
+
+/// `dup2(oldfd, newfd)`: duplicate `oldfd` onto exactly `newfd` (closing
+/// whatever it held), returning `newfd`.
+///
+/// # Errors
+/// [`IoError::BadFd`] if `oldfd` is not open, the host `dup` fails, or `newfd`
+/// is out of range.
+pub fn dup2(fds: &mut FdTable, oldfd: i32, newfd: i32) -> Result<i32, IoError> {
+    if fds.dup2(oldfd, newfd) {
+        Ok(newfd)
+    } else {
+        Err(IoError::BadFd)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{write, IoError};
@@ -224,5 +260,30 @@ mod tests {
             assert!(fds.close(fd));
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn close_releases_the_fd_and_reports_ebadf_for_unopen() {
+        use super::close;
+        let mut fds = FdTable::new();
+        assert!(close(&mut fds, 1).is_ok()); // stdout closes
+        assert!(!fds.is_open(1));
+        // Closing it again (or an unopen fd) is EBADF.
+        assert!(matches!(close(&mut fds, 1), Err(IoError::BadFd)));
+        assert!(matches!(close(&mut fds, 99), Err(IoError::BadFd)));
+    }
+
+    #[test]
+    fn dup_and_dup2_route_to_the_fd_table() {
+        use super::{dup, dup2};
+        let mut fds = FdTable::new();
+        // dup(1) -> the lowest free fd (3).
+        assert_eq!(dup(&mut fds, 1).unwrap(), 3);
+        // dup2(1, 7) -> 7, growing the table.
+        assert_eq!(dup2(&mut fds, 1, 7).unwrap(), 7);
+        assert!(fds.is_open(7));
+        // dup/dup2 from an unopen source is EBADF.
+        assert!(matches!(dup(&mut fds, 50), Err(IoError::BadFd)));
+        assert!(matches!(dup2(&mut fds, 50, 8), Err(IoError::BadFd)));
     }
 }
