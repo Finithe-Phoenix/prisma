@@ -38,6 +38,7 @@ mod nr {
     pub const GETEUID: u64 = 107;
     pub const GETEGID: u64 = 108;
     pub const GETPGRP: u64 = 111;
+    pub const GETSID: u64 = 124;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
@@ -50,6 +51,7 @@ mod nr {
 
 /// Negative Linux errno values returned in `rax` on failure.
 mod errno {
+    pub const ESRCH: i64 = -3;
     pub const EIO: i64 = -5;
     pub const EBADF: i64 = -9;
     pub const EFAULT: i64 = -14;
@@ -274,6 +276,18 @@ pub fn dispatch(
         // getpgrp: the calling process's group id. Our lone guest is its own
         // process-group leader, so its pgid is its pid.
         nr::GETPGRP => i64::from(std::process::id()),
+        // getsid(pid): the session id of `pid` (0 = the caller). The lone guest
+        // is its own session leader, so its sid is its pid; any other pid does
+        // not exist in our single-process model -> ESRCH.
+        nr::GETSID => {
+            let me = std::process::id();
+            let want = arg_i32(args[0]);
+            if want == 0 || (want > 0 && want as u32 == me) {
+                i64::from(me)
+            } else {
+                errno::ESRCH
+            }
+        }
         nr::GETTIMEOFDAY => match time_syscalls::gettimeofday(mem, args[0]) {
             Ok(()) => 0,
             Err(e) => time_errno(e),
@@ -493,6 +507,36 @@ mod tests {
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETPGRP, [u64::MAX; 6]),
             pid
+        );
+    }
+
+    #[test]
+    fn getsid_returns_the_sid_for_self_and_esrch_for_others() {
+        const SYS_GETSID: u64 = 124;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        let pid = std::process::id();
+        // getsid(0) -> own session id (== pid, the guest is its own leader).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETSID, [0, 0, 0, 0, 0, 0]),
+            i64::from(pid)
+        );
+        // getsid(self_pid) -> same.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_GETSID,
+                [u64::from(pid), 0, 0, 0, 0, 0]
+            ),
+            i64::from(pid)
+        );
+        // getsid of any other pid -> -ESRCH (-3): no such process here.
+        let other = u64::from(pid).wrapping_add(1);
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETSID, [other, 0, 0, 0, 0, 0]),
+            -3
         );
     }
 
