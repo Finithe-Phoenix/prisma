@@ -445,7 +445,7 @@ translator on a reference Linux ARM64 box.
 - [x] (cf5f668) F2-SY-030: Implement set_tid_address.
 - [ ] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
 - [ ] F2-SY-032: Implement robust_futex structure translation. **(deferred — needs thread support)**
-- [ ] F2-SY-033: Errno translation table (glibc expects Linux errno numbers). **(trivially satisfied — ARM64 Linux uses identical errno values)**
+- [x] F2-SY-033: Errno translation table — `SyscallError::to_errno` (-ENOSYS/-EFAULT/-EPERM/-EINTR) + `SyscallHandler::dispatch_raw` encoding the guest's `-errno`-in-`rax` return convention (`shell/prisma-runtime/src/syscall_handler.rs`). ARM64 Linux uses identical errno magnitudes; the work was the typed-error → ABI mapping.
 - [ ] F2-SY-034: iovec struct translation. **(trivially satisfied — same LP64 layout on ARM64)**
 - [ ] F2-SY-035: timespec / timeval / sigset_t struct translation. **(trivially satisfied — same layout on ARM64)**
 - [ ] F2-SY-036: termios struct translation for isatty / ioctl(TIOCGWINSZ). **(trivially satisfied — same layout on ARM64)**

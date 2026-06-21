@@ -6,6 +6,17 @@
 //! Actual syscall execution (real I/O, mmap, TLS) is implemented incrementally
 //! on top of this dispatch layer in `core/src/runtime/syscall_handler.cpp`.
 
+/// Linux errno values (x86-64 `asm-generic/errno*.h`). The guest is a Linux
+/// ABI, so these are the numbers it expects; ARM64 Linux uses the identical
+/// values, hence translation to the host is the identity on the magnitudes —
+/// the work is mapping our typed [`SyscallError`] onto the right one.
+mod errno {
+    pub const EPERM: i32 = 1;
+    pub const EINTR: i32 = 4;
+    pub const EFAULT: i32 = 14;
+    pub const ENOSYS: i32 = 38;
+}
+
 /// Error returned by a syscall dispatch attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallError {
@@ -17,6 +28,23 @@ pub enum SyscallError {
     PermissionDenied,
     /// The syscall was interrupted (EINTR-equivalent).
     Interrupted,
+}
+
+impl SyscallError {
+    /// The negative Linux errno the guest reads in `rax` by the syscall return
+    /// convention (a failed syscall returns `-errno`). Unsupported numbers map
+    /// to `-ENOSYS` (the kernel's answer for an unimplemented call), an invalid
+    /// pointer to `-EFAULT`, a policy denial to `-EPERM`, an interruption to
+    /// `-EINTR`.
+    #[must_use]
+    pub const fn to_errno(self) -> i32 {
+        match self {
+            Self::Unsupported(_) => -errno::ENOSYS,
+            Self::InvalidAddress => -errno::EFAULT,
+            Self::PermissionDenied => -errno::EPERM,
+            Self::Interrupted => -errno::EINTR,
+        }
+    }
 }
 
 /// Category of a guest syscall, used by policy and future real handlers.
@@ -157,6 +185,20 @@ impl SyscallHandler {
             Ok(0)
         }
     }
+
+    /// Dispatch and encode the result the way the guest reads it in `rax`: the
+    /// success value on `Ok`, or the sign-extended negative errno on `Err` (the
+    /// Linux syscall return convention, `-errno` on failure).
+    #[must_use]
+    pub fn dispatch_raw(&self, number: u32, args: &[u64; 6]) -> u64 {
+        match self.dispatch(number, args) {
+            Ok(value) => value,
+            // Sign-extend the negative errno into the 64-bit rax bit pattern;
+            // the sign loss is the intent (reinterpret -errno as the raw word).
+            #[allow(clippy::cast_sign_loss)]
+            Err(err) => i64::from(err.to_errno()) as u64,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +271,27 @@ mod tests {
         assert_eq!(h.dispatch(39, &args), Ok(pid)); // getpid
         assert_eq!(h.dispatch(186, &args), Ok(pid)); // gettid (== pid, single-threaded)
         assert_ne!(pid, 0); // a real pid, not the placeholder
+    }
+
+    #[test]
+    fn errno_mapping_matches_linux_values() {
+        assert_eq!(SyscallError::Unsupported(0x1234).to_errno(), -38); // -ENOSYS
+        assert_eq!(SyscallError::InvalidAddress.to_errno(), -14); // -EFAULT
+        assert_eq!(SyscallError::PermissionDenied.to_errno(), -1); // -EPERM
+        assert_eq!(SyscallError::Interrupted.to_errno(), -4); // -EINTR
+    }
+
+    #[test]
+    fn dispatch_raw_encodes_value_or_negative_errno() {
+        let h = SyscallHandler::new(); // deny-by-default
+        let args = [0u64; 6];
+        // A modelled syscall: the success value passes through.
+        assert_eq!(h.dispatch_raw(1, &args), 0); // write -> Ok(0)
+                                                 // getpid: the host pid passes through.
+        assert_eq!(h.dispatch_raw(39, &args), u64::from(std::process::id()));
+        // An unknown syscall under deny: rax holds -ENOSYS as a 64-bit word.
+        let rax = h.dispatch_raw(0x0FFF_FFFF, &args);
+        let expected = u64::from_ne_bytes((-38i64).to_ne_bytes()); // -ENOSYS in rax
+        assert_eq!(rax, expected);
     }
 }
