@@ -9,14 +9,17 @@
 
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
-use prisma_runtime::guest_signal::{SignalState, SigprocmaskHow, Sigset};
+use prisma_runtime::guest_signal::{SigAction, SignalState, SigprocmaskHow, Sigset};
 
-/// Why an `rt_sigprocmask` call failed (each maps to a guest errno).
+/// Why a signal syscall failed (each maps to a guest errno).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigError {
     /// `how` is not SIG_BLOCK/UNBLOCK/SETMASK — guest `EINVAL`.
     BadHow(i32),
-    /// A `set`/`oldset` pointer is not accessible guest memory — guest `EFAULT`.
+    /// The signal number is invalid or its disposition cannot be changed
+    /// (SIGKILL/SIGSTOP) — guest `EINVAL`.
+    BadSignal(u32),
+    /// A `set`/`oldset`/`act` pointer is not accessible guest memory — `EFAULT`.
     Fault(RangeError),
 }
 
@@ -72,12 +75,50 @@ pub fn rt_sigpending(
         .map_err(SigError::Fault)
 }
 
+/// `rt_sigaction(sig, act, oldact)`: read the current disposition for `sig` into
+/// `oldact` (when non-null), then install the disposition at `act` (when
+/// non-null). Both pointers go through the range-checked [`GuestRegion`].
+///
+/// `sig` is validated first, so an invalid signal — or SIGKILL/SIGSTOP, whose
+/// disposition the kernel never lets a process change — yields `EINVAL` with no
+/// effect.
+///
+/// # Errors
+/// [`SigError::BadSignal`] for an invalid/unchangeable signal,
+/// [`SigError::Fault`] if a non-null `act`/`oldact` is not accessible.
+pub fn rt_sigaction(
+    state: &mut SignalState,
+    mem: &mut GuestRegion,
+    sig: u32,
+    act_addr: u64,
+    oldact_addr: u64,
+) -> Result<(), SigError> {
+    // The current disposition; `None` means `sig` is out of range.
+    let current = state.action(sig).ok_or(SigError::BadSignal(sig))?;
+    if oldact_addr != 0 {
+        mem.write(oldact_addr, &current.to_guest_bytes())
+            .map_err(SigError::Fault)?;
+    }
+    if act_addr != 0 {
+        let bytes = mem
+            .read(act_addr, SigAction::SIZE)
+            .map_err(SigError::Fault)?;
+        let new =
+            SigAction::from_guest_bytes(bytes).ok_or(SigError::Fault(RangeError::Unmapped))?;
+        if !state.set_action(sig, new) {
+            // In range but unchangeable (SIGKILL/SIGSTOP).
+            return Err(SigError::BadSignal(sig));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{rt_sigprocmask, SigError};
     use prisma_orchestrator::address_space::{Protection, RangeError};
     use prisma_orchestrator::guest_memory::GuestRegion;
-    use prisma_runtime::guest_signal::{SignalState, Sigset};
+    use prisma_runtime::guest_signal::{SigAction, SignalState, Sigset};
 
     // SIG_BLOCK = 0, SIG_SETMASK = 2.
     const SIG_BLOCK: i32 = 0;
@@ -178,6 +219,53 @@ mod tests {
         let mut mem = region(&mut buf);
         assert_eq!(
             rt_sigpending(&st, &mut mem, 0x1000),
+            Err(SigError::Fault(RangeError::Unmapped))
+        );
+    }
+
+    #[test]
+    fn rt_sigaction_installs_and_reports_a_disposition() {
+        use super::rt_sigaction;
+        let mut st = SignalState::new();
+        // A new handler for signal 11 written at guest 0x1000.
+        let act = SigAction {
+            handler: 0x1_4000_7000,
+            flags: 4,
+            restorer: 0,
+            mask: Sigset::empty(),
+        };
+        let mut buf = [0u8; 64];
+        buf[0..32].copy_from_slice(&act.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // act=0x1000, oldact=0x1020 — install the new action, report the old.
+        rt_sigaction(&mut st, &mut mem, 11, 0x1000, 0x1020).expect("ok");
+        assert_eq!(st.action(11), Some(act));
+        // oldact holds the previous (default) disposition.
+        let old = SigAction::from_guest_bytes(&buf[32..64]).unwrap();
+        assert_eq!(old, SigAction::default());
+    }
+
+    #[test]
+    fn rt_sigaction_rejects_kill_and_invalid_signals() {
+        use super::rt_sigaction;
+        let mut st = SignalState::new();
+        let act = SigAction::default();
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&act.to_guest_bytes());
+        let mut mem = region(&mut buf);
+        // SIGKILL (9) disposition can't be changed -> EINVAL, no effect.
+        assert_eq!(
+            rt_sigaction(&mut st, &mut mem, 9, 0x1000, 0),
+            Err(SigError::BadSignal(9))
+        );
+        // An out-of-range signal is EINVAL.
+        assert_eq!(
+            rt_sigaction(&mut st, &mut mem, 99, 0x1000, 0),
+            Err(SigError::BadSignal(99))
+        );
+        // A bad act pointer is EFAULT.
+        assert_eq!(
+            rt_sigaction(&mut st, &mut mem, 11, 0x1010, 0),
             Err(SigError::Fault(RangeError::Unmapped))
         );
     }
