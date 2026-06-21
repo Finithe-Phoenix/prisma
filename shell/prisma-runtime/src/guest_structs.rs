@@ -626,11 +626,61 @@ impl Tms {
     }
 }
 
+/// `new_utsname` — the system identification `uname(2)` reports.
+///
+/// Six fixed-width NUL-terminated `char[UTS_FIELD]` fields laid out back to back.
+/// The guest reads each field as a C string, so a value shorter than the field is
+/// NUL-padded and a longer one is truncated to leave room for the terminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Utsname {
+    /// Operating system name (`sysname`), e.g. `Linux`.
+    pub sysname: &'static str,
+    /// Network node hostname (`nodename`).
+    pub nodename: &'static str,
+    /// OS release (`release`), e.g. a kernel version string.
+    pub release: &'static str,
+    /// OS version (`version`).
+    pub version: &'static str,
+    /// Hardware identifier (`machine`), e.g. `x86_64`.
+    pub machine: &'static str,
+    /// NIS/YP domain name (`domainname`); the GNU extension field.
+    pub domainname: &'static str,
+}
+
+impl Utsname {
+    /// Width of each `char[]` field (`__NEW_UTS_LEN + 1` on Linux).
+    pub const FIELD: usize = 65;
+    /// On-wire size in guest memory: the six fields concatenated.
+    pub const SIZE: usize = Self::FIELD * 6;
+
+    /// Encode to the guest wire form: each field NUL-padded to [`Self::FIELD`]
+    /// bytes, truncated to `FIELD - 1` so the terminating NUL is always present.
+    #[must_use]
+    pub fn to_guest_bytes(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        let fields = [
+            self.sysname,
+            self.nodename,
+            self.release,
+            self.version,
+            self.machine,
+            self.domainname,
+        ];
+        for (i, s) in fields.iter().enumerate() {
+            let base = i * Self::FIELD;
+            let bytes = s.as_bytes();
+            let n = bytes.len().min(Self::FIELD - 1);
+            out[base..base + n].copy_from_slice(&bytes[..n]);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec,
-        Timeval, Tms, Winsize,
+        Timeval, Tms, Utsname, Winsize,
     };
 
     #[test]
@@ -925,5 +975,40 @@ mod tests {
         assert_eq!(&bytes[24..32], &3i64.to_le_bytes()); // tms_cstime
         assert_eq!(Tms::from_guest_bytes(&bytes), Some(t));
         assert!(Tms::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn utsname_nul_pads_each_field_and_truncates_overlong_ones() {
+        let uts = Utsname {
+            sysname: "Linux",
+            nodename: "prisma",
+            release: "6.1.0",
+            version: "v",
+            machine: "x86_64",
+            domainname: "(none)",
+        };
+        let bytes = uts.to_guest_bytes();
+        assert_eq!(bytes.len(), Utsname::SIZE);
+        // Field 0 holds "Linux\0...": the string, then NUL padding to the width.
+        assert_eq!(&bytes[0..5], b"Linux");
+        assert_eq!(bytes[5], 0);
+        assert_eq!(bytes[Utsname::FIELD - 1], 0); // always terminated
+                                                  // Field 4 (machine) starts at 4 * FIELD.
+        let m = 4 * Utsname::FIELD;
+        assert_eq!(&bytes[m..m + 6], b"x86_64");
+
+        // An overlong field is truncated to FIELD-1 with the NUL preserved.
+        let long = "a".repeat(100);
+        let long_uts = Utsname {
+            sysname: Box::leak(long.into_boxed_str()),
+            nodename: "",
+            release: "",
+            version: "",
+            machine: "",
+            domainname: "",
+        };
+        let lb = long_uts.to_guest_bytes();
+        assert!(lb[..Utsname::FIELD - 1].iter().all(|&b| b == b'a'));
+        assert_eq!(lb[Utsname::FIELD - 1], 0);
     }
 }
