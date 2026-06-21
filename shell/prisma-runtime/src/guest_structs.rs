@@ -580,11 +580,57 @@ impl ITimerval {
     }
 }
 
+/// `struct tms` — the process times the `times` syscall fills in.
+///
+/// Four 64-bit `clock_t` fields on x86-64 Linux, 32 bytes: the calling process's
+/// user and system CPU time, then its waited-for children's user and system CPU
+/// time, all in clock ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tms {
+    /// User CPU time of the calling process (`tms_utime`).
+    pub utime: i64,
+    /// System CPU time of the calling process (`tms_stime`).
+    pub stime: i64,
+    /// User CPU time of waited-for children (`tms_cutime`).
+    pub cutime: i64,
+    /// System CPU time of waited-for children (`tms_cstime`).
+    pub cstime: i64,
+}
+
+impl Tms {
+    /// On-wire size in guest memory.
+    pub const SIZE: usize = 32;
+
+    /// Decode one `tms` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        let at = |o: usize| i64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+        Some(Self {
+            utime: at(0),
+            stime: at(8),
+            cutime: at(16),
+            cstime: at(24),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..8].copy_from_slice(&self.utime.to_le_bytes());
+        out[8..16].copy_from_slice(&self.stime.to_le_bytes());
+        out[16..24].copy_from_slice(&self.cutime.to_le_bytes());
+        out[24..32].copy_from_slice(&self.cstime.to_le_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec,
-        Timeval, Winsize,
+        Timeval, Tms, Winsize,
     };
 
     #[test]
@@ -863,5 +909,21 @@ mod tests {
         assert_eq!(ITimerval::from_guest_bytes(&bytes), Some(it));
         // A buffer one byte short is rejected, not overrun.
         assert!(ITimerval::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn tms_round_trips_through_four_clock_t_fields() {
+        let t = Tms {
+            utime: 100,
+            stime: 25,
+            cutime: 7,
+            cstime: 3,
+        };
+        let bytes = t.to_guest_bytes();
+        assert_eq!(bytes.len(), Tms::SIZE);
+        assert_eq!(&bytes[0..8], &100i64.to_le_bytes()); // tms_utime
+        assert_eq!(&bytes[24..32], &3i64.to_le_bytes()); // tms_cstime
+        assert_eq!(Tms::from_guest_bytes(&bytes), Some(t));
+        assert!(Tms::from_guest_bytes(&[0u8; 31]).is_none());
     }
 }
