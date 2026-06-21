@@ -7,7 +7,7 @@
 //! for `SCHED_OTHER`. Pointers are checked through a [`GuestRegion`].
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::guest_structs::SchedParam;
 
 /// `SCHED_OTHER` — the only scheduling policy the session models. Its valid
@@ -30,7 +30,7 @@ pub enum SchedError {
 ///
 /// # Errors
 /// [`RangeError`] if `param` is not writable guest memory (guest `EFAULT`).
-pub fn sched_getparam(mem: &mut GuestRegion, param: u64) -> Result<(), RangeError> {
+pub fn sched_getparam(mem: &mut impl GuestMem, param: u64) -> Result<(), RangeError> {
     mem.write(param, &SchedParam { priority: 0 }.to_guest_bytes())
 }
 
@@ -42,7 +42,7 @@ pub fn sched_getparam(mem: &mut GuestRegion, param: u64) -> Result<(), RangeErro
 /// # Errors
 /// [`SchedError::Fault`] if `param` is not readable guest memory,
 /// [`SchedError::InvalidParam`] if the requested priority is not 0.
-pub fn sched_setparam(mem: &GuestRegion, param: u64) -> Result<(), SchedError> {
+pub fn sched_setparam(mem: &impl GuestMem, param: u64) -> Result<(), SchedError> {
     let bytes = mem
         .read(param, SchedParam::SIZE)
         .map_err(SchedError::Fault)?;
