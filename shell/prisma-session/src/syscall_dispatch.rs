@@ -38,6 +38,7 @@ mod nr {
     pub const GETGID: u64 = 104;
     pub const GETEUID: u64 = 107;
     pub const GETEGID: u64 = 108;
+    pub const UMASK: u64 = 95;
     pub const GETPGRP: u64 = 111;
     pub const GETPGID: u64 = 121;
     pub const GETSID: u64 = 124;
@@ -82,17 +83,21 @@ pub struct SyscallContext {
     pub signals: SignalState,
     /// `CLOCK_MONOTONIC` reference point (session start).
     pub monotonic_start: Instant,
+    /// File-mode creation mask (`umask`): the bits cleared from the mode of files
+    /// the guest creates. The conventional default is `0o022`.
+    pub umask: u32,
 }
 
 impl SyscallContext {
     /// A fresh context: standard streams open, nothing blocked, monotonic clock
-    /// anchored now.
+    /// anchored now, the conventional `0o022` umask.
     #[must_use]
     pub fn new() -> Self {
         Self {
             fds: FdTable::new(),
             signals: SignalState::new(),
             monotonic_start: Instant::now(),
+            umask: 0o022,
         }
     }
 }
@@ -296,6 +301,13 @@ pub fn dispatch(
         // uid, so the guest is presented as a single unprivileged user. Real
         // and effective ids coincide — there is no setuid transition to model.
         nr::GETUID | nr::GETEUID | nr::GETGID | nr::GETEGID => GUEST_UID,
+        // umask(mask): install `mask & 0o777` as the file-mode creation mask and
+        // return the previous one. Always succeeds.
+        nr::UMASK => {
+            let old = ctx.umask;
+            ctx.umask = arg_u32(args[0]) & 0o777;
+            i64::from(old)
+        }
         // getpgrp: the calling process's group id. Our lone guest is its own
         // process-group leader, so its pgid is its pid.
         nr::GETPGRP => i64::from(std::process::id()),
@@ -620,6 +632,26 @@ mod tests {
             9
         );
         assert!(ctx.fds.is_open(9));
+    }
+
+    #[test]
+    fn umask_returns_the_previous_mask_and_installs_the_new() {
+        const SYS_UMASK: u64 = 95;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // The default mask is 0o022; the first call returns it.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_UMASK, [0o077, 0, 0, 0, 0, 0]),
+            0o022
+        );
+        // The next call returns the just-installed 0o077; only the low 9 mode
+        // bits of the argument are kept (0o7777 -> 0o777).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_UMASK, [0o7777, 0, 0, 0, 0, 0]),
+            0o077
+        );
+        assert_eq!(ctx.umask, 0o777);
     }
 
     #[test]
