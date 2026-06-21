@@ -79,6 +79,8 @@ mod nr {
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const EXIT: u64 = 60;
+    pub const EXIT_GROUP: u64 = 231;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const MEMBARRIER: u64 = 324;
     pub const PRCTL: u64 = 157;
@@ -162,6 +164,10 @@ pub struct SyscallContext {
     /// The thread name (`prctl(PR_SET_NAME)` / `PR_GET_NAME`), NUL-padded. Empty
     /// until the guest sets it.
     pub comm: [u8; COMM_LEN],
+    /// Set by `exit`/`exit_group` to the guest's exit status. `None` while the
+    /// guest is still running; the run loop polls this after each dispatch to
+    /// learn the guest has terminated (and with what code).
+    pub exit_status: Option<i32>,
 }
 
 impl SyscallContext {
@@ -182,6 +188,7 @@ impl SyscallContext {
             },
             itimers: [ZERO_ITIMERVAL; 3],
             comm: [0u8; COMM_LEN],
+            exit_status: None,
         }
     }
 }
@@ -650,6 +657,14 @@ pub fn dispatch(
         // caller's tid. With no thread teardown yet, honouring clear_child_tid is
         // a no-op; the contract that matters to glibc startup is the tid return.
         nr::SET_TID_ADDRESS => i64::from(std::process::id()),
+        // exit(status) / exit_group(status): the guest is terminating. Record the
+        // status in the context so the run loop can stop after this dispatch;
+        // the return value is never observed by the (now dead) guest. exit_group
+        // ends every thread — with the single-thread model that is exit.
+        nr::EXIT | nr::EXIT_GROUP => {
+            ctx.exit_status = Some(arg_i32(args[0]));
+            0
+        }
         // set_robust_list(head, len): the kernel records the per-thread robust
         // futex list head for cleanup at thread exit. glibc calls this at startup
         // even single-threaded; with no thread teardown the list is never walked,
@@ -1536,6 +1551,24 @@ mod tests {
             dispatch(&mut ctx, &mut mem, SYS_FSTATFS, [99, 0x1000, 0, 0, 0, 0]),
             -9
         );
+    }
+
+    #[test]
+    fn exit_and_exit_group_record_the_status() {
+        const SYS_EXIT: u64 = 60;
+        const SYS_EXIT_GROUP: u64 = 231;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // Running: no status yet.
+        assert!(ctx.exit_status.is_none());
+        // exit_group(42) records the status for the run loop to observe.
+        let _ = dispatch(&mut ctx, &mut mem, SYS_EXIT_GROUP, [42, 0, 0, 0, 0, 0]);
+        assert_eq!(ctx.exit_status, Some(42));
+        // exit(7) overwrites it (the run loop stops on the first; this just shows
+        // the plumbing).
+        let _ = dispatch(&mut ctx, &mut mem, SYS_EXIT, [7, 0, 0, 0, 0, 0]);
+        assert_eq!(ctx.exit_status, Some(7));
     }
 
     #[test]
