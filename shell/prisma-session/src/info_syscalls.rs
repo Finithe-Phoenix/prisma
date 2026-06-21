@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use prisma_orchestrator::address_space::RangeError;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::guest_mem::GuestMem;
 use prisma_runtime::guest_structs::{Rusage, Sysinfo, Utsname};
 
 /// The fixed identity the guest sees: an x86-64 Linux system. The syscall layer
@@ -28,7 +28,7 @@ const GUEST_UTSNAME: Utsname = Utsname {
 /// # Errors
 /// [`RangeError`] if `buf` is not writable guest memory for the full
 /// [`Utsname::SIZE`] bytes (guest `EFAULT`).
-pub fn uname(mem: &mut GuestRegion, buf: u64) -> Result<(), RangeError> {
+pub fn uname(mem: &mut impl GuestMem, buf: u64) -> Result<(), RangeError> {
     mem.write(buf, &GUEST_UTSNAME.to_guest_bytes())
 }
 
@@ -55,7 +55,7 @@ pub enum RusageError {
 /// # Errors
 /// [`RusageError::InvalidWho`] if `who` is not a recognised selector,
 /// [`RusageError::Fault`] if `usage` is not writable guest memory.
-pub fn getrusage(mem: &mut GuestRegion, who: i32, usage: u64) -> Result<(), RusageError> {
+pub fn getrusage(mem: &mut impl GuestMem, who: i32, usage: u64) -> Result<(), RusageError> {
     if !matches!(who, RUSAGE_SELF | RUSAGE_CHILDREN | RUSAGE_THREAD) {
         return Err(RusageError::InvalidWho);
     }
@@ -71,7 +71,7 @@ pub fn getrusage(mem: &mut GuestRegion, who: i32, usage: u64) -> Result<(), Rusa
 /// # Errors
 /// [`RangeError`] if a non-null `cpu`/`node` pointer is not writable guest
 /// memory (guest `EFAULT`).
-pub fn getcpu(mem: &mut GuestRegion, cpu: u64, node: u64) -> Result<(), RangeError> {
+pub fn getcpu(mem: &mut impl GuestMem, cpu: u64, node: u64) -> Result<(), RangeError> {
     if cpu != 0 {
         mem.write(cpu, &0u32.to_le_bytes())?;
     }
@@ -97,7 +97,7 @@ const SYNTH_FREERAM: u64 = 1024 * 1024 * 1024;
 /// [`RangeError`] if `buf` is not writable guest memory for [`Sysinfo::SIZE`]
 /// bytes (guest `EFAULT`).
 pub fn sysinfo(
-    mem: &mut GuestRegion,
+    mem: &mut impl GuestMem,
     buf: u64,
     monotonic_start: Instant,
 ) -> Result<(), RangeError> {
