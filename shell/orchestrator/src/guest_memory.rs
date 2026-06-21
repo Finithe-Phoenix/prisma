@@ -85,6 +85,19 @@ impl<'a> GuestRegion<'a> {
         self.bytes[off..off + src.len()].copy_from_slice(src);
         Ok(())
     }
+
+    /// Verify `[addr, addr+len)` is writable guest memory without writing — the
+    /// check a syscall runs before consuming an external source (e.g. `read`
+    /// validates the destination before pulling bytes off an fd, so a bad
+    /// pointer faults without losing data).
+    ///
+    /// # Errors
+    /// [`RangeError::NotWritable`] for a read-only region, otherwise
+    /// [`RangeError::Unmapped`] / [`RangeError::Overflow`] when the range leaves
+    /// the region.
+    pub fn ensure_writable(&self, addr: u64, len: usize) -> Result<(), RangeError> {
+        self.checked_offset(addr, len as u64, true).map(|_| ())
+    }
 }
 
 #[cfg(test)]

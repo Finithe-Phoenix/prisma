@@ -6,7 +6,7 @@
 //! first syscall that composes the memory keystone with the I/O keystone into
 //! real host I/O.
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use prisma_orchestrator::address_space::RangeError;
 use prisma_orchestrator::guest_memory::GuestRegion;
@@ -58,6 +58,41 @@ pub fn write(
             Ok(bytes.len())
         }
     }
+}
+
+/// `read(fd, buf, count)`: read up to `count` bytes from `fd` into the guest
+/// buffer at `buf`, returning the number actually read (0 at EOF).
+///
+/// The guest buffer is checked writable *before* any bytes are pulled off the
+/// fd, so a bad pointer faults (`EFAULT`) without consuming input. Reading from
+/// a write-only stream (stdout/stderr) is `EBADF`.
+///
+/// # Errors
+/// [`IoError::Fault`] if `buf`/`count` is not writable guest memory,
+/// [`IoError::BadFd`] for an unopen fd or a read from stdout/stderr,
+/// [`IoError::Host`] if the underlying host read fails.
+pub fn read(
+    fds: &FdTable,
+    mem: &mut GuestRegion,
+    fd: i32,
+    buf: u64,
+    count: usize,
+) -> Result<usize, IoError> {
+    // Validate the destination before consuming the fd, so a bad buffer cannot
+    // discard already-read bytes.
+    mem.ensure_writable(buf, count).map_err(IoError::Fault)?;
+    let mut host = vec![0u8; count];
+    let n = match fds.get(fd).ok_or(IoError::BadFd)? {
+        FdEntry::Stdin => std::io::stdin().read(&mut host).map_err(IoError::Host)?,
+        FdEntry::Stdout | FdEntry::Stderr => return Err(IoError::BadFd),
+        FdEntry::File(file) => {
+            // `&File` implements `Read`, so no mutable fd handle is needed.
+            let mut handle: &std::fs::File = file;
+            handle.read(&mut host).map_err(IoError::Host)?
+        }
+    };
+    mem.write(buf, &host[..n]).map_err(IoError::Fault)?;
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -131,6 +166,63 @@ mod tests {
         let read_back = std::fs::read(&path).expect("read temp");
         assert_eq!(&read_back, b"diskdata");
         // Resource cleanup: remove the temp file.
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_from_a_file_fd_fills_the_guest_buffer() {
+        use super::read;
+        let path = std::env::temp_dir().join(format!("prisma_read_{}.tmp", std::process::id()));
+        std::fs::write(&path, b"hello world").expect("seed temp");
+        let mut fds = FdTable::new();
+        let mut buf = [0u8; 16];
+        let mut mem = region(&mut buf);
+        {
+            let file = std::fs::File::open(&path).expect("open temp");
+            let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+            let n = read(&fds, &mut mem, fd, 0x1000, 5).expect("read ok");
+            assert_eq!(n, 5);
+            assert!(fds.close(fd));
+        }
+        assert_eq!(mem.read(0x1000, 5).unwrap(), b"hello");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_from_a_write_only_stream_is_ebadf() {
+        use super::read;
+        let fds = FdTable::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // stdout (1) / stderr (2) are write-only for the guest.
+        assert!(matches!(
+            read(&fds, &mut mem, 1, 0x1000, 1),
+            Err(IoError::BadFd)
+        ));
+        assert!(matches!(
+            read(&fds, &mut mem, 2, 0x1000, 1),
+            Err(IoError::BadFd)
+        ));
+    }
+
+    #[test]
+    fn read_into_an_out_of_range_buffer_is_efault_without_consuming() {
+        use super::read;
+        let path = std::env::temp_dir().join(format!("prisma_readf_{}.tmp", std::process::id()));
+        std::fs::write(&path, b"data").expect("seed");
+        let mut fds = FdTable::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        {
+            let file = std::fs::File::open(&path).expect("open");
+            let fd = fds.allocate(FdEntry::File(file)).expect("allocate");
+            // 9 bytes into an 8-byte region: rejected before the file is read.
+            assert!(matches!(
+                read(&fds, &mut mem, fd, 0x1000, 9),
+                Err(IoError::Fault(RangeError::Unmapped))
+            ));
+            assert!(fds.close(fd));
+        }
         let _ = std::fs::remove_file(&path);
     }
 }
