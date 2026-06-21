@@ -18,6 +18,18 @@ use crate::pe_loader::{self, ImportSymbol, MappedImage, PeError};
 /// cannot be resolved fails the whole load (`LoadError::Import`) instead of
 /// leaving a dangling slot the guest would crash on later.
 pub fn load_pe(file: &[u8], modules: &ModuleTable) -> Result<MappedImage, LoadError> {
+    load_pe_with_image(file, modules).map(|(_, mapped)| mapped)
+}
+
+/// Like [`load_pe`], but also returns the parsed [`pe_loader::PeImage`].
+///
+/// The caller can then lay the image out PER SECTION (W^X) via
+/// [`crate::guest_layout::layout_sections`] instead of a flat blanket-RWX
+/// region — the section table is needed for the protections.
+pub fn load_pe_with_image(
+    file: &[u8],
+    modules: &ModuleTable,
+) -> Result<(pe_loader::PeImage, MappedImage), LoadError> {
     let img = pe_loader::parse(file)?;
     let mut mapped = pe_loader::map_image(&img, file)?;
     // Mapped at the preferred base, so relocations are an identity no-op here;
@@ -54,7 +66,7 @@ pub fn load_pe(file: &[u8], modules: &ModuleTable) -> Result<MappedImage, LoadEr
     }
 
     apply_iat_patches(base, &mut mapped.bytes, &patches)?;
-    Ok(mapped)
+    Ok((img, mapped))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,5 +126,16 @@ mod tests {
         let modules = ModuleTable::new();
         let err = load_pe(&[0u8; 8], &modules).unwrap_err();
         assert!(matches!(err, LoadError::Pe(_)));
+    }
+
+    #[test]
+    fn load_pe_with_image_returns_the_section_table() {
+        let (img, mapped) = load_pe_with_image(&minimal_pe(), &ModuleTable::new()).expect("load");
+        // The parsed image exposes the sections (for per-section W^X layout),
+        // and the mapped image matches the plain load_pe path.
+        assert_eq!(img.sections.len(), 1);
+        assert_eq!(img.sections[0].virtual_address, 0x1000);
+        assert_eq!(mapped.base, 0x1_4000_0000);
+        assert_eq!(mapped.entry_pc, 0x1_4000_1000);
     }
 }
