@@ -27,7 +27,10 @@ mod nr {
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
     pub const NANOSLEEP: u64 = 35;
+    pub const FSYNC: u64 = 74;
+    pub const FDATASYNC: u64 = 75;
     pub const GETTIMEOFDAY: u64 = 96;
+    pub const RT_SIGPENDING: u64 = 127;
     pub const TIME: u64 = 201;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
@@ -149,6 +152,18 @@ pub fn dispatch(
             Ok(secs) => secs,
             Err(e) => time_errno(e),
         },
+        nr::FSYNC => match io_syscalls::fsync(&ctx.fds, arg_i32(args[0])) {
+            Ok(()) => 0,
+            Err(e) => io_errno(&e),
+        },
+        nr::FDATASYNC => match io_syscalls::fdatasync(&ctx.fds, arg_i32(args[0])) {
+            Ok(()) => 0,
+            Err(e) => io_errno(&e),
+        },
+        nr::RT_SIGPENDING => match sig_syscalls::rt_sigpending(&ctx.signals, mem, args[0]) {
+            Ok(()) => 0,
+            Err(e) => sig_errno(e),
+        },
         nr::NANOSLEEP => match time_syscalls::nanosleep_request(mem, args[0]) {
             Ok(duration) => {
                 std::thread::sleep(duration);
@@ -191,6 +206,7 @@ mod tests {
     use super::{dispatch, SyscallContext};
     use prisma_orchestrator::address_space::Protection;
     use prisma_orchestrator::guest_memory::GuestRegion;
+    use prisma_runtime::guest_signal::Sigset;
     use prisma_runtime::guest_structs::Timespec;
 
     const SYS_READ: u64 = 0;
@@ -306,6 +322,49 @@ mod tests {
         // time(NULL) returns the seconds without writing.
         let secs = dispatch(&mut ctx, &mut mem, SYS_TIME, [0, 0, 0, 0, 0, 0]);
         assert!(secs > 1_600_000_000);
+    }
+
+    #[test]
+    fn fsync_routes_to_the_fd_table() {
+        const SYS_FSYNC: u64 = 74;
+        const SYS_FDATASYNC: u64 = 75;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        // fsync/fdatasync on stdout (1) are a successful no-op (0).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSYNC, [1, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FDATASYNC, [1, 0, 0, 0, 0, 0]),
+            0
+        );
+        // An unopen fd -> -EBADF.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_FSYNC, [9, 0, 0, 0, 0, 0]),
+            -9
+        );
+    }
+
+    #[test]
+    fn rt_sigpending_routes_and_writes_the_set() {
+        const SYS_RT_SIGPENDING: u64 = 127;
+        let mut ctx = SyscallContext::new();
+        ctx.signals.raise(11);
+        let mut buf = [0u8; 8];
+        let mut mem = region(&mut buf);
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_RT_SIGPENDING,
+                [0x1000, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let set = Sigset::from_guest_bytes(&buf).unwrap();
+        assert!(set.contains(11));
     }
 
     #[test]
