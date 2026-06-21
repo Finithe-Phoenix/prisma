@@ -200,6 +200,52 @@ impl Sigset {
     }
 }
 
+/// A guest signal disposition — the kernel `struct sigaction` a guest registers
+/// via `rt_sigaction`.
+///
+/// x86-64 layout: `sa_handler`(8), `sa_flags`(8), `sa_restorer`(8),
+/// `sa_mask`(8) = 32 bytes. `handler` is the guest entry point (or `SIG_DFL`=0
+/// / `SIG_IGN`=1); `mask` is the extra set blocked while the handler runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SigAction {
+    /// Guest handler entry point (or `SIG_DFL` / `SIG_IGN`).
+    pub handler: u64,
+    /// `SA_*` flags.
+    pub flags: u64,
+    /// Restorer trampoline address (`SA_RESTORER`).
+    pub restorer: u64,
+    /// Signals blocked for the duration of the handler.
+    pub mask: Sigset,
+}
+
+impl SigAction {
+    /// On-wire size of the kernel `struct sigaction` in guest memory.
+    pub const SIZE: usize = 32;
+
+    /// Decode a `sigaction` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            handler: u64::from_le_bytes(raw[0..8].try_into().ok()?),
+            flags: u64::from_le_bytes(raw[8..16].try_into().ok()?),
+            restorer: u64::from_le_bytes(raw[16..24].try_into().ok()?),
+            mask: Sigset::from_bits(u64::from_le_bytes(raw[24..32].try_into().ok()?)),
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..8].copy_from_slice(&self.handler.to_le_bytes());
+        out[8..16].copy_from_slice(&self.flags.to_le_bytes());
+        out[16..24].copy_from_slice(&self.restorer.to_le_bytes());
+        out[24..32].copy_from_slice(&self.mask.bits().to_le_bytes());
+        out
+    }
+}
+
 /// A guest thread's signal state: the pending queue plus the blocked mask.
 ///
 /// Delivery honours the mask — a blocked signal stays pending until it is
@@ -258,7 +304,7 @@ impl SignalState {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuestSignalQueue, SignalState, SigprocmaskHow, Sigset};
+    use super::{GuestSignalQueue, SigAction, SignalState, SigprocmaskHow, Sigset};
 
     #[test]
     fn queue_roundtrip() {
@@ -393,5 +439,25 @@ mod tests {
         // Even SetMask cannot install them.
         mask.apply(SigprocmaskHow::SetMask, arg);
         assert!(!mask.contains(9) && !mask.contains(19));
+    }
+
+    #[test]
+    fn sigaction_round_trips_through_its_32_byte_layout() {
+        let mut mask = Sigset::empty();
+        mask.insert(13);
+        let act = SigAction {
+            handler: 0x1_4000_3000,
+            flags: 0x0400_0004, // SA_RESTORER | SA_SIGINFO, illustrative
+            restorer: 0x1_4000_9000,
+            mask,
+        };
+        let bytes = act.to_guest_bytes();
+        assert_eq!(bytes.len(), SigAction::SIZE);
+        // Field order: handler / flags / restorer / mask, little-endian.
+        assert_eq!(&bytes[0..8], &0x1_4000_3000u64.to_le_bytes());
+        assert_eq!(&bytes[24..32], &mask.bits().to_le_bytes());
+        assert_eq!(SigAction::from_guest_bytes(&bytes), Some(act));
+        // A short buffer is rejected, not read past.
+        assert!(SigAction::from_guest_bytes(&[0u8; 31]).is_none());
     }
 }
