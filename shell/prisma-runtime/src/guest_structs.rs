@@ -868,11 +868,74 @@ impl SchedParam {
     }
 }
 
+/// `struct statfs` — the filesystem statistics `statfs`/`fstatfs` report.
+///
+/// The x86-64 Linux layout is eleven 64-bit words (type, block size, block and
+/// inode counts, the 8-byte `f_fsid`, name length, fragment size, mount flags)
+/// followed by four 64-bit spare words — 120 bytes. The session has no real
+/// filesystem, so the figures are fixed synthetic values; this type preserves
+/// the wire layout the guest reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Statfs {
+    /// Filesystem type magic (`f_type`).
+    pub f_type: u64,
+    /// Optimal transfer block size (`f_bsize`).
+    pub bsize: u64,
+    /// Total data blocks (`f_blocks`), in `bsize` units.
+    pub blocks: u64,
+    /// Free blocks (`f_bfree`).
+    pub bfree: u64,
+    /// Free blocks available to an unprivileged user (`f_bavail`).
+    pub bavail: u64,
+    /// Total inodes (`f_files`).
+    pub files: u64,
+    /// Free inodes (`f_ffree`).
+    pub ffree: u64,
+    /// Filesystem id (`f_fsid`); two 32-bit words, here as one 64-bit value.
+    pub fsid: u64,
+    /// Maximum filename length (`f_namelen`).
+    pub namelen: u64,
+    /// Fragment size (`f_frsize`).
+    pub frsize: u64,
+    /// Mount flags (`f_flags`).
+    pub flags: u64,
+}
+
+impl Statfs {
+    /// On-wire size in guest memory (eleven words + four spare words).
+    pub const SIZE: usize = 120;
+
+    /// Encode to the guest wire form; the four trailing `f_spare` words stay
+    /// zero.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        let words = [
+            self.f_type,
+            self.bsize,
+            self.blocks,
+            self.bfree,
+            self.bavail,
+            self.files,
+            self.ffree,
+            self.fsid,
+            self.namelen,
+            self.frsize,
+            self.flags,
+        ];
+        for (i, w) in words.iter().enumerate() {
+            let base = i * 8;
+            out[base..base + 8].copy_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, Rusage, SchedParam, SigAltStack, Stat,
-        Sysinfo, Termios, Timespec, Timeval, Tms, Utsname, Winsize,
+        Statfs, Sysinfo, Termios, Timespec, Timeval, Tms, Utsname, Winsize,
     };
 
     #[test]
@@ -1167,6 +1230,30 @@ mod tests {
         assert_eq!(&bytes[24..32], &3i64.to_le_bytes()); // tms_cstime
         assert_eq!(Tms::from_guest_bytes(&bytes), Some(t));
         assert!(Tms::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn statfs_encodes_words_at_their_offsets_with_zero_spare() {
+        let s = Statfs {
+            f_type: 0x0102_1994,
+            bsize: 4096,
+            blocks: 0x4_0000,
+            bfree: 0x2_0000,
+            bavail: 0x2_0000,
+            files: 0x10_0000,
+            ffree: 0x8_0000,
+            fsid: 0,
+            namelen: 255,
+            frsize: 4096,
+            flags: 0,
+        };
+        let b = s.to_guest_bytes();
+        assert_eq!(b.len(), 120);
+        assert_eq!(&b[0..8], &0x0102_1994u64.to_le_bytes()); // f_type
+        assert_eq!(&b[8..16], &4096u64.to_le_bytes()); // f_bsize
+        assert_eq!(&b[64..72], &255u64.to_le_bytes()); // f_namelen (word 8)
+                                                       // The four spare words [88..120] are zero.
+        assert!(b[88..120].iter().all(|&x| x == 0));
     }
 
     #[test]

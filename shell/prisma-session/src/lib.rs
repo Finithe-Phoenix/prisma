@@ -8,6 +8,7 @@
 //! translation. The dispatcher owns the guest-PC stepping (which is why
 //! `CpuStateFrame` has no `RIP`); this crate is just the wiring + ownership.
 
+pub mod fs_syscalls;
 pub mod guest_io;
 pub mod info_syscalls;
 pub mod io_syscalls;
