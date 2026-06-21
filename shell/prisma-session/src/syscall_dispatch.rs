@@ -14,7 +14,7 @@ use std::time::Instant;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_signal::SignalState;
-use prisma_runtime::guest_structs::SigAltStack;
+use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 
 use crate::io_syscalls::{self, IoError};
 use crate::sig_syscalls::{self, SigError};
@@ -66,6 +66,9 @@ mod nr {
     pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
     pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
     pub const TIME: u64 = 201;
+    pub const TIMES: u64 = 100;
+    pub const SETITIMER: u64 = 38;
+    pub const GETITIMER: u64 = 36;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
     pub const CLOCK_NANOSLEEP: u64 = 230;
@@ -119,6 +122,12 @@ pub struct SyscallContext {
     pub umask: u32,
     /// The alternate signal stack (`sigaltstack`); disabled by default.
     pub altstack: SigAltStack,
+    /// The three interval timers (`setitimer`/`getitimer`), indexed by `which`:
+    /// `ITIMER_REAL` (0), `ITIMER_VIRTUAL` (1), `ITIMER_PROF` (2). All disarmed
+    /// (zero) by default. Expiry delivery is not modelled yet; this preserves the
+    /// armed value across `setitimer`/`getitimer` round-trips so a guest reads
+    /// back what it set.
+    pub itimers: [ITimerval; 3],
 }
 
 impl SyscallContext {
@@ -137,9 +146,21 @@ impl SyscallContext {
                 flags: 2,
                 size: 0,
             },
+            itimers: [ZERO_ITIMERVAL; 3],
         }
     }
 }
+
+/// A disarmed interval timer: both the reload period and the time-to-next-expiry
+/// are zero.
+const ZERO_ITIMERVAL: ITimerval = ITimerval {
+    interval: Timeval { sec: 0, usec: 0 },
+    value: Timeval { sec: 0, usec: 0 },
+};
+
+/// The number of interval timers (`ITIMER_REAL`/`VIRTUAL`/`PROF`); a `which`
+/// outside `0..ITIMER_COUNT` is `EINVAL`.
+const ITIMER_COUNT: u64 = 3;
 
 impl Default for SyscallContext {
     fn default() -> Self {
@@ -349,6 +370,42 @@ pub fn dispatch(
             Ok(secs) => secs,
             Err(e) => time_errno(e),
         },
+        // times(buf): write the process tms (zeroed CPU fields) and return the
+        // elapsed wall-clock ticks since the session started.
+        nr::TIMES => match time_syscalls::times(mem, args[0], ctx.monotonic_start) {
+            Ok(ticks) => ticks,
+            Err(e) => time_errno(e),
+        },
+        // setitimer(which, new, old): write the prior value to `old` (when
+        // non-null), then arm `which` with the value at `new`. The armed value is
+        // preserved in the context; expiry delivery is not modelled yet.
+        nr::SETITIMER => {
+            let which = args[0];
+            if which >= ITIMER_COUNT {
+                errno::EINVAL
+            } else {
+                let slot = which as usize;
+                match time_syscalls::setitimer(mem, args[1], args[2], ctx.itimers[slot]) {
+                    Ok(next) => {
+                        ctx.itimers[slot] = next;
+                        0
+                    }
+                    Err(e) => time_errno(e),
+                }
+            }
+        }
+        // getitimer(which, curr): write the armed value of `which` to `curr`.
+        nr::GETITIMER => {
+            let which = args[0];
+            if which >= ITIMER_COUNT {
+                errno::EINVAL
+            } else {
+                match time_syscalls::getitimer(mem, args[1], ctx.itimers[which as usize]) {
+                    Ok(()) => 0,
+                    Err(e) => time_errno(e),
+                }
+            }
+        }
         nr::FSYNC => match io_syscalls::fsync(&ctx.fds, arg_i32(args[0])) {
             Ok(()) => 0,
             Err(e) => io_errno(&e),
@@ -1581,5 +1638,83 @@ mod tests {
         );
         let ts = Timespec::from_guest_bytes(mem.read(0x1000, 16).unwrap()).unwrap();
         assert_eq!((ts.sec, ts.nsec), (0, 1)); // 1ns resolution
+    }
+
+    #[test]
+    fn times_routes_and_writes_a_zeroed_tms() {
+        use prisma_runtime::guest_structs::Tms;
+        const SYS_TIMES: u64 = 100;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0xffu8; Tms::SIZE];
+        let mut mem = region(&mut buf);
+        // times(buf) -> non-negative tick count; the CPU fields are reported zero.
+        let ticks = dispatch(&mut ctx, &mut mem, SYS_TIMES, [0x1000, 0, 0, 0, 0, 0]);
+        assert!(ticks >= 0);
+        let tms = Tms::from_guest_bytes(mem.read(0x1000, Tms::SIZE).unwrap()).unwrap();
+        assert_eq!((tms.utime, tms.stime, tms.cutime, tms.cstime), (0, 0, 0, 0));
+        // times(0): a null buffer is allowed (just returns the tick count).
+        assert!(dispatch(&mut ctx, &mut mem, SYS_TIMES, [0, 0, 0, 0, 0, 0]) >= 0);
+    }
+
+    #[test]
+    fn setitimer_arms_a_timer_that_getitimer_reads_back() {
+        use prisma_runtime::guest_structs::{ITimerval, Timeval};
+        const SYS_SETITIMER: u64 = 38;
+        const SYS_GETITIMER: u64 = 36;
+        const ITIMER_REAL: u64 = 0;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 2 * ITimerval::SIZE];
+        let mut mem = region(&mut buf);
+        let armed = ITimerval {
+            interval: Timeval { sec: 1, usec: 0 },
+            value: Timeval {
+                sec: 2,
+                usec: 500_000,
+            },
+        };
+        mem.write(0x1000, &armed.to_guest_bytes()).unwrap();
+        // setitimer(ITIMER_REAL, new=0x1000, old=0x1020): old (disarmed) is written
+        // back, the timer is armed from `new`.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SETITIMER,
+                [ITIMER_REAL, 0x1000, 0x1020, 0, 0, 0]
+            ),
+            0
+        );
+        let old = ITimerval::from_guest_bytes(mem.read(0x1020, ITimerval::SIZE).unwrap()).unwrap();
+        assert_eq!(old.value, Timeval { sec: 0, usec: 0 }); // was disarmed
+                                                            // getitimer(ITIMER_REAL, curr=0x1020) reads back exactly what we armed.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_GETITIMER,
+                [ITIMER_REAL, 0x1020, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let cur = ITimerval::from_guest_bytes(mem.read(0x1020, ITimerval::SIZE).unwrap()).unwrap();
+        assert_eq!(cur, armed);
+    }
+
+    #[test]
+    fn itimer_syscalls_reject_an_out_of_range_which() {
+        const SYS_SETITIMER: u64 = 38;
+        const SYS_GETITIMER: u64 = 36;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 32];
+        let mut mem = region(&mut buf);
+        // which = 3 is past ITIMER_PROF -> -EINVAL (-22), no memory touched.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_SETITIMER, [3, 0x1000, 0, 0, 0, 0]),
+            -22
+        );
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_GETITIMER, [3, 0x1000, 0, 0, 0, 0]),
+            -22
+        );
     }
 }
