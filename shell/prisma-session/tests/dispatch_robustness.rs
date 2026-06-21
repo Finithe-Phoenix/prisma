@@ -9,6 +9,7 @@
 use prisma_orchestrator::address_space::Protection;
 use prisma_orchestrator::guest_memory::GuestRegion;
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
+use proptest::prelude::*;
 
 const ENOSYS: i64 = -38;
 
@@ -53,5 +54,25 @@ fn unrouted_numbers_return_negative_enosys() {
     let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
     for number in [400u64, 1000, 65_535, u64::MAX, 9999] {
         assert_eq!(dispatch(&mut ctx, &mut mem, number, [0; 6]), ENOSYS);
+    }
+}
+
+proptest! {
+    // Fuzz every routed number with arbitrary register arguments: a fresh
+    // context and a zeroed region per case, so no handler panics and the run
+    // never blocks. The region stays zeroed precisely so the sleeping time
+    // syscalls (nanosleep / clock_nanosleep) read a `{0,0}` (instant) request
+    // even when a fuzzed pointer lands inside it; a pointer outside it faults.
+    #[test]
+    fn dispatch_never_panics_for_arbitrary_number_and_args(
+        number in 0u64..400,
+        args in any::<[u64; 6]>(),
+    ) {
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0u8; 256];
+        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        // The return is the guest's `rax`: a success value or a negative errno,
+        // never a panic. We only assert the call returns (no hang, no abort).
+        let _ = dispatch(&mut ctx, &mut mem, number, args);
     }
 }
