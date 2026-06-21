@@ -19,6 +19,7 @@ use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 use crate::info_syscalls::{self, RusageError};
 use crate::io_syscalls::{self, GetcwdError, IoError};
 use crate::resource_syscalls::{self, RlimitError};
+use crate::sched_syscalls::{self, SchedError};
 use crate::sig_syscalls::{self, SigError};
 use crate::time_syscalls::{self, TimeError};
 
@@ -79,6 +80,8 @@ mod nr {
     pub const SETPRIORITY: u64 = 141;
     pub const SCHED_SETSCHEDULER: u64 = 144;
     pub const SCHED_GETSCHEDULER: u64 = 145;
+    pub const SCHED_SETPARAM: u64 = 142;
+    pub const SCHED_GETPARAM: u64 = 143;
     pub const TIME: u64 = 201;
     pub const TIMES: u64 = 100;
     pub const SETITIMER: u64 = 38;
@@ -244,6 +247,13 @@ const fn rlimit_errno(e: &RlimitError) -> i64 {
     match e {
         RlimitError::InvalidResource => errno::EINVAL,
         RlimitError::Fault(_) => errno::EFAULT,
+    }
+}
+
+const fn sched_errno(e: &SchedError) -> i64 {
+    match e {
+        SchedError::InvalidParam => errno::EINVAL,
+        SchedError::Fault(_) => errno::EFAULT,
     }
 }
 
@@ -666,6 +676,17 @@ pub fn dispatch(
                 errno::EINVAL
             }
         }
+        // sched_getparam(pid, param): write the static priority (0 for the only
+        // policy modelled, SCHED_OTHER); a bad pointer is EFAULT.
+        nr::SCHED_GETPARAM => match sched_syscalls::sched_getparam(mem, args[1]) {
+            Ok(()) => 0,
+            Err(_) => errno::EFAULT,
+        },
+        // sched_setparam(pid, param): accept only priority 0 (SCHED_OTHER).
+        nr::SCHED_SETPARAM => match sched_syscalls::sched_setparam(mem, args[1]) {
+            Ok(()) => 0,
+            Err(e) => sched_errno(&e),
+        },
         // umask(mask): install `mask & 0o777` as the file-mode creation mask and
         // return the previous one. Always succeeds.
         nr::UMASK => {
@@ -1265,6 +1286,50 @@ mod tests {
                 &mut mem,
                 SYS_SCHED_SETSCHEDULER,
                 [0, 1, 0, 0, 0, 0]
+            ),
+            -22
+        );
+    }
+
+    #[test]
+    fn sched_param_syscalls_route() {
+        use prisma_runtime::guest_structs::SchedParam;
+        const SYS_SCHED_GETPARAM: u64 = 143;
+        const SYS_SCHED_SETPARAM: u64 = 142;
+        let mut ctx = SyscallContext::new();
+        let mut buf = [0xffu8; SchedParam::SIZE];
+        let mut mem = region(&mut buf);
+        // sched_getparam(pid, 0x1000) -> 0; priority reads back as 0.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_GETPARAM,
+                [0, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let p = SchedParam::from_guest_bytes(mem.read(0x1000, SchedParam::SIZE).unwrap()).unwrap();
+        assert_eq!(p.priority, 0);
+        // sched_setparam with priority 0 -> 0.
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETPARAM,
+                [0, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // sched_setparam with a non-zero priority -> -EINVAL (-22).
+        mem.write(0x1000, &SchedParam { priority: 9 }.to_guest_bytes())
+            .unwrap();
+        assert_eq!(
+            dispatch(
+                &mut ctx,
+                &mut mem,
+                SYS_SCHED_SETPARAM,
+                [0, 0x1000, 0, 0, 0, 0]
             ),
             -22
         );
