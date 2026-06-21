@@ -31,6 +31,15 @@ impl GuestSignalQueue {
         }
     }
 
+    /// Remove and return the first pending signal that is NOT in `blocked`,
+    /// preserving order and leaving blocked signals queued. The mask-aware
+    /// counterpart of [`pop`](Self::pop) that signal delivery uses.
+    #[must_use]
+    pub fn pop_deliverable(&mut self, blocked: &Sigset) -> Option<u32> {
+        let idx = self.pending.iter().position(|&s| !blocked.contains(s))?;
+        Some(self.pending.remove(idx))
+    }
+
     /// Clears all pending signals and returns the number cleared.
     #[must_use]
     pub fn drain(&mut self) -> usize {
@@ -181,9 +190,58 @@ impl Sigset {
     }
 }
 
+/// A guest thread's signal state: the pending queue plus the blocked mask.
+///
+/// Delivery honours the mask — a blocked signal stays pending until it is
+/// unblocked, while SIGKILL/SIGSTOP (which [`Sigset`] never lets into the mask)
+/// are always deliverable. This composes the pending queue and the `sigset_t`
+/// into the model `rt_sigprocmask` and signal dispatch operate on.
+#[derive(Debug, Default, Clone)]
+pub struct SignalState {
+    pending: GuestSignalQueue,
+    blocked: Sigset,
+}
+
+impl SignalState {
+    /// Empty pending queue, nothing blocked.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark `sig` pending against the guest thread.
+    pub fn raise(&mut self, sig: u32) {
+        self.pending.push(sig);
+    }
+
+    /// Apply an `rt_sigprocmask` operation to the blocked mask.
+    pub fn set_mask(&mut self, how: SigprocmaskHow, set: Sigset) {
+        self.blocked.apply(how, set);
+    }
+
+    /// The current blocked mask (for `rt_sigprocmask`'s old-set out-argument).
+    #[must_use]
+    pub const fn blocked(&self) -> Sigset {
+        self.blocked
+    }
+
+    /// Pop the next deliverable (unblocked) pending signal, if any. Blocked
+    /// signals stay queued until they are unblocked.
+    #[must_use]
+    pub fn next_deliverable(&mut self) -> Option<u32> {
+        self.pending.pop_deliverable(&self.blocked)
+    }
+
+    /// Number of pending signals, blocked or not.
+    #[must_use]
+    pub const fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GuestSignalQueue, SigprocmaskHow, Sigset};
+    use super::{GuestSignalQueue, SignalState, SigprocmaskHow, Sigset};
 
     #[test]
     fn queue_roundtrip() {
@@ -247,6 +305,50 @@ mod tests {
         assert!(!mask.contains(11) && mask.contains(12));
         mask.apply(SigprocmaskHow::SetMask, Sigset::empty());
         assert_eq!(mask, Sigset::empty());
+    }
+
+    #[test]
+    fn signal_state_delivery_honours_the_blocked_mask() {
+        let mut st = SignalState::new();
+        st.raise(10);
+        st.raise(11); // SIGSEGV — we'll block this one
+        st.raise(12);
+        // Block signal 11: delivery skips it and returns the others in order.
+        let mut block11 = Sigset::empty();
+        block11.insert(11);
+        st.set_mask(SigprocmaskHow::Block, block11);
+        assert_eq!(st.next_deliverable(), Some(10));
+        assert_eq!(st.next_deliverable(), Some(12));
+        // 11 is still blocked -> nothing deliverable, but it stays pending.
+        assert_eq!(st.next_deliverable(), None);
+        assert_eq!(st.pending_count(), 1);
+        // Unblock 11: it becomes deliverable.
+        st.set_mask(SigprocmaskHow::Unblock, block11);
+        assert_eq!(st.next_deliverable(), Some(11));
+        assert_eq!(st.pending_count(), 0);
+    }
+
+    #[test]
+    fn signal_state_never_blocks_sigkill() {
+        let mut st = SignalState::new();
+        st.raise(9); // SIGKILL
+                     // Even an explicit attempt to block it leaves it deliverable.
+        let mut all = Sigset::empty();
+        all.insert(9);
+        st.set_mask(SigprocmaskHow::Block, all);
+        assert_eq!(st.next_deliverable(), Some(9));
+    }
+
+    #[test]
+    fn pop_deliverable_on_empty_or_all_blocked_is_none() {
+        let mut q = GuestSignalQueue::new();
+        assert_eq!(q.pop_deliverable(&Sigset::empty()), None);
+        q.push(15);
+        let mut block15 = Sigset::empty();
+        block15.insert(15);
+        assert_eq!(q.pop_deliverable(&block15), None); // blocked -> not popped
+        assert_eq!(q.len(), 1); // stays queued
+        assert_eq!(q.pop_deliverable(&Sigset::empty()), Some(15));
     }
 
     #[test]
