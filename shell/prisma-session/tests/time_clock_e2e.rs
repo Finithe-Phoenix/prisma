@@ -8,7 +8,7 @@
 //! which the single-call unit tests can observe.
 
 use prisma_orchestrator::address_space::Protection;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_runtime::guest_structs::{Timespec, Timeval};
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
 
@@ -25,19 +25,22 @@ const CLOCK_MONOTONIC: u64 = 1;
 // sanity floor the unit tests use.
 const EPOCH_FLOOR: i64 = 1_600_000_000;
 
-fn region(buf: &mut [u8]) -> GuestRegion<'_> {
-    GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+fn region(buf: &[u8]) -> BackedAddressSpace {
+    let mut s = BackedAddressSpace::new();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite)
+        .unwrap();
+    s
 }
 
-fn read_timespec(mem: &GuestRegion, addr: u64) -> Timespec {
+fn read_timespec(mem: &BackedAddressSpace, addr: u64) -> Timespec {
     Timespec::from_guest_bytes(mem.read(addr, Timespec::SIZE).unwrap()).unwrap()
 }
 
 #[test]
 fn monotonic_clock_never_goes_backwards_across_calls() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 16];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 16];
+    let mut mem = region(&buf);
 
     assert_eq!(
         dispatch(
@@ -67,8 +70,8 @@ fn monotonic_clock_never_goes_backwards_across_calls() {
 #[test]
 fn the_wall_clocks_agree_on_a_plausible_epoch() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 16];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 16];
+    let mut mem = region(&buf);
 
     // clock_gettime(REALTIME)
     assert_eq!(
@@ -109,8 +112,8 @@ fn the_wall_clocks_agree_on_a_plausible_epoch() {
 #[test]
 fn clock_getres_reports_one_nanosecond() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 16];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 16];
+    let mut mem = region(&buf);
     for clk in [CLOCK_REALTIME, CLOCK_MONOTONIC] {
         assert_eq!(
             dispatch(
@@ -131,7 +134,7 @@ fn zero_nanosleep_returns_promptly_and_unknown_clock_is_einval() {
     let mut ctx = SyscallContext::new();
     let mut buf = [0u8; 16];
     buf.copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
-    let mut mem = region(&mut buf);
+    let mut mem = region(&buf);
     // A zero request returns success without a meaningful wait.
     assert_eq!(
         dispatch(&mut ctx, &mut mem, SYS_NANOSLEEP, [0x1000, 0, 0, 0, 0, 0]),

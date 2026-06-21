@@ -9,7 +9,7 @@
 //! state.
 
 use prisma_orchestrator::address_space::Protection;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
 
 const SYS_GETPID: u64 = 39;
@@ -20,15 +20,18 @@ const SYS_GETTID: u64 = 186;
 
 const ESRCH: i64 = -3;
 
-fn region(buf: &mut [u8]) -> GuestRegion<'_> {
-    GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+fn region(buf: &[u8]) -> BackedAddressSpace {
+    let mut s = BackedAddressSpace::new();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite)
+        .unwrap();
+    s
 }
 
 #[test]
 fn the_guest_leads_its_own_session_and_group() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
 
     let pid = dispatch(&mut ctx, &mut mem, SYS_GETPID, [0; 6]);
     assert!(pid > 0);
@@ -59,8 +62,8 @@ fn the_guest_leads_its_own_session_and_group() {
 #[test]
 fn querying_another_pid_is_esrch() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
     let pid = dispatch(&mut ctx, &mut mem, SYS_GETPID, [0; 6]);
     let other = u64::try_from(pid).unwrap().wrapping_add(1);
     // No other process exists in the single-process model.
@@ -81,8 +84,8 @@ fn hierarchy_queries_are_stable_and_side_effect_free() {
     ctx.signals.raise(9_u32.wrapping_add(1)); // raise signal 10 as a state marker
     let blocked_before = ctx.signals.blocked();
 
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
     // Run the whole hierarchy twice — answers are stable and nothing is touched.
     let first = dispatch(&mut ctx, &mut mem, SYS_GETPGRP, [0; 6]);
     for _ in 0..2 {

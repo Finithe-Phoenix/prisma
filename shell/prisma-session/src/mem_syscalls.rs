@@ -22,6 +22,12 @@ const PROT_EXEC: i32 = 0x4;
 /// page so a guest never receives 0 as a valid mapping.
 const MMAP_MIN_ADDR: u64 = 0x1_0000;
 
+/// The largest single mapping the model backs with host memory (256 MiB). A
+/// request beyond this is `ENOMEM` for `mmap` and a no-op (unchanged break) for
+/// `brk` — both the realistic out-of-memory answer and a guard against an absurd
+/// guest request exhausting the host. (Raisable once lazy/paged backing lands.)
+const MAX_MAP_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Why a memory-management syscall failed (each maps to a guest errno at routing
 /// time).
 #[derive(Debug, PartialEq, Eq)]
@@ -65,6 +71,9 @@ pub fn brk(
         return *current_break; // query / invalid shrink below the heap base
     }
     let new_size = addr - heap_base;
+    if new_size > MAX_MAP_BYTES {
+        return *current_break; // an absurd heap is out of memory: break unchanged
+    }
     let outcome = if new_size == 0 {
         // The heap is emptied: drop the region if one exists.
         if *current_break > heap_base {
@@ -96,6 +105,9 @@ pub fn brk(
 pub fn mmap(mem: &mut BackedAddressSpace, addr: u64, len: u64, prot: i32) -> Result<u64, MemError> {
     if len == 0 {
         return Err(MemError::Invalid);
+    }
+    if len > MAX_MAP_BYTES {
+        return Err(MemError::NoMemory);
     }
     let protection = protection_from_prot(prot);
     // A non-zero hint that is actually free is honoured; otherwise fall back to

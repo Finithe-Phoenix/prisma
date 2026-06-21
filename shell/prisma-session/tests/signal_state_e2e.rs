@@ -7,7 +7,7 @@
 //! can never be blocked is also checked through the public boundary.
 
 use prisma_orchestrator::address_space::Protection;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_runtime::guest_signal::{SigAction, Sigset};
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
 
@@ -18,8 +18,11 @@ const SYS_RT_SIGPENDING: u64 = 127;
 
 const SIG_SETMASK: u64 = 2;
 
-fn region(buf: &mut [u8]) -> GuestRegion<'_> {
-    GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+fn region(buf: &[u8]) -> BackedAddressSpace {
+    let mut s = BackedAddressSpace::new();
+    s.map_with_bytes(0x1000, buf, Protection::ReadWrite)
+        .unwrap();
+    s
 }
 
 #[test]
@@ -30,7 +33,7 @@ fn blocked_mask_persists_across_an_unrelated_syscall() {
     let mut want = Sigset::empty();
     want.insert(10);
     buf[0..8].copy_from_slice(&want.to_guest_bytes());
-    let mut mem = region(&mut buf);
+    let mut mem = region(&buf);
 
     // rt_sigprocmask(SETMASK, set=0x1000, oldset=0).
     assert_eq!(
@@ -53,8 +56,8 @@ fn pending_set_survives_and_reports_through_dispatch() {
     let mut ctx = SyscallContext::new();
     ctx.signals.raise(12);
     ctx.signals.raise(7);
-    let mut buf = [0u8; 8];
-    let mut mem = region(&mut buf);
+    let buf = [0u8; 8];
+    let mut mem = region(&buf);
 
     // An unrelated syscall first — the pending set must survive it.
     let _ = dispatch(&mut ctx, &mut mem, SYS_GETPID, [0; 6]);
@@ -68,7 +71,7 @@ fn pending_set_survives_and_reports_through_dispatch() {
         ),
         0
     );
-    let reported = Sigset::from_guest_bytes(&buf).unwrap();
+    let reported = Sigset::from_guest_bytes(mem.read(0x1000, 8).unwrap()).unwrap();
     assert!(reported.contains(12) && reported.contains(7));
     assert!(!reported.contains(11));
 }
@@ -82,7 +85,7 @@ fn sigkill_and_sigstop_can_never_be_blocked_through_dispatch() {
     want.insert(9);
     want.insert(19);
     buf[0..8].copy_from_slice(&want.to_guest_bytes());
-    let mut mem = region(&mut buf);
+    let mut mem = region(&buf);
 
     assert_eq!(
         dispatch(
@@ -109,7 +112,7 @@ fn installed_disposition_persists_and_oldact_reports_it() {
         mask: Sigset::empty(),
     };
     buf[0..32].copy_from_slice(&act.to_guest_bytes());
-    let mut mem = region(&mut buf);
+    let mut mem = region(&buf);
 
     // rt_sigaction(sig=11, act=0x1000, oldact=0) installs the handler.
     assert_eq!(
@@ -130,7 +133,7 @@ fn installed_disposition_persists_and_oldact_reports_it() {
     let def = SigAction::default();
     let mut buf2 = [0u8; 64];
     buf2[0..32].copy_from_slice(&def.to_guest_bytes());
-    let mut mem2 = region(&mut buf2);
+    let mut mem2 = region(&buf2);
     assert_eq!(
         dispatch(
             &mut ctx,
@@ -140,6 +143,6 @@ fn installed_disposition_persists_and_oldact_reports_it() {
         ),
         0
     );
-    let old = SigAction::from_guest_bytes(&buf2[32..64]).unwrap();
+    let old = SigAction::from_guest_bytes(mem2.read(0x1020, 32).unwrap()).unwrap();
     assert_eq!(old, act);
 }

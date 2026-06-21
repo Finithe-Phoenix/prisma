@@ -7,7 +7,7 @@
 //! instant sleep) rather than blocking the test.
 
 use prisma_orchestrator::address_space::Protection;
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_session::syscall_dispatch::{dispatch, SyscallContext};
 use proptest::prelude::*;
 
@@ -16,8 +16,13 @@ const ENOSYS: i64 = -38;
 #[test]
 fn dispatch_never_panics_over_the_low_syscall_range() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 64];
-    let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+    let buf = [0u8; 64];
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
     // A pointer into the zeroed region for pointer args; fd-shaped args (4096)
     // are harmlessly unopen, so no syscall blocks or grows unbounded.
     for number in 0u64..512 {
@@ -28,8 +33,13 @@ fn dispatch_never_panics_over_the_low_syscall_range() {
 #[test]
 fn dispatch_never_panics_on_extreme_args() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 16];
-    let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+    let buf = [0u8; 16];
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
     // Wild pointers / counts: every handler must fault (EFAULT/EBADF), not panic.
     for number in [0u64, 1, 3, 14, 96, 228, 229] {
         let _ = dispatch(
@@ -50,8 +60,13 @@ fn dispatch_never_panics_on_extreme_args() {
 #[test]
 fn unrouted_numbers_return_negative_enosys() {
     let mut ctx = SyscallContext::new();
-    let mut buf = [0u8; 16];
-    let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+    let buf = [0u8; 16];
+    let mut mem = {
+        let mut s = BackedAddressSpace::new();
+        s.map_with_bytes(0x1000, &buf, Protection::ReadWrite)
+            .unwrap();
+        s
+    };
     for number in [400u64, 1000, 65_535, u64::MAX, 9999] {
         assert_eq!(dispatch(&mut ctx, &mut mem, number, [0; 6]), ENOSYS);
     }
@@ -69,8 +84,8 @@ proptest! {
         args in any::<[u64; 6]>(),
     ) {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 256];
-        let mut mem = GuestRegion::new(0x1000, Protection::ReadWrite, &mut buf);
+        let buf = [0u8; 256];
+        let mut mem = { let mut s = BackedAddressSpace::new(); s.map_with_bytes(0x1000, &buf, Protection::ReadWrite).unwrap(); s };
         // The return is the guest's `rax`: a success value or a negative errno,
         // never a panic. We only assert the call returns (no hang, no abort).
         let _ = dispatch(&mut ctx, &mut mem, number, args);

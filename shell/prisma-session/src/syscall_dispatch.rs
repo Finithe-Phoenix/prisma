@@ -11,7 +11,7 @@
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
-use prisma_orchestrator::guest_memory::GuestRegion;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_runtime::fd_table::FdTable;
 use prisma_runtime::guest_signal::SignalState;
 use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
@@ -19,6 +19,7 @@ use prisma_runtime::guest_structs::{ITimerval, SigAltStack, Timeval};
 use crate::fs_syscalls::{self, FstatfsError};
 use crate::info_syscalls::{self, RusageError};
 use crate::io_syscalls::{self, GetcwdError, IoError};
+use crate::mem_syscalls::{self, MemError};
 use crate::process_syscalls::{self, PrctlError, COMM_LEN};
 use crate::resource_syscalls::{self, RlimitError};
 use crate::sched_syscalls::{self, SchedError};
@@ -83,6 +84,10 @@ mod nr {
     pub const EXIT: u64 = 60;
     pub const EXIT_GROUP: u64 = 231;
     pub const IOCTL: u64 = 16;
+    pub const BRK: u64 = 12;
+    pub const MMAP: u64 = 9;
+    pub const MUNMAP: u64 = 11;
+    pub const MPROTECT: u64 = 10;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const MEMBARRIER: u64 = 324;
     pub const PRCTL: u64 = 157;
@@ -113,6 +118,7 @@ mod errno {
     pub const ESRCH: i64 = -3;
     pub const EIO: i64 = -5;
     pub const EBADF: i64 = -9;
+    pub const ENOMEM: i64 = -12;
     pub const EFAULT: i64 = -14;
     pub const EINVAL: i64 = -22;
     pub const ENOTTY: i64 = -25;
@@ -171,6 +177,12 @@ pub struct SyscallContext {
     /// guest is still running; the run loop polls this after each dispatch to
     /// learn the guest has terminated (and with what code).
     pub exit_status: Option<i32>,
+    /// Base of the program heap (`brk`); the run loop sets this from the loaded
+    /// layout (the address just past the image's writable data). 0 until set.
+    pub heap_base: u64,
+    /// Current program break — the top of the heap, moved by `brk`. Starts equal
+    /// to `heap_base` (an empty heap).
+    pub brk: u64,
 }
 
 impl SyscallContext {
@@ -192,6 +204,8 @@ impl SyscallContext {
             itimers: [ZERO_ITIMERVAL; 3],
             comm: [0u8; COMM_LEN],
             exit_status: None,
+            heap_base: 0,
+            brk: 0,
         }
     }
 }
@@ -305,13 +319,20 @@ const fn ioctl_errno(e: &IoctlError) -> i64 {
     }
 }
 
+const fn mem_errno(e: &MemError) -> i64 {
+    match e {
+        MemError::NoMemory => errno::ENOMEM,
+        MemError::Invalid => errno::EINVAL,
+    }
+}
+
 /// Dispatch one guest syscall, returning the value the guest reads in `rax`
 /// (the success result, or a negative errno). `mem` is the guest memory the
 /// pointer arguments resolve against.
 #[allow(clippy::cast_possible_wrap)]
 pub fn dispatch(
     ctx: &mut SyscallContext,
-    mem: &mut GuestRegion,
+    mem: &mut BackedAddressSpace,
     number: u64,
     args: [u64; 6],
 ) -> i64 {
@@ -682,6 +703,24 @@ pub fn dispatch(
             Ok(v) => v,
             Err(e) => ioctl_errno(&e),
         },
+        // brk(addr): query (addr=0) or move the program break; returns the
+        // resulting break (unchanged on failure), per Linux.
+        nr::BRK => mem_syscalls::brk(mem, ctx.heap_base, &mut ctx.brk, args[0]) as i64,
+        // mmap(addr, len, prot, ...): place an anonymous mapping, return its base.
+        nr::MMAP => match mem_syscalls::mmap(mem, args[0], args[1], arg_i32(args[2])) {
+            Ok(base) => base as i64,
+            Err(e) => mem_errno(&e),
+        },
+        // munmap(addr, len): unmap the region based at addr.
+        nr::MUNMAP => match mem_syscalls::munmap(mem, args[0]) {
+            Ok(()) => 0,
+            Err(e) => mem_errno(&e),
+        },
+        // mprotect(addr, len, prot): re-protect the region based at addr.
+        nr::MPROTECT => match mem_syscalls::mprotect(mem, args[0], arg_i32(args[2])) {
+            Ok(()) => 0,
+            Err(e) => mem_errno(&e),
+        },
         // set_robust_list(head, len): the kernel records the per-thread robust
         // futex list head for cleanup at thread exit. glibc calls this at startup
         // even single-threaded; with no thread teardown the list is never walked,
@@ -885,7 +924,7 @@ pub fn dispatch(
 mod tests {
     use super::{dispatch, SyscallContext};
     use prisma_orchestrator::address_space::Protection;
-    use prisma_orchestrator::guest_memory::GuestRegion;
+    use prisma_orchestrator::backed_address_space::BackedAddressSpace;
     use prisma_runtime::guest_signal::Sigset;
     use prisma_runtime::guest_structs::{Iovec, Timespec};
 
@@ -897,16 +936,64 @@ mod tests {
     const SYS_CLOCK_GETRES: u64 = 229;
     const CLOCK_REALTIME: u64 = 0;
 
-    fn region(buf: &mut [u8]) -> GuestRegion<'_> {
-        GuestRegion::new(0x1000, Protection::ReadWrite, buf)
+    /// A guest memory with a single read-write region at 0x1000 holding `buf`'s
+    /// content (size = `buf.len()`), so a too-short `buf` still faults exactly as
+    /// the old single-region helper did.
+    fn region(buf: &[u8]) -> BackedAddressSpace {
+        let mut space = BackedAddressSpace::new();
+        space
+            .map_with_bytes(0x1000, buf, Protection::ReadWrite)
+            .unwrap();
+        space
+    }
+
+    #[test]
+    fn brk_and_mmap_route_through_the_backed_address_space() {
+        const SYS_BRK: u64 = 12;
+        const SYS_MMAP: u64 = 9;
+        const SYS_MUNMAP: u64 = 11;
+        let mut ctx = SyscallContext::new();
+        let heap_base = 0x10_0000;
+        ctx.heap_base = heap_base;
+        ctx.brk = heap_base;
+        let buf = [0u8; 64];
+        let mut mem = region(&buf);
+        // brk(0) queries the initial break (= heap_base).
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_BRK, [0, 0, 0, 0, 0, 0]),
+            heap_base as i64
+        );
+        // brk(heap_base + 0x1000) grows the heap and returns the new break; the
+        // new page is then writable guest memory.
+        let new_break = heap_base + 0x1000;
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_BRK, [new_break, 0, 0, 0, 0, 0]),
+            new_break as i64
+        );
+        mem.write(heap_base, &[1, 2, 3]).unwrap();
+        // mmap(0, 0x2000, PROT_READ|WRITE) returns a fresh writable mapping base.
+        let base = dispatch(&mut ctx, &mut mem, SYS_MMAP, [0, 0x2000, 0x3, 0, 0, 0]);
+        assert!(base > 0);
+        let base = u64::try_from(base).unwrap();
+        mem.write(base, &[9, 9]).unwrap();
+        // munmap releases it.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_MUNMAP, [base, 0x2000, 0, 0, 0, 0]),
+            0
+        );
+        // An absurd mmap is ENOMEM (-12), not a host OOM.
+        assert_eq!(
+            dispatch(&mut ctx, &mut mem, SYS_MMAP, [0, u64::MAX, 0x3, 0, 0, 0]),
+            -12
+        );
     }
 
     #[test]
     fn rt_sigaction_routes_and_rejects_sigkill() {
         const SYS_RT_SIGACTION: u64 = 13;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 32];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 32];
+        let mut mem = region(&buf);
         // rt_sigaction(SIGKILL=9, act=0x1000, oldact=0) -> -EINVAL (-22).
         assert_eq!(
             dispatch(
@@ -928,8 +1015,8 @@ mod tests {
     fn lseek_routes_to_the_fd_table() {
         const SYS_LSEEK: u64 = 8;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // lseek on stdout (fd 1) is not seekable -> -EBADF (-9).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_LSEEK, [1, 0, 0, 0, 0, 0]),
@@ -945,8 +1032,8 @@ mod tests {
     #[test]
     fn write_routes_and_returns_the_byte_count() {
         let mut ctx = SyscallContext::new();
-        let mut buf = *b"hello!!!";
-        let mut mem = region(&mut buf);
+        let buf = *b"hello!!!";
+        let mut mem = region(&buf);
         // write(1, 0x1000, 5) -> 5 (stdout, captured by the harness).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_WRITE, [1, 0x1000, 5, 0, 0, 0]),
@@ -957,8 +1044,8 @@ mod tests {
     #[test]
     fn write_to_a_bad_fd_returns_negative_ebadf() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // fd 7 is not open -> -EBADF (-9).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_WRITE, [7, 0x1000, 1, 0, 0, 0]),
@@ -969,8 +1056,8 @@ mod tests {
     #[test]
     fn clock_gettime_routes_and_writes_the_guest_timespec() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 16];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 16];
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -987,8 +1074,8 @@ mod tests {
     #[test]
     fn an_out_of_range_pointer_returns_negative_efault() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8]; // too small for a 16-byte timeval
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8]; // too small for a 16-byte timeval
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -1005,8 +1092,8 @@ mod tests {
         const SYS_GETPID: u64 = 39;
         const SYS_GETTID: u64 = 186;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         let pid = i64::from(std::process::id());
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_GETPID, [0; 6]), pid);
         // A single-threaded guest's tid equals its pid.
@@ -1021,8 +1108,8 @@ mod tests {
         const SYS_GETEUID: u64 = 107;
         const SYS_GETEGID: u64 = 108;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         for nr in [SYS_GETUID, SYS_GETGID, SYS_GETEUID, SYS_GETEGID] {
             // Real and effective ids coincide: the guest is one fixed user.
             assert_eq!(dispatch(&mut ctx, &mut mem, nr, [0; 6]), 1000);
@@ -1033,8 +1120,8 @@ mod tests {
     fn sched_yield_succeeds() {
         const SYS_SCHED_YIELD: u64 = 24;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // sched_yield ignores its arguments and always returns 0.
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_SCHED_YIELD, [0; 6]), 0);
         assert_eq!(
@@ -1047,8 +1134,8 @@ mod tests {
     fn set_tid_address_returns_the_tid() {
         const SYS_SET_TID_ADDRESS: u64 = 218;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         let pid = i64::from(std::process::id());
         // Returns the caller's tid (== pid here); the tidptr arg is recorded as
         // clear_child_tid (a no-op until thread teardown) and never faults.
@@ -1077,8 +1164,8 @@ mod tests {
     fn getpgrp_returns_the_pid_as_the_group_leader() {
         const SYS_GETPGRP: u64 = 111;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // The lone guest is its own process-group leader: pgid == pid.
         let pid = i64::from(std::process::id());
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_GETPGRP, [0; 6]), pid);
@@ -1093,8 +1180,8 @@ mod tests {
     fn getsid_returns_the_sid_for_self_and_esrch_for_others() {
         const SYS_GETSID: u64 = 124;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         let pid = std::process::id();
         // getsid(0) -> own session id (== pid, the guest is its own leader).
         assert_eq!(
@@ -1123,8 +1210,8 @@ mod tests {
     fn getpgid_mirrors_getsid_for_self_and_others() {
         const SYS_GETPGID: u64 = 121;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         let pid = std::process::id();
         // getpgid(0) and getpgid(self) -> own group id (== pid, the leader).
         assert_eq!(
@@ -1157,8 +1244,8 @@ mod tests {
         const SYS_DUP3: u64 = 292;
         const O_CLOEXEC: u64 = 0o2_000_000;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // dup3(1, 1, 0): oldfd == newfd -> -EINVAL (dup2 would allow it).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_DUP3, [1, 1, 0, 0, 0, 0]),
@@ -1183,8 +1270,8 @@ mod tests {
         const F_DUPFD: u64 = 0;
         const F_GETFD: u64 = 1;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // fcntl(1, F_DUPFD, 10): duplicate stdout onto the lowest fd >= 10.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_FCNTL, [1, F_DUPFD, 10, 0, 0, 0]),
@@ -1203,8 +1290,8 @@ mod tests {
         use prisma_runtime::guest_structs::Utsname;
         const SYS_UNAME: u64 = 63;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; Utsname::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; Utsname::SIZE];
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_UNAME, [0x1000, 0, 0, 0, 0, 0]),
             0
@@ -1222,8 +1309,8 @@ mod tests {
     fn getcwd_routes_writes_root_and_reports_erange() {
         const SYS_GETCWD: u64 = 79;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 16];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 16];
+        let mut mem = region(&buf);
         // getcwd(buf, 16) -> 2 ("/" + NUL); the bytes land in guest memory.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETCWD, [0x1000, 16, 0, 0, 0, 0]),
@@ -1242,8 +1329,8 @@ mod tests {
         use prisma_runtime::guest_structs::Rusage;
         const SYS_GETRUSAGE: u64 = 98;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0xffu8; Rusage::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0xffu8; Rusage::SIZE];
+        let mut mem = region(&buf);
         // getrusage(RUSAGE_SELF=0, 0x1000) -> 0; the struct is zeroed.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETRUSAGE, [0, 0x1000, 0, 0, 0, 0]),
@@ -1268,8 +1355,8 @@ mod tests {
         const SYS_PRLIMIT64: u64 = 302;
         const RLIMIT_NOFILE: u64 = 7;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 2 * Rlimit::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 2 * Rlimit::SIZE];
+        let mut mem = region(&buf);
         // getrlimit(RLIMIT_NOFILE, 0x1000) -> 0; soft 1024 lands at the front.
         assert_eq!(
             dispatch(
@@ -1305,8 +1392,8 @@ mod tests {
     fn getcpu_routes_and_reports_zero_zero() {
         const SYS_GETCPU: u64 = 309;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0xffu8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0xffu8; 8];
+        let mut mem = region(&buf);
         // getcpu(cpu=0x1000, node=0x1004, tcache=0) -> 0; both report 0.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETCPU, [0x1000, 0x1004, 0, 0, 0, 0]),
@@ -1326,8 +1413,8 @@ mod tests {
         use prisma_runtime::guest_structs::Sysinfo;
         const SYS_SYSINFO: u64 = 99;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; Sysinfo::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; Sysinfo::SIZE];
+        let mut mem = region(&buf);
         // sysinfo(0x1000) -> 0; totalram (offset 32) is the synthetic 2 GiB.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_SYSINFO, [0x1000, 0, 0, 0, 0, 0]),
@@ -1351,8 +1438,8 @@ mod tests {
         const SYS_SCHED_SETSCHEDULER: u64 = 144;
         const SYS_SCHED_GETSCHEDULER: u64 = 145;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // getpriority(PRIO_PROCESS=0, 0) -> 0 (default nice).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_GETPRIORITY, [0, 0, 0, 0, 0, 0]),
@@ -1406,8 +1493,8 @@ mod tests {
         const SYS_SCHED_GETPARAM: u64 = 143;
         const SYS_SCHED_SETPARAM: u64 = 142;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0xffu8; SchedParam::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0xffu8; SchedParam::SIZE];
+        let mut mem = region(&buf);
         // sched_getparam(pid, 0x1000) -> 0; priority reads back as 0.
         assert_eq!(
             dispatch(
@@ -1449,8 +1536,8 @@ mod tests {
         const SYS_SET_ROBUST_LIST: u64 = 273;
         const SYS_MEMBARRIER: u64 = 324;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // set_robust_list(head, len=24) -> 0 (accepted no-op).
         assert_eq!(
             dispatch(
@@ -1486,8 +1573,8 @@ mod tests {
     #[test]
     fn advisory_memory_syscalls_succeed_as_noops() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // madvise(28), mlock(149), munlock(150), mlockall(151), munlockall(152)
         // all succeed (0), even with wild addr/len — they are no-ops.
         for number in [28u64, 149, 150, 151, 152] {
@@ -1509,8 +1596,8 @@ mod tests {
         const PR_SET_NAME: u64 = 15;
         const PR_GET_NAME: u64 = 16;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 64];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 64];
+        let mut mem = region(&buf);
         mem.write(0x1000, b"task-x\0").unwrap();
         // prctl(PR_SET_NAME, 0x1000) -> 0; the name is stored in the context.
         assert_eq!(
@@ -1547,8 +1634,8 @@ mod tests {
         const SYS_STATFS: u64 = 137;
         const SYS_FSTATFS: u64 = 138;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; Statfs::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; Statfs::SIZE];
+        let mut mem = region(&buf);
         // statfs(path, buf) -> 0; f_bsize (word 1) reads back as 4096.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_STATFS, [0x2000, 0x1000, 0, 0, 0, 0]),
@@ -1575,8 +1662,8 @@ mod tests {
         const SYS_EXIT: u64 = 60;
         const SYS_EXIT_GROUP: u64 = 231;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // Running: no status yet.
         assert!(ctx.exit_status.is_none());
         // exit_group(42) records the status for the run loop to observe.
@@ -1594,8 +1681,8 @@ mod tests {
         const SYS_IOCTL: u64 = 16;
         const TIOCGWINSZ: u64 = 0x5413;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; Winsize::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; Winsize::SIZE];
+        let mut mem = region(&buf);
         // ioctl(1, TIOCGWINSZ, argp) on stdout (a tty) -> 0; reads 80x24.
         assert_eq!(
             dispatch(
@@ -1629,8 +1716,8 @@ mod tests {
     fn umask_returns_the_previous_mask_and_installs_the_new() {
         const SYS_UMASK: u64 = 95;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // The default mask is 0o022; the first call returns it.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_UMASK, [0o077, 0, 0, 0, 0, 0]),
@@ -1649,8 +1736,8 @@ mod tests {
     fn sched_getaffinity_writes_a_nonempty_cpu_mask() {
         const SYS_SCHED_GETAFFINITY: u64 = 204;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 16];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 16];
+        let mut mem = region(&buf);
         // sched_getaffinity(0, 8, mask=0x1000) writes 8 bytes and returns 8.
         assert_eq!(
             dispatch(
@@ -1704,7 +1791,7 @@ mod tests {
         let mut buf = [0u8; 16];
         // A mask selecting CPU 0 (bit 0) at guest 0x1000.
         buf[0] = 1;
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // sched_setaffinity(0, 8, 0x1000) accepts (CPU 0 is online) -> 0.
         assert_eq!(
             dispatch(
@@ -1753,8 +1840,8 @@ mod tests {
         let mut ctx = SyscallContext::new();
         // An all-zero mask selects no CPU at all -> -EINVAL, independent of how
         // many CPUs the host has.
-        let mut buf = [0u8; 16];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 16];
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -1789,7 +1876,7 @@ mod tests {
             }
             .to_guest_bytes(),
         );
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // writev(1, 0x1020, 2) gathers "foo"+"bar" -> 6 bytes to stdout.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_WRITEV, [1, 0x1020, 2, 0, 0, 0]),
@@ -1808,8 +1895,8 @@ mod tests {
         const SYS_TKILL: u64 = 200;
         const SYS_TGKILL: u64 = 234;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         let pid = u64::from(std::process::id());
 
         // tkill(self, 11) raises signal 11 pending; returns 0.
@@ -1862,7 +1949,7 @@ mod tests {
         let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
 
         let mut buf = [0u8; 16];
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // pread64(fd, 0x1000, 5, 6) reads "world" -> 5.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_PREAD64, [fd, 0x1000, 5, 6, 0, 0]),
@@ -1871,7 +1958,7 @@ mod tests {
         assert_eq!(mem.read(0x1000, 5).unwrap(), b"world");
         // pwrite64(fd, 0x1008, 2, 0) writes "XY" at offset 0 -> 2.
         buf[8..10].copy_from_slice(b"XY");
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_PWRITE64, [fd, 0x1008, 2, 0, 0, 0]),
             2
@@ -1904,8 +1991,8 @@ mod tests {
             .expect("open");
         let mut ctx = SyscallContext::new();
         let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
 
         // ftruncate(fd, 4) -> 0, file shrinks to 4 bytes.
         assert_eq!(
@@ -1984,7 +2071,7 @@ mod tests {
         ] {
             buf[at..at + 16].copy_from_slice(&iov.to_guest_bytes());
         }
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // pwritev at offset 8 gathers "foobar" -> 6.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_PWRITEV, [fd, 0x1020, 2, 8, 0, 0]),
@@ -2018,8 +2105,8 @@ mod tests {
         let mut ctx = SyscallContext::new();
         let fd = u64::try_from(ctx.fds.allocate(FdEntry::File(file)).expect("alloc")).unwrap();
 
-        let mut buf = [0u8; 160];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 160];
+        let mut mem = region(&buf);
         // fstat(fd, 0x1000) -> 0, writes the stat with size 11.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_FSTAT, [fd, 0x1000, 0, 0, 0, 0]),
@@ -2054,7 +2141,7 @@ mod tests {
         };
         let mut buf = [0u8; 64];
         buf[0..24].copy_from_slice(&new.to_guest_bytes());
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // sigaltstack(ss=0x1000, old_ss=0x1020): install new, report old.
         assert_eq!(
             dispatch(
@@ -2066,13 +2153,13 @@ mod tests {
             0
         );
         // old_ss holds the previous (disabled, flags=2) alt-stack.
-        let old = SigAltStack::from_guest_bytes(&buf[0x20..0x20 + 24]).unwrap();
+        let old = SigAltStack::from_guest_bytes(mem.read(0x1020, 24).unwrap()).unwrap();
         assert_eq!(old.flags, 2);
         // The new alt-stack persisted in the context.
         assert_eq!(ctx.altstack, new);
         // A query-only call (ss=0) reports the now-installed stack.
-        let mut buf2 = [0u8; 32];
-        let mut mem2 = region(&mut buf2);
+        let buf2 = [0u8; 32];
+        let mut mem2 = region(&buf2);
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -2082,7 +2169,10 @@ mod tests {
             ),
             0
         );
-        assert_eq!(SigAltStack::from_guest_bytes(&buf2[0..24]).unwrap(), new);
+        assert_eq!(
+            SigAltStack::from_guest_bytes(mem2.read(0x1000, 24).unwrap()).unwrap(),
+            new
+        );
     }
 
     #[test]
@@ -2110,7 +2200,7 @@ mod tests {
             }
             .to_guest_bytes(),
         );
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // poll(0x1000, 2, timeout=0) -> 2 ready; timeout ignored.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_POLL, [0x1000, 2, 0, 0, 0, 0]),
@@ -2142,7 +2232,7 @@ mod tests {
             .to_guest_bytes(),
         );
         buf[16..32].copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // ppoll(0x1000, 1, tmo=0x1010, sigmask=0, sigsetsize=0) -> 1 ready.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_PPOLL, [0x1000, 1, 0x1010, 0, 0, 0]),
@@ -2160,8 +2250,8 @@ mod tests {
         const SYS_MAX: u64 = 146;
         const SYS_MIN: u64 = 147;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // SCHED_OTHER (0): a normal process has a fixed priority 0.
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_MAX, [0, 0, 0, 0, 0, 0]), 0);
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_MIN, [0, 0, 0, 0, 0, 0]), 0);
@@ -2181,8 +2271,8 @@ mod tests {
     #[test]
     fn an_unrouted_syscall_is_negative_enosys() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         assert_eq!(dispatch(&mut ctx, &mut mem, 9999, [0; 6]), -38);
     }
 
@@ -2192,8 +2282,8 @@ mod tests {
         const SYS_DUP: u64 = 32;
         const SYS_DUP2: u64 = 33;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // dup(1) -> 3.
         assert_eq!(dispatch(&mut ctx, &mut mem, SYS_DUP, [1, 0, 0, 0, 0, 0]), 3);
         // dup2(1, 9) -> 9.
@@ -2216,8 +2306,8 @@ mod tests {
     fn time_routes_and_returns_epoch_seconds() {
         const SYS_TIME: u64 = 201;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // time(NULL) returns the seconds without writing.
         let secs = dispatch(&mut ctx, &mut mem, SYS_TIME, [0, 0, 0, 0, 0, 0]);
         assert!(secs > 1_600_000_000);
@@ -2228,8 +2318,8 @@ mod tests {
         const SYS_FSYNC: u64 = 74;
         const SYS_FDATASYNC: u64 = 75;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // fsync/fdatasync on stdout (1) are a successful no-op (0).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_FSYNC, [1, 0, 0, 0, 0, 0]),
@@ -2253,7 +2343,7 @@ mod tests {
         let mut ctx = SyscallContext::new();
         let mut buf = [0u8; 16];
         buf.copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // clock_nanosleep(MONOTONIC, flags=0, req=0x1000, rem=0) -> 0 instantly.
         assert_eq!(
             dispatch(
@@ -2281,8 +2371,8 @@ mod tests {
         const SYS_RT_SIGPENDING: u64 = 127;
         let mut ctx = SyscallContext::new();
         ctx.signals.raise(11);
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -2292,15 +2382,15 @@ mod tests {
             ),
             0
         );
-        let set = Sigset::from_guest_bytes(&buf).unwrap();
+        let set = Sigset::from_guest_bytes(mem.read(0x1000, 8).unwrap()).unwrap();
         assert!(set.contains(11));
     }
 
     #[test]
     fn read_from_a_write_only_stream_routes_to_negative_ebadf() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 8];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 8];
+        let mut mem = region(&buf);
         // read(1, ...) — stdout is write-only for the guest -> -EBADF (-9).
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_READ, [1, 0x1000, 1, 0, 0, 0]),
@@ -2313,7 +2403,7 @@ mod tests {
         let mut ctx = SyscallContext::new();
         let mut buf = [0u8; 16];
         buf[..16].copy_from_slice(&Timespec { sec: 0, nsec: 0 }.to_guest_bytes());
-        let mut mem = region(&mut buf);
+        let mut mem = region(&buf);
         // A zero-duration nanosleep returns 0 without a meaningful wait.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_NANOSLEEP, [0x1000, 0, 0, 0, 0, 0]),
@@ -2324,8 +2414,8 @@ mod tests {
     #[test]
     fn clock_getres_routes_and_writes_the_resolution() {
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 16];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 16];
+        let mut mem = region(&buf);
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -2344,8 +2434,8 @@ mod tests {
         use prisma_runtime::guest_structs::Tms;
         const SYS_TIMES: u64 = 100;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0xffu8; Tms::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0xffu8; Tms::SIZE];
+        let mut mem = region(&buf);
         // times(buf) -> non-negative tick count; the CPU fields are reported zero.
         let ticks = dispatch(&mut ctx, &mut mem, SYS_TIMES, [0x1000, 0, 0, 0, 0, 0]);
         assert!(ticks >= 0);
@@ -2362,8 +2452,8 @@ mod tests {
         const SYS_GETITIMER: u64 = 36;
         const ITIMER_REAL: u64 = 0;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 2 * ITimerval::SIZE];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 2 * ITimerval::SIZE];
+        let mut mem = region(&buf);
         let armed = ITimerval {
             interval: Timeval { sec: 1, usec: 0 },
             value: Timeval {
@@ -2404,8 +2494,8 @@ mod tests {
         const SYS_SETITIMER: u64 = 38;
         const SYS_GETITIMER: u64 = 36;
         let mut ctx = SyscallContext::new();
-        let mut buf = [0u8; 32];
-        let mut mem = region(&mut buf);
+        let buf = [0u8; 32];
+        let mut mem = region(&buf);
         // which = 3 is past ITIMER_PROF -> -EINVAL (-22), no memory touched.
         assert_eq!(
             dispatch(&mut ctx, &mut mem, SYS_SETITIMER, [3, 0x1000, 0, 0, 0, 0]),
