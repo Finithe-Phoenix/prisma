@@ -340,5 +340,13 @@ theorem adaptiveRewrite_barFree (ρ : Ref → Addr) (σ : Ref → Val) (l : List
   intro m hm
   rw [projBlock_adaptiveRewrite] at hm
   simpa using (List.mem_filter.mp hm).2
+
+/-- The full adaptive rewrite never grows a block: the downgrade half preserves
+    length (it is a `map`) and the fence-elim half only removes ops, so the
+    result fits wherever the original did. -/
+theorem adaptiveRewrite_length_le (l : List Op) :
+    (adaptiveRewrite l).length ≤ l.length := by
+  rw [adaptiveRewrite, downgradeAccesses_length]
+  exact elimFences_length_le l
 end TSO
 end PrismaIR
