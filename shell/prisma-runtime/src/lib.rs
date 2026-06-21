@@ -32,6 +32,7 @@ pub mod exception_record;
 pub mod executor;
 pub mod guest_exception;
 pub mod guest_signal;
+pub mod guest_structs;
 pub mod guest_thread;
 pub mod host_features;
 pub mod jit_buffer_pool;
