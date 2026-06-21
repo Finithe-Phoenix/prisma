@@ -543,11 +543,48 @@ impl Flock {
     }
 }
 
+/// `struct itimerval { struct timeval it_interval; struct timeval it_value; }` —
+/// the interval-timer record `setitimer` / `getitimer` read and write.
+///
+/// Two embedded `timeval`s, 32 bytes on x86-64 Linux: `it_interval` (the reload
+/// period) then `it_value` (the time until the next expiry; zero disarms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ITimerval {
+    /// Reload period applied after each expiry (`it_interval`).
+    pub interval: Timeval,
+    /// Time remaining until the next expiry (`it_value`); zero means disarmed.
+    pub value: Timeval,
+}
+
+impl ITimerval {
+    /// On-wire size in guest memory (two 16-byte `timeval`s).
+    pub const SIZE: usize = 32;
+
+    /// Decode one `itimerval` from the front of `bytes`, or `None` if too short.
+    #[must_use]
+    pub fn from_guest_bytes(bytes: &[u8]) -> Option<Self> {
+        let raw = bytes.get(..Self::SIZE)?;
+        Some(Self {
+            interval: Timeval::from_guest_bytes(&raw[0..16])?,
+            value: Timeval::from_guest_bytes(&raw[16..32])?,
+        })
+    }
+
+    /// Encode to the guest wire form.
+    #[must_use]
+    pub fn to_guest_bytes(self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..16].copy_from_slice(&self.interval.to_guest_bytes());
+        out[16..32].copy_from_slice(&self.value.to_guest_bytes());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EpollEvent, Flock, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec, Timeval,
-        Winsize,
+        EpollEvent, Flock, ITimerval, Iovec, PollFd, Rlimit, SigAltStack, Stat, Termios, Timespec,
+        Timeval, Winsize,
     };
 
     #[test]
@@ -804,5 +841,27 @@ mod tests {
         assert_eq!(Flock::from_guest_bytes(&dirty), Some(fl));
         // A buffer one byte short is rejected.
         assert!(Flock::from_guest_bytes(&[0u8; 31]).is_none());
+    }
+
+    #[test]
+    fn itimerval_round_trips_through_two_timevals() {
+        let it = ITimerval {
+            interval: Timeval {
+                sec: 1,
+                usec: 500_000,
+            }, // reload every 1.5s
+            value: Timeval {
+                sec: 0,
+                usec: 250_000,
+            }, // first expiry in 0.25s
+        };
+        let bytes = it.to_guest_bytes();
+        assert_eq!(bytes.len(), ITimerval::SIZE);
+        // it_interval [0..16], it_value [16..32].
+        assert_eq!(Timeval::from_guest_bytes(&bytes[0..16]), Some(it.interval));
+        assert_eq!(Timeval::from_guest_bytes(&bytes[16..32]), Some(it.value));
+        assert_eq!(ITimerval::from_guest_bytes(&bytes), Some(it));
+        // A buffer one byte short is rejected, not overrun.
+        assert!(ITimerval::from_guest_bytes(&[0u8; 31]).is_none());
     }
 }
