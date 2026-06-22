@@ -30,7 +30,7 @@ jobs:
     name: ffi-link
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install C++ toolchain
         run: |
@@ -75,7 +75,7 @@ jobs:
     name: ffi-link-arm64
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install C++ toolchain
         run: |
@@ -114,7 +114,7 @@ jobs:
     # the env this job passed on through 2026-06-14.
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build prisma_core_tests
         shell: pwsh
