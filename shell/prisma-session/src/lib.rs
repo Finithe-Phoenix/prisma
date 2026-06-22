@@ -25,6 +25,7 @@ use std::collections::HashSet;
 
 use prisma_cache::TranslationCache;
 use prisma_orchestrator::address_space::AddressSpaceError;
+use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_orchestrator::guest_layout::{
     backed_layout_sections, layout_sections, BackedGuestLayout, GuestLayout,
 };
@@ -32,7 +33,12 @@ use prisma_orchestrator::load_pe::{load_pe_with_image, LoadError};
 use prisma_orchestrator::module_table::ModuleTable;
 use prisma_orchestrator::pe_loader::{MappedImage, PeImage};
 use prisma_runtime::dispatcher::DispatchRunOutcome;
+use prisma_runtime::executor::{
+    execute_block, gpr, CpuStateFrame, ExecError, EXIT_NORMAL, EXIT_SYSCALL,
+};
 use prisma_runtime::{Dispatcher, SmcGuard};
+
+use crate::syscall_dispatch::{dispatch, SyscallContext};
 use prisma_translator::{decode_block_successors, BlockTranslation, Translator};
 
 /// How many guest bytes a single fetch hands the translator. The translator
@@ -58,6 +64,23 @@ pub struct Session {
     cache: TranslationCache,
     guard: SmcGuard,
     dispatcher: Dispatcher,
+}
+
+/// Why [`Session::run`] stopped.
+#[derive(Debug)]
+pub enum RunOutcome {
+    /// The guest called `exit`/`exit_group`; the value is its exit status.
+    Exited(i32),
+    /// The syscall budget was exhausted before the guest exited.
+    SyscallLimit,
+    /// A block ended on a non-`SYSCALL` terminator (a branch/return) at `pc`;
+    /// following the taken target needs the executor to surface the next PC.
+    NonSyscallExit { pc: u64 },
+    /// No block could be translated at `pc` (unmapped / undecodable).
+    UnmappedPc(u64),
+    /// Execution is unavailable on this host (e.g. [`ExecError::WrongArch`] on a
+    /// non-ARM64 dev host); the translate path still ran.
+    ExecUnavailable(ExecError),
 }
 
 impl Session {
@@ -92,6 +115,59 @@ impl Session {
     /// [`AddressSpaceError`] if a section base overflows or any mapping overlaps.
     pub fn backed_layout(&self, stack_base: u64) -> Result<BackedGuestLayout, AddressSpaceError> {
         backed_layout_sections(&self.pe_image, &self.image, stack_base)
+    }
+
+    /// Run the guest from its entry point, servicing each `SYSCALL` against the
+    /// syscall dispatcher, until it calls `exit`/`exit_group` (or a limit/fault).
+    ///
+    /// The OS-ABI execution loop (RFC 0019): translate the block at the current
+    /// PC, execute it (ARM64), and when it exits for a `SYSCALL`
+    /// ([`EXIT_SYSCALL`]) read the number/args from the guest GPRs, dispatch it,
+    /// write the result to `rax`, and resume past the 2-byte `SYSCALL` — stopping
+    /// when the guest sets [`SyscallContext::exit_status`].
+    ///
+    /// Execution is ARM64-gated: on a non-ARM64 host the first block returns
+    /// [`ExecError::WrongArch`] and this reports [`RunOutcome::ExecUnavailable`].
+    /// A block ending in a non-`SYSCALL` terminator (a branch/return) halts with
+    /// [`RunOutcome::NonSyscallExit`] — following the taken target needs the
+    /// executor to surface the next PC (a later step); a register-only program
+    /// whose blocks each end in a syscall runs to completion today.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    pub fn run(
+        &mut self,
+        ctx: &mut SyscallContext,
+        mem: &mut BackedAddressSpace,
+        state: &mut CpuStateFrame,
+        max_syscalls: usize,
+    ) -> RunOutcome {
+        let mut pc = self.entry_pc();
+        for _ in 0..max_syscalls {
+            let Some(block) = self.translate_at(pc) else {
+                return RunOutcome::UnmappedPc(pc);
+            };
+            state.exit_reason = EXIT_NORMAL;
+            if let Err(e) = execute_block(&block.code, state) {
+                return RunOutcome::ExecUnavailable(e);
+            }
+            if state.exit_reason != EXIT_SYSCALL {
+                return RunOutcome::NonSyscallExit { pc };
+            }
+            let number = state.gpr[gpr::RAX];
+            let args = [
+                state.gpr[gpr::RDI],
+                state.gpr[gpr::RSI],
+                state.gpr[gpr::RDX],
+                state.gpr[gpr::R10],
+                state.gpr[gpr::R8],
+                state.gpr[gpr::R9],
+            ];
+            state.gpr[gpr::RAX] = dispatch(ctx, mem, number, args) as u64;
+            if let Some(code) = ctx.exit_status {
+                return RunOutcome::Exited(code);
+            }
+            pc = pc.wrapping_add(block.guest_bytes as u64); // resume past SYSCALL
+        }
+        RunOutcome::SyscallLimit
     }
 
     /// Guest virtual address execution begins at.
@@ -357,5 +433,32 @@ mod tests {
         );
         // The stack region (top is the RSP seed) is writable.
         assert!(bl.space.write(bl.stack_top - 8, &[0u8; 8]).is_ok());
+    }
+
+    // The OS-ABI run loop: a register-only program that loads the exit_group
+    // number/status and traps. On ARM64 it runs to completion and reports the
+    // guest's exit status; on the x86 dev host the translate path still runs and
+    // the loop reports that execution is unavailable (WrongArch).
+    #[test]
+    fn run_drives_the_guest_to_its_exit_syscall() {
+        // mov eax, 231 (exit_group); mov edi, 7 (status); syscall
+        let code = [
+            0xB8, 0xE7, 0x00, 0x00, 0x00, // mov eax, 231
+            0xBF, 0x07, 0x00, 0x00, 0x00, // mov edi, 7
+            0x0F, 0x05, // syscall
+        ];
+        let mut s = Session::load(&pe_with_code(&code), &ModuleTable::new()).expect("load");
+        let mut mem = s.backed_layout(0x2_0000_0000).expect("backed layout").space;
+        let mut ctx = SyscallContext::new();
+        let mut state = CpuStateFrame::default();
+        let outcome = s.run(&mut ctx, &mut mem, &mut state, 8);
+        if cfg!(target_arch = "aarch64") {
+            assert!(matches!(outcome, RunOutcome::Exited(7)), "{outcome:?}");
+        } else {
+            assert!(
+                matches!(outcome, RunOutcome::ExecUnavailable(ExecError::WrongArch)),
+                "{outcome:?}"
+            );
+        }
     }
 }
