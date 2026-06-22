@@ -71,16 +71,18 @@ const LOOP_PROGRAM: [u8; 28] = [
     0x0F, 0x05,                   // syscall        (exit(edi))
 ];
 
-// KNOWN BUG (tracked): a `cmp; jnz` loop with preceding `add`/`sub` arithmetic,
-// taken through the full decode -> optimize -> lower -> chain pipeline, exits
-// early on ARM64 (`Exited(1)` instead of `Exited(5)`) — the counter behaves as if
-// it were 1. The block-chaining MECHANISM is proven correct by
+// KNOWN BUG (tracked): a `cmp; jnz` loop with preceding `add`/`sub` arithmetic
+// exits early on ARM64 (`Exited(1)` instead of `Exited(5)`). The defect is
+// LOCALIZED TO CODEGEN: the reference interpreter in `prisma_translator::interp`,
+// run over the EXACT same optimized IR the backend lowers (see the translator's
+// `interp_loop_diag` test, which passes), produces the correct result — so decode
+// and optimize are correct, and the chaining mechanism is proven by
 // `guest_unconditional_jump_chains_over_skipped_code` (this file) and
-// `exec_branch_chain`'s I32/I64 conditional cases (which pass on ffi-link-arm64);
-// the lowered block 0 inspects as a correct `cmp`+`csel`. The defect is therefore
-// in the multi-instruction fused-block decode/optimize path, not the branch ABI.
-// Ignored so it does not red the gate while it is investigated separately.
-#[ignore = "multi-instruction arithmetic loop mis-executes through the pipeline; see comment + memory"]
+// `exec_branch_chain`'s I32/I64 cases. Suspect: the lowerer's naive `value_reg`
+// (9 + ref%8) has no liveness, so a block whose SSA refs exceed 8 (this one tops
+// out at ref 10) aliases registers. Pinpointing needs an ARM64 differential
+// (execute_block vs interpret_block per block). Ignored so it does not red the gate.
+#[ignore = "arithmetic loop mis-executes on ARM64 — codegen bug (interp oracle proves IR is correct); see comment + memory"]
 #[test]
 fn guest_loop_runs_by_chaining_blocks_across_a_branch() {
     let mut s =

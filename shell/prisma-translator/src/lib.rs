@@ -13,6 +13,8 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(clippy::missing_const_for_fn, clippy::must_use_candidate)]
 
+pub mod interp;
+
 use prisma_backend::lowerer::{LowerError, Lowerer};
 use prisma_cache::cache::{fnv1a_64, LookupResult};
 use prisma_cache::{CacheEntry, TranslationCache};
@@ -45,6 +47,17 @@ pub struct BlockTranslation {
     /// block ended without one). Empty for a dynamic transfer (indirect
     /// jump/call, return) whose target is only known at run time. The
     /// run loop walks these to translate the reachable CFG ahead of execution.
+    pub successors: Vec<u64>,
+}
+
+/// A decoded + optimized fused block, before lowering — the IR the backend
+/// lowers and the reference interpreter executes.
+#[derive(Debug, Clone)]
+pub struct OptimizedBlock {
+    pub func: Function,
+    pub instruction_count: usize,
+    pub guest_bytes: usize,
+    pub ended_at_terminator: bool,
     pub successors: Vec<u64>,
 }
 
@@ -286,6 +299,47 @@ impl Translator {
         bytes: &[u8],
         max_insns: usize,
     ) -> Result<BlockTranslation, TranslateError> {
+        let opt = self.optimize_fused_block(guest_addr, bytes, max_insns)?;
+        // The runtime executes every translated block via execute_block, which
+        // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
+        // ret, SYSCALL) must route through the full epilogue — a bare ret would
+        // skip the prologue's stack/callee-saved restore and corrupt the host on
+        // return. with_branch_exits additionally routes a relative branch through
+        // the frame's next_pc (this is a single block, with no sibling to branch
+        // to) so the run loop can chain to the taken target.
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&opt.func)
+            .map_err(TranslateError::Lower)?;
+        let mut code = Vec::with_capacity(words.len() * 4);
+        for word in &words {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        Ok(BlockTranslation {
+            code,
+            instruction_count: opt.instruction_count,
+            guest_bytes: opt.guest_bytes,
+            ended_at_terminator: opt.ended_at_terminator,
+            successors: opt.successors,
+        })
+    }
+
+    /// Decode a straight-line run starting at `guest_addr` into one block, shift
+    /// each instruction's SSA refs above the previous so names never collide, and
+    /// run the optimization pipeline — returning the optimized IR plus how the
+    /// block ended, WITHOUT lowering. [`Self::translate_fused_block`] lowers this;
+    /// the reference interpreter ([`crate::interp`]) executes the same IR, so the
+    /// backend and the oracle agree on exactly what they evaluate.
+    ///
+    /// # Errors
+    /// [`TranslateError::Decode`] if the first instruction is undecodable.
+    pub fn optimize_fused_block(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+        max_insns: usize,
+    ) -> Result<OptimizedBlock, TranslateError> {
         let mut stmts = Vec::new();
         let mut offset = 0usize;
         let mut pc = guest_addr;
@@ -350,25 +404,8 @@ impl Translator {
             entry: 0,
             blocks: vec![BasicBlock { id: 0, stmts }],
         };
-        let optimized = self.pipeline.run(func);
-        // The runtime executes every translated block via execute_block, which
-        // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
-        // ret, SYSCALL) must route through the full epilogue — a bare ret would
-        // skip the prologue's stack/callee-saved restore and corrupt the host on
-        // return. with_branch_exits additionally routes a relative branch through
-        // the frame's next_pc (this is a single block, with no sibling to branch
-        // to) so the run loop can chain to the taken target.
-        let words = Lowerer::new()
-            .with_branch_exits()
-            .lower_function(&optimized)
-            .map_err(TranslateError::Lower)?;
-        let mut code = Vec::with_capacity(words.len() * 4);
-        for word in &words {
-            code.extend_from_slice(&word.to_le_bytes());
-        }
-
-        Ok(BlockTranslation {
-            code,
+        Ok(OptimizedBlock {
+            func: self.pipeline.run(func),
             instruction_count,
             guest_bytes: offset,
             ended_at_terminator,
