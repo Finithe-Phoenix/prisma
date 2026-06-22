@@ -382,6 +382,11 @@ impl Arm64Assembler {
         self.emit_word(cset_x(dst, cond));
     }
 
+    /// Emits `CSEL Xd, Xn, Xm, cond` (Xd = cond ? Xn : Xm).
+    pub fn csel_x(&mut self, dst: u8, if_true: u8, if_false: u8, cond: CondCode) {
+        self.emit_word(csel_x(dst, if_true, if_false, cond));
+    }
+
     /// Emits `LDR Xt, [Xn, #imm]`.
     pub fn ldr_x_unsigned(&mut self, dst: u8, base: u8, imm_bytes: u16) {
         self.emit_word(ldr_x_unsigned(dst, base, imm_bytes));
@@ -1061,6 +1066,25 @@ pub fn cset_x(dst: u8, cond: CondCode) -> u32 {
         | u32::from(dst)
 }
 
+/// Encodes `CSEL Xd, Xn, Xm, cond` — `Xd = if cond then Xn else Xm`.
+///
+/// # Panics
+///
+/// Panics if any register is outside `0..32`.
+#[must_use]
+pub fn csel_x(dst: u8, if_true: u8, if_false: u8, cond: CondCode) -> u32 {
+    assert!(
+        dst < 32 && if_true < 32 && if_false < 32,
+        "register out of range"
+    );
+    // CSEL (64-bit): sf=1, Rm at [20:16], cond at [15:12], Rn at [9:5], Rd[4:0].
+    0x9A80_0000
+        | (u32::from(if_false) << 16)
+        | (u32::from(arm_condition(cond)) << 12)
+        | (u32::from(if_true) << 5)
+        | u32::from(dst)
+}
+
 /// Encodes `LDR Xt, [Xn, #imm]`.
 ///
 /// # Panics
@@ -1530,6 +1554,14 @@ mod tests {
         assert_eq!(cset_x(9, CondCode::Ne), 0x9A9F_07E9);
         assert_eq!(cset_x(9, CondCode::Ult), 0x9A9F_27E9);
         assert_eq!(cset_x(9, CondCode::Slt), 0x9A9F_A7E9);
+    }
+
+    #[test]
+    fn encodes_csel() {
+        // CSEL x9, x9, x10, eq  (x9 = eq ? x9 : x10)
+        assert_eq!(csel_x(9, 9, 10, CondCode::Eq), 0x9A8A_0129);
+        // CSEL x0, x1, x2, ne
+        assert_eq!(csel_x(0, 1, 2, CondCode::Ne), 0x9A82_1020);
     }
 
     #[test]
