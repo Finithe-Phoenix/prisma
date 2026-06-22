@@ -22,6 +22,15 @@ const GPR_BYTES: usize = 16 * 8;
 /// `FS_BASE_OFFSET`); `gs_base` follows 8 bytes later.
 const FS_BASE_OFFSET: usize = 792;
 
+/// [`CpuStateFrame::exit_reason`] value: the block ran to a normal terminator
+/// (a branch/return). The run loop continues from the next guest PC.
+pub const EXIT_NORMAL: u64 = 0;
+/// [`CpuStateFrame::exit_reason`] value: the block ended on a guest `SYSCALL`.
+///
+/// The run loop reads the syscall number/args from the GPRs, services it, writes
+/// the result to `rax`, advances the PC past the 2-byte `SYSCALL`, and resumes.
+pub const EXIT_SYSCALL: u64 = 1;
+
 /// Guest CPU state, laid out exactly as the lowerer addresses it.
 ///
 /// Relative to [`abi::K_STATE_PTR_REG`] (x27): `gpr[i]` at byte `i * 8` (x86 GPR
@@ -41,7 +50,13 @@ pub struct CpuStateFrame {
     /// Persistent x86 carry flag (0 or 1) at byte offset 808, matching the
     /// lowerer's `CF_OFFSET`. Used by multi-precision ADC/SBB.
     pub cf: u64,
-    _tail: [u8; 56],
+    /// Why the block returned to the host ([`EXIT_NORMAL`] / [`EXIT_SYSCALL`]),
+    /// at byte offset 816 (matching the lowerer's `EXIT_REASON_OFFSET`). A guest
+    /// `SYSCALL` block stores [`EXIT_SYSCALL`] here before returning; a normal
+    /// block leaves it untouched, so the run loop clears it to [`EXIT_NORMAL`]
+    /// before each block.
+    pub exit_reason: u64,
+    _tail: [u8; 48],
 }
 
 impl Default for CpuStateFrame {
@@ -52,7 +67,8 @@ impl Default for CpuStateFrame {
             fs_base: 0,
             gs_base: 0,
             cf: 0,
-            _tail: [0; 56],
+            exit_reason: 0,
+            _tail: [0; 48],
         }
     }
 }

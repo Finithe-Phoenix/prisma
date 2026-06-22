@@ -272,7 +272,7 @@ fn lower_stmt(
             values.insert(result, dst);
         }
         Op::Syscall(_) => {
-            lower_syscall(asm);
+            lower_syscall(asm, return_via_epilogue);
         }
         Op::Trap(_) => {
             asm.movz_x(0, 0, 0);
@@ -471,6 +471,12 @@ const GS_BASE_OFFSET: u16 = 800;
 /// Byte offset of the persistent x86 carry flag in `CpuStateFrame` (follows
 /// `gs_base`). Matches `prisma_runtime::executor::CpuStateFrame::cf`.
 const CF_OFFSET: u16 = 808;
+/// Byte offset of the block exit-reason word in `CpuStateFrame` (follows `cf`).
+/// Matches `prisma_runtime::executor::CpuStateFrame::exit_reason`; a `SYSCALL`
+/// block stores `EXIT_SYSCALL` here before returning to the host.
+const EXIT_REASON_OFFSET: u16 = 816;
+/// Exit-reason value a `SYSCALL` block writes (`EXIT_SYSCALL` in the runtime).
+const EXIT_SYSCALL_MARK: u16 = 1;
 const KSTATE_CPUID_MAX_LEAF: u64 = 7;
 const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
 const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;
@@ -1047,8 +1053,23 @@ fn lower_read_flag(
     Ok(())
 }
 
-fn lower_syscall(asm: &mut Arm64Assembler) {
-    asm.nop();
+/// A guest `SYSCALL` exits the block back to the host so it can be serviced.
+/// The syscall number + args are already in the guest GPRs (rax/rdi/...); this
+/// records the exit reason in the state frame and returns. The host services the
+/// syscall, writes the result to rax, advances the guest PC past the 2-byte
+/// `SYSCALL`, and re-enters at the next block.
+///
+/// `x9` is a caller-saved scratch — the block is exiting, so clobbering it is
+/// safe (the epilogue restores only the callee-saved registers).
+fn lower_syscall(asm: &mut Arm64Assembler, return_via_epilogue: bool) {
+    const SCRATCH: u8 = 9;
+    asm.movz_x(SCRATCH, EXIT_SYSCALL_MARK, 0);
+    asm.str_x_unsigned(SCRATCH, abi::K_STATE_PTR_REG, EXIT_REASON_OFFSET);
+    if return_via_epilogue {
+        abi::emit_block_epilogue_and_ret(asm);
+    } else {
+        asm.ret();
+    }
 }
 
 fn lower_lzcnt(asm: &mut Arm64Assembler, dst: u8, src: u8, size: OpSize) {
