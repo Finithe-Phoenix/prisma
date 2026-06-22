@@ -101,7 +101,7 @@ TEST_CASE("decode ADD rax, rbx → LoadReg+LoadReg+BinOp+StoreReg, 3 bytes") {
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x01, 0xD8}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts.size() == 5);
 
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
@@ -109,6 +109,8 @@ TEST_CASE("decode ADD rax, rbx → LoadReg+LoadReg+BinOp+StoreReg, 3 bytes") {
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
 
     REQUIRE(r == 3);
 }
@@ -121,13 +123,15 @@ TEST_CASE("decode SUB rdx, rcx → same shape, BinOpKind::Sub, 3 bytes") {
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x29, 0xCA}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts.size() == 5);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rdx, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode ADD rax, imm8 via 83 /0") {
@@ -487,13 +491,16 @@ TEST_CASE("decode ADC rax, rbx → same shape as ADD, 3 bytes (carry path placeh
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x11, 0xD8}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts.size() == 5);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rax, 2u, ir::OpSize::I64}});
+    // ADC's placeholder reuses the ADD path, so it gets the same flag write.
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Add, 0u, 1u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode SBB rdx, rcx → same shape as SUB, 3 bytes (borrow path placeholder)") {
@@ -504,13 +511,16 @@ TEST_CASE("decode SBB rdx, rcx → same shape as SUB, 3 bytes (borrow path place
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x19, 0xCA}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts.size() == 5);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rdx, 2u, ir::OpSize::I64}});
+    // SBB's placeholder reuses the SUB path, so it gets the same flag write.
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::Sub, 0u, 1u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode TEST rbx, rax → and + CmpFlags zero, 3 bytes (placeholder)") {
@@ -1639,8 +1649,8 @@ TEST_CASE("decode ADD rax, r11 via REX.R extension (4C 01 D8)") {
     ir::Ref r = 0;
     auto d = decode_ok({0x4C, 0x01, 0xD8}, r);
     REQUIRE(d.bytes_consumed == 3);
-    // Should produce LoadReg + LoadReg + BinOp + StoreReg (the ALU shape).
-    REQUIRE(d.stmts.size() == 4);
+    // LoadReg + LoadReg + BinOp + StoreReg + AluFlags (the flag-setting ALU shape).
+    REQUIRE(d.stmts.size() == 5);
     REQUIRE(std::holds_alternative<ir::LoadReg>(d.stmts[0].op));
     REQUIRE(std::get<ir::LoadReg>(d.stmts[0].op).reg == ir::Gpr::Rax);
     REQUIRE(std::holds_alternative<ir::LoadReg>(d.stmts[1].op));
@@ -1720,13 +1730,15 @@ TEST_CASE("decode AND rsi, rdi → BinOpKind::And") {
     ir::Ref r = 0;
     auto d = decode_ok({0x48, 0x21, 0xFE}, r);
     REQUIRE(d.bytes_consumed == 3);
-    REQUIRE(d.stmts.size() == 4);
+    REQUIRE(d.stmts.size() == 5);
     REQUIRE(d.stmts[0].op == ir::Op{ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}});
     REQUIRE(d.stmts[1].op == ir::Op{ir::LoadReg{ir::Gpr::Rdi, ir::OpSize::I64}});
     REQUIRE(d.stmts[2].op ==
             ir::Op{ir::BinOp{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
     REQUIRE(d.stmts[3].op ==
             ir::Op{ir::StoreReg{ir::Gpr::Rsi, 2u, ir::OpSize::I64}});
+    REQUIRE(d.stmts[4].op ==
+            ir::Op{ir::AluFlags{ir::BinOpKind::And, 0u, 1u, ir::OpSize::I64}});
 }
 
 TEST_CASE("decode OR rbp, rsp → BinOpKind::Or") {

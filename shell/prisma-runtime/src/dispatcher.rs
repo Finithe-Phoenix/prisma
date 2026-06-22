@@ -782,6 +782,7 @@ mod tests {
                 0xF940_036A,
                 0x8B09_014B,
                 0xF900_036B,
+                0xAB09_0157, // adds x23, x10, x9 — implicit ALU flag write
             ]))
         );
         assert_eq!(

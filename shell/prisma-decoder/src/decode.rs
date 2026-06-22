@@ -2771,6 +2771,24 @@ fn decode_adc_sbb_rm_r(
     Ok(2)
 }
 
+/// Append the implicit NZCV flag write for a flag-setting ALU op. Scoped to
+/// Add/Sub/And — the kinds the C++ lowerer also lowers today, so the Rust and C++
+/// decoders stay byte-identical under the cross-language differential. (Or/Xor set
+/// flags too but need the C++ AluFlags lowerer extended first.)
+fn push_alu_flags(stmts: &mut Vec<Stmt>, kind: BinOpKind, lhs: Ref, rhs: Ref, size: OpSize) {
+    if matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::And) {
+        stmts.push(Stmt::new(
+            None,
+            Op::AluFlags(AluFlags {
+                op: kind,
+                lhs,
+                rhs,
+                size,
+            }),
+        ));
+    }
+}
+
 fn decode_binop_rm_r_with_size(
     kind: BinOpKind,
     prefixes: &PrefixSet,
@@ -2811,6 +2829,8 @@ fn decode_binop_rm_r_with_size(
                 size,
             }),
         ));
+        // x86 ADD/SUB/AND set SF/ZF/OF/CF; emit the flag write for a following Jcc.
+        push_alu_flags(stmts, kind, lhs_ref, rhs_ref, size);
         Ok(2)
     } else {
         let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
@@ -7759,6 +7779,15 @@ mod tests {
                         size: OpSize::I64,
                     }),
                 ),
+                Stmt::new(
+                    None,
+                    Op::AluFlags(AluFlags {
+                        op: BinOpKind::Add,
+                        lhs: 1,
+                        rhs: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
             ]
         );
     }
@@ -7779,15 +7808,25 @@ mod tests {
                 }),
             )
         );
+        // rm_r ADD now appends the implicit AluFlags after the StoreReg.
         assert!(matches!(
-            rm_r.stmts.last().unwrap().op,
+            rm_r.stmts[3].op,
             Op::StoreReg(StoreReg {
                 reg: Gpr::Rax,
                 size: OpSize::I8,
                 ..
             })
         ));
+        assert!(matches!(
+            rm_r.stmts.last().unwrap().op,
+            Op::AluFlags(AluFlags {
+                op: BinOpKind::Add,
+                size: OpSize::I8,
+                ..
+            })
+        ));
 
+        // r_rm direction is unchanged by this PR (still ends in StoreReg).
         let r_rm = decode_one(b"\x02\xC1", 0).unwrap();
         assert_eq!(r_rm.bytes_consumed, 2);
         assert_eq!(
