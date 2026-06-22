@@ -1191,6 +1191,14 @@ std::variant<Decoded, DecodeError> decode_alu_rm_r(
     d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_src, size}});
     d.stmts.push_back({std::nullopt,
                        ir::StoreReg{m.base, ref_res, size}});
+    // x86 ADD/SUB/AND set SF/ZF/OF/CF; emit the implicit flag write so a following
+    // Jcc reads them. Scoped to the kinds the AluFlags lowerer supports today, and
+    // must mirror the Rust decoder (decode_binop_rm_r) byte-for-byte under the
+    // cross-language differential.
+    if (op == ir::BinOpKind::Add || op == ir::BinOpKind::Sub ||
+        op == ir::BinOpKind::And) {
+        d.stmts.push_back({std::nullopt, ir::AluFlags{op, ref_dst, ref_src, size}});
+    }
     d.bytes_consumed = cursor_in_out;
     return d;
 }
