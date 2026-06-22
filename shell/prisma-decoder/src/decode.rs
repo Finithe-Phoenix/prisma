@@ -2771,6 +2771,27 @@ fn decode_adc_sbb_rm_r(
     Ok(2)
 }
 
+/// Append the implicit NZCV flag write for a flag-setting ALU op. Only
+/// Add/Sub/And/Or/Xor are modelled (the kinds the binop decoders emit); any other
+/// kind is a no-op (its flags, if needed, are handled by a dedicated path such as
+/// the persistent-carry ADC/SBB subsystem).
+fn push_alu_flags(stmts: &mut Vec<Stmt>, kind: BinOpKind, lhs: Ref, rhs: Ref, size: OpSize) {
+    if matches!(
+        kind,
+        BinOpKind::Add | BinOpKind::Sub | BinOpKind::And | BinOpKind::Or | BinOpKind::Xor
+    ) {
+        stmts.push(Stmt::new(
+            None,
+            Op::AluFlags(AluFlags {
+                op: kind,
+                lhs,
+                rhs,
+                size,
+            }),
+        ));
+    }
+}
+
 fn decode_binop_rm_r_with_size(
     kind: BinOpKind,
     prefixes: &PrefixSet,
@@ -2811,6 +2832,10 @@ fn decode_binop_rm_r_with_size(
                 size,
             }),
         ));
+        // ADD/SUB/AND/OR/XOR set SF/ZF/OF/CF; emit the flag write so a following
+        // Jcc (e.g. `sub; jnz`) reads them. Dead flag writes are removed by the
+        // flag-write-elimination pass.
+        push_alu_flags(stmts, kind, lhs_ref, rhs_ref, size);
         Ok(2)
     } else {
         let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
@@ -2840,6 +2865,7 @@ fn decode_binop_rm_r_with_size(
                 size,
             }),
         ));
+        push_alu_flags(stmts, kind, mem_val, rhs_ref, size);
         Ok(1 + used)
     }
 }
@@ -2910,6 +2936,7 @@ fn decode_binop_r_rm_with_size(
             size,
         }),
     ));
+    push_alu_flags(stmts, kind, dst_val, rhs, size);
     Ok(1 + used)
 }
 
@@ -7759,6 +7786,15 @@ mod tests {
                         size: OpSize::I64,
                     }),
                 ),
+                Stmt::new(
+                    None,
+                    Op::AluFlags(AluFlags {
+                        op: BinOpKind::Add,
+                        lhs: 1,
+                        rhs: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
             ]
         );
     }
@@ -7779,10 +7815,19 @@ mod tests {
                 }),
             )
         );
+        // StoreReg is followed by the implicit AluFlags write.
         assert!(matches!(
-            rm_r.stmts.last().unwrap().op,
+            rm_r.stmts[3].op,
             Op::StoreReg(StoreReg {
                 reg: Gpr::Rax,
+                size: OpSize::I8,
+                ..
+            })
+        ));
+        assert!(matches!(
+            rm_r.stmts.last().unwrap().op,
+            Op::AluFlags(AluFlags {
+                op: BinOpKind::Add,
                 size: OpSize::I8,
                 ..
             })
@@ -7803,9 +7848,17 @@ mod tests {
             )
         );
         assert!(matches!(
-            r_rm.stmts.last().unwrap().op,
+            r_rm.stmts[3].op,
             Op::StoreReg(StoreReg {
                 reg: Gpr::Rax,
+                size: OpSize::I8,
+                ..
+            })
+        ));
+        assert!(matches!(
+            r_rm.stmts.last().unwrap().op,
+            Op::AluFlags(AluFlags {
+                op: BinOpKind::Add,
                 size: OpSize::I8,
                 ..
             })
@@ -7863,12 +7916,17 @@ mod tests {
                 )
             );
             assert!(matches!(
-                d.stmts.last().unwrap().op,
+                d.stmts[3].op,
                 Op::StoreReg(StoreReg {
                     reg: Gpr::Rax,
                     size: OpSize::I64,
                     ..
                 })
+            ));
+            // The op sets flags; the implicit AluFlags write is appended.
+            assert!(matches!(
+                &d.stmts.last().unwrap().op,
+                Op::AluFlags(a) if a.op == op && a.size == OpSize::I64
             ));
         }
 
@@ -9336,6 +9394,15 @@ mod tests {
                     Op::StoreReg(StoreReg {
                         reg: Gpr::Rax,
                         value: 9,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::AluFlags(AluFlags {
+                        op: BinOpKind::Add,
+                        lhs: 0,
+                        rhs: 8,
                         size: OpSize::I64,
                     }),
                 ),
