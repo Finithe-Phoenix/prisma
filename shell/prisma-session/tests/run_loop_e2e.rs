@@ -71,18 +71,11 @@ const LOOP_PROGRAM: [u8; 28] = [
     0x0F, 0x05,                   // syscall        (exit(edi))
 ];
 
-// KNOWN BUG (tracked): a `cmp; jnz` loop with preceding `add`/`sub` arithmetic
-// exits early on ARM64 (`Exited(1)` instead of `Exited(5)`). The defect is
-// LOCALIZED TO CODEGEN: the reference interpreter in `prisma_translator::interp`,
-// run over the EXACT same optimized IR the backend lowers (see the translator's
-// `interp_loop_diag` test, which passes), produces the correct result — so decode
-// and optimize are correct, and the chaining mechanism is proven by
-// `guest_unconditional_jump_chains_over_skipped_code` (this file) and
-// `exec_branch_chain`'s I32/I64 cases. Suspect: the lowerer's naive `value_reg`
-// (9 + ref%8) has no liveness, so a block whose SSA refs exceed 8 (this one tops
-// out at ref 10) aliases registers. Pinpointing needs an ARM64 differential
-// (execute_block vs interpret_block per block). Ignored so it does not red the gate.
-#[ignore = "arithmetic loop mis-executes on ARM64 — codegen bug (interp oracle proves IR is correct); see comment + memory"]
+// A real `cmp; jnz` arithmetic loop, run end to end through the DBT. This was
+// briefly broken on ARM64 because `Session::translate_at` used the old
+// per-instruction `translate_block` instead of the fused `translate_fused_block`
+// (renumbered SSA + branch block-exit ABI); the `diff_loop` differential pinned
+// it down. Fixed — the loop now runs to its 5 iterations.
 #[test]
 fn guest_loop_runs_by_chaining_blocks_across_a_branch() {
     let mut s =
