@@ -526,6 +526,17 @@ const EXIT_SYSCALL_MARK: u16 = 1;
 const NEXT_PC_OFFSET: u16 = 824;
 /// Exit-reason value a relative-branch block writes (`EXIT_BRANCH` in runtime).
 const EXIT_BRANCH_MARK: u16 = 2;
+/// Byte offset of the guest-memory base in `CpuStateFrame` (follows `next_pc`).
+/// Matches `prisma_runtime::executor::CpuStateFrame::mem_base`. Every guest
+/// memory access is rebased to `host = mem_base + guest_va` so the JIT can reach
+/// a contiguous host arena that is not identity-mapped to the guest VAs (RFC
+/// 0020). A `mem_base` of 0 reproduces the legacy `host == guest` behaviour.
+const MEM_BASE_OFFSET: u16 = 832;
+/// Scratch register holding the rebased host address inside a memory op. Outside
+/// the value-register pool (x9..x16) so it never aliases the `addr`/`value`/`dst`
+/// operands, and inside the prologue's callee-saved set so the body may clobber
+/// it. The block body otherwise touches only x9..x23, x27 (state) and x28.
+const MEM_ADDR_SCRATCH: u8 = 24;
 const KSTATE_CPUID_MAX_LEAF: u64 = 7;
 const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
 const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;
@@ -1396,12 +1407,24 @@ fn emit_u64_constant(asm: &mut Arm64Assembler, dst: u8, value: u64) {
     }
 }
 
+/// Rebase a guest virtual address to its host address in `MEM_ADDR_SCRATCH`:
+/// `host = mem_base + guest_va`. `mem_base` is reloaded per access (cheap, and
+/// keeps the change localized to the memory ops — no prologue/ABI change). The
+/// scratch is disjoint from the value-register pool, so `addr` (and a store's
+/// `value`) stay live for any later use.
+fn emit_rebase_addr(asm: &mut Arm64Assembler, addr: u8) {
+    asm.ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET);
+    asm.add_x(MEM_ADDR_SCRATCH, addr, MEM_ADDR_SCRATCH);
+}
+
 fn emit_load_mem(asm: &mut Arm64Assembler, size: OpSize, dst: u8, addr: u8) {
+    emit_rebase_addr(asm, addr);
+    let base = MEM_ADDR_SCRATCH;
     match size {
-        OpSize::I8 => asm.ldrb_unsigned(dst, addr, 0),
-        OpSize::I16 => asm.ldrh_unsigned(dst, addr, 0),
-        OpSize::I32 => asm.ldr_w_unsigned(dst, addr, 0),
-        OpSize::I64 => asm.ldr_x_unsigned(dst, addr, 0),
+        OpSize::I8 => asm.ldrb_unsigned(dst, base, 0),
+        OpSize::I16 => asm.ldrh_unsigned(dst, base, 0),
+        OpSize::I32 => asm.ldr_w_unsigned(dst, base, 0),
+        OpSize::I64 => asm.ldr_x_unsigned(dst, base, 0),
     }
 }
 
@@ -1416,11 +1439,13 @@ fn emit_load_reg(asm: &mut Arm64Assembler, size: OpSize, dst: u8, reg: Gpr) {
 }
 
 fn emit_store_mem(asm: &mut Arm64Assembler, size: OpSize, value: u8, addr: u8) {
+    emit_rebase_addr(asm, addr);
+    let base = MEM_ADDR_SCRATCH;
     match size {
-        OpSize::I8 => asm.strb_unsigned(value, addr, 0),
-        OpSize::I16 => asm.strh_unsigned(value, addr, 0),
-        OpSize::I32 => asm.str_w_unsigned(value, addr, 0),
-        OpSize::I64 => asm.str_x_unsigned(value, addr, 0),
+        OpSize::I8 => asm.strb_unsigned(value, base, 0),
+        OpSize::I16 => asm.strh_unsigned(value, base, 0),
+        OpSize::I32 => asm.str_w_unsigned(value, base, 0),
+        OpSize::I64 => asm.str_x_unsigned(value, base, 0),
     }
 }
 
@@ -1454,8 +1479,9 @@ mod tests {
     use crate::abi;
     use crate::assembler::{
         add_x, add_x_imm, adds_x, ands_x, b, b_cond, blr_x, clz_w, clz_x, cmp_x, crc32cb, crc32ch,
-        crc32cw, crc32cx, cset_x, eor_x, fence, ldr_x_unsigned, lsl_x, lsr_x, mov_x, movz_x,
-        mrs_cntvct, msr_nzcv, orr_x, rbit_w, rbit_x, str_x_unsigned, sub_x_imm, sxtb_x, uxth_x,
+        crc32cw, crc32cx, cset_x, eor_x, fence, ldr_w_unsigned, ldr_x_unsigned, ldrb_unsigned,
+        ldrh_unsigned, lsl_x, lsr_x, mov_x, movz_x, mrs_cntvct, msr_nzcv, orr_x, rbit_w, rbit_x,
+        str_w_unsigned, str_x_unsigned, strb_unsigned, strh_unsigned, sub_x_imm, sxtb_x, uxth_x,
         uxtw_x,
     };
     use prisma_ir::{
@@ -2464,9 +2490,20 @@ mod tests {
             ),
         ]);
 
+        // Each memory op rebases the guest VA: ldr x24,[x27,#MEM_BASE_OFFSET];
+        // add x24, addr, x24; then the load/store off x24.
         assert_eq!(
             Lowerer::new().lower_function(&func).unwrap(),
-            vec![0xD282_0009, 0xD280_054A, 0xF900_012A, 0xF940_012B]
+            vec![
+                movz_x(value_reg(0), 0x1000, 0),
+                movz_x(value_reg(1), 0x2a, 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                str_x_unsigned(value_reg(1), MEM_ADDR_SCRATCH, 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                ldr_x_unsigned(value_reg(2), MEM_ADDR_SCRATCH, 0),
+            ]
         );
     }
 
@@ -2510,9 +2547,13 @@ mod tests {
                 movz_x(value_reg(0), 0x1000, 0),
                 movz_x(value_reg(1), 0x2a, 0),
                 fence(FenceKind::Mfence),
-                str_x_unsigned(value_reg(1), value_reg(0), 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                str_x_unsigned(value_reg(1), MEM_ADDR_SCRATCH, 0),
                 fence(FenceKind::Mfence),
-                ldr_x_unsigned(value_reg(2), value_reg(0), 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                ldr_x_unsigned(value_reg(2), MEM_ADDR_SCRATCH, 0),
                 fence(FenceKind::Mfence),
             ]
         );
@@ -2582,19 +2623,31 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(
-            Lowerer::new().lower_function(&func).unwrap(),
-            vec![
-                0xD282_0009,
-                0xD280_054A,
-                0x3900_012A,
-                0x3940_012B,
-                0x7900_012A,
-                0x7940_012C,
-                0xB900_012A,
-                0xB940_012D,
+        // Every access rebases via x24 first (ldr base; add x24, addr, base).
+        let rebase = |addr: u8| {
+            [
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, addr, MEM_ADDR_SCRATCH),
             ]
-        );
+        };
+        let a = value_reg(0);
+        let mut expected = vec![
+            movz_x(value_reg(0), 0x1000, 0),
+            movz_x(value_reg(1), 0x2a, 0),
+        ];
+        expected.extend(rebase(a));
+        expected.push(strb_unsigned(value_reg(1), MEM_ADDR_SCRATCH, 0));
+        expected.extend(rebase(a));
+        expected.push(ldrb_unsigned(value_reg(2), MEM_ADDR_SCRATCH, 0));
+        expected.extend(rebase(a));
+        expected.push(strh_unsigned(value_reg(1), MEM_ADDR_SCRATCH, 0));
+        expected.extend(rebase(a));
+        expected.push(ldrh_unsigned(value_reg(3), MEM_ADDR_SCRATCH, 0));
+        expected.extend(rebase(a));
+        expected.push(str_w_unsigned(value_reg(1), MEM_ADDR_SCRATCH, 0));
+        expected.extend(rebase(a));
+        expected.push(ldr_w_unsigned(value_reg(4), MEM_ADDR_SCRATCH, 0));
+        assert_eq!(Lowerer::new().lower_function(&func).unwrap(), expected);
     }
 
     #[test]
