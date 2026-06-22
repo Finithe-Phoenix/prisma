@@ -22,9 +22,10 @@ use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, EXIT_BRANCH};
 const TAKEN_PC: u64 = 0x1_4000_2000;
 const FALL_PC: u64 = 0x1_4000_3000;
 
-/// `if rcx == 0 { goto TAKEN } else { goto FALL }`, lowered as a host-wrapped
-/// block so the conditional branch exits via `next_pc`.
-fn cond_branch_block() -> Vec<u8> {
+/// `if rcx <cc> 0 { goto TAKEN } else { goto FALL }`, comparing at `size`,
+/// lowered as a host-wrapped block so the conditional branch exits via `next_pc`.
+/// A non-`I64` size exercises the shift-based flag alignment in the lowerer.
+fn cond_branch_block(size: OpSize, cc: CondCode) -> Vec<u8> {
     let func = Function {
         entry: 0,
         blocks: vec![BasicBlock {
@@ -34,28 +35,22 @@ fn cond_branch_block() -> Vec<u8> {
                     Some(0),
                     Op::LoadReg(LoadReg {
                         reg: Gpr::Rcx,
-                        size: OpSize::I64,
+                        size,
                     }),
                 ),
-                Stmt::new(
-                    Some(1),
-                    Op::Constant(Constant {
-                        value: 0,
-                        size: OpSize::I64,
-                    }),
-                ),
+                Stmt::new(Some(1), Op::Constant(Constant { value: 0, size })),
                 Stmt::new(
                     Some(2),
                     Op::CmpFlags(CmpFlags {
                         lhs: 0,
                         rhs: 1,
-                        size: OpSize::I64,
+                        size,
                     }),
                 ),
                 Stmt::new(
                     None,
                     Op::CondJumpRel(CondJumpRel {
-                        cc: CondCode::Eq,
+                        cc,
                         target_guest_pc: TAKEN_PC,
                         fallthrough_guest_pc: FALL_PC,
                     }),
@@ -70,41 +65,61 @@ fn cond_branch_block() -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
-#[test]
-fn taken_branch_records_target_pc() {
-    let code = cond_branch_block();
+// Run `cond_branch_block(size, cc)` with `rcx = rcx_val` and return the recorded
+// next_pc on ARM64 (None off-target, where WrongArch is asserted instead).
+fn run_cond(size: OpSize, cc: CondCode, rcx_val: u64) -> Option<u64> {
+    let code = cond_branch_block(size, cc);
     let mut state = CpuStateFrame::default();
-    state.gpr[gpr::RCX] = 0; // rcx == 0 -> condition true -> TAKEN
+    state.gpr[gpr::RCX] = rcx_val;
     let r = execute_block(&code, &mut state);
-
     #[cfg(target_arch = "aarch64")]
     {
         r.expect("execute on the ARM64 host");
         assert_eq!(state.exit_reason, EXIT_BRANCH, "branch exit reason");
-        assert_eq!(state.next_pc, TAKEN_PC, "taken target recorded");
+        Some(state.next_pc)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        let _ = EXIT_BRANCH;
+        let _ = (EXIT_BRANCH, cc);
         assert!(matches!(r, Err(ExecError::WrongArch)));
+        None
     }
 }
 
 #[test]
-fn untaken_branch_records_fallthrough_pc() {
-    let code = cond_branch_block();
-    let mut state = CpuStateFrame::default();
-    state.gpr[gpr::RCX] = 7; // rcx != 0 -> condition false -> FALL
-    let r = execute_block(&code, &mut state);
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        r.expect("execute on the ARM64 host");
-        assert_eq!(state.exit_reason, EXIT_BRANCH, "branch exit reason");
-        assert_eq!(state.next_pc, FALL_PC, "fall-through target recorded");
+fn i64_taken_branch_records_target_pc() {
+    let next = run_cond(OpSize::I64, CondCode::Eq, 0); // rcx == 0 -> taken
+    if cfg!(target_arch = "aarch64") {
+        assert_eq!(next, Some(TAKEN_PC));
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        assert!(matches!(r, Err(ExecError::WrongArch)));
+}
+
+#[test]
+fn i64_untaken_branch_records_fallthrough_pc() {
+    let next = run_cond(OpSize::I64, CondCode::Eq, 7); // rcx != 0 -> fall
+    if cfg!(target_arch = "aarch64") {
+        assert_eq!(next, Some(FALL_PC));
+    }
+}
+
+// The I32 cases exercise the shift-based flag alignment: a 32-bit compare aligns
+// operands into the high half before SUBS so NZCV reflects the 32-bit result.
+#[test]
+fn i32_ne_branch_taken_when_nonzero() {
+    let next = run_cond(OpSize::I32, CondCode::Ne, 4); // 4 != 0 -> taken (like a loop)
+    if cfg!(target_arch = "aarch64") {
+        assert_eq!(
+            next,
+            Some(TAKEN_PC),
+            "I32 Ne with rcx=4 must take the branch"
+        );
+    }
+}
+
+#[test]
+fn i32_ne_branch_untaken_when_zero() {
+    let next = run_cond(OpSize::I32, CondCode::Ne, 0); // 0 == 0 -> fall (loop exit)
+    if cfg!(target_arch = "aarch64") {
+        assert_eq!(next, Some(FALL_PC), "I32 Ne with rcx=0 must fall through");
     }
 }
