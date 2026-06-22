@@ -44,6 +44,7 @@ pub mod guest_memory;
 pub mod guest_stack;
 pub mod iat_patch;
 pub mod import_resolver;
+pub mod init_stack;
 pub mod integrity;
 pub mod load_pe;
 pub mod module_table;
