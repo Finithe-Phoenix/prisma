@@ -35,7 +35,7 @@ use prisma_orchestrator::module_table::ModuleTable;
 use prisma_orchestrator::pe_loader::{MappedImage, PeImage};
 use prisma_runtime::dispatcher::DispatchRunOutcome;
 use prisma_runtime::executor::{
-    execute_block, gpr, CpuStateFrame, ExecError, EXIT_NORMAL, EXIT_SYSCALL,
+    execute_block, gpr, CpuStateFrame, ExecError, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL,
 };
 use prisma_runtime::{Dispatcher, SmcGuard};
 
@@ -105,10 +105,12 @@ pub struct PreparedRun {
 pub enum RunOutcome {
     /// The guest called `exit`/`exit_group`; the value is its exit status.
     Exited(i32),
-    /// The syscall budget was exhausted before the guest exited.
-    SyscallLimit,
-    /// A block ended on a non-`SYSCALL` terminator (a branch/return) at `pc`;
-    /// following the taken target needs the executor to surface the next PC.
+    /// The step budget (total blocks executed) was exhausted before the guest
+    /// exited — e.g. a non-terminating loop.
+    StepLimit,
+    /// A block ended on a terminator that can't be followed yet (a `ret` or an
+    /// indirect jump — a dynamic target needs the guest stack / register, which
+    /// the run loop doesn't read yet) at `pc`.
     NonSyscallExit { pc: u64 },
     /// No block could be translated at `pc` (unmapped / undecodable).
     UnmappedPc(u64),
@@ -190,31 +192,33 @@ impl Session {
         })
     }
 
-    /// Run the guest from its entry point, servicing each `SYSCALL` against the
-    /// syscall dispatcher, until it calls `exit`/`exit_group` (or a limit/fault).
+    /// Run the guest from its entry point, chaining blocks across branches and
+    /// servicing each `SYSCALL`, until it calls `exit`/`exit_group` (or a
+    /// limit/fault). Bounded by `max_steps` total block executions.
     ///
     /// The OS-ABI execution loop (RFC 0019): translate the block at the current
-    /// PC, execute it (ARM64), and when it exits for a `SYSCALL`
-    /// ([`EXIT_SYSCALL`]) read the number/args from the guest GPRs, dispatch it,
-    /// write the result to `rax`, and resume past the 2-byte `SYSCALL` — stopping
-    /// when the guest sets [`SyscallContext::exit_status`].
+    /// PC, execute it (ARM64), then resume by exit reason:
+    /// - [`EXIT_SYSCALL`] — read the number/args from the GPRs, dispatch it, write
+    ///   the result to `rax`, and resume past the 2-byte `SYSCALL`; stop when the
+    ///   guest sets [`SyscallContext::exit_status`].
+    /// - [`EXIT_BRANCH`] — a relative branch recorded its taken target in
+    ///   `next_pc`; resume there (this is how loops/`if`s run).
+    /// - [`EXIT_NORMAL`] — a block cut at the fetch budget falls through to the
+    ///   next sequential PC; a block ending in a `ret`/indirect jump (a dynamic
+    ///   target the loop can't follow yet) halts with [`RunOutcome::NonSyscallExit`].
     ///
     /// Execution is ARM64-gated: on a non-ARM64 host the first block returns
     /// [`ExecError::WrongArch`] and this reports [`RunOutcome::ExecUnavailable`].
-    /// A block ending in a non-`SYSCALL` terminator (a branch/return) halts with
-    /// [`RunOutcome::NonSyscallExit`] — following the taken target needs the
-    /// executor to surface the next PC (a later step); a register-only program
-    /// whose blocks each end in a syscall runs to completion today.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     pub fn run(
         &mut self,
         ctx: &mut SyscallContext,
         mem: &mut BackedAddressSpace,
         state: &mut CpuStateFrame,
-        max_syscalls: usize,
+        max_steps: usize,
     ) -> RunOutcome {
         let mut pc = self.entry_pc();
-        for _ in 0..max_syscalls {
+        for _ in 0..max_steps {
             let Some(block) = self.translate_at(pc) else {
                 return RunOutcome::UnmappedPc(pc);
             };
@@ -222,25 +226,32 @@ impl Session {
             if let Err(e) = execute_block(&block.code, state) {
                 return RunOutcome::ExecUnavailable(e);
             }
-            if state.exit_reason != EXIT_SYSCALL {
-                return RunOutcome::NonSyscallExit { pc };
+            match state.exit_reason {
+                EXIT_SYSCALL => {
+                    let number = state.gpr[gpr::RAX];
+                    let args = [
+                        state.gpr[gpr::RDI],
+                        state.gpr[gpr::RSI],
+                        state.gpr[gpr::RDX],
+                        state.gpr[gpr::R10],
+                        state.gpr[gpr::R8],
+                        state.gpr[gpr::R9],
+                    ];
+                    state.gpr[gpr::RAX] = dispatch(ctx, mem, number, args) as u64;
+                    if let Some(code) = ctx.exit_status {
+                        return RunOutcome::Exited(code);
+                    }
+                    pc = pc.wrapping_add(block.guest_bytes as u64); // past SYSCALL
+                }
+                EXIT_BRANCH => pc = state.next_pc, // resume at the taken target
+                _ if !block.ended_at_terminator => {
+                    // A block cut at the fetch budget: continue at the next PC.
+                    pc = pc.wrapping_add(block.guest_bytes as u64);
+                }
+                _ => return RunOutcome::NonSyscallExit { pc }, // ret / indirect
             }
-            let number = state.gpr[gpr::RAX];
-            let args = [
-                state.gpr[gpr::RDI],
-                state.gpr[gpr::RSI],
-                state.gpr[gpr::RDX],
-                state.gpr[gpr::R10],
-                state.gpr[gpr::R8],
-                state.gpr[gpr::R9],
-            ];
-            state.gpr[gpr::RAX] = dispatch(ctx, mem, number, args) as u64;
-            if let Some(code) = ctx.exit_status {
-                return RunOutcome::Exited(code);
-            }
-            pc = pc.wrapping_add(block.guest_bytes as u64); // resume past SYSCALL
         }
-        RunOutcome::SyscallLimit
+        RunOutcome::StepLimit
     }
 
     /// Guest virtual address execution begins at.
