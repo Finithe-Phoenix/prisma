@@ -30,6 +30,14 @@ pub const EXIT_NORMAL: u64 = 0;
 /// The run loop reads the syscall number/args from the GPRs, services it, writes
 /// the result to `rax`, advances the PC past the 2-byte `SYSCALL`, and resumes.
 pub const EXIT_SYSCALL: u64 = 1;
+/// [`CpuStateFrame::exit_reason`] value: the block ended on a direct relative
+/// branch.
+///
+/// The taken `JumpRel`/`CondJumpRel` target is computed by the block and stored
+/// in [`CpuStateFrame::next_pc`]; the run loop resumes there. This is how blocks
+/// chain across branches without re-entering the host translator's sibling-block
+/// path.
+pub const EXIT_BRANCH: u64 = 2;
 
 /// Guest CPU state, laid out exactly as the lowerer addresses it.
 ///
@@ -56,7 +64,12 @@ pub struct CpuStateFrame {
     /// block leaves it untouched, so the run loop clears it to [`EXIT_NORMAL`]
     /// before each block.
     pub exit_reason: u64,
-    _tail: [u8; 48],
+    /// The guest PC to resume at when `exit_reason` is [`EXIT_BRANCH`], at byte
+    /// offset 824 (matching the lowerer's `NEXT_PC_OFFSET`). A branch block
+    /// computes its taken target (via `CSEL` for a conditional branch) and stores
+    /// it here before returning to the run loop.
+    pub next_pc: u64,
+    _tail: [u8; 40],
 }
 
 impl Default for CpuStateFrame {
@@ -68,7 +81,8 @@ impl Default for CpuStateFrame {
             gs_base: 0,
             cf: 0,
             exit_reason: 0,
-            _tail: [0; 48],
+            next_pc: 0,
+            _tail: [0; 40],
         }
     }
 }
@@ -207,6 +221,18 @@ mod tests {
             assert_eq!(
                 std::ptr::addr_of!(frame.cf).cast::<u8>().offset_from(base),
                 808
+            );
+            assert_eq!(
+                std::ptr::addr_of!(frame.exit_reason)
+                    .cast::<u8>()
+                    .offset_from(base),
+                816
+            );
+            assert_eq!(
+                std::ptr::addr_of!(frame.next_pc)
+                    .cast::<u8>()
+                    .offset_from(base),
+                824
             );
         }
     }

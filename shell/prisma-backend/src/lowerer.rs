@@ -59,6 +59,13 @@ pub struct Lowerer {
     /// pushes; the default (bare `ret`) preserves the historical lowering used
     /// by the differential and the per-instruction lowering tests.
     return_via_epilogue: bool,
+    /// When set, a relative branch (`JumpRel`/`CondJumpRel`) lowers to a
+    /// block-exit: it stores the taken guest PC in `CpuStateFrame::next_pc`, marks
+    /// `EXIT_BRANCH`, and returns to the run loop — instead of branching to a
+    /// sibling block label. Used by the single-block translator path, where there
+    /// is no sibling block; an intra-region multi-block lowering leaves this off
+    /// so branches stay direct `B`/`B.cond` within the region.
+    branch_via_frame: bool,
 }
 
 impl Default for Lowerer {
@@ -74,6 +81,7 @@ impl Lowerer {
         Self {
             budget: 1024,
             return_via_epilogue: false,
+            branch_via_frame: false,
         }
     }
 
@@ -82,6 +90,17 @@ impl Lowerer {
     /// the host stack and callee-saved registers correct on exit.
     #[must_use]
     pub const fn with_returns_via_epilogue(mut self) -> Self {
+        self.return_via_epilogue = true;
+        self
+    }
+
+    /// Returns a lowerer whose relative branches (`JumpRel`/`CondJumpRel`) exit
+    /// the block through `CpuStateFrame::next_pc` + `EXIT_BRANCH` instead of
+    /// branching to a sibling block. The single-block run-loop translator uses
+    /// this; it implies the epilogue return path, so it also sets that.
+    #[must_use]
+    pub const fn with_branch_exits(mut self) -> Self {
+        self.branch_via_frame = true;
         self.return_via_epilogue = true;
         self
     }
@@ -163,13 +182,26 @@ impl Lowerer {
                     &mut values,
                     &mut constants,
                     &mut flags,
-                    self.return_via_epilogue,
+                    ExitAbi {
+                        return_via_epilogue: self.return_via_epilogue,
+                        branch_via_frame: self.branch_via_frame,
+                    },
                 )?;
             }
         }
 
         Ok(asm.finish())
     }
+}
+
+/// How a block's terminators exit. Bundled so the lowering dispatch stays within
+/// the argument budget; both default off (bare `ret`, sibling-block branches).
+#[derive(Clone, Copy)]
+struct ExitAbi {
+    /// `Op::Return` lowers to the full AAPCS64 epilogue rather than a bare `ret`.
+    return_via_epilogue: bool,
+    /// Relative branches store the taken PC in the frame and exit to the run loop.
+    branch_via_frame: bool,
 }
 
 // One match arm per IR op; the dispatch is inherently long and splitting it
@@ -182,7 +214,7 @@ fn lower_stmt(
     values: &mut HashMap<Ref, u8>,
     constants: &mut HashMap<Ref, u64>,
     flags: &mut HashSet<Ref>,
-    return_via_epilogue: bool,
+    exit: ExitAbi,
 ) -> Result<(), LowerError> {
     match &stmt.op {
         Op::Constant(c) => {
@@ -272,7 +304,7 @@ fn lower_stmt(
             values.insert(result, dst);
         }
         Op::Syscall(_) => {
-            lower_syscall(asm, return_via_epilogue);
+            lower_syscall(asm, exit.return_via_epilogue);
         }
         Op::Trap(_) => {
             asm.movz_x(0, 0, 0);
@@ -420,7 +452,14 @@ fn lower_stmt(
             lower_cond_jump_flags(asm, labels, flags, jump)?;
         }
         Op::CondJumpRel(jump) => {
-            lower_cond_jump_rel(asm, labels, jump)?;
+            if exit.branch_via_frame {
+                // Host-wrapped single block: no sibling block to branch to.
+                // Compute the taken guest PC and exit to the run loop, which
+                // translates and runs the next block.
+                lower_cond_jump_rel_exit(asm, jump);
+            } else {
+                lower_cond_jump_rel(asm, labels, jump)?;
+            }
         }
         Op::Select(select) => {
             lower_select(asm, values, select, stmt)?;
@@ -432,8 +471,12 @@ fn lower_stmt(
             asm.br_x(target);
         }
         Op::JumpRel(jump) => {
-            let target = block_label(labels, jump.target_guest_pc)?;
-            asm.b_label(target);
+            if exit.branch_via_frame {
+                lower_jump_rel_exit(asm, jump.target_guest_pc);
+            } else {
+                let target = block_label(labels, jump.target_guest_pc)?;
+                asm.b_label(target);
+            }
         }
         Op::CallRel(call) => {
             let target = block_label(labels, call.target_guest_pc)?;
@@ -451,7 +494,7 @@ fn lower_stmt(
             lower_rsp_adjust(asm, rsp)?;
         }
         Op::Return(_) => {
-            if return_via_epilogue {
+            if exit.return_via_epilogue {
                 abi::emit_block_epilogue_and_ret(asm);
             } else {
                 asm.ret();
@@ -477,6 +520,12 @@ const CF_OFFSET: u16 = 808;
 const EXIT_REASON_OFFSET: u16 = 816;
 /// Exit-reason value a `SYSCALL` block writes (`EXIT_SYSCALL` in the runtime).
 const EXIT_SYSCALL_MARK: u16 = 1;
+/// Byte offset of the resume-PC word in `CpuStateFrame` (follows `exit_reason`).
+/// Matches `prisma_runtime::executor::CpuStateFrame::next_pc`; a relative-branch
+/// block stores its taken target here before returning to the host run loop.
+const NEXT_PC_OFFSET: u16 = 824;
+/// Exit-reason value a relative-branch block writes (`EXIT_BRANCH` in runtime).
+const EXIT_BRANCH_MARK: u16 = 2;
 const KSTATE_CPUID_MAX_LEAF: u64 = 7;
 const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
 const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;
@@ -1214,6 +1263,47 @@ fn lower_cond_jump_rel(
     asm.b_cond_label(jump.cc, if_true);
     asm.b_label(if_false);
     Ok(())
+}
+
+/// Scratch registers for the branch block-exit sequence. Both are value-register
+/// slots, dead at a terminator (all guest state is already stored to the frame),
+/// so clobbering them is safe — the same reasoning `lower_syscall` uses for x9.
+const BRANCH_EXIT_TARGET_REG: u8 = 9;
+const BRANCH_EXIT_FALL_REG: u8 = 10;
+
+/// Record `next_pc` + `EXIT_BRANCH` in the frame and return to the host run loop.
+/// `MOVZ`/`MOVK` (constant emission) and `STR` do not touch NZCV, so a preceding
+/// condition stays live for [`lower_cond_jump_rel_exit`]'s `CSEL`.
+fn emit_branch_exit(asm: &mut Arm64Assembler) {
+    asm.str_x_unsigned(BRANCH_EXIT_TARGET_REG, abi::K_STATE_PTR_REG, NEXT_PC_OFFSET);
+    asm.movz_x(BRANCH_EXIT_TARGET_REG, EXIT_BRANCH_MARK, 0);
+    asm.str_x_unsigned(
+        BRANCH_EXIT_TARGET_REG,
+        abi::K_STATE_PTR_REG,
+        EXIT_REASON_OFFSET,
+    );
+    abi::emit_block_epilogue_and_ret(asm);
+}
+
+/// Block-exit lowering for an unconditional `JumpRel`: store the target guest PC
+/// and exit to the run loop.
+fn lower_jump_rel_exit(asm: &mut Arm64Assembler, target_guest_pc: u64) {
+    emit_u64_constant(asm, BRANCH_EXIT_TARGET_REG, target_guest_pc);
+    emit_branch_exit(asm);
+}
+
+/// Block-exit lowering for a `CondJumpRel`: select the taken target (`CSEL` on
+/// the live NZCV the block's compare set), store it, and exit to the run loop.
+fn lower_cond_jump_rel_exit(asm: &mut Arm64Assembler, jump: &prisma_ir::CondJumpRel) {
+    emit_u64_constant(asm, BRANCH_EXIT_TARGET_REG, jump.target_guest_pc);
+    emit_u64_constant(asm, BRANCH_EXIT_FALL_REG, jump.fallthrough_guest_pc);
+    asm.csel_x(
+        BRANCH_EXIT_TARGET_REG,
+        BRANCH_EXIT_TARGET_REG,
+        BRANCH_EXIT_FALL_REG,
+        jump.cc,
+    );
+    emit_branch_exit(asm);
 }
 
 fn lower_rsp_adjust(

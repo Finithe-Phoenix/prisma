@@ -353,11 +353,13 @@ impl Translator {
         let optimized = self.pipeline.run(func);
         // The runtime executes every translated block via execute_block, which
         // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
-        // ret, SYSCALL) must therefore route through the full epilogue — a bare
-        // ret would skip the prologue's stack/callee-saved restore and corrupt
-        // the host on return.
+        // ret, SYSCALL) must route through the full epilogue — a bare ret would
+        // skip the prologue's stack/callee-saved restore and corrupt the host on
+        // return. with_branch_exits additionally routes a relative branch through
+        // the frame's next_pc (this is a single block, with no sibling to branch
+        // to) so the run loop can chain to the taken target.
         let words = Lowerer::new()
-            .with_returns_via_epilogue()
+            .with_branch_exits()
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
         let mut code = Vec::with_capacity(words.len() * 4);
@@ -401,11 +403,13 @@ impl Translator {
 
         // The runtime executes every translated block via execute_block, which
         // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
-        // ret, SYSCALL) must therefore route through the full epilogue — a bare
-        // ret would skip the prologue's stack/callee-saved restore and corrupt
-        // the host on return.
+        // ret, SYSCALL) must route through the full epilogue — a bare ret would
+        // skip the prologue's stack/callee-saved restore and corrupt the host on
+        // return. with_branch_exits additionally routes a relative branch through
+        // the frame's next_pc (this is a single block, with no sibling to branch
+        // to) so the run loop can chain to the taken target.
         let words = Lowerer::new()
-            .with_returns_via_epilogue()
+            .with_branch_exits()
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
         let mut code = Vec::with_capacity(words.len() * 4);
