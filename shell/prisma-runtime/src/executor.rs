@@ -69,7 +69,14 @@ pub struct CpuStateFrame {
     /// computes its taken target (via `CSEL` for a conditional branch) and stores
     /// it here before returning to the run loop.
     pub next_pc: u64,
-    _tail: [u8; 40],
+    /// Host base address the guest address space is mapped at, at byte offset 832
+    /// (matching the lowerer's `MEM_BASE_OFFSET`). Every guest memory access is
+    /// lowered to `host = mem_base + guest_va`, so a contiguous host arena that is
+    /// not identity-mapped to the guest VAs is still reachable from the JIT (RFC
+    /// 0020). The default 0 reproduces the legacy `host == guest` behaviour, which
+    /// is why GPR-only blocks and existing tests are unaffected.
+    pub mem_base: u64,
+    _tail: [u8; 32],
 }
 
 impl Default for CpuStateFrame {
@@ -82,7 +89,8 @@ impl Default for CpuStateFrame {
             cf: 0,
             exit_reason: 0,
             next_pc: 0,
-            _tail: [0; 40],
+            mem_base: 0,
+            _tail: [0; 32],
         }
     }
 }
@@ -233,6 +241,12 @@ mod tests {
                     .cast::<u8>()
                     .offset_from(base),
                 824
+            );
+            assert_eq!(
+                std::ptr::addr_of!(frame.mem_base)
+                    .cast::<u8>()
+                    .offset_from(base),
+                832
             );
         }
     }
