@@ -351,7 +351,13 @@ impl Translator {
             blocks: vec![BasicBlock { id: 0, stmts }],
         };
         let optimized = self.pipeline.run(func);
+        // The runtime executes every translated block via execute_block, which
+        // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
+        // ret, SYSCALL) must therefore route through the full epilogue — a bare
+        // ret would skip the prologue's stack/callee-saved restore and corrupt
+        // the host on return.
         let words = Lowerer::new()
+            .with_returns_via_epilogue()
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
         let mut code = Vec::with_capacity(words.len() * 4);
@@ -393,7 +399,13 @@ impl Translator {
         };
         let optimized = self.pipeline.run(func);
 
+        // The runtime executes every translated block via execute_block, which
+        // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
+        // ret, SYSCALL) must therefore route through the full epilogue — a bare
+        // ret would skip the prologue's stack/callee-saved restore and corrupt
+        // the host on return.
         let words = Lowerer::new()
+            .with_returns_via_epilogue()
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
         let mut code = Vec::with_capacity(words.len() * 4);
