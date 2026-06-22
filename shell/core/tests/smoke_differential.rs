@@ -73,19 +73,38 @@ const FIXTURES: &[SmokeFixture] = &[
         name: "add_rax_rcx",
         guest_bytes: &[0x48, 0x01, 0xC8],
         expected_exit: BlockExitKind::None,
-        rust_words: Some(&[0xF940_0769, 0xF940_036A, 0x8B09_014B, 0xF900_036B]),
+        // ... + the implicit NZCV flag write the decoder now emits.
+        rust_words: Some(&[
+            0xF940_0769,
+            0xF940_036A,
+            0x8B09_014B,
+            0xF900_036B,
+            0xAB09_0157, // adds x23, x10, x9
+        ]),
     },
     SmokeFixture {
         name: "sub_rax_rcx",
         guest_bytes: &[0x48, 0x29, 0xC8],
         expected_exit: BlockExitKind::None,
-        rust_words: Some(&[0xF940_0769, 0xF940_036A, 0xCB09_014B, 0xF900_036B]),
+        rust_words: Some(&[
+            0xF940_0769,
+            0xF940_036A,
+            0xCB09_014B,
+            0xF900_036B,
+            0xEB09_015F, // subs xzr, x10, x9
+        ]),
     },
     SmokeFixture {
         name: "and_rax_rcx",
         guest_bytes: &[0x48, 0x21, 0xC8],
         expected_exit: BlockExitKind::None,
-        rust_words: Some(&[0xF940_0769, 0xF940_036A, 0x8A09_014B, 0xF900_036B]),
+        rust_words: Some(&[
+            0xF940_0769,
+            0xF940_036A,
+            0x8A09_014B,
+            0xF900_036B,
+            0xEA09_0157, // ands x23, x10, x9
+        ]),
     },
     SmokeFixture {
         name: "or_rax_rcx",
