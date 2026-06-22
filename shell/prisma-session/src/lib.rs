@@ -29,6 +29,7 @@ use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_orchestrator::guest_layout::{
     backed_layout_sections, layout_sections, BackedGuestLayout, GuestLayout,
 };
+use prisma_orchestrator::init_stack::{build_initial_stack, ProcessStackParams, StackBuildError};
 use prisma_orchestrator::load_pe::{load_pe_with_image, LoadError};
 use prisma_orchestrator::module_table::ModuleTable;
 use prisma_orchestrator::pe_loader::{MappedImage, PeImage};
@@ -64,6 +65,39 @@ pub struct Session {
     cache: TranslationCache,
     guard: SmcGuard,
     dispatcher: Dispatcher,
+}
+
+/// Why [`Session::prepare`] could not build a runnable initial state.
+#[derive(Debug)]
+pub enum PrepareError {
+    /// The guest address space could not be laid out (section overlap/overflow).
+    Layout(AddressSpaceError),
+    /// The initial process stack did not fit (argument image larger than the
+    /// stack region).
+    Stack(StackBuildError),
+}
+
+impl From<AddressSpaceError> for PrepareError {
+    fn from(e: AddressSpaceError) -> Self {
+        Self::Layout(e)
+    }
+}
+
+impl From<StackBuildError> for PrepareError {
+    fn from(e: StackBuildError) -> Self {
+        Self::Stack(e)
+    }
+}
+
+/// A guest ready to run: the byte-backed memory, a CPU frame with `RSP` seeded
+/// at the initial stack, and a fresh syscall context — the three mutable inputs
+/// [`Session::run`] borrows. Owning them together keeps teardown deterministic
+/// (the `BackedAddressSpace` frees its bytes on drop).
+#[derive(Debug)]
+pub struct PreparedRun {
+    pub mem: BackedAddressSpace,
+    pub state: CpuStateFrame,
+    pub ctx: SyscallContext,
 }
 
 /// Why [`Session::run`] stopped.
@@ -115,6 +149,45 @@ impl Session {
     /// [`AddressSpaceError`] if a section base overflows or any mapping overlaps.
     pub fn backed_layout(&self, stack_base: u64) -> Result<BackedGuestLayout, AddressSpaceError> {
         backed_layout_sections(&self.pe_image, &self.image, stack_base)
+    }
+
+    /// Build a runnable initial state: lay out byte-backed guest memory at
+    /// `stack_base`, populate the initial process stack with `argv`/`envp` (plus
+    /// a minimal auxv), and seed `RSP` at its top — everything [`Session::run`]
+    /// needs, composed in one call.
+    ///
+    /// The auxv carries only `AT_PAGESZ` here; thread-local / loader-specific
+    /// entries (`AT_RANDOM`, `AT_PHDR`, ...) come with their own follow-on work
+    /// (RFC 0019 scopes TLS out), so this targets a freestanding program that
+    /// reads its own `argc`/`argv`/`envp` rather than a full dynamically-linked
+    /// glibc start-up.
+    ///
+    /// # Errors
+    /// [`PrepareError::Layout`] if the address space cannot be laid out;
+    /// [`PrepareError::Stack`] if the argument image does not fit the stack.
+    pub fn prepare(
+        &self,
+        stack_base: u64,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+    ) -> Result<PreparedRun, PrepareError> {
+        let layout = self.backed_layout(stack_base)?;
+        let mut mem = layout.space;
+        const AT_PAGESZ: u64 = 6;
+        let auxv = [(AT_PAGESZ, 4096)];
+        let params = ProcessStackParams {
+            argv,
+            envp,
+            auxv: &auxv,
+        };
+        let rsp = build_initial_stack(&mut mem, layout.stack_top, &params)?;
+        let mut state = CpuStateFrame::default();
+        state.gpr[gpr::RSP] = rsp;
+        Ok(PreparedRun {
+            mem,
+            state,
+            ctx: SyscallContext::new(),
+        })
     }
 
     /// Run the guest from its entry point, servicing each `SYSCALL` against the
@@ -454,6 +527,53 @@ mod tests {
         let outcome = s.run(&mut ctx, &mut mem, &mut state, 8);
         if cfg!(target_arch = "aarch64") {
             assert!(matches!(outcome, RunOutcome::Exited(7)), "{outcome:?}");
+        } else {
+            assert!(
+                matches!(outcome, RunOutcome::ExecUnavailable(ExecError::WrongArch)),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    // prepare() composes layout + initial stack + RSP seed into a runnable
+    // state: argc/argv land on the stack and RSP points at them, 16-aligned.
+    #[test]
+    fn prepare_seeds_rsp_at_a_well_formed_initial_stack() {
+        let s = Session::load(
+            &pe_with_code(&[0x48, 0x89, 0xC8, 0xC3]),
+            &ModuleTable::new(),
+        )
+        .expect("load");
+        let argv: [&[u8]; 2] = [b"prog", b"arg1"];
+        let envp: [&[u8]; 1] = [b"HOME=/root"];
+        let prepared = s
+            .prepare(0x2_0000_0000, &argv, &envp)
+            .expect("prepare a runnable state");
+        let rsp = prepared.state.gpr[gpr::RSP];
+        // RSP is 16-aligned and argc sits at the top of stack.
+        assert_eq!(rsp & 0xF, 0);
+        let argc = u64::from_le_bytes(prepared.mem.read(rsp, 8).unwrap().try_into().unwrap());
+        assert_eq!(argc, 2);
+        // argv[0] points to a NUL-terminated "prog".
+        let argv0 = u64::from_le_bytes(prepared.mem.read(rsp + 8, 8).unwrap().try_into().unwrap());
+        assert_eq!(prepared.mem.read(argv0, 5).unwrap(), b"prog\0");
+    }
+
+    // End-to-end through the composed path: prepare() then run() exit_group(9).
+    // ARM64 runs it to the exit; the x86 dev host reports WrongArch — either way
+    // prepare() produced a valid state and run() drove it.
+    #[test]
+    fn prepare_then_run_reaches_exit() {
+        // mov eax, 231 (exit_group); mov edi, 9; syscall
+        let code = [
+            0xB8, 0xE7, 0x00, 0x00, 0x00, 0xBF, 0x09, 0x00, 0x00, 0x00, 0x0F, 0x05,
+        ];
+        let mut s = Session::load(&pe_with_code(&code), &ModuleTable::new()).expect("load");
+        let argv: [&[u8]; 1] = [b"prog"];
+        let mut p = s.prepare(0x2_0000_0000, &argv, &[]).expect("prepare");
+        let outcome = s.run(&mut p.ctx, &mut p.mem, &mut p.state, 8);
+        if cfg!(target_arch = "aarch64") {
+            assert!(matches!(outcome, RunOutcome::Exited(9)), "{outcome:?}");
         } else {
             assert!(
                 matches!(outcome, RunOutcome::ExecUnavailable(ExecError::WrongArch)),
