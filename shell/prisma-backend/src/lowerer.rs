@@ -468,7 +468,11 @@ fn lower_stmt(
             let target = *values
                 .get(&jump.target)
                 .ok_or(LowerError::MissingValue(jump.target))?;
-            asm.br_x(target);
+            if exit.branch_via_frame {
+                lower_jump_reg_exit(asm, target);
+            } else {
+                asm.br_x(target);
+            }
         }
         Op::JumpRel(jump) => {
             if exit.branch_via_frame {
@@ -491,8 +495,12 @@ fn lower_stmt(
             let target = *values
                 .get(&call.target)
                 .ok_or(LowerError::MissingValue(call.target))?;
-            asm.blr_x(target);
-            let _ = call.return_guest_pc;
+            if exit.branch_via_frame {
+                lower_call_reg_exit(asm, target, call.return_guest_pc)?;
+            } else {
+                asm.blr_x(target);
+                let _ = call.return_guest_pc;
+            }
         }
         Op::RspAdjust(rsp) => {
             lower_rsp_adjust(asm, rsp)?;
@@ -1364,6 +1372,38 @@ fn lower_return_exit(asm: &mut Arm64Assembler, rsp_delta: u64) -> Result<(), Low
     let delta = i64::try_from(rsp_delta).map_err(|_| LowerError::ImmediateOutOfRange(rsp_delta))?;
     emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, delta)?;
     emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_branch_exit(asm);
+    Ok(())
+}
+
+/// Block-exit lowering for an indirect `JumpReg`: exit to the run loop at the
+/// (dynamic) guest PC held in `target_reg`, instead of a host `br` to that value
+/// as a host address.
+fn lower_jump_reg_exit(asm: &mut Arm64Assembler, target_reg: u8) {
+    if target_reg != BRANCH_EXIT_TARGET_REG {
+        asm.mov_x(BRANCH_EXIT_TARGET_REG, target_reg);
+    }
+    emit_branch_exit(asm);
+}
+
+/// Block-exit lowering for an indirect `CallReg`: push the return address onto
+/// the guest stack and exit to the run loop at the dynamic target in
+/// `target_reg`. The target is captured into the exit register first, before the
+/// push clobbers caller-saved scratch.
+fn lower_call_reg_exit(
+    asm: &mut Arm64Assembler,
+    target_reg: u8,
+    return_guest_pc: u64,
+) -> Result<(), LowerError> {
+    if target_reg != BRANCH_EXIT_TARGET_REG {
+        asm.mov_x(BRANCH_EXIT_TARGET_REG, target_reg);
+    }
+    // rsp -= 8; [rsp] = return address (rebased to host through mem_base)
+    emit_load_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, -8)?;
+    emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_u64_constant(asm, BRANCH_EXIT_FALL_REG, return_guest_pc);
+    emit_store_mem(asm, OpSize::I64, BRANCH_EXIT_FALL_REG, RSP_ADJUST_TMP_REG);
     emit_branch_exit(asm);
     Ok(())
 }
@@ -4164,6 +4204,69 @@ mod tests {
         assert!(
             words.contains(&add_x_imm(21, 21, 8)),
             "rsp increment: {words:#x?}"
+        );
+        assert!(
+            words.contains(&movz_x(9, 2, 0)),
+            "EXIT_BRANCH mark: {words:#x?}"
+        );
+        assert_eq!(words.last().copied(), Some(0xD65F_03C0), "ends with ret");
+    }
+
+    #[test]
+    fn lowers_jump_reg_branch_exit_not_host_br() {
+        // Indirect jmp reg in branch-exit mode exits to the run loop at the
+        // dynamic target — not a host `br` to that guest PC as a host address.
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(None, Op::JumpReg(prisma_ir::JumpReg { target: 0 })),
+        ]);
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&func)
+            .unwrap();
+        assert!(
+            words.contains(&movz_x(9, 2, 0)),
+            "EXIT_BRANCH mark: {words:#x?}"
+        );
+        assert_eq!(words.last().copied(), Some(0xD65F_03C0), "ends with ret");
+        // br_x(Rt) has top byte 0xD6 with opcode 0xD61F0000|rn<<5; ensure no raw
+        // `br x9` (0xD61F0120) slipped through.
+        assert!(!words.contains(&0xD61F_0120), "no host br: {words:#x?}");
+    }
+
+    #[test]
+    fn lowers_call_reg_branch_exit_pushes_and_exits() {
+        // Indirect call reg in branch-exit mode pushes the return address and
+        // exits to the dynamic target — not a host `blr`.
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::CallReg(prisma_ir::CallReg {
+                    target: 0,
+                    return_guest_pc: 0x1234,
+                }),
+            ),
+        ]);
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&func)
+            .unwrap();
+        assert!(
+            words.contains(&sub_x_imm(21, 21, 8)),
+            "rsp decrement: {words:#x?}"
         );
         assert!(
             words.contains(&movz_x(9, 2, 0)),

@@ -1675,6 +1675,10 @@ fn decode_group5(
         }
         // call r/m
         2 => {
+            // Near indirect call: the target operand is forced to 64-bit in
+            // 64-bit mode (REX.W / 0x66 do not change it), so the full guest PC
+            // is loaded — a 32-bit load would truncate a >4 GiB target.
+            let size = OpSize::I64;
             let target_ref = alloc_ref(stmts);
             if modrm.mod_ == 3 {
                 let src_reg = map_reg(modrm.rm, &prefixes.rex, false);
@@ -1712,6 +1716,8 @@ fn decode_group5(
         }
         // jmp r/m
         4 => {
+            // Near indirect jump: target operand is forced to 64-bit (see call).
+            let size = OpSize::I64;
             let target_ref = alloc_ref(stmts);
             if modrm.mod_ == 3 {
                 let src_reg = map_reg(modrm.rm, &prefixes.rex, false);
@@ -11868,9 +11874,10 @@ mod tests {
             vec![
                 Stmt::new(
                     Some(0),
+                    // Near indirect call forces a 64-bit target load.
                     Op::LoadReg(LoadReg {
                         reg: Gpr::Rax,
-                        size: OpSize::I32,
+                        size: OpSize::I64,
                     }),
                 ),
                 Stmt::new(
@@ -11890,9 +11897,10 @@ mod tests {
             vec![
                 Stmt::new(
                     Some(0),
+                    // Near indirect jump forces a 64-bit target load.
                     Op::LoadReg(LoadReg {
                         reg: Gpr::Rax,
-                        size: OpSize::I32,
+                        size: OpSize::I64,
                     }),
                 ),
                 Stmt::new(None, Op::JumpReg(JumpReg { target: 0 }),),
