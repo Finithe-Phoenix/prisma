@@ -13,11 +13,10 @@
 //!   syscall             ; exit(rdi) — exit(42) iff the round-trip worked
 //! ```
 //!
-//! The slot is addressed through `rbx` (a plain base+disp8) rather than `rsp`
-//! directly: `[rsp+disp]` needs a SIB byte, and the Rust decoder's no-index SIB
-//! path (index field 0b100) is buggy today (it doubles the base) — an unrelated
-//! decoder gap, tracked separately. This test is about the memory *backing*, so
-//! it uses an addressing mode that backing alone determines.
+//! Two addressing modes are covered: a plain base register (`mov rbx,rsp;
+//! [rbx-8]`) and `[rsp-8]` directly (a SIB byte with the no-index encoding). The
+//! latter regression-guards the decoder fix in this change — `[rsp+disp]` used to
+//! decode as base+base+disp (2*rsp-8), faulting outside the arena on ARM64.
 //!
 //! If memory were mis-addressed (the pre-RFC-0020 host==guest assumption, or a
 //! divergent second backing) the load would fault or read garbage and the exit
@@ -83,7 +82,7 @@ fn guest_round_trips_through_real_memory() {
     let outcome = s.run(&mut p.ctx, &mut p.mem, &mut p.state, 8);
 
     if cfg!(target_arch = "aarch64") {
-        // The value stored to [rsp-8] was read back into rdi, so exit == 42.
+        // The value stored to [rbx-8] was read back into rdi, so exit == 42.
         assert!(
             matches!(outcome, RunOutcome::Exited(42)),
             "outcome={:?} rdi={}",
@@ -94,6 +93,46 @@ fn guest_round_trips_through_real_memory() {
         assert!(
             matches!(outcome, RunOutcome::ExecUnavailable(_)),
             "off-target the run reports execution is unavailable: {outcome:?}"
+        );
+    }
+}
+
+// The same round-trip, but addressed through `[rsp-8]` directly — a SIB byte
+// with the no-index encoding (index field 0b100). This exercises the decoder
+// fix: before it, `[rsp+disp]` decoded as base+base+disp (2*rsp-8), landing
+// outside the arena and faulting on ARM64. Now it is a single base+disp and the
+// round-trip exits 42.
+#[rustfmt::skip]
+const SIB_PROGRAM: [u8; 22] = [
+    0xB8, 0x2A, 0x00, 0x00, 0x00, // mov eax, 42
+    0x48, 0x89, 0x44, 0x24, 0xF8, // mov [rsp-8], rax   (SIB, no index)
+    0x48, 0x8B, 0x7C, 0x24, 0xF8, // mov rdi, [rsp-8]   (load it back)
+    0xB8, 0x3C, 0x00, 0x00, 0x00, // mov eax, 60        (exit)
+    0x0F, 0x05,                   // syscall            (exit(rdi))
+];
+
+#[test]
+fn guest_round_trips_through_rsp_relative_memory() {
+    let mut s = Session::load(&pe_with_code(&SIB_PROGRAM), &ModuleTable::new())
+        .expect("load the SIB mem program");
+    let mut p = s
+        .prepare_arena(STACK_BASE, &[b"prog"], &[])
+        .expect("prepare against a contiguous arena");
+
+    let outcome = s.run(&mut p.ctx, &mut p.mem, &mut p.state, 8);
+
+    if cfg!(target_arch = "aarch64") {
+        // [rsp-8] now decodes as a single base+disp, so the round-trip exits 42.
+        assert!(
+            matches!(outcome, RunOutcome::Exited(42)),
+            "outcome={:?} rdi={}",
+            outcome,
+            p.state.gpr[7], // RDI
+        );
+    } else {
+        assert!(
+            matches!(outcome, RunOutcome::ExecUnavailable(_)),
+            "{outcome:?}"
         );
     }
 }
