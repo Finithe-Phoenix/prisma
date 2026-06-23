@@ -134,6 +134,30 @@ pub fn backed_layout_sections(
     stack_base: u64,
 ) -> Result<BackedGuestLayout, AddressSpaceError> {
     let mut space = BackedAddressSpace::new();
+    populate_backed(&mut space, img, mapped, stack_base)?;
+    Ok(BackedGuestLayout {
+        space,
+        image_base: mapped.base,
+        stack_top: stack_base.saturating_add(DEFAULT_STACK_SIZE),
+    })
+}
+
+/// Map every PE section (with content + protection) and a zeroed initial-thread
+/// stack into `space`.
+///
+/// Backing-mode-agnostic: works on an owned-mode or an arena-mode
+/// [`BackedAddressSpace`] alike (RFC 0020), so the run loop can back the guest
+/// with one contiguous host mapping using the same layout code.
+///
+/// # Errors
+/// [`AddressSpaceError`] if a section base overflows, any mapping overlaps, or
+/// (arena mode) a region falls outside the arena window.
+pub fn populate_backed(
+    space: &mut BackedAddressSpace,
+    img: &PeImage,
+    mapped: &MappedImage,
+    stack_base: u64,
+) -> Result<(), AddressSpaceError> {
     for sec in &img.sections {
         if sec.virtual_size == 0 {
             continue;
@@ -153,11 +177,7 @@ pub fn backed_layout_sections(
     }
     // The initial-thread stack: a zeroed read-write region.
     space.map(stack_base, DEFAULT_STACK_SIZE, Protection::ReadWrite)?;
-    Ok(BackedGuestLayout {
-        space,
-        image_base: mapped.base,
-        stack_top: stack_base.saturating_add(DEFAULT_STACK_SIZE),
-    })
+    Ok(())
 }
 
 #[cfg(test)]
