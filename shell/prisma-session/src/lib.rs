@@ -129,6 +129,49 @@ pub enum RunOutcome {
     ExecUnavailable(ExecError),
 }
 
+/// x86-64 `arch_prctl` syscall number.
+const ARCH_PRCTL: u64 = 158;
+
+/// Service `arch_prctl(code, addr)` against the thread's CPU frame: set or read
+/// the FS/GS segment base. The bases live in [`CpuStateFrame`] (the JIT reads
+/// them via FS/GS-relative addressing, RFC 0020), so this is handled in the run
+/// loop rather than the `dispatch` layer, which sees only `ctx`/`mem`.
+///
+/// Returns the Linux ABI result: 0 on success, `-EINVAL` for an unknown `code`,
+/// `-EFAULT` if a `GET` cannot write the out-pointer.
+fn arch_prctl(
+    state: &mut CpuStateFrame,
+    mem: &mut BackedAddressSpace,
+    code: u64,
+    addr: u64,
+) -> i64 {
+    const ARCH_SET_GS: u64 = 0x1001;
+    const ARCH_SET_FS: u64 = 0x1002;
+    const ARCH_GET_FS: u64 = 0x1003;
+    const ARCH_GET_GS: u64 = 0x1004;
+    const EINVAL: i64 = -22;
+    const EFAULT: i64 = -14;
+    match code {
+        ARCH_SET_FS => {
+            state.fs_base = addr;
+            0
+        }
+        ARCH_SET_GS => {
+            state.gs_base = addr;
+            0
+        }
+        ARCH_GET_FS => match mem.write(addr, &state.fs_base.to_le_bytes()) {
+            Ok(()) => 0,
+            Err(_) => EFAULT,
+        },
+        ARCH_GET_GS => match mem.write(addr, &state.gs_base.to_le_bytes()) {
+            Ok(()) => 0,
+            Err(_) => EFAULT,
+        },
+        _ => EINVAL,
+    }
+}
+
 impl Session {
     /// Load `file` against `modules` and build a session ready to run from the
     /// image's entry point.
@@ -298,7 +341,16 @@ impl Session {
                         state.gpr[gpr::R8],
                         state.gpr[gpr::R9],
                     ];
-                    state.gpr[gpr::RAX] = dispatch(ctx, mem, number, args) as u64;
+                    // arch_prctl sets/reads the FS/GS segment base, which lives
+                    // in the CPU frame this loop owns (the JIT reads it via the
+                    // FS/GS-relative addressing Stage 2B made real), so it is
+                    // serviced here rather than in the ctx/mem-only dispatcher.
+                    let result = if number == ARCH_PRCTL {
+                        arch_prctl(state, mem, args[0], args[1])
+                    } else {
+                        dispatch(ctx, mem, number, args)
+                    };
+                    state.gpr[gpr::RAX] = result as u64;
                     if let Some(code) = ctx.exit_status {
                         return RunOutcome::Exited(code);
                     }
@@ -465,6 +517,28 @@ fn fetch_window(image: &MappedImage, guest_pc: u64) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arch_prctl_sets_and_gets_segment_bases() {
+        use prisma_orchestrator::address_space::Protection;
+        let mut state = CpuStateFrame::default();
+        let mut mem = BackedAddressSpace::new();
+        mem.map(0x1000, 0x1000, Protection::ReadWrite).unwrap();
+
+        // SET_FS (0x1002) / SET_GS (0x1001) update the frame.
+        assert_eq!(arch_prctl(&mut state, &mut mem, 0x1002, 0xDEAD_BEEF), 0);
+        assert_eq!(state.fs_base, 0xDEAD_BEEF);
+        assert_eq!(arch_prctl(&mut state, &mut mem, 0x1001, 0xCAFE), 0);
+        assert_eq!(state.gs_base, 0xCAFE);
+
+        // GET_FS (0x1003) writes the base to the out-pointer.
+        assert_eq!(arch_prctl(&mut state, &mut mem, 0x1003, 0x1000), 0);
+        assert_eq!(mem.read(0x1000, 8).unwrap(), &0xDEAD_BEEFu64.to_le_bytes());
+
+        // Unknown code -> EINVAL; GET to an unmapped pointer -> EFAULT.
+        assert_eq!(arch_prctl(&mut state, &mut mem, 0x9999, 0), -22);
+        assert_eq!(arch_prctl(&mut state, &mut mem, 0x1003, 0x9_0000), -14);
+    }
 
     /// Minimal valid PE32+ with one `.text` section, image base 0x1_4000_0000,
     /// entry RVA 0x1000, size 0x10000. (Mirrors load_pe's own test fixture.)
