@@ -19,6 +19,11 @@ sha2      = { workspace = true }
 zstd      = { workspace = true }
 thiserror = { workspace = true }
 anyhow    = { workspace = true }
+# Reused for the contiguous-arena backing of BackedAddressSpace (RFC 0020): one
+# host mapping so a single mem_base maps guest VAs to host addresses for the JIT.
+# (Layering note: this points "up" at prisma-runtime only to reuse GuestArena's
+# OS-page primitive; a future low-level `os-mem` crate could host it instead.)
+prisma-runtime = { path = "../prisma-runtime" }
 
 [dev-dependencies]
 tempfile   = "3.10"

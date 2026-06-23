@@ -428,6 +428,7 @@ name = "prisma_orchestrator"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "prisma-runtime",
  "proptest",
  "serde",
  "serde_json",
