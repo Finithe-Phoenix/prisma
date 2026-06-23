@@ -479,9 +479,13 @@ fn lower_stmt(
             }
         }
         Op::CallRel(call) => {
-            let target = block_label(labels, call.target_guest_pc)?;
-            asm.b_label(target);
-            let _ = call.return_guest_pc;
+            if exit.branch_via_frame {
+                lower_call_rel_exit(asm, call.target_guest_pc, call.return_guest_pc)?;
+            } else {
+                let target = block_label(labels, call.target_guest_pc)?;
+                asm.b_label(target);
+                let _ = call.return_guest_pc;
+            }
         }
         Op::CallReg(call) => {
             let target = *values
@@ -494,14 +498,22 @@ fn lower_stmt(
             lower_rsp_adjust(asm, rsp)?;
         }
         Op::Return(_) => {
-            if exit.return_via_epilogue {
+            if exit.branch_via_frame {
+                // The guest stack holds the return address (RFC 0020): pop it and
+                // chain through the run loop instead of returning to the host.
+                lower_return_exit(asm, 8)?;
+            } else if exit.return_via_epilogue {
                 abi::emit_block_epilogue_and_ret(asm);
             } else {
                 asm.ret();
             }
         }
         Op::RetAdjusted(ret) => {
-            lower_ret_adjusted(asm, ret.pop_bytes)?;
+            if exit.branch_via_frame {
+                lower_return_exit(asm, ret.pop_bytes)?;
+            } else {
+                lower_ret_adjusted(asm, ret.pop_bytes)?;
+            }
         }
         _ => return Err(LowerError::UnsupportedOp("unsupported")),
     }
@@ -1315,6 +1327,45 @@ fn lower_cond_jump_rel_exit(asm: &mut Arm64Assembler, jump: &prisma_ir::CondJump
         jump.cc,
     );
     emit_branch_exit(asm);
+}
+
+/// Block-exit lowering for a `CallRel`: push the return address onto the guest
+/// stack (real memory since RFC 0020) and exit to the run loop at the call
+/// target. The guest stack *is* the return-address stack — a later `Return`
+/// pops what this pushes — so cross-block calls chain through the run loop with
+/// no host-side call frame.
+fn lower_call_rel_exit(
+    asm: &mut Arm64Assembler,
+    target_guest_pc: u64,
+    return_guest_pc: u64,
+) -> Result<(), LowerError> {
+    // rsp -= 8
+    emit_load_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, -8)?;
+    emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    // [rsp] = return address (rebased to host through mem_base by emit_store_mem)
+    emit_u64_constant(asm, BRANCH_EXIT_FALL_REG, return_guest_pc);
+    emit_store_mem(asm, OpSize::I64, BRANCH_EXIT_FALL_REG, RSP_ADJUST_TMP_REG);
+    // Exit to the call target.
+    emit_u64_constant(asm, BRANCH_EXIT_TARGET_REG, target_guest_pc);
+    emit_branch_exit(asm);
+    Ok(())
+}
+
+/// Block-exit lowering for a `Return` (and `RetAdjusted`): pop the return address
+/// off the guest stack and exit to the run loop there. `rsp_delta` is the total
+/// bytes to add back to RSP — 8 for a plain `ret`, `pop_bytes` (which already
+/// includes the 8) for `ret imm16`.
+fn lower_return_exit(asm: &mut Arm64Assembler, rsp_delta: u64) -> Result<(), LowerError> {
+    // target = [rsp] (rebased to host through mem_base by emit_load_mem)
+    emit_load_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_load_mem(asm, OpSize::I64, BRANCH_EXIT_TARGET_REG, RSP_ADJUST_TMP_REG);
+    // rsp += rsp_delta
+    let delta = i64::try_from(rsp_delta).map_err(|_| LowerError::ImmediateOutOfRange(rsp_delta))?;
+    emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, delta)?;
+    emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
+    emit_branch_exit(asm);
+    Ok(())
 }
 
 fn lower_rsp_adjust(
@@ -4052,6 +4103,73 @@ mod tests {
             Lowerer::new().lower_function(&func).unwrap(),
             vec![0x1400_0001, 0xD65F_03C0]
         );
+    }
+
+    #[test]
+    fn lowers_call_rel_branch_exit_pushes_return_and_exits() {
+        // In branch-exit mode a CallRel is a block-exit: push the return address
+        // onto the guest stack and exit to the run loop at the target — not a
+        // tail `b` to a sibling block.
+        let func = function(vec![Stmt::new(
+            None,
+            Op::CallRel(prisma_ir::CallRel {
+                target_guest_pc: 0x1000,
+                return_guest_pc: 0x1005,
+            }),
+        )]);
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&func)
+            .unwrap();
+        // rsp -= 8 (sub x21,x21,#8), the mem-base rebase for the push, the
+        // EXIT_BRANCH mark (movz x9,#2), and the epilogue ret.
+        assert!(
+            words.contains(&sub_x_imm(21, 21, 8)),
+            "rsp decrement: {words:#x?}"
+        );
+        assert!(
+            words.contains(&ldr_x_unsigned(
+                MEM_ADDR_SCRATCH,
+                abi::K_STATE_PTR_REG,
+                MEM_BASE_OFFSET
+            )),
+            "rebased store of the return address: {words:#x?}"
+        );
+        assert!(
+            words.contains(&movz_x(9, 2, 0)),
+            "EXIT_BRANCH mark: {words:#x?}"
+        );
+        assert_eq!(words.last().copied(), Some(0xD65F_03C0), "ends with ret");
+        assert!(!words.contains(&0x1400_0001), "not a tail b");
+    }
+
+    #[test]
+    fn lowers_return_branch_exit_pops_and_exits() {
+        // In branch-exit mode a Return pops the return address off the guest
+        // stack and exits to the run loop there — not a host `ret`.
+        let func = function(vec![Stmt::new(None, Op::Return(Return))]);
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&func)
+            .unwrap();
+        // The rebase load of the target, rsp += 8, the EXIT_BRANCH mark, ret.
+        assert!(
+            words.contains(&ldr_x_unsigned(
+                MEM_ADDR_SCRATCH,
+                abi::K_STATE_PTR_REG,
+                MEM_BASE_OFFSET
+            )),
+            "rebased load of the return address: {words:#x?}"
+        );
+        assert!(
+            words.contains(&add_x_imm(21, 21, 8)),
+            "rsp increment: {words:#x?}"
+        );
+        assert!(
+            words.contains(&movz_x(9, 2, 0)),
+            "EXIT_BRANCH mark: {words:#x?}"
+        );
+        assert_eq!(words.last().copied(), Some(0xD65F_03C0), "ends with ret");
     }
 
     #[test]
