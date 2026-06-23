@@ -132,3 +132,50 @@ fn guest_indirect_call_reg_chains() {
         );
     }
 }
+
+// Nested calls (depth 2): entry -> a -> b, then b returns to a returns to entry.
+// Two return addresses are stacked and unwound in order — proof the guest stack
+// (the return-address stack, RFC 0020) handles nesting, not just one level.
+//   entry: call a ; mov eax,60 ; syscall
+//   a:     call b ; ret
+//   b:     mov edi,11 ; ret
+#[rustfmt::skip]
+const NESTED_CALL_PROGRAM: [u8; 24] = [
+    0xE8, 0x07, 0x00, 0x00, 0x00, // call a (+7 -> 0x0C)
+    0xB8, 0x3C, 0x00, 0x00, 0x00, // mov eax, 60
+    0x0F, 0x05,                   // syscall
+    // a (offset 0x0C):
+    0xE8, 0x01, 0x00, 0x00, 0x00, // call b (+1 -> 0x12)
+    0xC3,                         // ret (-> after `call a`)
+    // b (offset 0x12):
+    0xBF, 0x0B, 0x00, 0x00, 0x00, // mov edi, 11
+    0xC3,                         // ret (-> after `call b`)
+];
+
+#[test]
+fn guest_nested_calls_unwind_in_order() {
+    let mut s = Session::load(&pe_with_code(&NESTED_CALL_PROGRAM), &ModuleTable::new())
+        .expect("load the nested-call program");
+    let mut p = s
+        .prepare_arena(STACK_BASE, &[b"prog"], &[])
+        .expect("prepare against a contiguous arena");
+
+    // entry->a->b + two returns + exit = ~6 blocks.
+    let outcome = s.run(&mut p.ctx, &mut p.mem, &mut p.state, 16);
+
+    if cfg!(target_arch = "aarch64") {
+        // b set edi=11; both returns unwound back to the exit sequence.
+        assert!(
+            matches!(outcome, RunOutcome::Exited(11)),
+            "outcome={:?} rdi={} rsp={:#x}",
+            outcome,
+            p.state.gpr[7], // RDI
+            p.state.gpr[4], // RSP — balanced back to its start if both rets popped
+        );
+    } else {
+        assert!(
+            matches!(outcome, RunOutcome::ExecUnavailable(_)),
+            "{outcome:?}"
+        );
+    }
+}
