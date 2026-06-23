@@ -27,8 +27,9 @@ use prisma_cache::TranslationCache;
 use prisma_orchestrator::address_space::AddressSpaceError;
 use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_orchestrator::guest_layout::{
-    backed_layout_sections, layout_sections, BackedGuestLayout, GuestLayout,
+    backed_layout_sections, layout_sections, populate_backed, BackedGuestLayout, GuestLayout,
 };
+use prisma_orchestrator::guest_stack::DEFAULT_STACK_SIZE;
 use prisma_orchestrator::init_stack::{build_initial_stack, ProcessStackParams, StackBuildError};
 use prisma_orchestrator::load_pe::{load_pe_with_image, LoadError};
 use prisma_orchestrator::module_table::ModuleTable;
@@ -75,11 +76,20 @@ pub enum PrepareError {
     /// The initial process stack did not fit (argument image larger than the
     /// stack region).
     Stack(StackBuildError),
+    /// The contiguous host arena backing the guest space could not be allocated
+    /// (arena mode only, [`Session::prepare_arena`]).
+    Arena(std::io::Error),
 }
 
 impl From<AddressSpaceError> for PrepareError {
     fn from(e: AddressSpaceError) -> Self {
         Self::Layout(e)
+    }
+}
+
+impl From<std::io::Error> for PrepareError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Arena(e)
     }
 }
 
@@ -185,6 +195,57 @@ impl Session {
         let rsp = build_initial_stack(&mut mem, layout.stack_top, &params)?;
         let mut state = CpuStateFrame::default();
         state.gpr[gpr::RSP] = rsp;
+        Ok(PreparedRun {
+            mem,
+            state,
+            ctx: SyscallContext::new(),
+        })
+    }
+
+    /// Like [`prepare`](Self::prepare), but backs the guest with a single
+    /// contiguous host arena (RFC 0020) and seeds `state.mem_base`, so the JIT's
+    /// memory accesses and the syscall layer share one backing — the Stage 2B
+    /// memory model. The arena window spans `[image_base, stack_top)`; pass a
+    /// `stack_base` close to the image so the window stays compact (the whole
+    /// window is one host mapping — a far-apart stack would reserve a huge span).
+    ///
+    /// On a non-ARM64 host the arena is still allocated and the program laid out
+    /// (so the layout is testable everywhere); only [`run`](Self::run)'s
+    /// execution is ARM64-gated.
+    ///
+    /// # Errors
+    /// [`PrepareError::Arena`] if the host arena cannot be allocated,
+    /// [`PrepareError::Layout`] if the address space cannot be laid out (e.g. a
+    /// region falls outside the window), or [`PrepareError::Stack`] if the
+    /// argument image does not fit the stack.
+    pub fn prepare_arena(
+        &self,
+        stack_base: u64,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+    ) -> Result<PreparedRun, PrepareError> {
+        let image_base = self.image.base;
+        let stack_top = stack_base.saturating_add(DEFAULT_STACK_SIZE);
+        // One page below the image through the stack top, page-rounded — the whole
+        // guest lives in this single contiguous host window.
+        let window_base = image_base & !0xFFF;
+        let window_size = usize::try_from(stack_top.saturating_sub(window_base)).map_err(|_| {
+            PrepareError::Layout(AddressSpaceError::Overflow(window_base, stack_top))
+        })?;
+        let mut mem = BackedAddressSpace::with_arena(window_base, window_size)?;
+        populate_backed(&mut mem, &self.pe_image, &self.image, stack_base)?;
+        const AT_PAGESZ: u64 = 6;
+        let auxv = [(AT_PAGESZ, 4096)];
+        let params = ProcessStackParams {
+            argv,
+            envp,
+            auxv: &auxv,
+        };
+        let rsp = build_initial_stack(&mut mem, stack_top, &params)?;
+        let mut state = CpuStateFrame::default();
+        state.gpr[gpr::RSP] = rsp;
+        // The single offset the JIT rebases every guest memory access through.
+        state.mem_base = mem.mem_base().expect("arena-mode space exposes a mem_base");
         Ok(PreparedRun {
             mem,
             state,
