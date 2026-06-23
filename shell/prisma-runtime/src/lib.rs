@@ -31,6 +31,7 @@ pub mod dispatcher;
 pub mod exception_record;
 pub mod executor;
 pub mod fd_table;
+pub mod guest_arena;
 pub mod guest_clock;
 pub mod guest_exception;
 pub mod guest_signal;

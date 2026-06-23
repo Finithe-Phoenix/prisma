@@ -13,7 +13,7 @@ use std::io;
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-mod platform {
+pub(crate) mod platform {
     use std::ffi::c_void;
 
     const MEM_COMMIT: u32 = 0x0000_1000;
@@ -90,7 +90,7 @@ mod platform {
 }
 
 #[cfg(unix)]
-mod platform {
+pub(crate) mod platform {
     pub fn page_size() -> usize {
         // SAFETY: sysconf with a valid name returns the page size or -1.
         let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
