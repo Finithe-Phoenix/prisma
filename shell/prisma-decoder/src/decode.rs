@@ -5748,6 +5748,7 @@ fn emit_addr_mode_at(addr: &modrm::AddrMode, rip_after: u64, stmts: &mut Vec<Stm
         modrm::AddrMode::RipRelative { disp } => {
             emit_addr_const(stmts, add_signed_disp(rip_after, *disp))
         }
+        modrm::AddrMode::Absolute { disp } => emit_addr_const(stmts, add_signed_disp(0, *disp)),
         modrm::AddrMode::Register(reg) => emit_load_addr_reg(stmts, *reg),
     }
 }

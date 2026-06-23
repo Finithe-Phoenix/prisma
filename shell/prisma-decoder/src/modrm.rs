@@ -34,6 +34,9 @@ pub enum AddrMode {
     },
     /// [rip + disp32]
     RipRelative { disp: i64 },
+    /// [disp] with no base and no index — a SIB with base field 0b101 (mod=0)
+    /// and the no-index encoding. An absolute address.
+    Absolute { disp: i64 },
 }
 
 /// Parse a ModR/M byte from the instruction stream.
@@ -136,16 +139,24 @@ fn decode_sib_addr(
     disp: i64,
     next_offset: usize,
 ) -> (AddrMode, usize) {
-    let index = gpr_from_sib_index(sib.index, prefixes);
-    (
+    // x86: a SIB index field of 0b100 means *no index register* — unless REX.X
+    // is set, which makes it r12. Without this, `[rsp+disp]` (and any no-index
+    // SIB) wrongly decodes the base as the index too, yielding base+base+disp.
+    let has_index = sib.index != 4 || prefixes.rex.x;
+    let mode = if has_index {
         AddrMode::Indexed {
             base,
-            index,
+            index: gpr_from_sib_index(sib.index, prefixes),
             scale: sib.scale,
             disp,
-        },
-        next_offset,
-    )
+        }
+    } else {
+        base.map_or(AddrMode::Absolute { disp }, |base| AddrMode::BaseDisp {
+            base,
+            disp,
+        })
+    };
+    (mode, next_offset)
 }
 
 fn read_disp8(bytes: &[u8], offset: usize) -> Result<i8, super::DecodeError> {
@@ -412,5 +423,82 @@ mod tests {
                 disp: 0,
             }
         );
+    }
+
+    #[test]
+    fn decode_addr_sib_no_index_is_base_disp_not_doubled() {
+        // [rsp - 8]: SIB index field 0b100 = no index. Must be BaseDisp{Rsp,-8},
+        // NOT Indexed (which doubled the base into rsp+rsp-8).
+        let m = ModRm {
+            mod_: 1,
+            reg: 0,
+            rm: 4,
+        };
+        let sib = Sib {
+            scale: 1,
+            index: 4, // no index
+            base: 4,  // rsp
+        };
+        let prefixes = PrefixSet::default();
+        let (addr, used) = decode_addr(&m, Some(&sib), &prefixes, b"\xF8", 0).unwrap();
+        assert_eq!(used, 1);
+        assert_eq!(
+            addr,
+            AddrMode::BaseDisp {
+                base: Gpr::Rsp,
+                disp: -8,
+            }
+        );
+    }
+
+    #[test]
+    fn decode_addr_sib_no_index_with_rex_x_is_r12_index() {
+        // index 0b100 + REX.X = r12 is a real index register (not "no index").
+        let m = ModRm {
+            mod_: 0,
+            reg: 0,
+            rm: 4,
+        };
+        let sib = Sib {
+            scale: 2,
+            index: 4,
+            base: 0,
+        };
+        let prefixes = PrefixSet {
+            rex: crate::prefixes::RexPrefix {
+                x: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (addr, _used) = decode_addr(&m, Some(&sib), &prefixes, b"", 0).unwrap();
+        assert_eq!(
+            addr,
+            AddrMode::Indexed {
+                base: Some(Gpr::Rax),
+                index: Gpr::R12,
+                scale: 2,
+                disp: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn decode_addr_sib_no_base_no_index_is_absolute() {
+        // mod=0, base field 0b101 (no base) + no index → [disp32] absolute.
+        let m = ModRm {
+            mod_: 0,
+            reg: 0,
+            rm: 4,
+        };
+        let sib = Sib {
+            scale: 1,
+            index: 4, // no index
+            base: 5,  // no base (mod=0)
+        };
+        let prefixes = PrefixSet::default();
+        let (addr, used) = decode_addr(&m, Some(&sib), &prefixes, b"\x78\x56\x34\x12", 0).unwrap();
+        assert_eq!(used, 4);
+        assert_eq!(addr, AddrMode::Absolute { disp: 0x1234_5678 });
     }
 }
