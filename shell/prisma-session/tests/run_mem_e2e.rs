@@ -5,12 +5,19 @@
 //! memory model: translated code reaches real guest memory, coherently.
 //!
 //! ```text
+//!   mov rbx, rsp        ; a stack pointer in a plain base register
 //!   mov eax, 42         ; the value
-//!   mov [rsp-8], rax    ; store it to stack memory
-//!   mov rdi, [rsp-8]    ; load it back
+//!   mov [rbx-8], rax    ; store it to stack memory
+//!   mov rdi, [rbx-8]    ; load it back
 //!   mov eax, 60         ; exit
 //!   syscall             ; exit(rdi) — exit(42) iff the round-trip worked
 //! ```
+//!
+//! The slot is addressed through `rbx` (a plain base+disp8) rather than `rsp`
+//! directly: `[rsp+disp]` needs a SIB byte, and the Rust decoder's no-index SIB
+//! path (index field 0b100) is buggy today (it doubles the base) — an unrelated
+//! decoder gap, tracked separately. This test is about the memory *backing*, so
+//! it uses an addressing mode that backing alone determines.
 //!
 //! If memory were mis-addressed (the pre-RFC-0020 host==guest assumption, or a
 //! divergent second backing) the load would fault or read garbage and the exit
@@ -49,10 +56,11 @@ fn pe_with_code(code: &[u8]) -> Vec<u8> {
 }
 
 #[rustfmt::skip]
-const MEM_PROGRAM: [u8; 22] = [
+const MEM_PROGRAM: [u8; 23] = [
+    0x48, 0x89, 0xE3,             // mov rbx, rsp
     0xB8, 0x2A, 0x00, 0x00, 0x00, // mov eax, 42
-    0x48, 0x89, 0x44, 0x24, 0xF8, // mov [rsp-8], rax
-    0x48, 0x8B, 0x7C, 0x24, 0xF8, // mov rdi, [rsp-8]   (load it back)
+    0x48, 0x89, 0x43, 0xF8,       // mov [rbx-8], rax
+    0x48, 0x8B, 0x7B, 0xF8,       // mov rdi, [rbx-8]   (load it back)
     0xB8, 0x3C, 0x00, 0x00, 0x00, // mov eax, 60        (exit)
     0x0F, 0x05,                   // syscall            (exit(rdi))
 ];
