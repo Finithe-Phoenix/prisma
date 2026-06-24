@@ -6,9 +6,34 @@
 > SHA and a one-line note in `Notes`. Multi-commit items list every
 > commit in order under `SHAs`.
 
-Last updated: 2026-06-19 (Rust side now JIT-executes translated blocks on ARM64
-— the Track-B milestone — plus an I32 zero-extension correctness fix and
-executing e2e coverage for three decoder families; all green on main / in CI).
+Last updated: 2026-06-24 (Stage 2B + control-flow chaining + TLS landed — see the
+2026-06-23 session below; the Rust core now runs a guest with functions, real
+memory, and `%fs` end to end on ARM64).
+
+## Session 2026-06-23/24 — Stage 2B, control-flow chaining, TLS
+
+A guest program now executes through the DBT on real ARM64 with real memory,
+function calls (direct/indirect/nested), and TLS. All ARM64-verified
+(`ffi-link-arm64`); all required checks green on `main`.
+
+- **Stage 2B — real guest memory (RFC 0020).** PR #300 the JIT rebases every
+  access to `host = mem_base + guest_va`; #301 `GuestArena` (one contiguous host
+  mapping, `Drop`→munmap/VirtualFree); #302 `BackedAddressSpace` arena mode
+  (additive — owned mode unchanged, ~50 dispatch tests intact); #303
+  `Session::prepare_arena` + e2e (guest stores/loads real memory).
+- **Control-flow chaining (RFC 0021).** #305 direct `call`/`ret` chain via the
+  guest stack + `EXIT_BRANCH`; #306 indirect `call reg`/`jmp reg`; #307 nested
+  calls e2e. The `NonSyscallExit` ceiling is lifted.
+- **TLS.** #308 `arch_prctl` FS/GS (serviced in the run loop — segment bases live
+  in `CpuStateFrame`).
+- **Decoder correctness (found by the ARM64 e2e's).** #304 SIB index `0b100` is
+  no-index (was doubling the base); #306 near indirect call/jmp force a 64-bit
+  target (was truncating >4 GiB PCs).
+- Also: closed the in-flight reg-reg ALU NZCV flags (#298); dependabot
+  checkout v6→v7 (#299).
+
+NEXT: threading/process syscalls — `futex`/`clone`/`execve` (need a multi-thread
+run model; `run()` is single-frame today).
 
 ## Session 2026-06-19 — Rust ARM64 JIT execution milestone + correctness fix
 

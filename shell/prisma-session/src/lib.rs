@@ -118,9 +118,10 @@ pub enum RunOutcome {
     /// The step budget (total blocks executed) was exhausted before the guest
     /// exited — e.g. a non-terminating loop.
     StepLimit,
-    /// A block ended on a terminator that can't be followed yet (a `ret` or an
-    /// indirect jump — a dynamic target needs the guest stack / register, which
-    /// the run loop doesn't read yet) at `pc`.
+    /// A block ended on a terminator the loop can't resume from at `pc`. Relative
+    /// branches, `call`/`ret`, and indirect `call`/`jmp` now chain via
+    /// `EXIT_BRANCH` (RFC 0021), so this is reached only by a terminator with no
+    /// recorded next PC — e.g. an unhandled/halting instruction.
     NonSyscallExit { pc: u64 },
     /// No block could be translated at `pc` (unmapped / undecodable).
     UnmappedPc(u64),
@@ -305,11 +306,13 @@ impl Session {
     /// - [`EXIT_SYSCALL`] — read the number/args from the GPRs, dispatch it, write
     ///   the result to `rax`, and resume past the 2-byte `SYSCALL`; stop when the
     ///   guest sets [`SyscallContext::exit_status`].
-    /// - [`EXIT_BRANCH`] — a relative branch recorded its taken target in
-    ///   `next_pc`; resume there (this is how loops/`if`s run).
+    /// - [`EXIT_BRANCH`] — a branch / `call` / `ret` / indirect transfer recorded
+    ///   its taken target in `next_pc`; resume there. This is how loops, `if`s,
+    ///   and function calls/returns chain (RFC 0021: `call`/`ret` push/pop the
+    ///   target on the guest stack).
     /// - [`EXIT_NORMAL`] — a block cut at the fetch budget falls through to the
-    ///   next sequential PC; a block ending in a `ret`/indirect jump (a dynamic
-    ///   target the loop can't follow yet) halts with [`RunOutcome::NonSyscallExit`].
+    ///   next sequential PC; a block ending on a terminator with no recorded next
+    ///   PC halts with [`RunOutcome::NonSyscallExit`].
     ///
     /// Execution is ARM64-gated: on a non-ARM64 host the first block returns
     /// [`ExecError::WrongArch`] and this reports [`RunOutcome::ExecUnavailable`].
