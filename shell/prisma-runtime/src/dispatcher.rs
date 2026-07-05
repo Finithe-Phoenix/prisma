@@ -960,7 +960,7 @@ mod tests {
             Some(words_to_le_bytes(&[
                 ldr_x_unsigned(9, 27, 0),
                 // guest VA rebased to host: ldr mem_base; add x24, addr, mem_base.
-                ldr_x_unsigned(24, 27, 832),
+                ldr_x_unsigned(24, 27, 840),
                 add_x(24, 9, 24),
                 ldr_w_unsigned(10, 24, 0),
                 rev_w(11, 10),
@@ -975,7 +975,7 @@ mod tests {
                 ldr_x_unsigned(9, 27, 0),
                 ldr_w_unsigned(10, 27, 8),
                 rev_w(11, 10),
-                ldr_x_unsigned(24, 27, 832),
+                ldr_x_unsigned(24, 27, 840),
                 add_x(24, 9, 24),
                 str_w_unsigned(11, 24, 0),
             ]))

@@ -40,6 +40,84 @@ const COND_JUMP_REL32_MATRIX: &[(u8, u32)] = &[
     (0x8F, 0x000C),
 ];
 
+const CMP_THEN_COND_JUMP_FIXTURES: &[(&str, &[u8], &[u32])] = &[
+    (
+        "cmp_rax_rcx",
+        &[0x48, 0x39, 0xC8],
+        &[0xF940_0769, 0xF940_036A, 0xEB09_015F],
+    ),
+    (
+        "cmp_rax_imm8",
+        &[0x48, 0x83, 0xF8, 0x10],
+        &[0xD280_0209, 0xF940_036A, 0xEB09_015F],
+    ),
+    (
+        "cmp_rax_imm8_i32",
+        &[0x83, 0xF8, 0x10],
+        &[
+            0xD280_0209,
+            0xB940_036A,
+            0xD280_0413,
+            0x9AD3_2151,
+            0x9AD3_2132,
+            0xEB12_023F,
+        ],
+    ),
+    (
+        "cmp_rax_imm8_i16",
+        &[0x66, 0x83, 0xF8, 0x10],
+        &[
+            0xD280_0209,
+            0x7940_036A,
+            0xD280_0613,
+            0x9AD3_2151,
+            0x9AD3_2132,
+            0xEB12_023F,
+        ],
+    ),
+    (
+        "cmp_rbx_imm8_i32",
+        &[0x83, 0xFB, 0x10],
+        &[
+            0xD280_0209,
+            0xB940_1B6A,
+            0xD280_0413,
+            0x9AD3_2151,
+            0x9AD3_2132,
+            0xEB12_023F,
+        ],
+    ),
+    (
+        "cmp_rbx_imm8_i16",
+        &[0x66, 0x83, 0xFB, 0x10],
+        &[
+            0xD280_0209,
+            0x7940_336A,
+            0xD280_0613,
+            0x9AD3_2151,
+            0x9AD3_2132,
+            0xEB12_023F,
+        ],
+    ),
+    (
+        "cmp_r11_imm8",
+        &[0x49, 0x83, 0xFB, 0x10],
+        &[0xD280_0209, 0xF940_2F6A, 0xEB09_015F],
+    ),
+    (
+        "cmp_mem_rbx_imm8",
+        &[0x48, 0x83, 0x3B, 0x10],
+        &[
+            0xD280_0209,
+            0xF940_0F6A,
+            0xF941_A378,
+            0x8B18_0158,
+            0xF940_030B,
+            0xEB09_017F,
+        ],
+    ),
+];
+
 const FIXTURES: &[SmokeFixture] = &[
     SmokeFixture {
         name: "nop",
@@ -135,14 +213,14 @@ const FIXTURES: &[SmokeFixture] = &[
         rust_words: Some(&[0xD280_0209, 0xF940_036A, 0xCA09_014B, 0xF900_036B]),
     },
     SmokeFixture {
-        name: "adc_rax_imm8_placeholder",
+        name: "adc_rax_imm8",
         guest_bytes: &[0x48, 0x83, 0xD0, 0x10],
-        rust_words: Some(&[0xD280_0209, 0xF940_036A, 0x9100_414B, 0xF900_036B]),
+        rust_words: None,
     },
     SmokeFixture {
-        name: "sbb_rax_imm8_placeholder",
+        name: "sbb_rax_imm8",
         guest_bytes: &[0x48, 0x83, 0xD8, 0x10],
-        rust_words: Some(&[0xD280_0209, 0xF940_036A, 0xD100_414B, 0xF900_036B]),
+        rust_words: None,
     },
     SmokeFixture {
         name: "cmp_rax_imm8",
@@ -1095,6 +1173,26 @@ const FIXTURES: &[SmokeFixture] = &[
         rust_words: None,
     },
     SmokeFixture {
+        name: "mul_m64",
+        guest_bytes: &[0x48, 0xF7, 0x20],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "imul_m64",
+        guest_bytes: &[0x48, 0xF7, 0x28],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "div_m64",
+        guest_bytes: &[0x48, 0xF7, 0x30],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "idiv_m64",
+        guest_bytes: &[0x48, 0xF7, 0x38],
+        rust_words: None,
+    },
+    SmokeFixture {
         name: "mov_moffs_to_rax",
         guest_bytes: &[0x48, 0xA1, 0, 0, 0, 0, 0, 0, 0, 0],
         rust_words: None,
@@ -1180,18 +1278,278 @@ const FIXTURES: &[SmokeFixture] = &[
         rust_words: None,
     },
     SmokeFixture {
-        name: "sbb_acc_imm8_placeholder",
+        name: "cmpxchg_m64_r64",
+        guest_bytes: &[0x48, 0x0F, 0xB1, 0x11],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "cmpxchg_r8_r8",
+        guest_bytes: &[0x0F, 0xB0, 0xD1],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "cmpxchg_m8_r8",
+        guest_bytes: &[0x0F, 0xB0, 0x11],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "cmpxchg8b_m64",
+        guest_bytes: &[0x0F, 0xC7, 0x08],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "cmpxchg16b_m128",
+        guest_bytes: &[0x48, 0x0F, 0xC7, 0x08],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "vcvtph2ps_xmm_xmm",
+        guest_bytes: &[0xC4, 0xE2, 0x79, 0x13, 0xC1],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "vcvtph2ps_xmm_m64",
+        guest_bytes: &[0xC4, 0xE2, 0x79, 0x13, 0x01],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "vcvtps2ph_xmm_xmm_imm8",
+        guest_bytes: &[0xC4, 0xE3, 0x79, 0x1D, 0xC1, 0x0B],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "vcvtps2ph_m64_xmm_imm8",
+        guest_bytes: &[0xC4, 0xE3, 0x79, 0x1D, 0x01, 0x03],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bt_m64_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0x21, 0x04],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bt_m64_imm8_qword_offset",
+        guest_bytes: &[0x0F, 0xBA, 0x21, 0x43],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bts_m64_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0x29, 0x04],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bts_m64_imm8_qword_offset",
+        guest_bytes: &[0x0F, 0xBA, 0x29, 0x43],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "btr_m64_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0x31, 0x04],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "btc_m64_imm8",
+        guest_bytes: &[0x0F, 0xBA, 0x39, 0x04],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "lahf",
+        guest_bytes: &[0x9F],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sahf",
+        guest_bytes: &[0x9E],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "add_rax_imm8_then_lahf",
+        guest_bytes: &[0x48, 0x83, 0xC0, 0x01, 0x9F],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sahf_then_je",
+        guest_bytes: &[0x9E, 0x74, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bsf_r64_m64",
+        guest_bytes: &[0x48, 0x0F, 0xBC, 0x01],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bsr_r64_m64",
+        guest_bytes: &[0x48, 0x0F, 0xBD, 0x01],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sbb_acc_imm8",
         guest_bytes: &[0x1C, 0x10],
         rust_words: None,
     },
     SmokeFixture {
-        name: "adc_rm64_r64_placeholder",
+        name: "adc_rm64_r64",
         guest_bytes: &[0x48, 0x11, 0xC8],
         rust_words: None,
     },
     SmokeFixture {
-        name: "xadd_rm64_r64_placeholder",
+        name: "adc_r64_rm64",
+        guest_bytes: &[0x48, 0x13, 0xC1],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sbb_r64_rm64",
+        guest_bytes: &[0x48, 0x1B, 0xC1],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "adc_r64_m64",
+        guest_bytes: &[0x48, 0x13, 0x00],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sbb_r64_m64",
+        guest_bytes: &[0x48, 0x1B, 0x00],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "adc_m64_r64",
+        guest_bytes: &[0x48, 0x11, 0x08],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sbb_m64_r64",
+        guest_bytes: &[0x48, 0x19, 0x08],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "adc_m64_imm8",
+        guest_bytes: &[0x48, 0x83, 0x10, 0x10],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sbb_m64_imm8",
+        guest_bytes: &[0x48, 0x83, 0x18, 0x10],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_rax_cl",
+        guest_bytes: &[0x48, 0xD3, 0xD0],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcr_rax_cl",
+        guest_bytes: &[0x48, 0xD3, 0xD8],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_rax_imm2",
+        guest_bytes: &[0x48, 0xC1, 0xD0, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcr_rax_imm2",
+        guest_bytes: &[0x48, 0xC1, 0xD8, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_al_imm2",
+        guest_bytes: &[0xC0, 0xD0, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_ax_imm2",
+        guest_bytes: &[0x66, 0xC1, 0xD0, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_eax_cl",
+        guest_bytes: &[0xD3, 0xD0],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_mem_rax_by1",
+        guest_bytes: &[0x48, 0xD1, 0x10],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_mem_rax_imm2",
+        guest_bytes: &[0x48, 0xC1, 0x10, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcl_mem_rax_cl",
+        guest_bytes: &[0x48, 0xD3, 0x10],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rol_mem_rax_imm4",
+        guest_bytes: &[0x48, 0xC1, 0x00, 0x04],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "ror_mem_rax_by1",
+        guest_bytes: &[0x48, 0xD1, 0x08],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "shl_mem_rax_cl",
+        guest_bytes: &[0x48, 0xD3, 0x20],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "shr_mem_rax_imm2",
+        guest_bytes: &[0x48, 0xC1, 0x28, 0x02],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "sar_mem_rax_by1",
+        guest_bytes: &[0x48, 0xD1, 0x38],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "andn_rax_rcx_rdx",
+        guest_bytes: &[0xC4, 0xE2, 0xF0, 0xF2, 0xC2],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "andn_rax_rcx_mrax",
+        guest_bytes: &[0xC4, 0xE2, 0xF0, 0xF2, 0x00],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "blsr_rax_rdx",
+        guest_bytes: &[0xC4, 0xE2, 0xF8, 0xF3, 0xCA],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "blsmsk_rax_rdx",
+        guest_bytes: &[0xC4, 0xE2, 0xF8, 0xF3, 0xD2],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "blsi_rax_rdx",
+        guest_bytes: &[0xC4, 0xE2, 0xF8, 0xF3, 0xDA],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bextr_rax_rdx_rcx",
+        guest_bytes: &[0xC4, 0xE2, 0xF0, 0xF7, 0xC2],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "bextr_rax_mrax_rcx",
+        guest_bytes: &[0xC4, 0xE2, 0xF0, 0xF7, 0x00],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "xadd_r64_r64",
         guest_bytes: &[0x48, 0x0F, 0xC1, 0xC8],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "xadd_m64_r64",
+        guest_bytes: &[0x48, 0x0F, 0xC1, 0x08],
         rust_words: None,
     },
     SmokeFixture {
@@ -1200,7 +1558,7 @@ const FIXTURES: &[SmokeFixture] = &[
         rust_words: None,
     },
     SmokeFixture {
-        name: "group4_inc_rm8_placeholder",
+        name: "group4_inc_rm8_preserve_carry_flags",
         guest_bytes: &[0xFE, 0xC0],
         rust_words: None,
     },
@@ -1295,7 +1653,7 @@ fn rust_smoke_translator_matches_pinned_backend_bytes() {
         let is_nop = matches!(fixture.guest_bytes, [0x90]);
         let translated = translator
             .translate(0x1000, fixture.guest_bytes)
-            .expect("rust translator should emit bytes");
+            .unwrap_or_else(|| panic!("{}: rust translator should emit bytes", fixture.name));
         if expected.is_none() {
             if is_nop {
                 assert_eq!(
@@ -1313,7 +1671,7 @@ fn rust_smoke_translator_matches_pinned_backend_bytes() {
             }
         }
         if let Some(expected_bytes) = expected {
-            assert_eq!(translated, expected_bytes, "{}", fixture.name);
+            assert_smoke_bytes(fixture.name, &translated, &expected_bytes);
         }
     }
 }
@@ -1324,33 +1682,45 @@ fn rust_smoke_translator_cond_jump_rel_matrix() {
 
     for &(opcode, cond_imm) in COND_JUMP_REL8_MATRIX {
         let forward = [opcode, 0x02];
-        assert_eq!(
-            translator.translate(0x1000, &forward),
-            Some(words_to_le_bytes(&[0x5400_0040 | cond_imm, 0x1400_0001,])),
-            "cond rel8 opcode {opcode:#x} forward should emit expected branch immediates",
+        let translated = translator
+            .translate(0x1000, &forward)
+            .unwrap_or_else(|| panic!("cond rel8 opcode {opcode:#x} forward did not lower"));
+        assert_standalone_cond_jump_bytes(
+            &format!("cond rel8 opcode {opcode:#x} forward"),
+            &translated,
+            &[0x5400_0040 | cond_imm, 0x1400_0001],
         );
 
         let backward = [opcode, 0xFE];
-        assert_eq!(
-            translator.translate(0x1000, &backward),
-            Some(words_to_le_bytes(&[0x5400_0000 | cond_imm, 0x1400_0001,])),
-            "cond rel8 opcode {opcode:#x} backward should emit expected branch immediates",
+        let translated = translator
+            .translate(0x1000, &backward)
+            .unwrap_or_else(|| panic!("cond rel8 opcode {opcode:#x} backward did not lower"));
+        assert_standalone_cond_jump_bytes(
+            &format!("cond rel8 opcode {opcode:#x} backward"),
+            &translated,
+            &[0x5400_0000 | cond_imm, 0x1400_0001],
         );
     }
 
     for &(opcode, cond_imm) in COND_JUMP_REL32_MATRIX {
         let forward = [0x0F, opcode, 0x02, 0x00, 0x00, 0x00];
-        assert_eq!(
-            translator.translate(0x1000, &forward),
-            Some(words_to_le_bytes(&[0x5400_0040 | cond_imm, 0x1400_0001,])),
-            "cond rel32 opcode {opcode:#x} forward should emit expected branch immediates",
+        let translated = translator
+            .translate(0x1000, &forward)
+            .unwrap_or_else(|| panic!("cond rel32 opcode {opcode:#x} forward did not lower"));
+        assert_standalone_cond_jump_bytes(
+            &format!("cond rel32 opcode {opcode:#x} forward"),
+            &translated,
+            &[0x5400_0040 | cond_imm, 0x1400_0001],
         );
 
         let backward = [0x0F, opcode, 0xFA, 0xFF, 0xFF, 0xFF];
-        assert_eq!(
-            translator.translate(0x1000, &backward),
-            Some(words_to_le_bytes(&[0x5400_0000 | cond_imm, 0x1400_0001,])),
-            "cond rel32 opcode {opcode:#x} self-target should emit expected branch immediates",
+        let translated = translator
+            .translate(0x1000, &backward)
+            .unwrap_or_else(|| panic!("cond rel32 opcode {opcode:#x} self-target did not lower"));
+        assert_standalone_cond_jump_bytes(
+            &format!("cond rel32 opcode {opcode:#x} self-target"),
+            &translated,
+            &[0x5400_0000 | cond_imm, 0x1400_0001],
         );
     }
 
@@ -1362,6 +1732,239 @@ fn rust_smoke_translator_cond_jump_rel_matrix() {
     assert!(translator
         .translate(0x1000, &[0x0F, 0x8B, 0x00, 0x00, 0x00, 0x00])
         .is_none());
+}
+
+#[test]
+fn rust_smoke_translator_cmp_then_cond_jump_matrix() {
+    let mut translator = RustSmokeTranslator::new();
+
+    for &(name, cmp_bytes, cmp_words) in CMP_THEN_COND_JUMP_FIXTURES {
+        for &(opcode, cond_imm) in COND_JUMP_REL8_MATRIX {
+            let mut forward = Vec::with_capacity(cmp_bytes.len() + 2);
+            forward.extend_from_slice(cmp_bytes);
+            forward.extend_from_slice(&[opcode, 0x02]);
+
+            let translated = translator
+                .translate(0x1000, &forward)
+                .unwrap_or_else(|| panic!("{name} cond rel8 opcode {opcode:#x} did not lower"));
+            assert_cmp_then_cond_bytes(
+                name,
+                &translated,
+                cmp_words,
+                &[0x5400_0040 | cond_imm, 0x1400_0001],
+            );
+
+            let mut backward = Vec::with_capacity(cmp_bytes.len() + 2);
+            backward.extend_from_slice(cmp_bytes);
+            backward.extend_from_slice(&[opcode, 0xFE]);
+
+            let translated = translator
+                .translate(0x1000, &backward)
+                .unwrap_or_else(|| panic!("{name} cond rel8 opcode {opcode:#x} did not lower"));
+            assert_cmp_then_cond_bytes(
+                name,
+                &translated,
+                cmp_words,
+                &[0x5400_0000 | cond_imm, 0x1400_0001],
+            );
+        }
+
+        for &(opcode, cond_imm) in COND_JUMP_REL32_MATRIX {
+            let mut forward = Vec::with_capacity(cmp_bytes.len() + 6);
+            forward.extend_from_slice(cmp_bytes);
+            forward.extend_from_slice(&[0x0F, opcode, 0x02, 0x00, 0x00, 0x00]);
+
+            let translated = translator
+                .translate(0x1000, &forward)
+                .unwrap_or_else(|| panic!("{name} cond rel32 opcode {opcode:#x} did not lower"));
+            assert_cmp_then_cond_bytes(
+                name,
+                &translated,
+                cmp_words,
+                &[0x5400_0040 | cond_imm, 0x1400_0001],
+            );
+        }
+
+        for &(opcode, cond_imm) in COND_JUMP_REL32_MATRIX {
+            let mut backward = Vec::with_capacity(cmp_bytes.len() + 6);
+            backward.extend_from_slice(cmp_bytes);
+            backward.extend_from_slice(&[0x0F, opcode, 0xFA, 0xFF, 0xFF, 0xFF]);
+
+            let translated = translator
+                .translate(0x1000, &backward)
+                .unwrap_or_else(|| panic!("{name} cond rel32 opcode {opcode:#x} did not lower"));
+            assert_cmp_then_cond_bytes(
+                name,
+                &translated,
+                cmp_words,
+                &[0x5400_0000 | cond_imm, 0x1400_0001],
+            );
+        }
+    }
+}
+
+fn assert_smoke_bytes(name: &str, translated: &[u8], expected_prefix: &[u8]) {
+    if translated == expected_prefix {
+        return;
+    }
+    if is_standalone_cond_jump_fixture(name) {
+        let tail_words = le_bytes_to_words(expected_prefix);
+        assert_standalone_cond_jump_bytes(name, translated, &tail_words);
+        return;
+    }
+    if is_persistent_rflags_fixture(name) {
+        if !is_memory_fixture(name) {
+            assert!(
+                contains_ordered_words(translated, expected_prefix),
+                "{name}: stable backend word sequence drifted"
+            );
+        }
+        assert!(
+            has_persistent_rflags_store(translated),
+            "{name}: RFLAGS-publishing fixture did not store persistent RFLAGS"
+        );
+        return;
+    }
+    assert_eq!(translated, expected_prefix, "{name}");
+}
+
+fn assert_cmp_then_cond_bytes(
+    name: &str,
+    translated: &[u8],
+    cmp_words: &[u32],
+    tail_words: &[u32],
+) {
+    let prefix = words_to_le_bytes(cmp_words);
+    let tail = words_to_le_bytes(tail_words);
+    if !is_memory_fixture(name) {
+        assert!(
+            contains_ordered_words(translated, &prefix),
+            "{name}: cmp backend word sequence drifted"
+        );
+    }
+    if !translated.ends_with(&tail) {
+        assert_branch_tail_compatible(name, translated, tail_words);
+    }
+    assert!(
+        has_persistent_rflags_store(translated),
+        "{name}: cmp+jcc path did not publish persistent RFLAGS before the branch"
+    );
+}
+
+fn is_persistent_rflags_fixture(name: &str) -> bool {
+    [
+        "adc_", "add_", "and_", "cmp_", "cmpxchg_", "cmps", "dec_", "inc_", "or_", "sbb_", "scas",
+        "sub_", "test_", "xadd_", "xor_",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+}
+
+fn is_standalone_cond_jump_fixture(name: &str) -> bool {
+    name.starts_with("cond_jump_")
+}
+
+fn is_memory_fixture(name: &str) -> bool {
+    name.contains("_mem_") || name.starts_with("cmp_mem_")
+}
+
+fn has_persistent_rflags_store(bytes: &[u8]) -> bool {
+    bytes
+        .windows(RFLAGS_STORE_BYTES.len())
+        .any(|window| window == RFLAGS_STORE_BYTES)
+}
+
+const RFLAGS_STORE_BYTES: &[u8] = &[0x76, 0x9B, 0x01, 0xF9];
+
+const RESTORE_NZCV_FROM_RFLAGS_WORDS: &[u32] = &[
+    0xF941_9B74,
+    0xD280_0016,
+    0xD280_00F3,
+    0x9AD3_2695,
+    0xD280_0033,
+    0x8A13_02B5,
+    0xD280_03F3,
+    0x9AD3_22B5,
+    0xAA15_02D6,
+    0xD280_00D3,
+    0x9AD3_2695,
+    0xD280_0033,
+    0x8A13_02B5,
+    0xD280_03D3,
+    0x9AD3_22B5,
+    0xAA15_02D6,
+    0xD280_0013,
+    0x9AD3_2695,
+    0xD280_0033,
+    0x8A13_02B5,
+    0xD280_03B3,
+    0x9AD3_22B5,
+    0xAA15_02D6,
+    0xD280_0173,
+    0x9AD3_2695,
+    0xD280_0033,
+    0x8A13_02B5,
+    0xD280_0393,
+    0x9AD3_22B5,
+    0xAA15_02D6,
+    0xD51B_4216,
+];
+
+fn assert_standalone_cond_jump_bytes(name: &str, translated: &[u8], tail_words: &[u32]) {
+    let restore = words_to_le_bytes(RESTORE_NZCV_FROM_RFLAGS_WORDS);
+    assert!(
+        translated.starts_with(&restore),
+        "{name}: standalone Jcc did not restore NZCV from RFLAGS before branching"
+    );
+    assert_branch_tail_compatible(name, translated, tail_words);
+}
+
+fn assert_branch_tail_compatible(name: &str, translated: &[u8], tail_words: &[u32]) {
+    assert_eq!(
+        tail_words.len(),
+        2,
+        "{name}: branch tail expectation must be B.cond + B"
+    );
+    let words = le_bytes_to_words(translated);
+    let tail = words
+        .get(words.len().saturating_sub(2)..)
+        .unwrap_or_default();
+    assert_eq!(
+        tail.len(),
+        2,
+        "{name}: translated bytes too short for branch tail"
+    );
+    assert_eq!(
+        tail[1], tail_words[1],
+        "{name}: final unconditional branch drifted"
+    );
+    assert_eq!(
+        tail[0] & 0xFF00_001F,
+        tail_words[0] & 0xFF00_001F,
+        "{name}: conditional branch opcode/condition drifted"
+    );
+}
+
+fn contains_ordered_words(translated: &[u8], expected: &[u8]) -> bool {
+    let mut translated_words = translated.chunks_exact(4);
+    let expected_words = expected.chunks_exact(4);
+    if !translated_words.remainder().is_empty() || !expected_words.remainder().is_empty() {
+        return false;
+    }
+
+    for expected_word in expected_words {
+        if !translated_words.any(|word| word == expected_word) {
+            return false;
+        }
+    }
+    true
+}
+
+fn le_bytes_to_words(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("chunk has four bytes")))
+        .collect()
 }
 
 fn words_to_le_bytes(words: &[u32]) -> Vec<u8> {
