@@ -45,12 +45,12 @@ enum class IrDeserializeError {
 [[nodiscard]] std::vector<std::uint8_t> serialize_function(const Function& function);
 
 [[nodiscard]] std::variant<std::vector<Stmt>, IrDeserializeError>
-deserialize_stmts(std::span<const std::uint8_t> bytes);
+deserialize_binary_stmts(std::span<const std::uint8_t> bytes);
 
 [[nodiscard]] std::variant<Op, IrDeserializeError>
-deserialize_op(std::span<const std::uint8_t> bytes);
+deserialize_binary_op(std::span<const std::uint8_t> bytes);
 
 [[nodiscard]] std::variant<Function, IrDeserializeError>
-deserialize_function(std::span<const std::uint8_t> bytes);
+deserialize_binary_function(std::span<const std::uint8_t> bytes);
 
 }  // namespace prisma::ir

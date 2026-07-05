@@ -1088,7 +1088,7 @@ std::vector<std::uint8_t> serialize_function(const Function& function) {
 }
 
 std::variant<std::vector<Stmt>, IrDeserializeError>
-deserialize_stmts(std::span<const std::uint8_t> bytes) {
+deserialize_binary_stmts(std::span<const std::uint8_t> bytes) {
     Reader reader(bytes);
     if (auto error = read_header(reader, IrBinaryKind::StmtList)) return *error;
     auto stmts = read_stmt_list_payload(reader);
@@ -1100,7 +1100,7 @@ deserialize_stmts(std::span<const std::uint8_t> bytes) {
 }
 
 std::variant<Op, IrDeserializeError>
-deserialize_op(std::span<const std::uint8_t> bytes) {
+deserialize_binary_op(std::span<const std::uint8_t> bytes) {
     Reader reader(bytes);
     auto op = read_op(reader);
     if (std::holds_alternative<IrDeserializeError>(op)) {
@@ -1111,7 +1111,7 @@ deserialize_op(std::span<const std::uint8_t> bytes) {
 }
 
 std::variant<Function, IrDeserializeError>
-deserialize_function(std::span<const std::uint8_t> bytes) {
+deserialize_binary_function(std::span<const std::uint8_t> bytes) {
     Reader reader(bytes);
     if (auto error = read_header(reader, IrBinaryKind::Function)) return *error;
 

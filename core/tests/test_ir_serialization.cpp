@@ -206,7 +206,7 @@ TEST_CASE("IR serialization: function bytes preserve entry and block order") {
 TEST_CASE("IR deserialization: every Op variant round-trips") {
     for (const auto& stmt : all_op_variant_stmts()) {
         const auto bytes = serialize_op(stmt.op);
-        const auto result = deserialize_op(bytes);
+        const auto result = deserialize_binary_op(bytes);
 
         REQUIRE(std::holds_alternative<Op>(result));
         const auto& decoded = std::get<Op>(result);
@@ -218,7 +218,7 @@ TEST_CASE("IR deserialization: every Op variant round-trips") {
 TEST_CASE("IR deserialization: statement lists round-trip") {
     const auto expected = all_op_variant_stmts();
     const auto bytes = serialize_stmts(expected);
-    const auto result = deserialize_stmts(bytes);
+    const auto result = deserialize_binary_stmts(bytes);
 
     REQUIRE((std::holds_alternative<std::vector<Stmt>>(result)));
     const auto& decoded = std::get<std::vector<Stmt>>(result);
@@ -249,7 +249,7 @@ TEST_CASE("IR deserialization: functions round-trip") {
     });
 
     const auto bytes = serialize_function(expected);
-    const auto result = deserialize_function(bytes);
+    const auto result = deserialize_binary_function(bytes);
 
     REQUIRE(std::holds_alternative<Function>(result));
     const auto& decoded = std::get<Function>(result);
@@ -262,7 +262,7 @@ TEST_CASE("IR deserialization: rejects malformed input") {
         auto bytes = serialize_stmts(all_op_variant_stmts());
         bytes[0] ^= 0xFFu;
 
-        require_error(deserialize_stmts(bytes), IrDeserializeError::BadMagic);
+        require_error(deserialize_binary_stmts(bytes), IrDeserializeError::BadMagic);
     }
 
     SECTION("truncated payload") {
@@ -270,53 +270,53 @@ TEST_CASE("IR deserialization: rejects malformed input") {
         REQUIRE_FALSE(bytes.empty());
         bytes.pop_back();
 
-        require_error(deserialize_function(bytes), IrDeserializeError::Truncated);
+        require_error(deserialize_binary_function(bytes), IrDeserializeError::Truncated);
     }
 
     SECTION("invalid op tag") {
         const std::vector<std::uint8_t> bytes{0xFFu};
 
-        require_error(deserialize_op(bytes), IrDeserializeError::InvalidTag);
+        require_error(deserialize_binary_op(bytes), IrDeserializeError::InvalidTag);
     }
 
     SECTION("invalid enum value") {
         auto bytes = serialize_op(Op{Constant{1u, OpSize::I64}});
         bytes[9] = 0x7Fu;
 
-        require_error(deserialize_op(bytes), IrDeserializeError::InvalidEnum);
+        require_error(deserialize_binary_op(bytes), IrDeserializeError::InvalidEnum);
     }
 
     SECTION("wrong binary kind for statement list") {
         const auto bytes = serialize_function(simple_program());
 
-        require_error(deserialize_stmts(bytes), IrDeserializeError::WrongKind);
+        require_error(deserialize_binary_stmts(bytes), IrDeserializeError::WrongKind);
     }
 
     SECTION("wrong binary kind for function") {
         const auto bytes = serialize_stmts(all_op_variant_stmts());
 
-        require_error(deserialize_function(bytes), IrDeserializeError::WrongKind);
+        require_error(deserialize_binary_function(bytes), IrDeserializeError::WrongKind);
     }
 
     SECTION("non-zero flags") {
         auto bytes = serialize_stmts({});
         bytes[7] = 1u;
 
-        require_error(deserialize_stmts(bytes), IrDeserializeError::UnsupportedVersion);
+        require_error(deserialize_binary_stmts(bytes), IrDeserializeError::UnsupportedVersion);
     }
 
     SECTION("unsupported version") {
         auto bytes = serialize_stmts({});
         bytes[4] = static_cast<std::uint8_t>(kIrBinaryVersion + 1u);
 
-        require_error(deserialize_stmts(bytes), IrDeserializeError::UnsupportedVersion);
+        require_error(deserialize_binary_stmts(bytes), IrDeserializeError::UnsupportedVersion);
     }
 
     SECTION("excessive stmt count") {
         auto bytes = serialize_stmts({});
         write_u32le(bytes, 8u, 1'000'001u);
 
-        require_error(deserialize_stmts(bytes), IrDeserializeError::TooLarge);
+        require_error(deserialize_binary_stmts(bytes), IrDeserializeError::TooLarge);
     }
 
     SECTION("invalid result presence byte") {
@@ -324,13 +324,13 @@ TEST_CASE("IR deserialization: rejects malformed input") {
         auto bytes = serialize_stmts(stmts);
         bytes[12] = 2u;
 
-        require_error(deserialize_stmts(bytes), IrDeserializeError::InvalidBool);
+        require_error(deserialize_binary_stmts(bytes), IrDeserializeError::InvalidBool);
     }
 
     SECTION("trailing bytes") {
         auto bytes = serialize_op(Op{Return{}});
         bytes.push_back(0u);
 
-        require_error(deserialize_op(bytes), IrDeserializeError::TrailingBytes);
+        require_error(deserialize_binary_op(bytes), IrDeserializeError::TrailingBytes);
     }
 }
