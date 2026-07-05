@@ -61,7 +61,11 @@ pub fn redundant_load_eliminate(func: Function) -> Function {
                             last_load.insert(key, result);
                         }
                     }
-                    Op::StoreMem(_) | Op::StoreMemTSO(_) | Op::Fence(_) => {
+                    Op::StoreMem(_)
+                    | Op::StoreMemTSO(_)
+                    | Op::AtomicCmpxchg(_)
+                    | Op::AtomicCmpxchgPair(_)
+                    | Op::Fence(_) => {
                         // Any store could alias; a fence orders memory.
                         last_load.clear();
                     }
