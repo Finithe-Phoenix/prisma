@@ -41,57 +41,55 @@ namespace prisma::passes {
 namespace {
 
 struct StoreKey {
-    ir::Ref    addr;
-    ir::OpSize size;
-    bool operator==(const StoreKey&) const = default;
+  ir::Ref addr;
+  ir::OpSize size;
+  bool operator==(const StoreKey&) const = default;
 };
 
 struct StoreKeyHash {
-    std::size_t operator()(const StoreKey& k) const noexcept {
-        return std::hash<ir::Ref>{}(k.addr) * 31u
-             + static_cast<std::size_t>(k.size);
-    }
+  std::size_t operator()(const StoreKey& k) const noexcept {
+    return std::hash<ir::Ref>{}(k.addr) * 31u + static_cast<std::size_t>(k.size);
+  }
 };
 
 }  // namespace
 
-std::vector<ir::Stmt>
-dead_store_eliminate(const std::vector<ir::Stmt>& stmts) {
-    std::unordered_map<StoreKey, std::size_t, StoreKeyHash> pending;
-    std::unordered_set<std::size_t> dead_indices;
+std::vector<ir::Stmt> dead_store_eliminate(const std::vector<ir::Stmt>& stmts) {
+  std::unordered_map<StoreKey, std::size_t, StoreKeyHash> pending;
+  std::unordered_set<std::size_t> dead_indices;
 
-    for (std::size_t i = 0; i < stmts.size(); ++i) {
-        const auto& s = stmts[i];
-        if (std::holds_alternative<ir::StoreMem>(s.op)) {
-            const auto& st = std::get<ir::StoreMem>(s.op);
-            const StoreKey k{st.addr, st.size};
-            auto it = pending.find(k);
-            if (it != pending.end()) {
-                dead_indices.insert(it->second);
-                it->second = i;
-            } else {
-                pending[k] = i;
-            }
-        }
-        else if (std::holds_alternative<ir::LoadMem>(s.op)
-              || std::holds_alternative<ir::LoadMemTSO>(s.op)
-              || std::holds_alternative<ir::StoreMemTSO>(s.op)
-              || std::holds_alternative<ir::AtomicCmpxchg>(s.op)
-              || std::holds_alternative<ir::AtomicCmpxchgPair>(s.op)
-              || std::holds_alternative<ir::Fence>(s.op)) {
-            // Could observe / synchronise with a pending store.
-            pending.clear();
-        }
-        // Pure ops don't interact with memory — table survives.
+  for (std::size_t i = 0; i < stmts.size(); ++i) {
+    const auto& s = stmts[i];
+    if (std::holds_alternative<ir::StoreMem>(s.op)) {
+      const auto& st = std::get<ir::StoreMem>(s.op);
+      const StoreKey k{st.addr, st.size};
+      auto it = pending.find(k);
+      if (it != pending.end()) {
+        dead_indices.insert(it->second);
+        it->second = i;
+      } else {
+        pending[k] = i;
+      }
+    } else if (std::holds_alternative<ir::LoadMem>(s.op) ||
+               std::holds_alternative<ir::LoadMemTSO>(s.op) ||
+               std::holds_alternative<ir::StoreMemTSO>(s.op) ||
+               std::holds_alternative<ir::AtomicCmpxchg>(s.op) ||
+               std::holds_alternative<ir::AtomicCmpxchgPair>(s.op) ||
+               std::holds_alternative<ir::Fence>(s.op)) {
+      // Could observe / synchronise with a pending store.
+      pending.clear();
     }
+    // Pure ops don't interact with memory — table survives.
+  }
 
-    // Filter.
-    std::vector<ir::Stmt> out;
-    out.reserve(stmts.size() - dead_indices.size());
-    for (std::size_t i = 0; i < stmts.size(); ++i) {
-        if (!dead_indices.contains(i)) out.push_back(stmts[i]);
-    }
-    return out;
+  // Filter.
+  std::vector<ir::Stmt> out;
+  out.reserve(stmts.size() - dead_indices.size());
+  for (std::size_t i = 0; i < stmts.size(); ++i) {
+    if (!dead_indices.contains(i))
+      out.push_back(stmts[i]);
+  }
+  return out;
 }
 
 }  // namespace prisma::passes

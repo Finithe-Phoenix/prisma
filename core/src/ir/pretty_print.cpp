@@ -13,697 +13,1099 @@ namespace prisma::ir {
 namespace {
 
 constexpr std::string_view gpr_name(Gpr r) noexcept {
-    switch (r) {
-        case Gpr::Rax: return "rax"; case Gpr::Rcx: return "rcx";
-        case Gpr::Rdx: return "rdx"; case Gpr::Rbx: return "rbx";
-        case Gpr::Rsp: return "rsp"; case Gpr::Rbp: return "rbp";
-        case Gpr::Rsi: return "rsi"; case Gpr::Rdi: return "rdi";
-        case Gpr::R8:  return "r8";  case Gpr::R9:  return "r9";
-        case Gpr::R10: return "r10"; case Gpr::R11: return "r11";
-        case Gpr::R12: return "r12"; case Gpr::R13: return "r13";
-        case Gpr::R14: return "r14"; case Gpr::R15: return "r15";
-    }
-    return "?";
+  switch (r) {
+    case Gpr::Rax:
+      return "rax";
+    case Gpr::Rcx:
+      return "rcx";
+    case Gpr::Rdx:
+      return "rdx";
+    case Gpr::Rbx:
+      return "rbx";
+    case Gpr::Rsp:
+      return "rsp";
+    case Gpr::Rbp:
+      return "rbp";
+    case Gpr::Rsi:
+      return "rsi";
+    case Gpr::Rdi:
+      return "rdi";
+    case Gpr::R8:
+      return "r8";
+    case Gpr::R9:
+      return "r9";
+    case Gpr::R10:
+      return "r10";
+    case Gpr::R11:
+      return "r11";
+    case Gpr::R12:
+      return "r12";
+    case Gpr::R13:
+      return "r13";
+    case Gpr::R14:
+      return "r14";
+    case Gpr::R15:
+      return "r15";
+  }
+  return "?";
 }
 
 constexpr std::string_view size_suffix(OpSize s) noexcept {
-    switch (s) {
-        case OpSize::I8:  return "i8";
-        case OpSize::I16: return "i16";
-        case OpSize::I32: return "i32";
-        case OpSize::I64: return "i64";
-    }
-    return "?";
+  switch (s) {
+    case OpSize::I8:
+      return "i8";
+    case OpSize::I16:
+      return "i16";
+    case OpSize::I32:
+      return "i32";
+    case OpSize::I64:
+      return "i64";
+  }
+  return "?";
 }
 
 constexpr std::string_view binop_name(BinOpKind k) noexcept {
-    switch (k) {
-        case BinOpKind::Add: return "add"; case BinOpKind::Sub: return "sub";
-        case BinOpKind::Mul: return "mul";
-        case BinOpKind::And: return "and"; case BinOpKind::Or:  return "or";
-        case BinOpKind::Xor: return "xor"; case BinOpKind::Shl: return "shl";
-        case BinOpKind::Shr: return "shr"; case BinOpKind::Sar: return "sar";
-        case BinOpKind::Rol: return "rol"; case BinOpKind::Ror: return "ror";
-        case BinOpKind::Rcl: return "rcl"; case BinOpKind::Rcr: return "rcr";
-        case BinOpKind::UMulHi: return "umulhi"; case BinOpKind::SMulHi: return "smulhi";
-        case BinOpKind::UDiv:   return "udiv";   case BinOpKind::SDiv:   return "sdiv";
-        case BinOpKind::UMod:   return "umod";   case BinOpKind::SMod:   return "smod";
-        case BinOpKind::Pdep:   return "pdep";   case BinOpKind::Pext:   return "pext";
-    }
-    return "?";
+  switch (k) {
+    case BinOpKind::Add:
+      return "add";
+    case BinOpKind::Sub:
+      return "sub";
+    case BinOpKind::Mul:
+      return "mul";
+    case BinOpKind::And:
+      return "and";
+    case BinOpKind::Or:
+      return "or";
+    case BinOpKind::Xor:
+      return "xor";
+    case BinOpKind::Shl:
+      return "shl";
+    case BinOpKind::Shr:
+      return "shr";
+    case BinOpKind::Sar:
+      return "sar";
+    case BinOpKind::Rol:
+      return "rol";
+    case BinOpKind::Ror:
+      return "ror";
+    case BinOpKind::Rcl:
+      return "rcl";
+    case BinOpKind::Rcr:
+      return "rcr";
+    case BinOpKind::UMulHi:
+      return "umulhi";
+    case BinOpKind::SMulHi:
+      return "smulhi";
+    case BinOpKind::UDiv:
+      return "udiv";
+    case BinOpKind::SDiv:
+      return "sdiv";
+    case BinOpKind::UMod:
+      return "umod";
+    case BinOpKind::SMod:
+      return "smod";
+    case BinOpKind::Pdep:
+      return "pdep";
+    case BinOpKind::Pext:
+      return "pext";
+  }
+  return "?";
 }
 
 constexpr std::string_view cc_name(CondCode cc) noexcept {
-    switch (cc) {
-        case CondCode::Eq:  return "eq";  case CondCode::Ne:  return "ne";
-        case CondCode::Ult: return "ult"; case CondCode::Ule: return "ule";
-        case CondCode::Ugt: return "ugt"; case CondCode::Uge: return "uge";
-        case CondCode::Slt: return "slt"; case CondCode::Sle: return "sle";
-        case CondCode::Sgt: return "sgt"; case CondCode::Sge: return "sge";
-        case CondCode::Cc:  return "cc";  case CondCode::Nc:  return "nc";
-        case CondCode::Ov:  return "ov";  case CondCode::NoOv: return "noov";
-        case CondCode::Mi:  return "mi";  case CondCode::Pl:  return "pl";
-    }
-    return "?";
+  switch (cc) {
+    case CondCode::Eq:
+      return "eq";
+    case CondCode::Ne:
+      return "ne";
+    case CondCode::Ult:
+      return "ult";
+    case CondCode::Ule:
+      return "ule";
+    case CondCode::Ugt:
+      return "ugt";
+    case CondCode::Uge:
+      return "uge";
+    case CondCode::Slt:
+      return "slt";
+    case CondCode::Sle:
+      return "sle";
+    case CondCode::Sgt:
+      return "sgt";
+    case CondCode::Sge:
+      return "sge";
+    case CondCode::Cc:
+      return "cc";
+    case CondCode::Nc:
+      return "nc";
+    case CondCode::Ov:
+      return "ov";
+    case CondCode::NoOv:
+      return "noov";
+    case CondCode::Mi:
+      return "mi";
+    case CondCode::Pl:
+      return "pl";
+  }
+  return "?";
 }
 
 constexpr std::string_view rflags_carry_name(RflagsCarryMode mode) noexcept {
-    switch (mode) {
-        case RflagsCarryMode::ArmCarry: return "armcarry";
-        case RflagsCarryMode::InvertArmCarry: return "invertarmcarry";
-        case RflagsCarryMode::Clear: return "clear";
-        case RflagsCarryMode::Preserve: return "preserve";
-    }
-    return "?";
+  switch (mode) {
+    case RflagsCarryMode::ArmCarry:
+      return "armcarry";
+    case RflagsCarryMode::InvertArmCarry:
+      return "invertarmcarry";
+    case RflagsCarryMode::Clear:
+      return "clear";
+    case RflagsCarryMode::Preserve:
+      return "preserve";
+  }
+  return "?";
 }
 
 void print_ref(std::ostream& os, Ref r) {
-    if (r == kInvalidRef) { os << "%?"; } else { os << "%" << r; }
+  if (r == kInvalidRef) {
+    os << "%?";
+  } else {
+    os << "%" << r;
+  }
 }
 
 void print_optional_ref(std::ostream& os, std::optional<Ref> r) {
-    if (r.has_value()) {
-        print_ref(os, *r);
-    } else {
-        os << "-";
-    }
+  if (r.has_value()) {
+    print_ref(os, *r);
+  } else {
+    os << "-";
+  }
 }
 
 }  // namespace
 
 std::string pretty_print(const Op& op) {
-    std::ostringstream os;
-    std::visit([&](auto const& x) {
+  std::ostringstream os;
+  std::visit(
+      [&](auto const& x) {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, Constant>) {
-            os << "const." << size_suffix(x.size) << " 0x" << std::hex << x.value;
+          os << "const." << size_suffix(x.size) << " 0x" << std::hex << x.value;
         } else if constexpr (std::is_same_v<T, LoadReg>) {
-            os << "loadreg." << size_suffix(x.size) << " " << gpr_name(x.reg);
+          os << "loadreg." << size_suffix(x.size) << " " << gpr_name(x.reg);
         } else if constexpr (std::is_same_v<T, StoreReg>) {
-            os << "storereg." << size_suffix(x.size) << " " << gpr_name(x.reg) << ", ";
-            print_ref(os, x.value);
+          os << "storereg." << size_suffix(x.size) << " " << gpr_name(x.reg) << ", ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, LoadSegBase>) {
-            const char* s = "?";
-            switch (x.seg) {
-                case SegmentReg::Es: s = "es"; break;
-                case SegmentReg::Cs: s = "cs"; break;
-                case SegmentReg::Ss: s = "ss"; break;
-                case SegmentReg::Ds: s = "ds"; break;
-                case SegmentReg::Fs: s = "fs"; break;
-                case SegmentReg::Gs: s = "gs"; break;
-            }
-            os << "segbase " << s;
+          const char* s = "?";
+          switch (x.seg) {
+            case SegmentReg::Es:
+              s = "es";
+              break;
+            case SegmentReg::Cs:
+              s = "cs";
+              break;
+            case SegmentReg::Ss:
+              s = "ss";
+              break;
+            case SegmentReg::Ds:
+              s = "ds";
+              break;
+            case SegmentReg::Fs:
+              s = "fs";
+              break;
+            case SegmentReg::Gs:
+              s = "gs";
+              break;
+          }
+          os << "segbase " << s;
         } else if constexpr (std::is_same_v<T, LoadCarry>) {
-            os << "loadcarry";
+          os << "loadcarry";
         } else if constexpr (std::is_same_v<T, StoreCarry>) {
-            os << "storecarry ";
-            print_ref(os, x.value);
+          os << "storecarry ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, LoadRflags>) {
-            os << "loadrflags";
+          os << "loadrflags";
         } else if constexpr (std::is_same_v<T, StoreRflags>) {
-            os << "storerflags ";
-            print_ref(os, x.value);
+          os << "storerflags ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, StoreRflagsFromNzcv>) {
-            os << "storerflags.nzcv " << rflags_carry_name(x.carry)
-               << ", pf=";
-            print_optional_ref(os, x.pf);
-            os << ", af=";
-            print_optional_ref(os, x.af);
+          os << "storerflags.nzcv " << rflags_carry_name(x.carry) << ", pf=";
+          print_optional_ref(os, x.pf);
+          os << ", af=";
+          print_optional_ref(os, x.af);
         } else if constexpr (std::is_same_v<T, StoreRflagsFromBits>) {
-            os << "storerflags.bits pf=";
-            print_optional_ref(os, x.pf);
-            os << ", af=";
-            print_optional_ref(os, x.af);
-            os << ", zf=";
-            print_ref(os, x.zf);
-            os << ", sf=";
-            print_ref(os, x.sf);
-            os << ", of=";
-            print_ref(os, x.of);
+          os << "storerflags.bits pf=";
+          print_optional_ref(os, x.pf);
+          os << ", af=";
+          print_optional_ref(os, x.af);
+          os << ", zf=";
+          print_ref(os, x.zf);
+          os << ", sf=";
+          print_ref(os, x.sf);
+          os << ", of=";
+          print_ref(os, x.of);
         } else if constexpr (std::is_same_v<T, BinOp>) {
-            os << binop_name(x.op) << "." << size_suffix(x.size) << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << binop_name(x.op) << "." << size_suffix(x.size) << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, WideDiv>) {
-            os << (x.is_signed ? "s" : "u") << "widediv."
-               << (x.result == WideDivResult::Quotient ? "quot" : "rem")
-               << ".i64 ";
-            print_ref(os, x.high); os << ", ";
-            print_ref(os, x.low); os << ", ";
-            print_ref(os, x.divisor);
+          os << (x.is_signed ? "s" : "u") << "widediv."
+             << (x.result == WideDivResult::Quotient ? "quot" : "rem") << ".i64 ";
+          print_ref(os, x.high);
+          os << ", ";
+          print_ref(os, x.low);
+          os << ", ";
+          print_ref(os, x.divisor);
         } else if constexpr (std::is_same_v<T, Compare>) {
-            os << "cmp." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "cmp." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, Select>) {
-            os << "select." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
-            print_ref(os, x.true_value); os << ", ";
-            print_ref(os, x.false_value);
+          os << "select." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
+          print_ref(os, x.true_value);
+          os << ", ";
+          print_ref(os, x.false_value);
         } else if constexpr (std::is_same_v<T, LoadMem>) {
-            os << "load." << size_suffix(x.size) << " ["; print_ref(os, x.addr); os << "]";
+          os << "load." << size_suffix(x.size) << " [";
+          print_ref(os, x.addr);
+          os << "]";
         } else if constexpr (std::is_same_v<T, StoreMem>) {
-            os << "store." << size_suffix(x.size) << " ["; print_ref(os, x.addr);
-            os << "], "; print_ref(os, x.value);
+          os << "store." << size_suffix(x.size) << " [";
+          print_ref(os, x.addr);
+          os << "], ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, LoadMemTSO>) {
-            os << "load.tso." << size_suffix(x.size) << " ["; print_ref(os, x.addr); os << "]";
+          os << "load.tso." << size_suffix(x.size) << " [";
+          print_ref(os, x.addr);
+          os << "]";
         } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
-            os << "store.tso." << size_suffix(x.size) << " ["; print_ref(os, x.addr);
-            os << "], "; print_ref(os, x.value);
+          os << "store.tso." << size_suffix(x.size) << " [";
+          print_ref(os, x.addr);
+          os << "], ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, AtomicCmpxchg>) {
-            os << "atomic.cmpxchg." << size_suffix(x.size) << " [";
-            print_ref(os, x.addr); os << "], expected=";
-            print_ref(os, x.expected); os << ", new=";
-            print_ref(os, x.new_value);
+          os << "atomic.cmpxchg." << size_suffix(x.size) << " [";
+          print_ref(os, x.addr);
+          os << "], expected=";
+          print_ref(os, x.expected);
+          os << ", new=";
+          print_ref(os, x.new_value);
         } else if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) {
-            os << "atomic.cmpxchg.pair.i64 [";
-            print_ref(os, x.addr); os << "], expected=(";
-            print_ref(os, x.expected_low); os << ", ";
-            print_ref(os, x.expected_high); os << "), new=(";
-            print_ref(os, x.new_low); os << ", ";
-            print_ref(os, x.new_high); os << "), old_high=";
-            print_ref(os, x.old_high);
+          os << "atomic.cmpxchg.pair.i64 [";
+          print_ref(os, x.addr);
+          os << "], expected=(";
+          print_ref(os, x.expected_low);
+          os << ", ";
+          print_ref(os, x.expected_high);
+          os << "), new=(";
+          print_ref(os, x.new_low);
+          os << ", ";
+          print_ref(os, x.new_high);
+          os << "), old_high=";
+          print_ref(os, x.old_high);
         } else if constexpr (std::is_same_v<T, Jump>) {
-            os << "jmp bb" << x.target_block;
+          os << "jmp bb" << x.target_block;
         } else if constexpr (std::is_same_v<T, JumpReg>) {
-            os << "jmpreg ";
-            print_ref(os, x.target);
+          os << "jmpreg ";
+          print_ref(os, x.target);
         } else if constexpr (std::is_same_v<T, CondJump>) {
-            os << "condjmp "; print_ref(os, x.cond);
-            os << ", bb" << x.if_true << ", bb" << x.if_false;
+          os << "condjmp ";
+          print_ref(os, x.cond);
+          os << ", bb" << x.if_true << ", bb" << x.if_false;
         } else if constexpr (std::is_same_v<T, Return>) {
-            os << "ret";
+          os << "ret";
         } else if constexpr (std::is_same_v<T, CmpFlags>) {
-            os << "cmpflags." << size_suffix(x.size) << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "cmpflags." << size_suffix(x.size) << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, AluFlags>) {
-            os << "aluflags." << binop_name(x.op) << "."
-               << size_suffix(x.size) << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "aluflags." << binop_name(x.op) << "." << size_suffix(x.size) << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, JumpRel>) {
-            os << "jmprel 0x" << std::hex << x.target_guest_pc;
+          os << "jmprel 0x" << std::hex << x.target_guest_pc;
         } else if constexpr (std::is_same_v<T, CondJumpRel>) {
-            os << "condjmprel." << cc_name(x.cc)
-               << " taken=0x" << std::hex << x.target_guest_pc
-               << ", fallthrough=0x" << std::hex << x.fallthrough_guest_pc;
+          os << "condjmprel." << cc_name(x.cc) << " taken=0x" << std::hex << x.target_guest_pc
+             << ", fallthrough=0x" << std::hex << x.fallthrough_guest_pc;
         } else if constexpr (std::is_same_v<T, CallRel>) {
-            os << "callrel target=0x" << std::hex << x.target_guest_pc
-               << ", ret=0x" << std::hex << x.return_guest_pc;
+          os << "callrel target=0x" << std::hex << x.target_guest_pc << ", ret=0x" << std::hex
+             << x.return_guest_pc;
         } else if constexpr (std::is_same_v<T, CallReg>) {
-            os << "callreg "; print_ref(os, x.target);
-            os << ", ret=0x" << std::hex << x.return_guest_pc;
+          os << "callreg ";
+          print_ref(os, x.target);
+          os << ", ret=0x" << std::hex << x.return_guest_pc;
         } else if constexpr (std::is_same_v<T, RetAdjusted>) {
-            os << "ret pop=" << std::dec << x.pop_bytes;
+          os << "ret pop=" << std::dec << x.pop_bytes;
         } else if constexpr (std::is_same_v<T, Cpuid>) {
-            os << "cpuid";
+          os << "cpuid";
         } else if constexpr (std::is_same_v<T, Xgetbv>) {
-            os << "xgetbv";
+          os << "xgetbv";
         } else if constexpr (std::is_same_v<T, Rdtsc>) {
-            os << "rdtsc";
+          os << "rdtsc";
         } else if constexpr (std::is_same_v<T, Syscall>) {
-            os << "syscall";
+          os << "syscall";
         } else if constexpr (std::is_same_v<T, Trap>) {
-            const char* k = "?";
-            switch (x.kind) {
-                case TrapKind::Sigtrap: k = "sigtrap"; break;
-                case TrapKind::Sigill:  k = "sigill";  break;
-                case TrapKind::Sigfpe:  k = "sigfpe";  break;
-            }
-            os << "trap " << k;
+          const char* k = "?";
+          switch (x.kind) {
+            case TrapKind::Sigtrap:
+              k = "sigtrap";
+              break;
+            case TrapKind::Sigill:
+              k = "sigill";
+              break;
+            case TrapKind::Sigfpe:
+              k = "sigfpe";
+              break;
+          }
+          os << "trap " << k;
         } else if constexpr (std::is_same_v<T, TrapIf>) {
-            const char* k = "?";
-            switch (x.kind) {
-                case TrapKind::Sigtrap: k = "sigtrap"; break;
-                case TrapKind::Sigill:  k = "sigill";  break;
-                case TrapKind::Sigfpe:  k = "sigfpe";  break;
-            }
-            os << "trapif ";
-            print_ref(os, x.condition);
-            os << ", " << k;
+          const char* k = "?";
+          switch (x.kind) {
+            case TrapKind::Sigtrap:
+              k = "sigtrap";
+              break;
+            case TrapKind::Sigill:
+              k = "sigill";
+              break;
+            case TrapKind::Sigfpe:
+              k = "sigfpe";
+              break;
+          }
+          os << "trapif ";
+          print_ref(os, x.condition);
+          os << ", " << k;
         } else if constexpr (std::is_same_v<T, Extend>) {
-            os << (x.is_signed ? "sext." : "zext.")
-               << size_suffix(x.from_size) << "->" << size_suffix(x.to_size) << " ";
-            print_ref(os, x.value);
+          os << (x.is_signed ? "sext." : "zext.") << size_suffix(x.from_size) << "->"
+             << size_suffix(x.to_size) << " ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Truncate>) {
-            os << "trunc->" << size_suffix(x.to_size) << " ";
-            print_ref(os, x.value);
+          os << "trunc->" << size_suffix(x.to_size) << " ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Fence>) {
-            const char* k = "?";
-            switch (x.kind) {
-                case FenceKind::Mfence: k = "mfence"; break;
-                case FenceKind::Lfence: k = "lfence"; break;
-                case FenceKind::Sfence: k = "sfence"; break;
-            }
-            os << "fence." << k;
+          const char* k = "?";
+          switch (x.kind) {
+            case FenceKind::Mfence:
+              k = "mfence";
+              break;
+            case FenceKind::Lfence:
+              k = "lfence";
+              break;
+            case FenceKind::Sfence:
+              k = "sfence";
+              break;
+          }
+          os << "fence." << k;
         } else if constexpr (std::is_same_v<T, GuestPc>) {
-            os << "guest_pc 0x" << std::hex << x.pc;
+          os << "guest_pc 0x" << std::hex << x.pc;
         } else if constexpr (std::is_same_v<T, InlineAsm>) {
-            os << "inline_asm " << std::dec << x.bytes.size() << "B";
+          os << "inline_asm " << std::dec << x.bytes.size() << "B";
         } else if constexpr (std::is_same_v<T, FpConstant>) {
-            const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
-            os << "fpconst." << sz << " 0x" << std::hex << x.bits;
+          const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
+          os << "fpconst." << sz << " 0x" << std::hex << x.bits;
         } else if constexpr (std::is_same_v<T, FpBinOp>) {
-            const char* op_n = "?";
-            switch (x.op) {
-                case FpBinOpKind::Add: op_n = "fadd"; break;
-                case FpBinOpKind::Sub: op_n = "fsub"; break;
-                case FpBinOpKind::Mul: op_n = "fmul"; break;
-                case FpBinOpKind::Div: op_n = "fdiv"; break;
-            }
-            const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
-            os << op_n << "." << sz << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* op_n = "?";
+          switch (x.op) {
+            case FpBinOpKind::Add:
+              op_n = "fadd";
+              break;
+            case FpBinOpKind::Sub:
+              op_n = "fsub";
+              break;
+            case FpBinOpKind::Mul:
+              op_n = "fmul";
+              break;
+            case FpBinOpKind::Div:
+              op_n = "fdiv";
+              break;
+          }
+          const char* sz = x.size == FpSize::F32 ? "f32" : "f64";
+          os << op_n << "." << sz << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, WriteFlags>) {
-            os << "writeflags." << binop_name(x.op) << "."
-               << size_suffix(x.size) << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "writeflags." << binop_name(x.op) << "." << size_suffix(x.size) << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, ReadFlag>) {
-            const char* w = "?";
-            switch (x.which) {
-                case FlagBit::Carry:    w = "cf"; break;
-                case FlagBit::Zero:     w = "zf"; break;
-                case FlagBit::Sign:     w = "sf"; break;
-                case FlagBit::Overflow: w = "of"; break;
-                case FlagBit::Parity:   w = "pf"; break;
-                case FlagBit::Aux:      w = "af"; break;
-            }
-            os << "readflag." << w << " "; print_ref(os, x.flags);
+          const char* w = "?";
+          switch (x.which) {
+            case FlagBit::Carry:
+              w = "cf";
+              break;
+            case FlagBit::Zero:
+              w = "zf";
+              break;
+            case FlagBit::Sign:
+              w = "sf";
+              break;
+            case FlagBit::Overflow:
+              w = "of";
+              break;
+            case FlagBit::Parity:
+              w = "pf";
+              break;
+            case FlagBit::Aux:
+              w = "af";
+              break;
+          }
+          os << "readflag." << w << " ";
+          print_ref(os, x.flags);
         } else if constexpr (std::is_same_v<T, CondJumpFlags>) {
-            os << "condjmpflags." << cc_name(x.cc) << " ";
-            print_ref(os, x.flags);
-            os << ", bb" << std::dec << x.if_true
-               << ", bb" << std::dec << x.if_false;
+          os << "condjmpflags." << cc_name(x.cc) << " ";
+          print_ref(os, x.flags);
+          os << ", bb" << std::dec << x.if_true << ", bb" << std::dec << x.if_false;
         } else if constexpr (std::is_same_v<T, RspAdjust>) {
-            os << "rsp_adjust " << std::dec << x.delta_bytes;
+          os << "rsp_adjust " << std::dec << x.delta_bytes;
         } else if constexpr (std::is_same_v<T, VecConstant>) {
-            os << "vconst.128 0x" << std::hex << x.hi << ":0x" << std::hex << x.lo;
+          os << "vconst.128 0x" << std::hex << x.hi << ":0x" << std::hex << x.lo;
         } else if constexpr (std::is_same_v<T, LoadVecReg>) {
-            os << "loadxmm xmm" << std::dec
-               << static_cast<unsigned>(x.xmm_index);
+          os << "loadxmm xmm" << std::dec << static_cast<unsigned>(x.xmm_index);
         } else if constexpr (std::is_same_v<T, StoreVecReg>) {
-            os << "storexmm xmm" << std::dec
-               << static_cast<unsigned>(x.xmm_index) << ", ";
-            print_ref(os, x.value);
+          os << "storexmm xmm" << std::dec << static_cast<unsigned>(x.xmm_index) << ", ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, PcmpStrIndex>) {
-            os << "pcmpstri ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
-            if (x.lhs_len) { os << ", lhs_len="; print_ref(os, *x.lhs_len); }
-            if (x.rhs_len) { os << ", rhs_len="; print_ref(os, *x.rhs_len); }
-            os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
+          os << "pcmpstri ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
+          if (x.lhs_len) {
+            os << ", lhs_len=";
+            print_ref(os, *x.lhs_len);
+          }
+          if (x.rhs_len) {
+            os << ", rhs_len=";
+            print_ref(os, *x.rhs_len);
+          }
+          os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
         } else if constexpr (std::is_same_v<T, PcmpStrMask>) {
-            os << "pcmpstrm ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
-            if (x.lhs_len) { os << ", lhs_len="; print_ref(os, *x.lhs_len); }
-            if (x.rhs_len) { os << ", rhs_len="; print_ref(os, *x.rhs_len); }
-            os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
+          os << "pcmpstrm ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
+          if (x.lhs_len) {
+            os << ", lhs_len=";
+            print_ref(os, *x.lhs_len);
+          }
+          if (x.rhs_len) {
+            os << ", rhs_len=";
+            print_ref(os, *x.rhs_len);
+          }
+          os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
         } else if constexpr (std::is_same_v<T, PcmpStrFlags>) {
-            os << "pcmpstrf ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
-            if (x.lhs_len) { os << ", lhs_len="; print_ref(os, *x.lhs_len); }
-            if (x.rhs_len) { os << ", rhs_len="; print_ref(os, *x.rhs_len); }
-            os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
+          os << "pcmpstrf ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
+          if (x.lhs_len) {
+            os << ", lhs_len=";
+            print_ref(os, *x.lhs_len);
+          }
+          if (x.rhs_len) {
+            os << ", rhs_len=";
+            print_ref(os, *x.rhs_len);
+          }
+          os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
         } else if constexpr (std::is_same_v<T, LoadVecRegHi>) {
-            os << "loadymmhi ymm" << std::dec
-               << static_cast<unsigned>(x.ymm_index);
+          os << "loadymmhi ymm" << std::dec << static_cast<unsigned>(x.ymm_index);
         } else if constexpr (std::is_same_v<T, StoreVecRegHi>) {
-            os << "storeymmhi ymm" << std::dec
-               << static_cast<unsigned>(x.ymm_index) << ", ";
-            print_ref(os, x.value);
+          os << "storeymmhi ymm" << std::dec << static_cast<unsigned>(x.ymm_index) << ", ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecFpFma>) {
-            const char* mn = x.neg_mul
-                ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
-                : (x.neg_addend ? "vfmsub"  : "vfmadd");
-            os << mn << "." << (x.size == VecFpSize::S4 ? "s4" : "d2") << " ";
-            print_ref(os, x.a); os << ", ";
-            print_ref(os, x.b); os << ", ";
-            print_ref(os, x.c);
+          const char* mn = x.neg_mul ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
+                                     : (x.neg_addend ? "vfmsub" : "vfmadd");
+          os << mn << "." << (x.size == VecFpSize::S4 ? "s4" : "d2") << " ";
+          print_ref(os, x.a);
+          os << ", ";
+          print_ref(os, x.b);
+          os << ", ";
+          print_ref(os, x.c);
         } else if constexpr (std::is_same_v<T, VecFpScalarFma>) {
-            const char* mn = x.neg_mul
-                ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
-                : (x.neg_addend ? "vfmsub"  : "vfmadd");
-            os << mn << "." << (x.size == FpSize::F32 ? "ss" : "sd") << " ";
-            print_ref(os, x.a); os << ", ";
-            print_ref(os, x.b); os << ", ";
-            print_ref(os, x.c); os << ", upper=";
-            print_ref(os, x.scalar_upper);
+          const char* mn = x.neg_mul ? (x.neg_addend ? "vfnmsub" : "vfnmadd")
+                                     : (x.neg_addend ? "vfmsub" : "vfmadd");
+          os << mn << "." << (x.size == FpSize::F32 ? "ss" : "sd") << " ";
+          print_ref(os, x.a);
+          os << ", ";
+          print_ref(os, x.b);
+          os << ", ";
+          print_ref(os, x.c);
+          os << ", upper=";
+          print_ref(os, x.scalar_upper);
         } else if constexpr (std::is_same_v<T, RepStos>) {
-            os << "rep_stos." << size_suffix(x.size)
-               << (x.reverse ? ".rev" : "")
-               << " (pc=" << x.pc_of_rep
-               << " -> " << x.pc_after_rep << ")";
+          os << "rep_stos." << size_suffix(x.size) << (x.reverse ? ".rev" : "")
+             << " (pc=" << x.pc_of_rep << " -> " << x.pc_after_rep << ")";
         } else if constexpr (std::is_same_v<T, RepMovs>) {
-            os << "rep_movs." << size_suffix(x.size)
-               << (x.reverse ? ".rev" : "")
-               << " (pc=" << x.pc_of_rep
-               << " -> " << x.pc_after_rep << ")";
+          os << "rep_movs." << size_suffix(x.size) << (x.reverse ? ".rev" : "")
+             << " (pc=" << x.pc_of_rep << " -> " << x.pc_after_rep << ")";
         } else if constexpr (std::is_same_v<T, X87Load>) {
-            os << "x87_load st(" << static_cast<unsigned>(x.st_index) << ")";
+          os << "x87_load st(" << static_cast<unsigned>(x.st_index) << ")";
         } else if constexpr (std::is_same_v<T, X87Store>) {
-            os << "x87_store st(" << static_cast<unsigned>(x.st_index) << "), ";
-            print_ref(os, x.value);
+          os << "x87_store st(" << static_cast<unsigned>(x.st_index) << "), ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, X87Push>) {
-            os << "x87_push ";
-            print_ref(os, x.value);
+          os << "x87_push ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, X87Pop>) {
-            (void)x;
-            os << "x87_pop";
+          (void)x;
+          os << "x87_pop";
         } else if constexpr (std::is_same_v<T, VecBinOp>) {
-            const char* op_n = "?";
-            switch (x.op) {
-                case VecBinOpKind::Add: op_n = "vadd"; break;
-                case VecBinOpKind::Sub: op_n = "vsub"; break;
-                case VecBinOpKind::And: op_n = "vand"; break;
-                case VecBinOpKind::Or:  op_n = "vorr"; break;
-                case VecBinOpKind::Xor: op_n = "veor"; break;
-                case VecBinOpKind::Mul: op_n = "vmul"; break;
-                case VecBinOpKind::SqAdd: op_n = "vsqadd"; break;
-                case VecBinOpKind::UqAdd: op_n = "vuqadd"; break;
-                case VecBinOpKind::SqSub: op_n = "vsqsub"; break;
-                case VecBinOpKind::UqSub: op_n = "vuqsub"; break;
-                case VecBinOpKind::UMin:  op_n = "vumin"; break;
-                case VecBinOpKind::UMax:  op_n = "vumax"; break;
-                case VecBinOpKind::SMin:  op_n = "vsmin"; break;
-                case VecBinOpKind::SMax:  op_n = "vsmax"; break;
-                case VecBinOpKind::SMulHi: op_n = "vsmulhi"; break;
-                case VecBinOpKind::UMulHi: op_n = "vumulhi"; break;
-                case VecBinOpKind::UMul32To64: op_n = "vumul32to64"; break;
-                case VecBinOpKind::SadBw:    op_n = "vsadbw"; break;
-                case VecBinOpKind::PairAddInt: op_n = "vaddp"; break;
-                case VecBinOpKind::PairSubInt: op_n = "vsubp"; break;
-            }
-            const char* lane_n = "?";
-            switch (x.lane) {
-                case VecLane::B16: lane_n = "b16"; break;
-                case VecLane::H8:  lane_n = "h8";  break;
-                case VecLane::S4:  lane_n = "s4";  break;
-                case VecLane::D2:  lane_n = "d2";  break;
-            }
-            os << op_n << "." << lane_n << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* op_n = "?";
+          switch (x.op) {
+            case VecBinOpKind::Add:
+              op_n = "vadd";
+              break;
+            case VecBinOpKind::Sub:
+              op_n = "vsub";
+              break;
+            case VecBinOpKind::And:
+              op_n = "vand";
+              break;
+            case VecBinOpKind::Or:
+              op_n = "vorr";
+              break;
+            case VecBinOpKind::Xor:
+              op_n = "veor";
+              break;
+            case VecBinOpKind::Mul:
+              op_n = "vmul";
+              break;
+            case VecBinOpKind::SqAdd:
+              op_n = "vsqadd";
+              break;
+            case VecBinOpKind::UqAdd:
+              op_n = "vuqadd";
+              break;
+            case VecBinOpKind::SqSub:
+              op_n = "vsqsub";
+              break;
+            case VecBinOpKind::UqSub:
+              op_n = "vuqsub";
+              break;
+            case VecBinOpKind::UMin:
+              op_n = "vumin";
+              break;
+            case VecBinOpKind::UMax:
+              op_n = "vumax";
+              break;
+            case VecBinOpKind::SMin:
+              op_n = "vsmin";
+              break;
+            case VecBinOpKind::SMax:
+              op_n = "vsmax";
+              break;
+            case VecBinOpKind::SMulHi:
+              op_n = "vsmulhi";
+              break;
+            case VecBinOpKind::UMulHi:
+              op_n = "vumulhi";
+              break;
+            case VecBinOpKind::UMul32To64:
+              op_n = "vumul32to64";
+              break;
+            case VecBinOpKind::SadBw:
+              op_n = "vsadbw";
+              break;
+            case VecBinOpKind::PairAddInt:
+              op_n = "vaddp";
+              break;
+            case VecBinOpKind::PairSubInt:
+              op_n = "vsubp";
+              break;
+          }
+          const char* lane_n = "?";
+          switch (x.lane) {
+            case VecLane::B16:
+              lane_n = "b16";
+              break;
+            case VecLane::H8:
+              lane_n = "h8";
+              break;
+            case VecLane::S4:
+              lane_n = "s4";
+              break;
+            case VecLane::D2:
+              lane_n = "d2";
+              break;
+          }
+          os << op_n << "." << lane_n << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecClMul>) {
-            os << "vpclmulqdq.";
-            os << (x.lhs_high ? "hi" : "lo") << ".";
-            os << (x.rhs_high ? "hi" : "lo") << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "vpclmulqdq.";
+          os << (x.lhs_high ? "hi" : "lo") << ".";
+          os << (x.rhs_high ? "hi" : "lo") << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecF16Cvt>) {
-            if (x.kind == VecF16CvtKind::PhToPs) {
-                os << "vcvtph2ps ";
-            } else {
-                os << "vcvtps2ph.rc" << static_cast<unsigned>(x.rounding) << " ";
-            }
-            print_ref(os, x.src);
+          if (x.kind == VecF16CvtKind::PhToPs) {
+            os << "vcvtph2ps ";
+          } else {
+            os << "vcvtps2ph.rc" << static_cast<unsigned>(x.rounding) << " ";
+          }
+          print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecFpBinOp>) {
-            const char* op_n = "?";
-            switch (x.op) {
-                case VecFpBinOpKind::Add: op_n = "vfadd"; break;
-                case VecFpBinOpKind::Sub: op_n = "vfsub"; break;
-                case VecFpBinOpKind::Mul: op_n = "vfmul"; break;
-                case VecFpBinOpKind::Div: op_n = "vfdiv"; break;
-                case VecFpBinOpKind::Min: op_n = "vfmin"; break;
-                case VecFpBinOpKind::Max: op_n = "vfmax"; break;
-                case VecFpBinOpKind::Sqrt: op_n = "vfsqrt"; break;
-                case VecFpBinOpKind::HAdd: op_n = "vfaddp"; break;
-            }
-            const char* size_n = (x.size == VecFpSize::S4) ? "s4" : "d2";
-            os << op_n << "." << size_n << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* op_n = "?";
+          switch (x.op) {
+            case VecFpBinOpKind::Add:
+              op_n = "vfadd";
+              break;
+            case VecFpBinOpKind::Sub:
+              op_n = "vfsub";
+              break;
+            case VecFpBinOpKind::Mul:
+              op_n = "vfmul";
+              break;
+            case VecFpBinOpKind::Div:
+              op_n = "vfdiv";
+              break;
+            case VecFpBinOpKind::Min:
+              op_n = "vfmin";
+              break;
+            case VecFpBinOpKind::Max:
+              op_n = "vfmax";
+              break;
+            case VecFpBinOpKind::Sqrt:
+              op_n = "vfsqrt";
+              break;
+            case VecFpBinOpKind::HAdd:
+              op_n = "vfaddp";
+              break;
+          }
+          const char* size_n = (x.size == VecFpSize::S4) ? "s4" : "d2";
+          os << op_n << "." << size_n << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, LoadVec>) {
-            os << "loadvec ["; print_ref(os, x.addr); os << "]";
+          os << "loadvec [";
+          print_ref(os, x.addr);
+          os << "]";
         } else if constexpr (std::is_same_v<T, StoreVec>) {
-            os << "storevec ["; print_ref(os, x.addr); os << "], ";
-            print_ref(os, x.value);
+          os << "storevec [";
+          print_ref(os, x.addr);
+          os << "], ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, XmmFromGpr>) {
-            os << "xmm_from_gpr." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
-            print_ref(os, x.value);
+          os << "xmm_from_gpr." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, GprFromXmm>) {
-            os << "gpr_from_xmm." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
-            print_ref(os, x.value);
+          os << "gpr_from_xmm." << ((x.size == OpSize::I32) ? "i32" : "i64") << " ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecUnpack>) {
-            const char* op_n = x.is_high ? "vunpckh" : "vunpckl";
-            const char* lane_n = "?";
-            switch (x.lane) {
-                case VecLane::B16: lane_n = "b16"; break;
-                case VecLane::H8:  lane_n = "h8";  break;
-                case VecLane::S4:  lane_n = "s4";  break;
-                case VecLane::D2:  lane_n = "d2";  break;
-            }
-            os << op_n << "." << lane_n << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* op_n = x.is_high ? "vunpckh" : "vunpckl";
+          const char* lane_n = "?";
+          switch (x.lane) {
+            case VecLane::B16:
+              lane_n = "b16";
+              break;
+            case VecLane::H8:
+              lane_n = "h8";
+              break;
+            case VecLane::S4:
+              lane_n = "s4";
+              break;
+            case VecLane::D2:
+              lane_n = "d2";
+              break;
+          }
+          os << op_n << "." << lane_n << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecShiftBytes>) {
-            os << (x.is_left ? "vshlb " : "vshrb ");
-            print_ref(os, x.src);
-            os << ", #" << static_cast<unsigned>(x.count);
+          os << (x.is_left ? "vshlb " : "vshrb ");
+          print_ref(os, x.src);
+          os << ", #" << static_cast<unsigned>(x.count);
         } else if constexpr (std::is_same_v<T, IntToFpScalar>) {
-            os << "scvtf." << ((x.fp_size == FpSize::F32) ? "f32" : "f64")
-               << ((x.int_size == OpSize::I32) ? ".i32 " : ".i64 ");
-            print_ref(os, x.value);
+          os << "scvtf." << ((x.fp_size == FpSize::F32) ? "f32" : "f64")
+             << ((x.int_size == OpSize::I32) ? ".i32 " : ".i64 ");
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, FpToIntScalar>) {
-            os << "fcvtzs." << ((x.int_size == OpSize::I32) ? "i32" : "i64")
-               << ((x.fp_size == FpSize::F32) ? ".f32 " : ".f64 ");
-            print_ref(os, x.value);
+          os << "fcvtzs." << ((x.int_size == OpSize::I32) ? "i32" : "i64")
+             << ((x.fp_size == FpSize::F32) ? ".f32 " : ".f64 ");
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecInsertLane>) {
-            os << "vins.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
-            print_ref(os, x.lhs_xmm); os << ", "; print_ref(os, x.value);
+          os << "vins.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
+          print_ref(os, x.lhs_xmm);
+          os << ", ";
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, VecExtractLaneU>) {
-            os << "vextu.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
-            print_ref(os, x.src_xmm);
+          os << "vextu.lane[" << static_cast<unsigned>(x.lane_idx) << "] ";
+          print_ref(os, x.src_xmm);
         } else if constexpr (std::is_same_v<T, VecMaskMsb>) {
-            os << "vmask_msb.b16 ";
-            print_ref(os, x.src_xmm);
+          os << "vmask_msb.b16 ";
+          print_ref(os, x.src_xmm);
         } else if constexpr (std::is_same_v<T, WriteFlagsFp>) {
-            os << "wrflags.fp." << ((x.size == FpSize::F32) ? "f32" : "f64") << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "wrflags.fp." << ((x.size == FpSize::F32) ? "f32" : "f64") << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecShuffleH4>) {
-            os << (x.is_high ? "vshufhw " : "vshuflw ");
-            print_ref(os, x.src);
-            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+          os << (x.is_high ? "vshufhw " : "vshuflw ");
+          print_ref(os, x.src);
+          os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
         } else if constexpr (std::is_same_v<T, VecMaskFp>) {
-            os << (x.is_pd ? "vmaskpd " : "vmaskps ");
-            print_ref(os, x.src_xmm);
+          os << (x.is_pd ? "vmaskpd " : "vmaskps ");
+          print_ref(os, x.src_xmm);
         } else if constexpr (std::is_same_v<T, VecPshufb>) {
-            os << "vpshufb ";
-            print_ref(os, x.src); os << ", "; print_ref(os, x.mask);
+          os << "vpshufb ";
+          print_ref(os, x.src);
+          os << ", ";
+          print_ref(os, x.mask);
         } else if constexpr (std::is_same_v<T, VecAlignr>) {
-            os << "valignr ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
-            os << ", #" << static_cast<unsigned>(x.count);
+          os << "valignr ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
+          os << ", #" << static_cast<unsigned>(x.count);
         } else if constexpr (std::is_same_v<T, Popcnt>) {
-            os << "popcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
-            print_ref(os, x.value);
+          os << "popcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Lzcnt>) {
-            os << "lzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
-            print_ref(os, x.value);
+          os << "lzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Tzcnt>) {
-            os << "tzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
-            print_ref(os, x.value);
+          os << "tzcnt." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) {
-            os << "wrflags.count0." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
-            print_ref(os, x.src); os << ", "; print_ref(os, x.result);
+          os << "wrflags.count0." << ((x.size == OpSize::I32) ? "i32 " : "i64 ");
+          print_ref(os, x.src);
+          os << ", ";
+          print_ref(os, x.result);
         } else if constexpr (std::is_same_v<T, WriteFlagsPtest>) {
-            os << "wrflags.ptest ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          os << "wrflags.ptest ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) {
-            os << "wrflags.ptest_ymm ";
-            print_ref(os, x.lo_lhs); os << ", "; print_ref(os, x.lo_rhs);
-            os << " | ";
-            print_ref(os, x.hi_lhs); os << ", "; print_ref(os, x.hi_rhs);
+          os << "wrflags.ptest_ymm ";
+          print_ref(os, x.lo_lhs);
+          os << ", ";
+          print_ref(os, x.lo_rhs);
+          os << " | ";
+          print_ref(os, x.hi_lhs);
+          os << ", ";
+          print_ref(os, x.hi_rhs);
         } else if constexpr (std::is_same_v<T, VecTbl2>) {
-            os << "vtbl2 ";
-            print_ref(os, x.src_lo); os << ", ";
-            print_ref(os, x.src_hi); os << ", idx=";
-            print_ref(os, x.idx);
+          os << "vtbl2 ";
+          print_ref(os, x.src_lo);
+          os << ", ";
+          print_ref(os, x.src_hi);
+          os << ", idx=";
+          print_ref(os, x.idx);
         } else if constexpr (std::is_same_v<T, Bswap>) {
-            os << "bswap." << size_suffix(x.size) << ' ';
-            print_ref(os, x.value);
+          os << "bswap." << size_suffix(x.size) << ' ';
+          print_ref(os, x.value);
         } else if constexpr (std::is_same_v<T, Crc32c>) {
-            os << "crc32c." << size_suffix(x.data_size) << ' ';
-            print_ref(os, x.crc); os << ", ";
-            print_ref(os, x.data);
+          os << "crc32c." << size_suffix(x.data_size) << ' ';
+          print_ref(os, x.crc);
+          os << ", ";
+          print_ref(os, x.data);
         } else if constexpr (std::is_same_v<T, VecGather>) {
-            os << "vgather." << (x.elem_is64 ? 'd' : 's')
-               << static_cast<unsigned>(x.lane_count)
-               << ".idx" << (x.index_is64 ? 'd' : 's');
-            if (x.dest_lane_base != 0) {
-                os << ".db" << static_cast<unsigned>(x.dest_lane_base);
-            }
-            if (x.index_lane_base != 0) {
-                os << ".ib" << static_cast<unsigned>(x.index_lane_base);
-            }
-            os << " base=";
-            print_ref(os, x.base); os << ", idx=";
-            print_ref(os, x.index); os << ", mask=";
-            print_ref(os, x.mask); os << ", prev=";
-            print_ref(os, x.prev);
-            os << ", scale=" << (1u << x.scale_shift);
+          os << "vgather." << (x.elem_is64 ? 'd' : 's') << static_cast<unsigned>(x.lane_count)
+             << ".idx" << (x.index_is64 ? 'd' : 's');
+          if (x.dest_lane_base != 0) {
+            os << ".db" << static_cast<unsigned>(x.dest_lane_base);
+          }
+          if (x.index_lane_base != 0) {
+            os << ".ib" << static_cast<unsigned>(x.index_lane_base);
+          }
+          os << " base=";
+          print_ref(os, x.base);
+          os << ", idx=";
+          print_ref(os, x.index);
+          os << ", mask=";
+          print_ref(os, x.mask);
+          os << ", prev=";
+          print_ref(os, x.prev);
+          os << ", scale=" << (1u << x.scale_shift);
         } else if constexpr (std::is_same_v<T, VecAes>) {
-            const char* k = "?";
-            switch (x.kind) {
-                case VecAesKind::Enc:     k = "enc";       break;
-                case VecAesKind::EncLast: k = "enc_last";  break;
-                case VecAesKind::Dec:     k = "dec";       break;
-                case VecAesKind::DecLast: k = "dec_last";  break;
-                case VecAesKind::Imc:     k = "imc";       break;
-            }
-            os << "vaes." << k << ' ';
-            print_ref(os, x.src); os << ", ";
-            print_ref(os, x.key);
+          const char* k = "?";
+          switch (x.kind) {
+            case VecAesKind::Enc:
+              k = "enc";
+              break;
+            case VecAesKind::EncLast:
+              k = "enc_last";
+              break;
+            case VecAesKind::Dec:
+              k = "dec";
+              break;
+            case VecAesKind::DecLast:
+              k = "dec_last";
+              break;
+            case VecAesKind::Imc:
+              k = "imc";
+              break;
+          }
+          os << "vaes." << k << ' ';
+          print_ref(os, x.src);
+          os << ", ";
+          print_ref(os, x.key);
         } else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) {
-            os << "vaes.keygenassist ";
-            print_ref(os, x.src);
-            os << ", rcon=0x" << std::hex << static_cast<unsigned>(x.rcon)
-               << std::dec;
+          os << "vaes.keygenassist ";
+          print_ref(os, x.src);
+          os << ", rcon=0x" << std::hex << static_cast<unsigned>(x.rcon) << std::dec;
         } else if constexpr (std::is_same_v<T, VecSha>) {
-            const char* k = "?";
-            switch (x.kind) {
-                case VecShaKind::Sha1Rnds4:   k = "sha1rnds4";   break;
-                case VecShaKind::Sha1Nexte:   k = "sha1nexte";   break;
-                case VecShaKind::Sha1Msg1:    k = "sha1msg1";    break;
-                case VecShaKind::Sha1Msg2:    k = "sha1msg2";    break;
-                case VecShaKind::Sha256Rnds2: k = "sha256rnds2"; break;
-                case VecShaKind::Sha256Msg1:  k = "sha256msg1";  break;
-                case VecShaKind::Sha256Msg2:  k = "sha256msg2";  break;
-            }
-            os << "vsha." << k << ' ';
-            print_ref(os, x.a); os << ", ";
-            print_ref(os, x.b);
-            if (x.kind == VecShaKind::Sha256Rnds2) {
-                os << ", wk=";
-                print_ref(os, x.wk);
-            }
-            if (x.kind == VecShaKind::Sha1Rnds4) {
-                os << ", f=" << static_cast<unsigned>(x.imm);
-            }
+          const char* k = "?";
+          switch (x.kind) {
+            case VecShaKind::Sha1Rnds4:
+              k = "sha1rnds4";
+              break;
+            case VecShaKind::Sha1Nexte:
+              k = "sha1nexte";
+              break;
+            case VecShaKind::Sha1Msg1:
+              k = "sha1msg1";
+              break;
+            case VecShaKind::Sha1Msg2:
+              k = "sha1msg2";
+              break;
+            case VecShaKind::Sha256Rnds2:
+              k = "sha256rnds2";
+              break;
+            case VecShaKind::Sha256Msg1:
+              k = "sha256msg1";
+              break;
+            case VecShaKind::Sha256Msg2:
+              k = "sha256msg2";
+              break;
+          }
+          os << "vsha." << k << ' ';
+          print_ref(os, x.a);
+          os << ", ";
+          print_ref(os, x.b);
+          if (x.kind == VecShaKind::Sha256Rnds2) {
+            os << ", wk=";
+            print_ref(os, x.wk);
+          }
+          if (x.kind == VecShaKind::Sha1Rnds4) {
+            os << ", f=" << static_cast<unsigned>(x.imm);
+          }
         } else if constexpr (std::is_same_v<T, VecBlend>) {
-            const char* lane_n = "?";
-            switch (x.lane) {
-                case VecLane::B16: lane_n = "b16"; break;
-                case VecLane::H8:  lane_n = "h8";  break;
-                case VecLane::S4:  lane_n = "s4";  break;
-                case VecLane::D2:  lane_n = "d2";  break;
-            }
-            os << "vblend." << lane_n << " ";
-            print_ref(os, x.dst); os << ", ";
-            print_ref(os, x.src); os << ", ";
-            print_ref(os, x.mask);
+          const char* lane_n = "?";
+          switch (x.lane) {
+            case VecLane::B16:
+              lane_n = "b16";
+              break;
+            case VecLane::H8:
+              lane_n = "h8";
+              break;
+            case VecLane::S4:
+              lane_n = "s4";
+              break;
+            case VecLane::D2:
+              lane_n = "d2";
+              break;
+          }
+          os << "vblend." << lane_n << " ";
+          print_ref(os, x.dst);
+          os << ", ";
+          print_ref(os, x.src);
+          os << ", ";
+          print_ref(os, x.mask);
         } else if constexpr (std::is_same_v<T, VecFpRound>) {
-            const char* modes[] = {"rn","rm","rp","rz","rn","rn","rn","rn"};
-            os << "vfrint." << modes[x.mode & 0x7]
-               << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
-               << (x.is_packed ? "_p " : "_s ");
-            print_ref(os, x.src);
+          const char* modes[] = {"rn", "rm", "rp", "rz", "rn", "rn", "rn", "rn"};
+          os << "vfrint." << modes[x.mode & 0x7] << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
+             << (x.is_packed ? "_p " : "_s ");
+          print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecExtend>) {
-            const char* nl = "?", *wl = "?";
-            switch (x.narrow_lane) {
-                case VecLane::B16: nl = "b"; break; case VecLane::H8: nl = "h"; break;
-                case VecLane::S4:  nl = "s"; break; case VecLane::D2: nl = "d"; break;
-            }
-            switch (x.wide_lane) {
-                case VecLane::B16: wl = "b"; break; case VecLane::H8: wl = "h"; break;
-                case VecLane::S4:  wl = "s"; break; case VecLane::D2: wl = "d"; break;
-            }
-            os << (x.is_signed ? "vsxtl." : "vuxtl.") << nl << "_to_" << wl << " ";
-            print_ref(os, x.src);
+          const char *nl = "?", *wl = "?";
+          switch (x.narrow_lane) {
+            case VecLane::B16:
+              nl = "b";
+              break;
+            case VecLane::H8:
+              nl = "h";
+              break;
+            case VecLane::S4:
+              nl = "s";
+              break;
+            case VecLane::D2:
+              nl = "d";
+              break;
+          }
+          switch (x.wide_lane) {
+            case VecLane::B16:
+              wl = "b";
+              break;
+            case VecLane::H8:
+              wl = "h";
+              break;
+            case VecLane::S4:
+              wl = "s";
+              break;
+            case VecLane::D2:
+              wl = "d";
+              break;
+          }
+          os << (x.is_signed ? "vsxtl." : "vuxtl.") << nl << "_to_" << wl << " ";
+          print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecAbs>) {
-            const char* lane_n = "?";
-            switch (x.lane) {
-                case VecLane::B16: lane_n = "b16"; break;
-                case VecLane::H8:  lane_n = "h8";  break;
-                case VecLane::S4:  lane_n = "s4";  break;
-                case VecLane::D2:  lane_n = "d2";  break;
-            }
-            os << "vabs." << lane_n << " ";
-            print_ref(os, x.src);
+          const char* lane_n = "?";
+          switch (x.lane) {
+            case VecLane::B16:
+              lane_n = "b16";
+              break;
+            case VecLane::H8:
+              lane_n = "h8";
+              break;
+            case VecLane::S4:
+              lane_n = "s4";
+              break;
+            case VecLane::D2:
+              lane_n = "d2";
+              break;
+          }
+          os << "vabs." << lane_n << " ";
+          print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecFpCompare>) {
-            const char* preds[] = {"eq","lt","le","unord","neq","nlt","nle","ord"};
-            os << "vfcmp." << preds[static_cast<unsigned>(x.pred)]
-               << "." << ((x.size == FpSize::F32) ? "f32" : "f64")
-               << (x.is_packed ? "_p " : "_s ");
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* preds[] = {"eq", "lt", "le", "unord", "neq", "nlt", "nle", "ord"};
+          os << "vfcmp." << preds[static_cast<unsigned>(x.pred)] << "."
+             << ((x.size == FpSize::F32) ? "f32" : "f64") << (x.is_packed ? "_p " : "_s ");
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecShuffle2Src>) {
-            os << (x.is_pd ? "vshufpd " : "vshufps ");
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
-            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+          os << (x.is_pd ? "vshufpd " : "vshufps ");
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
+          os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
         } else if constexpr (std::is_same_v<T, FpCvtScalar>) {
-            os << "fcvt_s."
-               << ((x.src_size == FpSize::F32) ? "f32" : "f64") << "->"
-               << ((x.dst_size == FpSize::F32) ? "f32" : "f64") << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.src);
+          os << "fcvt_s." << ((x.src_size == FpSize::F32) ? "f32" : "f64") << "->"
+             << ((x.dst_size == FpSize::F32) ? "f32" : "f64") << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecShiftImm>) {
-            const char* op_n = "?";
-            switch (x.kind) {
-                case VecShiftKind::ShiftL:      op_n = "vshl";  break;
-                case VecShiftKind::LogicalShr:  op_n = "vushr"; break;
-                case VecShiftKind::ArithShr:    op_n = "vsshr"; break;
-            }
-            const char* lane_n = "?";
-            switch (x.lane) {
-                case VecLane::B16: lane_n = "b16"; break;
-                case VecLane::H8:  lane_n = "h8";  break;
-                case VecLane::S4:  lane_n = "s4";  break;
-                case VecLane::D2:  lane_n = "d2";  break;
-            }
-            os << op_n << "." << lane_n << " ";
-            print_ref(os, x.src);
-            os << ", #" << static_cast<unsigned>(x.count);
+          const char* op_n = "?";
+          switch (x.kind) {
+            case VecShiftKind::ShiftL:
+              op_n = "vshl";
+              break;
+            case VecShiftKind::LogicalShr:
+              op_n = "vushr";
+              break;
+            case VecShiftKind::ArithShr:
+              op_n = "vsshr";
+              break;
+          }
+          const char* lane_n = "?";
+          switch (x.lane) {
+            case VecLane::B16:
+              lane_n = "b16";
+              break;
+            case VecLane::H8:
+              lane_n = "h8";
+              break;
+            case VecLane::S4:
+              lane_n = "s4";
+              break;
+            case VecLane::D2:
+              lane_n = "d2";
+              break;
+          }
+          os << op_n << "." << lane_n << " ";
+          print_ref(os, x.src);
+          os << ", #" << static_cast<unsigned>(x.count);
         } else if constexpr (std::is_same_v<T, VecShuffle32x4>) {
-            os << "vshuffle.s4 ";
-            print_ref(os, x.src);
-            os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
+          os << "vshuffle.s4 ";
+          print_ref(os, x.src);
+          os << ", 0x" << std::hex << static_cast<unsigned>(x.control) << std::dec;
         } else if constexpr (std::is_same_v<T, VecCmp>) {
-            const char* op_n = (x.kind == VecCmpKind::Eq) ? "vcmeq" : "vcmgt";
-            const char* lane_n = "?";
-            switch (x.lane) {
-                case VecLane::B16: lane_n = "b16"; break;
-                case VecLane::H8:  lane_n = "h8";  break;
-                case VecLane::S4:  lane_n = "s4";  break;
-                case VecLane::D2:  lane_n = "d2";  break;
-            }
-            os << op_n << "." << lane_n << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* op_n = (x.kind == VecCmpKind::Eq) ? "vcmeq" : "vcmgt";
+          const char* lane_n = "?";
+          switch (x.lane) {
+            case VecLane::B16:
+              lane_n = "b16";
+              break;
+            case VecLane::H8:
+              lane_n = "h8";
+              break;
+            case VecLane::S4:
+              lane_n = "s4";
+              break;
+            case VecLane::D2:
+              lane_n = "d2";
+              break;
+          }
+          os << op_n << "." << lane_n << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         } else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) {
-            const char* op_n = "?";
-            switch (x.op) {
-                case VecFpBinOpKind::Add: op_n = "vfadd_s"; break;
-                case VecFpBinOpKind::Sub: op_n = "vfsub_s"; break;
-                case VecFpBinOpKind::Mul: op_n = "vfmul_s"; break;
-                case VecFpBinOpKind::Div: op_n = "vfdiv_s"; break;
-                case VecFpBinOpKind::Min: op_n = "vfmin_s"; break;
-                case VecFpBinOpKind::Max: op_n = "vfmax_s"; break;
-                case VecFpBinOpKind::Sqrt: op_n = "vfsqrt_s"; break;
-                case VecFpBinOpKind::HAdd: op_n = "vfaddp_s"; break;
-            }
-            const char* size_n = (x.size == FpSize::F32) ? "f32" : "f64";
-            os << op_n << "." << size_n << " ";
-            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+          const char* op_n = "?";
+          switch (x.op) {
+            case VecFpBinOpKind::Add:
+              op_n = "vfadd_s";
+              break;
+            case VecFpBinOpKind::Sub:
+              op_n = "vfsub_s";
+              break;
+            case VecFpBinOpKind::Mul:
+              op_n = "vfmul_s";
+              break;
+            case VecFpBinOpKind::Div:
+              op_n = "vfdiv_s";
+              break;
+            case VecFpBinOpKind::Min:
+              op_n = "vfmin_s";
+              break;
+            case VecFpBinOpKind::Max:
+              op_n = "vfmax_s";
+              break;
+            case VecFpBinOpKind::Sqrt:
+              op_n = "vfsqrt_s";
+              break;
+            case VecFpBinOpKind::HAdd:
+              op_n = "vfaddp_s";
+              break;
+          }
+          const char* size_n = (x.size == FpSize::F32) ? "f32" : "f64";
+          os << op_n << "." << size_n << " ";
+          print_ref(os, x.lhs);
+          os << ", ";
+          print_ref(os, x.rhs);
         }
-    }, op);
-    return os.str();
+      },
+      op);
+  return os.str();
 }
 
 std::string pretty_print(const Stmt& stmt) {
-    std::ostringstream os;
-    if (stmt.result) {
-        print_ref(os, *stmt.result);
-        os << " = ";
-    }
-    os << pretty_print(stmt.op);
-    return os.str();
+  std::ostringstream os;
+  if (stmt.result) {
+    print_ref(os, *stmt.result);
+    os << " = ";
+  }
+  os << pretty_print(stmt.op);
+  return os.str();
 }
 
 std::string pretty_print(const BasicBlock& block) {
-    std::ostringstream os;
-    os << "bb" << block.id << ":\n";
-    for (const auto& stmt : block.stmts) {
-        os << "    " << pretty_print(stmt) << "\n";
-    }
-    return os.str();
+  std::ostringstream os;
+  os << "bb" << block.id << ":\n";
+  for (const auto& stmt : block.stmts) {
+    os << "    " << pretty_print(stmt) << "\n";
+  }
+  return os.str();
 }
 
 std::string pretty_print(const Function& fn) {
-    std::ostringstream os;
-    os << "function (entry=bb" << fn.entry << ") {\n";
-    for (const auto& b : fn.blocks) {
-        os << pretty_print(b);
-    }
-    os << "}\n";
-    return os.str();
+  std::ostringstream os;
+  os << "function (entry=bb" << fn.entry << ") {\n";
+  for (const auto& b : fn.blocks) {
+    os << pretty_print(b);
+  }
+  os << "}\n";
+  return os.str();
 }
 
 // ---------------------------------------------------------------------------
@@ -721,36 +1123,37 @@ namespace {
 constexpr std::size_t kMemoisedCapacity = 256;
 
 struct MemoEntry {
-    Stmt        key;
-    std::string value;
+  Stmt key;
+  std::string value;
 };
 
 std::vector<MemoEntry>& memo_storage() {
-    thread_local std::vector<MemoEntry> storage;
-    return storage;
+  thread_local std::vector<MemoEntry> storage;
+  return storage;
 }
 
 }  // namespace
 
 std::string pretty_print_memoised(const Stmt& stmt) {
-    auto& store = memo_storage();
-    for (const auto& e : store) {
-        if (e.key == stmt) return e.value;
-    }
-    std::string s = pretty_print(stmt);
-    if (store.size() >= kMemoisedCapacity) {
-        store.erase(store.begin());  // FIFO eviction
-    }
-    store.push_back({stmt, s});
-    return s;
+  auto& store = memo_storage();
+  for (const auto& e : store) {
+    if (e.key == stmt)
+      return e.value;
+  }
+  std::string s = pretty_print(stmt);
+  if (store.size() >= kMemoisedCapacity) {
+    store.erase(store.begin());  // FIFO eviction
+  }
+  store.push_back({stmt, s});
+  return s;
 }
 
 void pretty_print_memoised_clear() noexcept {
-    memo_storage().clear();
+  memo_storage().clear();
 }
 
 std::size_t pretty_print_memoised_size() noexcept {
-    return memo_storage().size();
+  return memo_storage().size();
 }
 
 }  // namespace prisma::ir

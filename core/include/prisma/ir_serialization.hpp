@@ -5,13 +5,13 @@
 
 #pragma once
 
+#include "prisma/ir.hpp"
+
 #include <array>
 #include <cstdint>
 #include <span>
 #include <variant>
 #include <vector>
-
-#include "prisma/ir.hpp"
 
 namespace prisma::ir {
 
@@ -24,20 +24,20 @@ inline constexpr std::array<std::uint8_t, 4> kIrBinaryMagic{
 inline constexpr std::uint16_t kIrBinaryVersion = 2;
 
 enum class IrBinaryKind : std::uint8_t {
-    StmtList = 1,
-    Function = 2,
+  StmtList = 1,
+  Function = 2,
 };
 
 enum class IrDeserializeError {
-    BadMagic,
-    UnsupportedVersion,
-    WrongKind,
-    Truncated,
-    InvalidTag,
-    InvalidEnum,
-    InvalidBool,
-    TooLarge,
-    TrailingBytes,
+  BadMagic,
+  UnsupportedVersion,
+  WrongKind,
+  Truncated,
+  InvalidTag,
+  InvalidEnum,
+  InvalidBool,
+  TooLarge,
+  TrailingBytes,
 };
 
 [[nodiscard]] std::vector<std::uint8_t> serialize_stmts(std::span<const Stmt> stmts);
