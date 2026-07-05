@@ -891,9 +891,9 @@ fn decode_vex_bmi1_bextr(
     let mask_candidate = push_binop_ref(stmts, BinOpKind::Sub, mask_plus_one, one, size);
     let all_ones = push_constant_ref(stmts, size.mask(), size);
     let width = push_constant_ref(stmts, u64::from(size.bit_width()), size);
-    let _len_ge_width = alloc_ref(stmts);
+    let len_ge_width = alloc_ref(stmts);
     stmts.push(Stmt::new(
-        Some(_len_ge_width),
+        Some(len_ge_width),
         Op::Compare(Compare {
             cc: CondCode::Uge,
             lhs: len,
@@ -913,9 +913,9 @@ fn decode_vex_bmi1_bextr(
     ));
     let masked = push_binop_ref(stmts, BinOpKind::And, shifted, mask, size);
     let zero = push_constant_ref(stmts, 0, size);
-    let _start_ge_width = alloc_ref(stmts);
+    let start_ge_width = alloc_ref(stmts);
     stmts.push(Stmt::new(
-        Some(_start_ge_width),
+        Some(start_ge_width),
         Op::Compare(Compare {
             cc: CondCode::Uge,
             lhs: start,
@@ -3283,7 +3283,7 @@ fn decode_group3(
                 5 => emit_mul_imul_pair(stmts, rax_ref, rhs_ref, size, true),
                 6 => emit_div_idiv_pair(stmts, rax_ref, rhs_ref, size, false),
                 _ => emit_div_idiv_pair(stmts, rax_ref, rhs_ref, size, true),
-            };
+            }
             Ok(1 + used)
         }
         _ => Err(crate::DecodeError::UnsupportedOpcode(opcode)),
@@ -10705,27 +10705,21 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(
-            rm_r.stmts.iter().find(|stmt| matches!(
-                stmt.op,
-                Op::AluFlags(AluFlags {
-                    op: BinOpKind::Add,
-                    size: OpSize::I8,
-                    ..
-                })
-            )),
-            Some(_)
-        ));
-        assert!(matches!(
-            rm_r.stmts.iter().find(|stmt| matches!(
-                stmt.op,
-                Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
-                    carry: RflagsCarryMode::ArmCarry,
-                    ..
-                })
-            )),
-            Some(_)
-        ));
+        assert!(rm_r.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::AluFlags(AluFlags {
+                op: BinOpKind::Add,
+                size: OpSize::I8,
+                ..
+            })
+        )));
+        assert!(rm_r.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
+                carry: RflagsCarryMode::ArmCarry,
+                ..
+            })
+        )));
 
         // r_rm direction now also publishes RFLAGS after the StoreReg.
         let r_rm = decode_one(b"\x02\xC1", 0).unwrap();

@@ -13,6 +13,14 @@
 //! with no local flag writer, condition consumers restore NZCV from the
 //! persistent RFLAGS subset, matching backend lowering.
 
+// Guest integer semantics are wrapping/truncating by definition — in this
+// reference interpreter those casts are the behavior under test, not a bug.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 use std::collections::HashMap;
 
 use prisma_ir::{
@@ -84,7 +92,7 @@ fn msb(value: u64, size: OpSize) -> bool {
 
 fn sign_extend_to_i128(value: u64, size: OpSize) -> i128 {
     let bits = size.bit_width();
-    let masked = mask(value, size) as i128;
+    let masked = i128::from(mask(value, size));
     let sign_bit = 1_i128 << (bits - 1);
     if masked & sign_bit == 0 {
         masked
@@ -296,7 +304,7 @@ fn eval_binop(op: BinOpKind, a: u64, b: u64, size: OpSize) -> Option<u64> {
         BinOpKind::Or => a | b,
         BinOpKind::Xor => a ^ b,
         BinOpKind::Mul => a.wrapping_mul(b),
-        BinOpKind::UMulHi => (((a as u128) * (b as u128)) >> bits) as u64,
+        BinOpKind::UMulHi => ((u128::from(a) * u128::from(b)) >> bits) as u64,
         BinOpKind::SMulHi => {
             let product = sign_extend_to_i128(a, size) * sign_extend_to_i128(b, size);
             (product >> bits) as u64
@@ -373,9 +381,9 @@ fn eval_wide_div(
     }
 
     if signed {
-        let dividend_bits = ((high as u128) << 64) | u128::from(low);
+        let dividend_bits = (u128::from(high) << 64) | u128::from(low);
         let dividend = dividend_bits as i128;
-        let divisor = (divisor as i64) as i128;
+        let divisor = i128::from(divisor as i64);
         let quotient = dividend / divisor;
         if quotient < i128::from(i64::MIN) || quotient > i128::from(i64::MAX) {
             return None;
@@ -387,7 +395,7 @@ fn eval_wide_div(
         });
     }
 
-    let dividend = ((high as u128) << 64) | u128::from(low);
+    let dividend = (u128::from(high) << 64) | u128::from(low);
     let quotient = dividend / u128::from(divisor);
     if quotient > u128::from(u64::MAX) {
         return None;
@@ -455,9 +463,8 @@ fn eval_pcmp_str(
     let mut bits = 0u16;
     for i in 0..max_lanes {
         let lhs_valid = i < lhs_len;
-        let mut matched = false;
-        if lhs_valid {
-            matched = match aggregation {
+        let mut matched = lhs_valid
+            && match aggregation {
                 // Equal-any.
                 0 => (0..rhs_len).any(|j| {
                     if signed {
@@ -511,7 +518,6 @@ fn eval_pcmp_str(
                         })
                 }
             };
-        }
 
         let valid_for_polarity = if polarity & 0x02 != 0 {
             lhs_valid
@@ -727,6 +733,8 @@ fn f16c_ps_to_ph(src: u128, imm8: u8) -> u128 {
 ///
 /// Operates on the optimized IR (post decode + renumber + pipeline) so it sees
 /// exactly what the backend would lower.
+// One arm per IR op; splitting the dispatch would scatter the op semantics.
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn interpret_block(stmts: &[Stmt], regs: &mut GuestRegs) -> BlockOutcome {
     let mut vals: HashMap<Ref, u64> = HashMap::new();
@@ -1505,6 +1513,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn decoded_arithmetic_flag_edge_cases_publish_expected_rflags() {
         const CF: u64 = 1 << 0;
         const PF: u64 = 1 << 2;
@@ -1770,6 +1779,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn decoded_vex_bmi1_ops_execute_and_publish_core_flags() {
         const CF: u64 = 1 << 0;
         const PF: u64 = 1 << 2;

@@ -46,7 +46,7 @@ const PCMP_HELPER_TARGET_REG: u8 = 16;
 
 /// Scalar register pairs used for the current XMM lowering frontier. The Rust
 /// backend does not have NEON/vector-register emission yet, so 128-bit vector
-/// values are carried as two callee-saved host `u64` registers while PCMPxSTRx
+/// values are carried as two callee-saved host `u64` registers while `PCMPxSTRx`
 /// lowering calls semantic helpers.
 const VEC_REG_PAIRS: [(u8, u8); 3] = [
     (FLAG_ALIGN_SHIFT_REG, MOD_QUOTIENT_REG),
@@ -68,6 +68,23 @@ struct BackendPcmpStrEval {
     rhs_len: usize,
 }
 
+// Intentional narrowing for the extern "C" helper ABI and packed-lane
+// extraction — the truncation is the semantic.
+#[allow(clippy::cast_possible_truncation)]
+const fn low8(x: u64) -> u8 {
+    x as u8
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn low32(x: u64) -> u32 {
+    x as u32
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn low64(x: u128) -> u64 {
+    x as u64
+}
+
 fn pcmp_lane_unsigned(bytes: &[u8; 16], lane: usize, lane_bytes: usize) -> u16 {
     if lane_bytes == 1 {
         u16::from(bytes[lane])
@@ -78,7 +95,7 @@ fn pcmp_lane_unsigned(bytes: &[u8; 16], lane: usize, lane_bytes: usize) -> u16 {
 
 fn pcmp_lane_signed(bytes: &[u8; 16], lane: usize, lane_bytes: usize) -> i16 {
     if lane_bytes == 1 {
-        i16::from(bytes[lane] as i8)
+        i16::from(bytes[lane].cast_signed())
     } else {
         i16::from_le_bytes([bytes[lane * 2], bytes[lane * 2 + 1]])
     }
@@ -87,14 +104,17 @@ fn pcmp_lane_signed(bytes: &[u8; 16], lane: usize, lane_bytes: usize) -> i16 {
 fn pcmp_effective_len(bytes: &[u8; 16], lane_bytes: usize, explicit: Option<u64>) -> usize {
     let max_lanes = 16 / lane_bytes;
     if let Some(raw) = explicit {
-        let signed = raw as u32 as i32;
-        return signed.unsigned_abs().min(max_lanes as u32) as usize;
+        let lanes = usize::try_from(low32(raw).cast_signed().unsigned_abs())
+            .expect("u32 lane count fits usize");
+        return lanes.min(max_lanes);
     }
     (0..max_lanes)
         .position(|i| pcmp_lane_unsigned(bytes, i, lane_bytes) == 0)
         .unwrap_or(max_lanes)
 }
 
+// Mirrors the 8-slot extern "C" PCMP helper ABI.
+#[allow(clippy::too_many_arguments)]
 fn eval_backend_pcmp_str(
     lhs_lo: u64,
     lhs_hi: u64,
@@ -128,9 +148,8 @@ fn eval_backend_pcmp_str(
     let mut bits = 0u16;
     for i in 0..max_lanes {
         let lhs_valid = i < lhs_len;
-        let mut matched = false;
-        if lhs_valid {
-            matched = match aggregation {
+        let mut matched = lhs_valid
+            && match aggregation {
                 0 => (0..rhs_len).any(|j| {
                     if signed {
                         pcmp_lane_signed(&lhs_bytes, i, lane_bytes)
@@ -180,7 +199,6 @@ fn eval_backend_pcmp_str(
                         })
                 }
             };
-        }
 
         let valid_for_polarity = if polarity & 0x02 != 0 {
             lhs_valid
@@ -260,9 +278,16 @@ extern "C" fn pcmpstr_index_helper(
     imm8: u64,
 ) -> u64 {
     let eval = eval_backend_pcmp_str(
-        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode, imm8 as u8,
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
     );
-    backend_pcmp_str_index(eval, imm8 as u8)
+    backend_pcmp_str_index(eval, low8(imm8))
 }
 
 #[inline(never)]
@@ -277,9 +302,16 @@ extern "C" fn pcmpstr_mask_lo_helper(
     imm8: u64,
 ) -> u64 {
     let eval = eval_backend_pcmp_str(
-        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode, imm8 as u8,
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
     );
-    backend_pcmp_str_mask(eval, imm8 as u8) as u64
+    low64(backend_pcmp_str_mask(eval, low8(imm8)))
 }
 
 #[inline(never)]
@@ -294,9 +326,16 @@ extern "C" fn pcmpstr_mask_hi_helper(
     imm8: u64,
 ) -> u64 {
     let eval = eval_backend_pcmp_str(
-        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode, imm8 as u8,
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
     );
-    (backend_pcmp_str_mask(eval, imm8 as u8) >> 64) as u64
+    low64(backend_pcmp_str_mask(eval, low8(imm8)) >> 64)
 }
 
 #[inline(never)]
@@ -311,7 +350,14 @@ extern "C" fn pcmpstr_flags_helper(
     imm8: u64,
 ) -> u64 {
     backend_pcmp_str_flags(eval_backend_pcmp_str(
-        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode, imm8 as u8,
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
     ))
 }
 
@@ -375,7 +421,7 @@ fn f16_should_round(sign: u16, mode: u8, remainder: u64, halfway: u64, lsb: u64)
 fn f32_bits_to_f16(bits: u32, imm8: u8) -> u16 {
     let mode = if imm8 & 0x04 != 0 { 0 } else { imm8 & 0x03 };
     let sign = u16::try_from((bits >> 16) & 0x8000).expect("f16 sign");
-    let exp = ((bits >> 23) & 0xff) as i32;
+    let exp = ((bits >> 23) & 0xff).cast_signed();
     let frac = bits & 0x007f_ffff;
 
     if exp == 0xff {
@@ -425,7 +471,7 @@ fn f32_bits_to_f16(bits: u32, imm8: u8) -> u16 {
 fn backend_f16c_ph_to_ps(src_lo: u64) -> u128 {
     let mut out = 0u128;
     for lane in 0..4 {
-        let h = ((src_lo >> (lane * 16)) & 0xffff) as u16;
+        let h = u16::try_from((src_lo >> (lane * 16)) & 0xffff).expect("masked half lane");
         out |= u128::from(f16_to_f32_bits(h)) << (lane * 32);
     }
     out
@@ -435,7 +481,7 @@ fn backend_f16c_ps_to_ph(src_lo: u64, src_hi: u64, imm8: u8) -> u64 {
     let src = (u128::from(src_hi) << 64) | u128::from(src_lo);
     let mut out = 0u64;
     for lane in 0..4 {
-        let bits = ((src >> (lane * 32)) & 0xffff_ffff) as u32;
+        let bits = u32::try_from((src >> (lane * 32)) & 0xffff_ffff).expect("masked f32 lane");
         out |= u64::from(f32_bits_to_f16(bits, imm8)) << (lane * 16);
     }
     out
@@ -443,17 +489,17 @@ fn backend_f16c_ps_to_ph(src_lo: u64, src_hi: u64, imm8: u8) -> u64 {
 
 #[inline(never)]
 extern "C" fn f16c_ph2ps_lo_helper(src_lo: u64) -> u64 {
-    backend_f16c_ph_to_ps(src_lo) as u64
+    low64(backend_f16c_ph_to_ps(src_lo))
 }
 
 #[inline(never)]
 extern "C" fn f16c_ph2ps_hi_helper(src_lo: u64) -> u64 {
-    (backend_f16c_ph_to_ps(src_lo) >> 64) as u64
+    low64(backend_f16c_ph_to_ps(src_lo) >> 64)
 }
 
 #[inline(never)]
 extern "C" fn f16c_ps2ph_helper(src_lo: u64, src_hi: u64, imm8: u64) -> u64 {
-    backend_f16c_ps_to_ph(src_lo, src_hi, imm8 as u8)
+    backend_f16c_ps_to_ph(src_lo, src_hi, low8(imm8))
 }
 
 /// Lowering failures surfaced by the Rust backend.
@@ -638,8 +684,9 @@ struct ExitAbi {
 }
 
 // One match arm per IR op; the dispatch is inherently long and splitting it
-// would only scatter the op->lowering mapping across helpers.
-#[allow(clippy::too_many_lines)]
+// would only scatter the op->lowering mapping across helpers. The argument
+// list mirrors the per-block lowering state threaded through every op.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn lower_stmt(
     stmt: &Stmt,
     asm: &mut Arm64Assembler,
@@ -2516,13 +2563,6 @@ fn lower_vec_clmul(
     vec_values: &mut HashMap<Ref, (u8, u8)>,
     op: &prisma_ir::VecClMul,
 ) -> Result<(), LowerError> {
-    let result = stmt.result.ok_or(LowerError::MissingResult("VecClMul"))?;
-    let lhs = vec_pair(vec_values, op.lhs)?;
-    let rhs = vec_pair(vec_values, op.rhs)?;
-    let lhs_reg = if op.lhs_high { lhs.1 } else { lhs.0 };
-    let rhs_reg = if op.rhs_high { rhs.1 } else { rhs.0 };
-    let (out_lo, out_hi) = alloc_vec_pair(vec_values, result)?;
-
     const CLMUL_WORK_LO: u8 = FLAG_ALIGN_LHS_REG; // X17
     const CLMUL_WORK_HI: u8 = FLAG_ALIGN_RHS_REG; // X18
     const CLMUL_RHS: u8 = MEM_ADDR_SCRATCH; // X24
@@ -2530,6 +2570,13 @@ fn lower_vec_clmul(
     const CLMUL_ONE: u8 = 28;
     const CLMUL_SHIFT63: u8 = 29;
     const CLMUL_COUNT: u8 = 30;
+
+    let result = stmt.result.ok_or(LowerError::MissingResult("VecClMul"))?;
+    let lhs = vec_pair(vec_values, op.lhs)?;
+    let rhs = vec_pair(vec_values, op.rhs)?;
+    let lhs_reg = if op.lhs_high { lhs.1 } else { lhs.0 };
+    let rhs_reg = if op.rhs_high { rhs.1 } else { rhs.0 };
+    let (out_lo, out_hi) = alloc_vec_pair(vec_values, result)?;
 
     asm.mov_x(CLMUL_WORK_LO, lhs_reg);
     emit_u64_constant(asm, CLMUL_WORK_HI, 0);
@@ -3983,7 +4030,7 @@ mod tests {
             Stmt::new(
                 Some(2),
                 Op::Constant(Constant {
-                    value: (-7i64) as u64,
+                    value: (-7i64).cast_unsigned(),
                     size: OpSize::I64,
                 }),
             ),
@@ -4330,7 +4377,7 @@ mod tests {
 
         assert_eq!(backend_f16c_ph_to_ps(packed_halves), expected);
         assert_eq!(
-            backend_f16c_ps_to_ph(expected as u64, (expected >> 64) as u64, 0),
+            backend_f16c_ps_to_ph(low64(expected), low64(expected >> 64), 0),
             packed_halves
         );
     }
@@ -4415,8 +4462,8 @@ mod tests {
             )
         }
 
-        let (lhs_lo, lhs_hi) = pack(&[b'z', b'a', b'b']);
-        let (rhs_lo, rhs_hi) = pack(&[b'a', b'b', b'c']);
+        let (lhs_lo, lhs_hi) = pack(b"zab");
+        let (rhs_lo, rhs_hi) = pack(b"abc");
         assert_eq!(
             pcmpstr_index_helper(lhs_lo, lhs_hi, rhs_lo, rhs_hi, 0, 0, 0, 0),
             1
@@ -5886,7 +5933,7 @@ mod tests {
 
         assert!(code.contains(&movz_x(
             FLAG_ALIGN_LHS_REG,
-            KSTATE_CPUID_LEAF7_EBX as u16,
+            u16::try_from(KSTATE_CPUID_LEAF7_EBX).expect("leaf7 EBX fits u16"),
             0
         )));
         assert_ne!(KSTATE_CPUID_LEAF7_EBX & (1 << 3), 0, "BMI1 bit");

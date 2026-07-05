@@ -1044,6 +1044,7 @@ fn live_cpp_translator_cond_jump_matrix_contains_supported_paths() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn live_cpp_translator_cmp_then_cond_jump_matrix() {
     let mut cpp = Translator::new().expect("cpp translator");
     let mut rust = RustSmokeTranslator::new();
