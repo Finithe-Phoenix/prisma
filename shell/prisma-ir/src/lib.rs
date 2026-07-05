@@ -96,6 +96,14 @@ pub enum BinOpKind {
     Pext,
 }
 
+/// Which half of a full-width division result an IR statement materializes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[repr(u8)]
+pub enum WideDivResult {
+    Quotient = 0,
+    Remainder,
+}
+
 /// Condition codes for `Compare`, `CondJumpRel`, `Select`, `CondJumpFlags`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
@@ -140,6 +148,20 @@ pub enum FlagBit {
     Overflow,
     Parity,
     Aux,
+}
+
+/// How `StoreRflagsFromNzcv` derives the x86 CF bit from ARM64 NZCV.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[repr(u8)]
+pub enum RflagsCarryMode {
+    /// x86 CF is ARM64 C, used by add-like flag writers.
+    ArmCarry = 0,
+    /// x86 CF is NOT ARM64 C, used by subtract/compare borrow semantics.
+    InvertArmCarry,
+    /// x86 CF is cleared, used by logical flag writers.
+    Clear,
+    /// x86 CF is left unchanged while ZF/SF/OF are refreshed.
+    Preserve,
 }
 
 /// Memory fence kinds.
@@ -241,6 +263,16 @@ pub enum VecFpSize {
     D2,
 }
 
+/// Packed F16C conversion direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[repr(u8)]
+pub enum VecF16CvtKind {
+    /// Convert four packed half-precision values from src[63:0] to four f32 lanes.
+    PhToPs = 0,
+    /// Convert four packed f32 lanes to four half-precision values in result[63:0].
+    PsToPh,
+}
+
 /// Scalar FP size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[repr(u8)]
@@ -324,6 +356,16 @@ pub struct BinOp {
     pub size: OpSize,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WideDiv {
+    /// High half of the dividend (`RDX` for x86-64 `DIV/IDIV r/m64`).
+    pub high: Ref,
+    /// Low half of the dividend (`RAX` for x86-64 `DIV/IDIV r/m64`).
+    pub low: Ref,
+    pub divisor: Ref,
+    pub signed: bool,
+    pub result: WideDivResult,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Compare {
     pub cc: CondCode,
     pub lhs: Ref,
@@ -360,6 +402,22 @@ pub struct StoreMemTSO {
     pub size: OpSize,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AtomicCmpxchg {
+    pub addr: Ref,
+    pub expected: Ref,
+    pub new_value: Ref,
+    pub size: OpSize,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AtomicCmpxchgPair {
+    pub addr: Ref,
+    pub expected_low: Ref,
+    pub expected_high: Ref,
+    pub new_low: Ref,
+    pub new_high: Ref,
+    pub old_high: Ref,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Jump {
     pub target_block: u32,
 }
@@ -379,6 +437,13 @@ pub struct CmpFlags {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AluFlags {
+    pub op: BinOpKind,
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub size: OpSize,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AluFlagsPreserveCarry {
     pub op: BinOpKind,
     pub lhs: Ref,
     pub rhs: Ref,
@@ -476,6 +541,20 @@ pub struct VecBinOp {
     pub lane: VecLane,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VecClMul {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lhs_high: bool,
+    pub rhs_high: bool,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VecF16Cvt {
+    pub kind: VecF16CvtKind,
+    pub src: Ref,
+    /// VCVTPS2PH rounding immediate. Ignored for VCVTPH2PS.
+    pub rounding: u8,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoadVecReg {
     pub xmm_index: u8,
 }
@@ -523,6 +602,30 @@ pub struct VecCmp {
     pub lhs: Ref,
     pub rhs: Ref,
     pub lane: VecLane,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcmpStrIndex {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lhs_len: Option<Ref>,
+    pub rhs_len: Option<Ref>,
+    pub imm8: u8,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcmpStrMask {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lhs_len: Option<Ref>,
+    pub rhs_len: Option<Ref>,
+    pub imm8: u8,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcmpStrFlags {
+    pub lhs: Ref,
+    pub rhs: Ref,
+    pub lhs_len: Option<Ref>,
+    pub rhs_len: Option<Ref>,
+    pub imm8: u8,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VecShuffle32x4 {
@@ -695,6 +798,33 @@ pub struct ReadCarryOut {
 pub struct StoreCarry {
     pub value: Ref,
 }
+/// Loads the persistent x86 RFLAGS subset into `result`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadRflags;
+/// Stores the persistent x86 RFLAGS subset from `value`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreRflags {
+    pub value: Ref,
+}
+/// Publishes the transient ARM64 NZCV flags into the persistent x86 RFLAGS
+/// subset. ZF/SF/OF always come from NZCV; CF follows `carry`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreRflagsFromNzcv {
+    pub carry: RflagsCarryMode,
+    pub pf: Option<Ref>,
+    pub af: Option<Ref>,
+}
+/// Publishes explicit 0/1 refs into the persistent x86 RFLAGS subset while
+/// preserving CF. PF/AF are optional so producers can avoid inventing undefined
+/// or not-yet-modelled bits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreRflagsFromBits {
+    pub pf: Option<Ref>,
+    pub af: Option<Ref>,
+    pub zf: Ref,
+    pub sf: Ref,
+    pub of: Ref,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VecBlend {
     pub dst: Ref,
@@ -828,6 +958,11 @@ pub struct InlineAsm {
 pub struct Trap {
     pub kind: TrapKind,
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrapIf {
+    pub condition: Ref,
+    pub kind: TrapKind,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FpConstant {
@@ -862,17 +997,21 @@ pub enum Op {
     StoreReg(StoreReg),
     LoadSegBase(LoadSegBase),
     BinOp(BinOp),
+    WideDiv(WideDiv),
     Compare(Compare),
     Select(Select),
     LoadMem(LoadMem),
     StoreMem(StoreMem),
     LoadMemTSO(LoadMemTSO),
     StoreMemTSO(StoreMemTSO),
+    AtomicCmpxchg(AtomicCmpxchg),
+    AtomicCmpxchgPair(AtomicCmpxchgPair),
     Jump(Jump),
     CondJump(CondJump),
     Return(Return),
     CmpFlags(CmpFlags),
     AluFlags(AluFlags),
+    AluFlagsPreserveCarry(AluFlagsPreserveCarry),
     JumpReg(JumpReg),
     JumpRel(JumpRel),
     CondJumpRel(CondJumpRel),
@@ -884,6 +1023,7 @@ pub enum Op {
     Rdtsc(Rdtsc),
     Syscall(Syscall),
     Trap(Trap),
+    TrapIf(TrapIf),
     Extend(Extend),
     Truncate(Truncate),
     Fence(Fence),
@@ -897,6 +1037,8 @@ pub enum Op {
     RspAdjust(RspAdjust),
     VecConstant(VecConstant),
     VecBinOp(VecBinOp),
+    VecClMul(VecClMul),
+    VecF16Cvt(VecF16Cvt),
     LoadVecReg(LoadVecReg),
     StoreVecReg(StoreVecReg),
     LoadVec(LoadVec),
@@ -906,6 +1048,9 @@ pub enum Op {
     XmmFromGpr(XmmFromGpr),
     GprFromXmm(GprFromXmm),
     VecCmp(VecCmp),
+    PcmpStrIndex(PcmpStrIndex),
+    PcmpStrMask(PcmpStrMask),
+    PcmpStrFlags(PcmpStrFlags),
     VecShuffle32x4(VecShuffle32x4),
     VecUnpack(VecUnpack),
     VecShiftImm(VecShiftImm),
@@ -954,6 +1099,10 @@ pub enum Op {
     LoadCarry(LoadCarry),
     ReadCarryOut(ReadCarryOut),
     StoreCarry(StoreCarry),
+    LoadRflags(LoadRflags),
+    StoreRflags(StoreRflags),
+    StoreRflagsFromNzcv(StoreRflagsFromNzcv),
+    StoreRflagsFromBits(StoreRflagsFromBits),
 }
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1147,11 @@ impl Op {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
             }
+            Self::WideDiv(x) => {
+                x.high = f(x.high);
+                x.low = f(x.low);
+                x.divisor = f(x.divisor);
+            }
             Self::Compare(x) => {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
@@ -1016,12 +1170,29 @@ impl Op {
                 x.addr = f(x.addr);
                 x.value = f(x.value);
             }
+            Self::AtomicCmpxchg(x) => {
+                x.addr = f(x.addr);
+                x.expected = f(x.expected);
+                x.new_value = f(x.new_value);
+            }
+            Self::AtomicCmpxchgPair(x) => {
+                x.addr = f(x.addr);
+                x.expected_low = f(x.expected_low);
+                x.expected_high = f(x.expected_high);
+                x.new_low = f(x.new_low);
+                x.new_high = f(x.new_high);
+                x.old_high = f(x.old_high);
+            }
             Self::CondJump(x) => x.cond = f(x.cond),
             Self::CmpFlags(x) => {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
             }
             Self::AluFlags(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::AluFlagsPreserveCarry(x) => {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
             }
@@ -1043,6 +1214,11 @@ impl Op {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
             }
+            Self::VecClMul(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+            }
+            Self::VecF16Cvt(x) => x.src = f(x.src),
             Self::StoreVecReg(x) => x.value = f(x.value),
             Self::LoadVec(x) => x.addr = f(x.addr),
             Self::StoreVec(x) => {
@@ -1062,6 +1238,36 @@ impl Op {
             Self::VecCmp(x) => {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
+            }
+            Self::PcmpStrIndex(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+                if let Some(r) = x.lhs_len {
+                    x.lhs_len = Some(f(r));
+                }
+                if let Some(r) = x.rhs_len {
+                    x.rhs_len = Some(f(r));
+                }
+            }
+            Self::PcmpStrMask(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+                if let Some(r) = x.lhs_len {
+                    x.lhs_len = Some(f(r));
+                }
+                if let Some(r) = x.rhs_len {
+                    x.rhs_len = Some(f(r));
+                }
+            }
+            Self::PcmpStrFlags(x) => {
+                x.lhs = f(x.lhs);
+                x.rhs = f(x.rhs);
+                if let Some(r) = x.lhs_len {
+                    x.lhs_len = Some(f(r));
+                }
+                if let Some(r) = x.rhs_len {
+                    x.rhs_len = Some(f(r));
+                }
             }
             Self::VecShuffle32x4(x) => x.src = f(x.src),
             Self::VecUnpack(x) => {
@@ -1175,6 +1381,8 @@ impl Op {
             Self::X87Push(x) => x.value = f(x.value),
             Self::ReadCarryOut(x) => x.flags = f(x.flags),
             Self::StoreCarry(x) => x.value = f(x.value),
+            Self::StoreRflags(x) => x.value = f(x.value),
+            Self::TrapIf(x) => x.condition = f(x.condition),
             // Ops with no SSA operand refs: constants, register/segment loads,
             // block/guest-address control transfers, fences, CPU queries,
             // string ops, and the x87 load/pop forms.
@@ -1204,7 +1412,27 @@ impl Op {
             | Self::RepMovs(_)
             | Self::X87Load(_)
             | Self::X87Pop(_)
-            | Self::LoadCarry(_) => {}
+            | Self::LoadCarry(_)
+            | Self::LoadRflags(_) => {}
+            Self::StoreRflagsFromNzcv(x) => {
+                if let Some(pf) = x.pf {
+                    x.pf = Some(f(pf));
+                }
+                if let Some(af) = x.af {
+                    x.af = Some(f(af));
+                }
+            }
+            Self::StoreRflagsFromBits(x) => {
+                if let Some(pf) = x.pf {
+                    x.pf = Some(f(pf));
+                }
+                if let Some(af) = x.af {
+                    x.af = Some(f(af));
+                }
+                x.zf = f(x.zf);
+                x.sf = f(x.sf);
+                x.of = f(x.of);
+            }
         }
     }
 }
@@ -1264,6 +1492,158 @@ mod tests {
         match stmt.op {
             Op::BinOp(b) => {
                 assert_eq!((b.lhs, b.rhs), (10, 11));
+            }
+            _ => panic!("op changed"),
+        }
+    }
+
+    #[test]
+    fn map_refs_shifts_atomic_pair_secondary_result() {
+        let mut stmt = Stmt::new(
+            Some(6),
+            Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
+                addr: 0,
+                expected_low: 1,
+                expected_high: 2,
+                new_low: 3,
+                new_high: 4,
+                old_high: 7,
+            }),
+        );
+
+        stmt.map_refs(|r| r + 10);
+
+        assert_eq!(stmt.result, Some(16));
+        match stmt.op {
+            Op::AtomicCmpxchgPair(cas) => {
+                assert_eq!(cas.addr, 10);
+                assert_eq!(cas.expected_low, 11);
+                assert_eq!(cas.expected_high, 12);
+                assert_eq!(cas.new_low, 13);
+                assert_eq!(cas.new_high, 14);
+                assert_eq!(cas.old_high, 17);
+            }
+            _ => panic!("op changed"),
+        }
+    }
+
+    #[test]
+    fn map_refs_shifts_vec_clmul_operands() {
+        let mut stmt = Stmt::new(
+            Some(2),
+            Op::VecClMul(VecClMul {
+                lhs: 0,
+                rhs: 1,
+                lhs_high: true,
+                rhs_high: false,
+            }),
+        );
+
+        stmt.map_refs(|r| r + 10);
+
+        assert_eq!(stmt.result, Some(12));
+        match stmt.op {
+            Op::VecClMul(p) => {
+                assert_eq!(p.lhs, 10);
+                assert_eq!(p.rhs, 11);
+                assert!(p.lhs_high);
+                assert!(!p.rhs_high);
+            }
+            _ => panic!("op changed"),
+        }
+    }
+
+    #[test]
+    fn map_refs_shifts_vec_f16cvt_operand() {
+        let mut stmt = Stmt::new(
+            Some(2),
+            Op::VecF16Cvt(VecF16Cvt {
+                kind: VecF16CvtKind::PsToPh,
+                src: 1,
+                rounding: 0,
+            }),
+        );
+
+        stmt.map_refs(|r| r + 10);
+
+        assert_eq!(stmt.result, Some(12));
+        match stmt.op {
+            Op::VecF16Cvt(p) => {
+                assert_eq!(p.kind, VecF16CvtKind::PsToPh);
+                assert_eq!(p.src, 11);
+                assert_eq!(p.rounding, 0);
+            }
+            _ => panic!("op changed"),
+        }
+    }
+
+    #[test]
+    fn map_refs_shifts_pcmp_string_lengths() {
+        let mut index = Stmt::new(
+            Some(4),
+            Op::PcmpStrIndex(PcmpStrIndex {
+                lhs: 0,
+                rhs: 1,
+                lhs_len: Some(2),
+                rhs_len: Some(3),
+                imm8: 0x18,
+            }),
+        );
+        index.map_refs(|r| r + 20);
+        assert_eq!(index.result, Some(24));
+        match index.op {
+            Op::PcmpStrIndex(p) => {
+                assert_eq!(p.lhs, 20);
+                assert_eq!(p.rhs, 21);
+                assert_eq!(p.lhs_len, Some(22));
+                assert_eq!(p.rhs_len, Some(23));
+                assert_eq!(p.imm8, 0x18);
+            }
+            _ => panic!("op changed"),
+        }
+
+        let mut mask = Stmt::new(
+            Some(12),
+            Op::PcmpStrMask(PcmpStrMask {
+                lhs: 10,
+                rhs: 11,
+                lhs_len: None,
+                rhs_len: Some(13),
+                imm8: 0x40,
+            }),
+        );
+        mask.map_refs(|r| r + 5);
+        assert_eq!(mask.result, Some(17));
+        match mask.op {
+            Op::PcmpStrMask(p) => {
+                assert_eq!(p.lhs, 15);
+                assert_eq!(p.rhs, 16);
+                assert_eq!(p.lhs_len, None);
+                assert_eq!(p.rhs_len, Some(18));
+                assert_eq!(p.imm8, 0x40);
+            }
+            _ => panic!("op changed"),
+        }
+
+        let mut flags = Stmt::new(
+            Some(30),
+            Op::PcmpStrFlags(PcmpStrFlags {
+                lhs: 20,
+                rhs: 21,
+                lhs_len: Some(22),
+                rhs_len: None,
+                imm8: 0x04,
+            }),
+        );
+        flags.map_refs(|r| r + 2);
+        assert_eq!(flags.result, Some(32));
+        match flags.op {
+            Op::PcmpStrFlags(p) => {
+                assert_eq!(p.lhs, 22);
+                assert_eq!(p.rhs, 23);
+                assert_eq!(p.lhs_len, Some(24));
+                assert_eq!(p.rhs_len, None);
+                assert_eq!(p.imm8, 0x04);
             }
             _ => panic!("op changed"),
         }
