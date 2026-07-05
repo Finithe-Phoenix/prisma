@@ -58,6 +58,21 @@ TEST_CASE("ir_serialize: LoadSegBase round-trip", "[ir_serialize]") {
         Op{LoadSegBase{SegmentReg::Fs}}});
 }
 
+TEST_CASE("ir_serialize: LoadCarry / StoreCarry round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{4u}, Op{LoadCarry{}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{StoreCarry{Ref{4u}}}});
+}
+
+TEST_CASE("ir_serialize: LoadRflags / StoreRflags round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{5u}, Op{LoadRflags{}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt, Op{StoreRflags{Ref{5u}}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{StoreRflagsFromNzcv{RflagsCarryMode::InvertArmCarry,
+                               Ref{6u}, std::nullopt}}});
+    check_single_stmt_roundtrip(Stmt{std::nullopt,
+        Op{StoreRflagsFromBits{Ref{6u}, Ref{7u}, Ref{8u}, Ref{9u}, Ref{10u}}}});
+}
+
 TEST_CASE("ir_serialize: BinOp round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{5u},
         Op{BinOp{BinOpKind::Mul, Ref{1u}, Ref{2u}, OpSize::I64}}});
@@ -65,6 +80,13 @@ TEST_CASE("ir_serialize: BinOp round-trip", "[ir_serialize]") {
         Op{BinOp{BinOpKind::Rcr, Ref{3u}, Ref{4u}, OpSize::I16}}});
     check_single_stmt_roundtrip(Stmt{Ref{7u},
         Op{BinOp{BinOpKind::Pext, Ref{3u}, Ref{4u}, OpSize::I64}}});
+}
+
+TEST_CASE("ir_serialize: WideDiv round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{8u},
+        Op{WideDiv{Ref{1u}, Ref{0u}, Ref{2u}, false, WideDivResult::Quotient}}});
+    check_single_stmt_roundtrip(Stmt{Ref{9u},
+        Op{WideDiv{Ref{1u}, Ref{0u}, Ref{2u}, true, WideDivResult::Remainder}}});
 }
 
 TEST_CASE("ir_serialize: Compare round-trip", "[ir_serialize]") {
@@ -89,6 +111,17 @@ TEST_CASE("ir_serialize: LoadMemTSO / StoreMemTSO round-trip", "[ir_serialize]")
         Op{LoadMemTSO{Ref{14u}, OpSize::I32}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt,
         Op{StoreMemTSO{Ref{15u}, Ref{16u}, OpSize::I64}}});
+}
+
+TEST_CASE("ir_serialize: AtomicCmpxchg round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{17u},
+        Op{AtomicCmpxchg{Ref{1u}, Ref{2u}, Ref{3u}, OpSize::I32}}});
+}
+
+TEST_CASE("ir_serialize: AtomicCmpxchgPair round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{18u},
+        Op{AtomicCmpxchgPair{Ref{1u}, Ref{2u}, Ref{3u}, Ref{4u},
+                             Ref{5u}, Ref{19u}}}});
 }
 
 TEST_CASE("ir_serialize: Jump / CondJump / Return round-trip", "[ir_serialize]") {
@@ -168,6 +201,12 @@ TEST_CASE("ir_serialize: VecConstant + VecBinOp round-trip",
         Op{VecBinOp{VecBinOpKind::Add, Ref{0u}, Ref{1u}, VecLane::B16}}});
     check_single_stmt_roundtrip(Stmt{Ref{3u},
         Op{VecBinOp{VecBinOpKind::Xor, Ref{0u}, Ref{0u}, VecLane::D2}}});
+    check_single_stmt_roundtrip(Stmt{Ref{4u},
+        Op{VecClMul{Ref{0u}, Ref{1u}, true, false}}});
+    check_single_stmt_roundtrip(Stmt{Ref{5u},
+        Op{VecF16Cvt{VecF16CvtKind::PhToPs, Ref{0u}, 0u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{6u},
+        Op{VecF16Cvt{VecF16CvtKind::PsToPh, Ref{1u}, 0x0Bu}}});
 }
 
 TEST_CASE("ir_serialize: VecFpBinOp round-trip", "[ir_serialize]") {
@@ -188,6 +227,15 @@ TEST_CASE("ir_serialize: LoadVec + StoreVec round-trip", "[ir_serialize]") {
     check_single_stmt_roundtrip(Stmt{Ref{8u}, Op{LoadVec{Ref{0u}}}});
     check_single_stmt_roundtrip(Stmt{std::nullopt,
         Op{StoreVec{Ref{0u}, Ref{8u}}}});
+}
+
+TEST_CASE("ir_serialize: PcmpStr ops round-trip", "[ir_serialize]") {
+    check_single_stmt_roundtrip(Stmt{Ref{23u},
+        Op{PcmpStrIndex{Ref{0u}, Ref{1u}, std::nullopt, std::nullopt, 0x00u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{24u},
+        Op{PcmpStrMask{Ref{0u}, Ref{1u}, Ref{2u}, Ref{3u}, 0x48u}}});
+    check_single_stmt_roundtrip(Stmt{Ref{25u},
+        Op{PcmpStrFlags{Ref{0u}, Ref{1u}, Ref{2u}, Ref{3u}, 0x08u}}});
 }
 
 TEST_CASE("ir_serialize: VecShiftBytes round-trip", "[ir_serialize]") {
@@ -355,8 +403,9 @@ TEST_CASE("ir_serialize: large mixed program round-trip", "[ir_serialize]") {
         {std::nullopt, Op{Cpuid{}}},
         {std::nullopt, Op{Syscall{}}},
 
-        // 23: trap
+        // 23-24: traps
         {std::nullopt, Op{Trap{TrapKind::Sigfpe}}},
+        {std::nullopt, Op{TrapIf{Ref{4u}, TrapKind::Sigfpe}}},
     };
 
     const auto bytes = serialize(program);

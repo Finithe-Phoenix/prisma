@@ -95,6 +95,8 @@ bool op_may_write_guest_memory(const ir::Op& op) noexcept {
         using T = std::decay_t<decltype(inner)>;
         return std::is_same_v<T, ir::StoreMem>
             || std::is_same_v<T, ir::StoreMemTSO>
+            || std::is_same_v<T, ir::AtomicCmpxchg>
+            || std::is_same_v<T, ir::AtomicCmpxchgPair>
             || std::is_same_v<T, ir::StoreVec>
             || std::is_same_v<T, ir::CallRel>
             || std::is_same_v<T, ir::CallReg>
@@ -500,27 +502,28 @@ TranslateResult Translator::translate(
     // decoded).
     lopts.cpuid_leaf1_edx = (1u << 0) | (1u << 4) | (1u << 8) |
                             (1u << 15) | (1u << 25) | (1u << 26);
-    // Leaf 1 ECX: SSE3 (ADDSUB/HSUB now decoded), SSSE3, FMA (96/96
-    // forms), CMPXCHG16B, SSE4.1, MOVBE, POPCNT (32/64-bit + memory
-    // forms + ZF), OSXSAVE, AVX. Deliberately clear:
-    //   SSE4.2 — its canonical use-case PCMPISTRI/PCMPESTRI (string
-    //            functions) is not decoded; only PCMPGTQ/CRC32 are.
+    // Leaf 1 ECX: SSE3 (ADDSUB/HSUB now decoded), PCLMULQDQ, SSSE3,
+    // FMA (96/96 forms), CMPXCHG16B, SSE4.1, SSE4.2 (PCMPxSTRx +
+    // PCMPGTQ/CRC32), MOVBE, POPCNT (32/64-bit + memory forms + ZF),
+    // OSXSAVE, AVX, F16C (W2-09 — VCVTPH2PS/VCVTPS2PH).
+    // Deliberately clear:
     //   XSAVE  — instructions + CPUID leaf 0xD unmodelled; the
     //            canonical AVX gate (Intel's sequence, MSVC's
     //            __isa_available, glibc) checks OSXSAVE+XGETBV only.
-    //   PCLMULQDQ / F16C / RDRAND — not decoded.
+    //   RDRAND — not decoded.
     // Known thin spots inside advertised families (loud decode
     // failures by design, queued): SSSE3 PMADDUBSW/PMULHRSW/PSIGN,
     // SSE4.1 INSERTPS/BLENDPS-imm/DPPS/PACKUSDW.
-    lopts.cpuid_leaf1_ecx = (1u << 0) | (1u << 9) | (1u << 12) |
-                            (1u << 13) | (1u << 19) | (1u << 22) |
-                            (1u << 23) | (1u << 27) | (1u << 28);
-    // Leaf 7 EBX: BMI2 (bit 8) — SHLX/SARX/SHRX, RORX, MULX, BZHI,
-    // PDEP, PEXT are all decoded; that is the complete BMI2 set. BMI1
-    // deliberately clear (ANDN/BEXTR/BLSI/BLSMSK/BLSR not decoded);
-    // AVX2 deliberately clear (VPBROADCAST*/VINSERTI128/variable
-    // shifts missing).
-    lopts.cpuid_leaf7_ebx = 1u << 8;
+    lopts.cpuid_leaf1_ecx = (1u << 0) | (1u << 1) | (1u << 9) | (1u << 12) |
+                            (1u << 13) | (1u << 19) | (1u << 20) |
+                            (1u << 22) | (1u << 23) | (1u << 27) |
+                            (1u << 28) | (1u << 29);
+    // Leaf 7 EBX: BMI1 (bit 3) and BMI2 (bit 8) are advertised only
+    // after their scalar GPR families are decoded: BMI1 covers
+    // ANDN/BEXTR/BLSI/BLSMSK/BLSR; BMI2 covers SHLX/SARX/SHRX, RORX,
+    // MULX, BZHI, PDEP, and PEXT. AVX2 deliberately remains clear
+    // (VPBROADCAST*/VINSERTI128/variable vector shifts missing).
+    lopts.cpuid_leaf7_ebx = (1u << 3) | (1u << 8);
     {
         const auto& hf = runtime::host_features();
         if (hf.feat_sha1 && hf.feat_sha256) {

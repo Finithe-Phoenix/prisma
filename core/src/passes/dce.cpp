@@ -32,9 +32,14 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         if constexpr (std::is_same_v<T, ir::Constant>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadReg>) return true;
         else if constexpr (std::is_same_v<T, ir::BinOp>) return true;
+        else if constexpr (std::is_same_v<T, ir::WideDiv>) return true;
         else if constexpr (std::is_same_v<T, ir::Compare>) return true;
         else if constexpr (std::is_same_v<T, ir::Select>) return true;
+        else if constexpr (std::is_same_v<T, ir::Extend>) return true;
+        else if constexpr (std::is_same_v<T, ir::Truncate>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadMem>) return true;
+        else if constexpr (std::is_same_v<T, ir::LoadCarry>) return true;
+        else if constexpr (std::is_same_v<T, ir::LoadRflags>) return true;
         // F2-PS-002: WriteFlags / ReadFlag / WriteFlagsFp /
         // WriteFlagsPtest are pure — they compute a flag-typed Ref
         // from operands without side effects. If no consumer
@@ -44,8 +49,14 @@ bool is_pure_for_dce(const ir::Op& op) noexcept {
         else if constexpr (std::is_same_v<T, ir::ReadFlag>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsFp>) return true;
         else if constexpr (std::is_same_v<T, ir::VecConstant>) return true;
+        else if constexpr (std::is_same_v<T, ir::VecBinOp>) return true;
+        else if constexpr (std::is_same_v<T, ir::VecClMul>) return true;
+        else if constexpr (std::is_same_v<T, ir::VecF16Cvt>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadVecReg>) return true;
         else if constexpr (std::is_same_v<T, ir::LoadVecRegHi>) return true;
+        else if constexpr (std::is_same_v<T, ir::PcmpStrIndex>) return true;
+        else if constexpr (std::is_same_v<T, ir::PcmpStrMask>) return true;
+        else if constexpr (std::is_same_v<T, ir::PcmpStrFlags>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsPtest>) return true;
         else if constexpr (std::is_same_v<T, ir::WriteFlagsPtestYmm>) return true;
         else if constexpr (std::is_same_v<T, ir::VecTbl2>) return true;
@@ -80,12 +91,20 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::BinOp>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::WideDiv>) {
+            into.insert(x.high);
+            into.insert(x.low);
+            into.insert(x.divisor);
         } else if constexpr (std::is_same_v<T, ir::Compare>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
         } else if constexpr (std::is_same_v<T, ir::Select>) {
             into.insert(x.true_value);
             into.insert(x.false_value);
+        } else if constexpr (std::is_same_v<T, ir::Extend>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::LoadMem>) {
             into.insert(x.addr);
         } else if constexpr (std::is_same_v<T, ir::StoreMem>) {
@@ -96,12 +115,37 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
         } else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) {
             into.insert(x.addr);
             into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::AtomicCmpxchg>) {
+            into.insert(x.addr);
+            into.insert(x.expected);
+            into.insert(x.new_value);
+        } else if constexpr (std::is_same_v<T, ir::AtomicCmpxchgPair>) {
+            into.insert(x.addr);
+            into.insert(x.expected_low);
+            into.insert(x.expected_high);
+            into.insert(x.new_low);
+            into.insert(x.new_high);
+        } else if constexpr (std::is_same_v<T, ir::StoreCarry>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::StoreRflags>) {
+            into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::StoreRflagsFromNzcv>) {
+            if (x.pf) into.insert(*x.pf);
+            if (x.af) into.insert(*x.af);
+        } else if constexpr (std::is_same_v<T, ir::StoreRflagsFromBits>) {
+            if (x.pf) into.insert(*x.pf);
+            if (x.af) into.insert(*x.af);
+            into.insert(x.zf);
+            into.insert(x.sf);
+            into.insert(x.of);
         } else if constexpr (std::is_same_v<T, ir::Jump>) {
             (void)x;
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
             into.insert(x.target);
         } else if constexpr (std::is_same_v<T, ir::CallReg>) {
             into.insert(x.target);
+        } else if constexpr (std::is_same_v<T, ir::TrapIf>) {
+            into.insert(x.condition);
         } else if constexpr (std::is_same_v<T, ir::CondJump>) {
             into.insert(x.cond);
         } else if constexpr (std::is_same_v<T, ir::Return>) {
@@ -118,6 +162,10 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             (void)x;  // no SSA operands; cc + PCs are constants.
         } else if constexpr (std::is_same_v<T, ir::VecBinOp>) {
             into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::VecClMul>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::VecF16Cvt>) {
+            into.insert(x.src);
         } else if constexpr (std::is_same_v<T, ir::VecFpBinOp>) {
             into.insert(x.lhs); into.insert(x.rhs);
         } else if constexpr (std::is_same_v<T, ir::VecFpScalarBinOp>) {
@@ -132,6 +180,18 @@ void collect_operand_refs(const ir::Op& op, std::unordered_set<ir::Ref>& into) {
             into.insert(x.value);
         } else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
             into.insert(x.value);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrIndex>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+            if (x.lhs_len) into.insert(*x.lhs_len);
+            if (x.rhs_len) into.insert(*x.rhs_len);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrMask>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+            if (x.lhs_len) into.insert(*x.lhs_len);
+            if (x.rhs_len) into.insert(*x.rhs_len);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrFlags>) {
+            into.insert(x.lhs); into.insert(x.rhs);
+            if (x.lhs_len) into.insert(*x.lhs_len);
+            if (x.rhs_len) into.insert(*x.rhs_len);
         } else if constexpr (std::is_same_v<T, ir::VecCmp>) {
             into.insert(x.lhs); into.insert(x.rhs);
         } else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) {

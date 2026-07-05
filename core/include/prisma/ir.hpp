@@ -123,7 +123,47 @@ enum class SegmentReg : std::uint8_t {
 // that table, not invalidating cached translations.
 struct LoadSegBase { SegmentReg seg; };
 
+// Persistent carry flag access. This is separate from the existing
+// SSA/NZCV flags model so ADC/SBB/RCL/RCR-style chains can survive
+// across instructions without pretending all RFLAGS are implemented.
+enum class RflagsCarryMode : std::uint8_t {
+    ArmCarry = 0,
+    InvertArmCarry,
+    Clear,
+    Preserve,
+};
+
+struct LoadCarry {};
+struct StoreCarry { Ref value; };
+struct LoadRflags {};
+struct StoreRflags { Ref value; };
+struct StoreRflagsFromNzcv {
+    RflagsCarryMode carry;
+    std::optional<Ref> pf;
+    std::optional<Ref> af;
+};
+struct StoreRflagsFromBits {
+    std::optional<Ref> pf;
+    std::optional<Ref> af;
+    Ref zf;
+    Ref sf;
+    Ref of;
+};
+
 struct BinOp    { BinOpKind op; Ref lhs; Ref rhs; OpSize size; };
+
+enum class WideDivResult : std::uint8_t {
+    Quotient = 0,
+    Remainder,
+};
+
+struct WideDiv {
+    Ref high;
+    Ref low;
+    Ref divisor;
+    bool is_signed;
+    WideDivResult result;
+};
 
 struct Compare  { CondCode cc; Ref lhs; Ref rhs; OpSize size; };
 
@@ -141,6 +181,31 @@ struct LoadMem     { Ref addr; OpSize size; };
 struct StoreMem    { Ref addr; Ref value; OpSize size; };
 struct LoadMemTSO  { Ref addr; OpSize size; };
 struct StoreMemTSO { Ref addr; Ref value; OpSize size; };
+
+// Atomic compare-exchange used by memory CMPXCHG and CMPXCHG8B.
+//
+// The statement result is the old memory value. The memory destination is
+// updated to `new_value` only when the old value equals `expected`.
+struct AtomicCmpxchg {
+    Ref addr;
+    Ref expected;
+    Ref new_value;
+    OpSize size;
+};
+
+// Atomic 128-bit compare-exchange pair used by CMPXCHG16B.
+//
+// The statement result carries the low 64 bits of the old memory value.
+// `old_high` is a second SSA definition carrying the high 64 bits. Operand
+// walkers must treat `old_high` as a definition, not as a read operand.
+struct AtomicCmpxchgPair {
+    Ref addr;
+    Ref expected_low;
+    Ref expected_high;
+    Ref new_low;
+    Ref new_high;
+    Ref old_high;
+};
 
 struct Jump     { std::uint32_t target_block; };
 struct CondJump { Ref cond; std::uint32_t if_true; std::uint32_t if_false; };
@@ -403,6 +468,27 @@ struct VecBinOp {
     VecLane      lane;   // ignored for And/Or/Xor — they're bitwise.
 };
 
+// W2-08 — PCLMULQDQ / VPCLMULQDQ carry-less 64x64->128 multiply.
+// `lhs_high` selects qword 1 of lhs when set, otherwise qword 0.
+// `rhs_high` selects qword 1 of rhs when set, otherwise qword 0.
+struct VecClMul {
+    Ref  lhs;
+    Ref  rhs;
+    bool lhs_high;
+    bool rhs_high;
+};
+
+// W2-09 - F16C packed half/single conversions. PhToPs converts four
+// half-precision lanes from src[63:0] to four f32 lanes. PsToPh converts four
+// f32 lanes to half-precision bits in result[63:0]; result[127:64] is zero.
+enum class VecF16CvtKind : std::uint8_t { PhToPs = 0, PsToPh };
+
+struct VecF16Cvt {
+    VecF16CvtKind kind;
+    Ref           src;
+    std::uint8_t  rounding;  // VCVTPS2PH imm8; ignored by PhToPs.
+};
+
 // SSE2 register file: 16 × 128-bit XMM registers, mapped onto the
 // CpuStateFrame's `xmm[16]` slots. The decoder emits LoadVecReg /
 // StoreVecReg pairs around `VecBinOp` to materialise SSE2 register
@@ -427,6 +513,32 @@ struct StoreVecRegHi { std::uint8_t ymm_index; Ref value; };  // 0..15
 // the same Ref namespace as LoadVecReg.
 struct LoadVec  { Ref addr; };
 struct StoreVec { Ref addr; Ref value; };
+
+// W2-06 — SSE4.2 PCMPxSTRx string comparison primitives.
+// `lhs` and `rhs` are 128-bit XMM-shaped refs. Explicit-length PCMPESTR*
+// forms pass EAX/EDX refs through lhs_len/rhs_len; implicit PCMPISTR* forms
+// leave both empty and derive lengths from the first NUL lane.
+struct PcmpStrIndex {
+    Ref lhs;
+    Ref rhs;
+    std::optional<Ref> lhs_len;
+    std::optional<Ref> rhs_len;
+    std::uint8_t imm8;
+};
+struct PcmpStrMask {
+    Ref lhs;
+    Ref rhs;
+    std::optional<Ref> lhs_len;
+    std::optional<Ref> rhs_len;
+    std::uint8_t imm8;
+};
+struct PcmpStrFlags {
+    Ref lhs;
+    Ref rhs;
+    std::optional<Ref> lhs_len;
+    std::optional<Ref> rhs_len;
+    std::uint8_t imm8;
+};
 
 // F2-IR-008 — GPR ↔ XMM transfers (MOVD/MOVQ family).
 //   XmmFromGpr{value, size}: produces a 128-bit value with the low
@@ -1015,28 +1127,40 @@ struct Trap {
     TrapKind kind;
 };
 
+struct TrapIf {
+    Ref      condition;
+    TrapKind kind;
+};
+
 using Op = std::variant<
     Constant,
     LoadReg, StoreReg,
     LoadSegBase,
+    LoadCarry, StoreCarry,
+    LoadRflags, StoreRflags,
+    StoreRflagsFromNzcv, StoreRflagsFromBits,
     BinOp,
+    WideDiv,
     Compare,
     Select,
     LoadMem, StoreMem,
     LoadMemTSO, StoreMemTSO,
+    AtomicCmpxchg,
+    AtomicCmpxchgPair,
     Jump, CondJump, Return,
     JumpReg,
     CmpFlags, AluFlags, JumpRel, CondJumpRel,
     CallRel, CallReg, RetAdjusted,
-    Cpuid, Syscall, Trap,
+    Cpuid, Syscall, Trap, TrapIf,
     Extend, Truncate, Fence,
     GuestPc, InlineAsm,
     FpConstant, FpBinOp,
     WriteFlags, ReadFlag, CondJumpFlags,
     RspAdjust,
-    VecConstant, VecBinOp,
+    VecConstant, VecBinOp, VecClMul, VecF16Cvt,
     LoadVecReg, StoreVecReg,
     LoadVec, StoreVec,
+    PcmpStrIndex, PcmpStrMask, PcmpStrFlags,
     VecFpBinOp, VecFpScalarBinOp,
     XmmFromGpr, GprFromXmm,
     VecCmp, VecShuffle32x4,
@@ -1125,13 +1249,22 @@ bool operator==(const Constant& a, const Constant& b) noexcept;
 bool operator==(const LoadReg& a, const LoadReg& b) noexcept;
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept;
 bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept;
+bool operator==(const LoadCarry&, const LoadCarry&) noexcept;
+bool operator==(const StoreCarry& a, const StoreCarry& b) noexcept;
+bool operator==(const LoadRflags&, const LoadRflags&) noexcept;
+bool operator==(const StoreRflags& a, const StoreRflags& b) noexcept;
+bool operator==(const StoreRflagsFromNzcv& a, const StoreRflagsFromNzcv& b) noexcept;
+bool operator==(const StoreRflagsFromBits& a, const StoreRflagsFromBits& b) noexcept;
 bool operator==(const BinOp& a, const BinOp& b) noexcept;
+bool operator==(const WideDiv& a, const WideDiv& b) noexcept;
 bool operator==(const Compare& a, const Compare& b) noexcept;
 bool operator==(const Select& a, const Select& b) noexcept;
 bool operator==(const LoadMem& a, const LoadMem& b) noexcept;
 bool operator==(const StoreMem& a, const StoreMem& b) noexcept;
 bool operator==(const LoadMemTSO& a, const LoadMemTSO& b) noexcept;
 bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept;
+bool operator==(const AtomicCmpxchg& a, const AtomicCmpxchg& b) noexcept;
+bool operator==(const AtomicCmpxchgPair& a, const AtomicCmpxchgPair& b) noexcept;
 bool operator==(const Jump& a, const Jump& b) noexcept;
 bool operator==(const CondJump& a, const CondJump& b) noexcept;
 bool operator==(const JumpReg& a, const JumpReg& b) noexcept;
@@ -1150,6 +1283,7 @@ bool operator==(const Xgetbv&, const Xgetbv&) noexcept;
 bool operator==(const Rdtsc&, const Rdtsc&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
+bool operator==(const TrapIf& a, const TrapIf& b) noexcept;
 bool operator==(const Extend& a, const Extend& b) noexcept;
 bool operator==(const Truncate& a, const Truncate& b) noexcept;
 bool operator==(const Fence& a, const Fence& b) noexcept;
@@ -1163,12 +1297,17 @@ bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
 bool operator==(const RspAdjust&     a, const RspAdjust&     b) noexcept;
 bool operator==(const VecConstant&   a, const VecConstant&   b) noexcept;
 bool operator==(const VecBinOp&      a, const VecBinOp&      b) noexcept;
+bool operator==(const VecClMul&      a, const VecClMul&      b) noexcept;
+bool operator==(const VecF16Cvt&     a, const VecF16Cvt&     b) noexcept;
 bool operator==(const LoadVecReg&    a, const LoadVecReg&    b) noexcept;
 bool operator==(const StoreVecReg&   a, const StoreVecReg&   b) noexcept;
 bool operator==(const VecFpBinOp&    a, const VecFpBinOp&    b) noexcept;
 bool operator==(const VecFpScalarBinOp& a, const VecFpScalarBinOp& b) noexcept;
 bool operator==(const LoadVec&       a, const LoadVec&       b) noexcept;
 bool operator==(const StoreVec&      a, const StoreVec&      b) noexcept;
+bool operator==(const PcmpStrIndex&  a, const PcmpStrIndex&  b) noexcept;
+bool operator==(const PcmpStrMask&   a, const PcmpStrMask&   b) noexcept;
+bool operator==(const PcmpStrFlags&  a, const PcmpStrFlags&  b) noexcept;
 bool operator==(const XmmFromGpr&    a, const XmmFromGpr&    b) noexcept;
 bool operator==(const GprFromXmm&    a, const GprFromXmm&    b) noexcept;
 bool operator==(const VecCmp&        a, const VecCmp&        b) noexcept;

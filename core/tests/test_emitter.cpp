@@ -238,6 +238,18 @@ TEST_CASE("Emitter: ldaxr + stlxr pair is the acquire-release variant") {
     REQUIRE(text.find("stlxr") != std::string::npos);
 }
 
+TEST_CASE("Emitter: ldaxp + stlxp pair is the acquire-release pair variant") {
+    backend::Emitter em;
+    em.ldaxp(arm64::Reg::X0, arm64::Reg::X1, arm64::Reg::X2);
+    em.stlxp(arm64::Reg::X3, arm64::Reg::X4, arm64::Reg::X5, arm64::Reg::X2);
+    em.clrex();
+    em.finalize();
+    const std::string text = em.disassemble();
+    REQUIRE(text.find("ldaxp") != std::string::npos);
+    REQUIRE(text.find("stlxp") != std::string::npos);
+    REQUIRE(text.find("clrex") != std::string::npos);
+}
+
 TEST_CASE("Emitter: ldxr on byte size emits ldxrb") {
     backend::Emitter em;
     em.ldxr(arm64::Reg::X0, arm64::Reg::X1, ir::OpSize::I8);

@@ -18,8 +18,37 @@ bool operator==(const StoreReg& a, const StoreReg& b) noexcept {
 bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept {
     return a.seg == b.seg;
 }
+bool operator==(const LoadCarry&, const LoadCarry&) noexcept {
+    return true;
+}
+bool operator==(const StoreCarry& a, const StoreCarry& b) noexcept {
+    return a.value == b.value;
+}
+bool operator==(const LoadRflags&, const LoadRflags&) noexcept {
+    return true;
+}
+bool operator==(const StoreRflags& a, const StoreRflags& b) noexcept {
+    return a.value == b.value;
+}
+bool operator==(const StoreRflagsFromNzcv& a, const StoreRflagsFromNzcv& b) noexcept {
+    return a.carry == b.carry && a.pf == b.pf && a.af == b.af;
+}
+bool operator==(const StoreRflagsFromBits& a, const StoreRflagsFromBits& b) noexcept {
+    return a.pf == b.pf
+        && a.af == b.af
+        && a.zf == b.zf
+        && a.sf == b.sf
+        && a.of == b.of;
+}
 bool operator==(const BinOp& a, const BinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
+}
+bool operator==(const WideDiv& a, const WideDiv& b) noexcept {
+    return a.high == b.high
+        && a.low == b.low
+        && a.divisor == b.divisor
+        && a.is_signed == b.is_signed
+        && a.result == b.result;
 }
 bool operator==(const Compare& a, const Compare& b) noexcept {
     return a.cc == b.cc && a.lhs == b.lhs && a.rhs == b.rhs && a.size == b.size;
@@ -39,6 +68,20 @@ bool operator==(const LoadMemTSO& a, const LoadMemTSO& b) noexcept {
 }
 bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept {
     return a.addr == b.addr && a.value == b.value && a.size == b.size;
+}
+bool operator==(const AtomicCmpxchg& a, const AtomicCmpxchg& b) noexcept {
+    return a.addr == b.addr
+        && a.expected == b.expected
+        && a.new_value == b.new_value
+        && a.size == b.size;
+}
+bool operator==(const AtomicCmpxchgPair& a, const AtomicCmpxchgPair& b) noexcept {
+    return a.addr == b.addr
+        && a.expected_low == b.expected_low
+        && a.expected_high == b.expected_high
+        && a.new_low == b.new_low
+        && a.new_high == b.new_high
+        && a.old_high == b.old_high;
 }
 bool operator==(const Jump& a, const Jump& b) noexcept {
     return a.target_block == b.target_block;
@@ -87,6 +130,9 @@ bool operator==(const Syscall&, const Syscall&) noexcept {
 bool operator==(const Trap& a, const Trap& b) noexcept {
     return a.kind == b.kind;
 }
+bool operator==(const TrapIf& a, const TrapIf& b) noexcept {
+    return a.condition == b.condition && a.kind == b.kind;
+}
 bool operator==(const Fence& a, const Fence& b) noexcept {
     return a.kind == b.kind;
 }
@@ -134,6 +180,13 @@ bool operator==(const VecConstant& a, const VecConstant& b) noexcept {
 }
 bool operator==(const VecBinOp& a, const VecBinOp& b) noexcept {
     return a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs && a.lane == b.lane;
+}
+bool operator==(const VecClMul& a, const VecClMul& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs
+        && a.lhs_high == b.lhs_high && a.rhs_high == b.rhs_high;
+}
+bool operator==(const VecF16Cvt& a, const VecF16Cvt& b) noexcept {
+    return a.kind == b.kind && a.src == b.src && a.rounding == b.rounding;
 }
 bool operator==(const LoadVecReg& a, const LoadVecReg& b) noexcept {
     return a.xmm_index == b.xmm_index;
@@ -191,6 +244,21 @@ bool operator==(const LoadVec& a, const LoadVec& b) noexcept {
 }
 bool operator==(const StoreVec& a, const StoreVec& b) noexcept {
     return a.addr == b.addr && a.value == b.value;
+}
+bool operator==(const PcmpStrIndex& a, const PcmpStrIndex& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs
+        && a.lhs_len == b.lhs_len && a.rhs_len == b.rhs_len
+        && a.imm8 == b.imm8;
+}
+bool operator==(const PcmpStrMask& a, const PcmpStrMask& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs
+        && a.lhs_len == b.lhs_len && a.rhs_len == b.rhs_len
+        && a.imm8 == b.imm8;
+}
+bool operator==(const PcmpStrFlags& a, const PcmpStrFlags& b) noexcept {
+    return a.lhs == b.lhs && a.rhs == b.rhs
+        && a.lhs_len == b.lhs_len && a.rhs_len == b.rhs_len
+        && a.imm8 == b.imm8;
 }
 bool operator==(const XmmFromGpr& a, const XmmFromGpr& b) noexcept {
     return a.value == b.value && a.size == b.size;

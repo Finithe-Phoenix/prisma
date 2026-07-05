@@ -77,13 +77,24 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{1u, LoadReg{Gpr::Rax, OpSize::I64}});
     c.visit(Stmt{std::nullopt, StoreReg{Gpr::Rbx, 1u, OpSize::I64}});
     c.visit(Stmt{2u, LoadSegBase{SegmentReg::Fs}});
+    c.visit(Stmt{63u, LoadCarry{}});
+    c.visit(Stmt{std::nullopt, StoreCarry{63u}});
+    c.visit(Stmt{64u, LoadRflags{}});
+    c.visit(Stmt{std::nullopt, StoreRflags{64u}});
+    c.visit(Stmt{std::nullopt,
+        StoreRflagsFromNzcv{RflagsCarryMode::ArmCarry, 63u, 64u}});
+    c.visit(Stmt{std::nullopt,
+        StoreRflagsFromBits{63u, 64u, 4u, 5u, 6u}});
     c.visit(Stmt{3u, BinOp{BinOpKind::Add, 0u, 1u, OpSize::I64}});
+    c.visit(Stmt{65u, WideDiv{1u, 0u, 2u, false, WideDivResult::Quotient}});
     c.visit(Stmt{4u, Compare{CondCode::Eq, 0u, 1u, OpSize::I64}});
     c.visit(Stmt{5u, Select{CondCode::Ne, 0u, 1u, OpSize::I64}});
     c.visit(Stmt{6u, LoadMem{1u, OpSize::I64}});
     c.visit(Stmt{std::nullopt, StoreMem{1u, 6u, OpSize::I64}});
     c.visit(Stmt{7u, LoadMemTSO{1u, OpSize::I64}});
     c.visit(Stmt{std::nullopt, StoreMemTSO{1u, 7u, OpSize::I64}});
+    c.visit(Stmt{8u, AtomicCmpxchg{1u, 2u, 3u, OpSize::I64}});
+    c.visit(Stmt{8u, AtomicCmpxchgPair{1u, 2u, 3u, 4u, 5u, 9u}});
     c.visit(Stmt{std::nullopt, Jump{0u}});
     c.visit(Stmt{std::nullopt, CondJump{4u, 0u, 1u}});
     c.visit(Stmt{std::nullopt, Return{}});
@@ -99,6 +110,7 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{std::nullopt, Cpuid{}});
     c.visit(Stmt{std::nullopt, Syscall{}});
     c.visit(Stmt{std::nullopt, Trap{TrapKind::Sigtrap}});
+    c.visit(Stmt{std::nullopt, TrapIf{0u, TrapKind::Sigfpe}});
     c.visit(Stmt{8u,
         Extend{1u, OpSize::I8, OpSize::I64, /*signed=*/true}});
     c.visit(Stmt{9u, Truncate{8u, OpSize::I8}});
@@ -113,6 +125,8 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
     c.visit(Stmt{std::nullopt, RspAdjust{-8}});
     c.visit(Stmt{14u, VecConstant{0u, 0u}});
     c.visit(Stmt{15u, VecBinOp{VecBinOpKind::Add, 14u, 14u, VecLane::B16}});
+    c.visit(Stmt{63u, VecClMul{14u, 14u, true, false}});
+    c.visit(Stmt{69u, VecF16Cvt{VecF16CvtKind::PhToPs, 14u, 0u}});
     c.visit(Stmt{16u, LoadVecReg{0u}});
     c.visit(Stmt{std::nullopt, StoreVecReg{0u, 16u}});
     c.visit(Stmt{17u,
@@ -121,6 +135,9 @@ TEST_CASE("OpCounter: Kind covers every Op variant") {
         VecFpScalarBinOp{VecFpBinOpKind::Add, 14u, 14u, FpSize::F32}});
     c.visit(Stmt{19u, LoadVec{0u}});
     c.visit(Stmt{std::nullopt, StoreVec{0u, 19u}});
+    c.visit(Stmt{66u, PcmpStrIndex{14u, 14u, std::nullopt, std::nullopt, 0x00u}});
+    c.visit(Stmt{67u, PcmpStrMask{14u, 14u, 0u, 1u, 0x48u}});
+    c.visit(Stmt{68u, PcmpStrFlags{14u, 14u, 0u, 1u, 0x08u}});
     c.visit(Stmt{20u, XmmFromGpr{0u, OpSize::I64}});
     c.visit(Stmt{21u, GprFromXmm{14u, OpSize::I32}});
     c.visit(Stmt{22u, VecCmp{VecCmpKind::Eq, 14u, 14u, VecLane::B16}});

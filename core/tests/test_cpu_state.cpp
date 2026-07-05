@@ -79,6 +79,16 @@ TEST_CASE("CpuStateFrame: fs_base_offset and gs_base_offset are stable") {
     REQUIRE(runtime::CpuStateFrame::gs_base_offset() == 800);
 }
 
+TEST_CASE("CpuStateFrame: cf and rflags offsets/defaults are stable") {
+    runtime::CpuStateFrame f{};
+    REQUIRE(offsetof(runtime::CpuStateFrame, cf) == 816);
+    REQUIRE(offsetof(runtime::CpuStateFrame, rflags) == 824);
+    REQUIRE(runtime::CpuStateFrame::cf_offset() == 816);
+    REQUIRE(runtime::CpuStateFrame::rflags_offset() == 824);
+    REQUIRE(f.cf == 0);
+    REQUIRE(f.rflags == 2);
+}
+
 TEST_CASE("CpuStateFrame: read-write fs_base and gs_base through the frame") {
     runtime::CpuStateFrame f;
     f.fs_base = 0x7F0000000000;

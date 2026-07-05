@@ -3412,14 +3412,14 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         REQUIRE((ecx & (1u << 12)) != 0u);   // FMA
         REQUIRE((ecx & (1u << 13)) != 0u);   // CMPXCHG16B
         REQUIRE((ecx & (1u << 19)) != 0u);   // SSE4.1
+        REQUIRE((ecx & (1u << 20)) != 0u);   // SSE4.2
         REQUIRE((ecx & (1u << 22)) != 0u);   // MOVBE
         REQUIRE((ecx & (1u << 23)) != 0u);   // POPCNT (32/64 + mem)
         REQUIRE((ecx & (1u << 27)) != 0u);   // OSXSAVE
         REQUIRE((ecx & (1u << 28)) != 0u);   // AVX
-        REQUIRE((ecx & (1u << 20)) == 0u);   // SSE4.2 off: PCMPxSTRx
         REQUIRE((ecx & (1u << 25)) == 0u);   // AESNI off: no host AES
         REQUIRE((ecx & (1u << 26)) == 0u);   // XSAVE deliberately off
-        REQUIRE((ecx & (1u << 1)) == 0u);    // PCLMULQDQ not decoded
+        REQUIRE((ecx & (1u << 1)) != 0u);    // PCLMULQDQ
     }
     SECTION("AESNI bit follows host AES crypto") {
         runtime::HostFeatures aes_host{};
@@ -3428,11 +3428,11 @@ TEST_CASE("e2e: CPUID leaf model + SHA advertisement — F2-IR-060 followup") {
         auto s = run_cpuid(1, 0);
         REQUIRE((s[ir::Gpr::Rcx] & (1u << 25)) != 0u);
     }
-    SECTION("leaf 7 EBX always carries BMI2") {
+    SECTION("leaf 7 EBX always carries BMI1 and BMI2") {
         FeatureOverrideGuard guard{runtime::HostFeatures{}};
         auto s = run_cpuid(7, 0);
+        REQUIRE((s[ir::Gpr::Rbx] & (1u << 3)) != 0u);   // BMI1
         REQUIRE((s[ir::Gpr::Rbx] & (1u << 8)) != 0u);   // BMI2
-        REQUIRE((s[ir::Gpr::Rbx] & (1u << 3)) == 0u);   // BMI1 off
         REQUIRE((s[ir::Gpr::Rbx] & (1u << 5)) == 0u);   // AVX2 off
     }
     SECTION("unmodelled leaves and subleaves return zeros") {

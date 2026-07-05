@@ -267,6 +267,21 @@ void Emitter::stlxr(arm64::Reg rs, arm64::Reg rv,
     }
 }
 
+void Emitter::ldaxp(arm64::Reg rd_low, arm64::Reg rd_high, arm64::Reg raddr) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    impl_->masm.Ldaxp(to_vixl_x(rd_low), to_vixl_x(rd_high), mo);
+}
+
+void Emitter::stlxp(arm64::Reg rs, arm64::Reg rv_low,
+                    arm64::Reg rv_high, arm64::Reg raddr) {
+    const vixl_aa::MemOperand mo(to_vixl_x(raddr));
+    impl_->masm.Stlxp(to_vixl_w(rs), to_vixl_x(rv_low), to_vixl_x(rv_high), mo);
+}
+
+void Emitter::clrex() {
+    impl_->masm.Clrex();
+}
+
 void Emitter::casal(arm64::Reg rs, arm64::Reg rt,
                     arm64::Reg raddr, ir::OpSize size) {
     const vixl_aa::MemOperand mo(to_vixl_x(raddr));
@@ -326,6 +341,16 @@ void Emitter::push_pair(arm64::Reg r1, arm64::Reg r2) {
 void Emitter::pop_pair(arm64::Reg r1, arm64::Reg r2) {
     // ldp r1, r2, [sp], #16  (post-index)
     impl_->masm.Ldp(to_vixl_x(r1), to_vixl_x(r2),
+                    vixl_aa::MemOperand(vixl_aa::sp, 16, vixl_aa::PostIndex));
+}
+
+void Emitter::push_fp_q(FpReg r) {
+    impl_->masm.Str(vixl_aa::QRegister(static_cast<int>(r)),
+                    vixl_aa::MemOperand(vixl_aa::sp, -16, vixl_aa::PreIndex));
+}
+
+void Emitter::pop_fp_q(FpReg r) {
+    impl_->masm.Ldr(vixl_aa::QRegister(static_cast<int>(r)),
                     vixl_aa::MemOperand(vixl_aa::sp, 16, vixl_aa::PostIndex));
 }
 
@@ -1339,6 +1364,23 @@ void Emitter::vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx) {
     impl_->masm.Mov(v_lo_dst, v_src_lo);
     impl_->masm.Mov(v_hi_dst, v_src_hi);
     impl_->masm.Tbl(v_dst, v_lo_dst, v_hi_dst, v_idx);
+}
+
+void Emitter::vpclmulqdq(FpReg dst, FpReg lhs, FpReg rhs,
+                         bool lhs_high, bool rhs_high) {
+    constexpr int kLhsScratch = kInternalFpScratchV;  // V31
+    constexpr int kRhsScratch = 30;
+    const vixl_aa::VRegister v_lhs(static_cast<int>(lhs), vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_rhs(static_cast<int>(rhs), vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_ltmp(kLhsScratch, vixl_aa::kFormat2D);
+    const vixl_aa::VRegister v_rtmp(kRhsScratch, vixl_aa::kFormat2D);
+    impl_->masm.Mov(v_ltmp, 0, v_lhs, lhs_high ? 1 : 0);
+    impl_->masm.Mov(v_rtmp, 0, v_rhs, rhs_high ? 1 : 0);
+
+    const vixl_aa::VRegister v_dst(static_cast<int>(dst), vixl_aa::kFormat1Q);
+    const vixl_aa::VRegister v_l64(kLhsScratch, vixl_aa::kFormat1D);
+    const vixl_aa::VRegister v_r64(kRhsScratch, vixl_aa::kFormat1D);
+    impl_->masm.Pmull(v_dst, v_l64, v_r64);
 }
 
 void Emitter::crc32c(arm64::Reg rd, arm64::Reg rcrc, arm64::Reg rdata,

@@ -36,6 +36,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -233,6 +234,31 @@ private:
     std::vector<Emitter::FpReg>                 fp_free_;
     [[nodiscard]] bool allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out);
     [[nodiscard]] bool fp_reg_of(ir::Ref ref, Emitter::FpReg& out);
+
+    [[nodiscard]] LowerResult lower_pcmpstr_index(const ir::PcmpStrIndex& op,
+                                                  ir::Ref result);
+    [[nodiscard]] LowerResult lower_pcmpstr_mask(const ir::PcmpStrMask& op,
+                                                 ir::Ref result);
+    [[nodiscard]] LowerResult lower_pcmpstr_flags(const ir::PcmpStrFlags& op,
+                                                  ir::Ref result);
+    [[nodiscard]] LowerResult emit_pcmpstr_scalar_helper(ir::Ref lhs,
+                                                         ir::Ref rhs,
+                                                         std::optional<ir::Ref> lhs_len,
+                                                         std::optional<ir::Ref> rhs_len,
+                                                         std::uint8_t imm8,
+                                                         std::uint64_t helper_addr,
+                                                         const char* name,
+                                                         ir::Ref result);
+    [[nodiscard]] LowerResult emit_pcmpstr_mask_helper(ir::Ref lhs,
+                                                       ir::Ref rhs,
+                                                       std::optional<ir::Ref> lhs_len,
+                                                       std::optional<ir::Ref> rhs_len,
+                                                       std::uint8_t imm8,
+                                                       ir::Ref result);
+    // W2-09 — F16C conversions via a software helper call so all four
+    // VCVTPS2PH rounding modes stay bit-exact with the Rust backend.
+    [[nodiscard]] LowerResult lower_vec_f16cvt(const ir::VecF16Cvt& op,
+                                               ir::Ref result);
 
     // Flags refs (F1-IR-003 .. F1-IR-007) don't have a host register
     // — they live in NZCV. We just track which Refs are valid Flags

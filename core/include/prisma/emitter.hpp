@@ -114,11 +114,10 @@ public:
     // we compute that in two steps: the low 64 bits via `mul`, the high
     // 64 bits via `umulh` (unsigned) or `smulh` (signed).
     //
-    // x86 DIV / IDIV read RDX:RAX and write quotient to RAX, remainder to
-    // RDX. On ARM64 there is no 128/64 divide; our lowering will narrow
-    // to 64/64 for MVP and emit the pair `udiv rq, rn, rm` + `msub rr,
-    // rq, rm, rn` (remainder = n - q*m). `msub(rd, rn, rm, ra)` gives
-    // `rd = ra - rn*rm` which is the canonical AArch64 idiom.
+    // Scalar 64/64 DIV / IDIV-like IR lowers through `udiv`/`sdiv`; modulo
+    // uses `msub(rd, rn, rm, ra)` as `rd = ra - rn*rm`. Full RDX:RAX qword
+    // division is represented separately as `ir::WideDiv` and lowered above
+    // the emitter API as a software long-division sequence.
     void umulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // unsigned high 64
     void smulh(arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // signed   high 64
     void udiv (arm64::Reg rd, arm64::Reg rn, arm64::Reg rm);  // unsigned 64/64
@@ -147,6 +146,10 @@ public:
     void stxr  (arm64::Reg rs, arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
     void ldaxr (arm64::Reg rd, arm64::Reg raddr, ir::OpSize size);
     void stlxr (arm64::Reg rs, arm64::Reg rv, arm64::Reg raddr, ir::OpSize size);
+    void ldaxp (arm64::Reg rd_low, arm64::Reg rd_high, arm64::Reg raddr);
+    void stlxp (arm64::Reg rs, arm64::Reg rv_low, arm64::Reg rv_high,
+                arm64::Reg raddr);
+    void clrex ();
 
     // LSE atomics (F1-BK-017). One-instruction CAS + fetch-add.
     // Requires `host_features().feat_lse`; the lowerer should check
@@ -253,6 +256,8 @@ public:
     void sp_load       (arm64::Reg rd, std::int32_t imm);
     void sp_store      (arm64::Reg rv, std::int32_t imm);
 
+    enum class FpReg : std::uint8_t;
+
     // Stack push/pop as register pairs (the ARM64 idiom for prologue /
     // epilogue sequences). `push_pair(r1, r2)` emits
     //   stp r1, r2, [sp, #-16]!   ; sp -= 16, store both
@@ -262,6 +267,8 @@ public:
     // registers that we clobber (x19..x26 + x27 state ptr + x29/x30).
     void push_pair (arm64::Reg r1, arm64::Reg r2);
     void pop_pair  (arm64::Reg r1, arm64::Reg r2);
+    void push_fp_q (FpReg r);
+    void pop_fp_q  (FpReg r);
 
     // ret xN  (default x30)
     void ret(arm64::Reg rn = arm64::Reg::X30);
@@ -522,6 +529,11 @@ public:
     // (3 extra NEON ops total: two `mov` + the `tbl`) rather than
     // forcing the regalloc to allocate adjacent pairs.
     void vtbl2_q(FpReg dst, FpReg src_lo, FpReg src_hi, FpReg idx);
+
+    // W2-08 — PCLMULQDQ carry-less 64x64->128 multiply. Lane selectors
+    // choose qword 0/1 from each 128-bit source before ARM PMULL.
+    void vpclmulqdq(FpReg dst, FpReg lhs, FpReg rhs,
+                    bool lhs_high, bool rhs_high);
 
     // F2-IR-055 — x86 AES-NI round primitives mapped onto ARM NEON
     // AES. The semantic gap from x86 to ARM is that x86 applies

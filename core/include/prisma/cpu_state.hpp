@@ -88,6 +88,15 @@ struct CpuStateFrame {
     // exceptions, FZ off, RC = nearest).
     std::uint32_t mxcsr{0x1F80u};
 
+    // Dedicated carry flag slot. This is intentionally narrower than
+    // full RFLAGS plumbing: ADC/SBB-style ops can persist CF here while
+    // the broader flags model keeps using SSA/NZCV where appropriate.
+    std::uint64_t cf{0};
+
+    // Partial architectural RFLAGS mirror. Bit 1 is the always-set x86
+    // reserved bit; StoreCarry keeps bit 0 in sync with `cf`.
+    std::uint64_t rflags{2};
+
     // Halt sentinel — when a translated block returns this value in x0,
     // the dispatcher exits the run loop cleanly. The IR::Return lowerer
     // emits code that sets x0 = 0 before `ret`, so pc=0 is the default
@@ -146,6 +155,12 @@ struct CpuStateFrame {
     [[nodiscard]] static constexpr std::int32_t gs_base_offset() noexcept {
         return 800;
     }
+    [[nodiscard]] static constexpr std::int32_t cf_offset() noexcept {
+        return 816;
+    }
+    [[nodiscard]] static constexpr std::int32_t rflags_offset() noexcept {
+        return 824;
+    }
 };
 
 // Guarantees the C++ struct layout matches what the Translator emits
@@ -175,5 +190,9 @@ static_assert(offsetof(CpuStateFrame, fs_base) == CpuStateFrame::fs_base_offset(
               "fs_base_offset must match offsetof(fs_base)");
 static_assert(offsetof(CpuStateFrame, gs_base) == CpuStateFrame::gs_base_offset(),
               "gs_base_offset must match offsetof(gs_base)");
+static_assert(offsetof(CpuStateFrame, cf) == CpuStateFrame::cf_offset(),
+              "cf_offset must match offsetof(cf)");
+static_assert(offsetof(CpuStateFrame, rflags) == CpuStateFrame::rflags_offset(),
+              "rflags_offset must match offsetof(rflags)");
 
 }  // namespace prisma::runtime

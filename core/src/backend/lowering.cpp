@@ -16,7 +16,9 @@
 #include "prisma/lowering.hpp"
 
 #include <algorithm>
+#include <array>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 
 #include "prisma/abi.hpp"
@@ -130,6 +132,548 @@ void emit_bit_permute(Emitter& em,
     }
 }
 
+struct WideDivWorkRegs {
+    arm64::Reg rem;
+    arm64::Reg low;
+    arm64::Reg divisor;
+    arm64::Reg mask;
+    arm64::Reg bit;
+    arm64::Reg overflow;
+};
+
+void emit_abs_signed_wide_div_inputs(Emitter& em, const WideDivWorkRegs& r) {
+    em.lsr_imm(r.bit, r.rem, 63);
+
+    const auto dividend_low_zero = em.create_label();
+    const auto dividend_done = em.create_label();
+    em.cbz(r.bit, dividend_done);
+    em.mov_imm64(r.mask, ~0ull);
+    em.cbz(r.low, dividend_low_zero);
+    em.neg(r.low, r.low);
+    em.eor(r.rem, r.rem, r.mask);
+    em.branch(dividend_done);
+    em.bind(dividend_low_zero);
+    em.neg(r.rem, r.rem);
+    em.bind(dividend_done);
+
+    const auto divisor_done = em.create_label();
+    em.lsr_imm(r.bit, r.divisor, 63);
+    em.cbz(r.bit, divisor_done);
+    em.neg(r.divisor, r.divisor);
+    em.bind(divisor_done);
+}
+
+void emit_wide_udiv_core(Emitter& em, arm64::Reg quotient, const WideDivWorkRegs& r) {
+    em.mov_imm64(r.mask, 1ull << 63);
+    em.mov_imm64(quotient, 0);
+
+    for (unsigned i = 0; i < 64; ++i) {
+        const auto subtract = em.create_label();
+        const auto done = em.create_label();
+
+        em.lsr_imm(r.bit, r.low, 63);
+        em.add(r.low, r.low, r.low);
+        em.lsr_imm(r.overflow, r.rem, 63);
+        em.add(r.rem, r.rem, r.rem);
+        em.orr(r.rem, r.rem, r.bit);
+
+        em.cbnz(r.overflow, subtract);
+        em.cmp(r.rem, r.divisor);
+        em.branch_cc(subtract, ir::CondCode::Uge);
+        em.branch(done);
+
+        em.bind(subtract);
+        em.sub(r.rem, r.rem, r.divisor);
+        em.orr(quotient, quotient, r.mask);
+
+        em.bind(done);
+        em.lsr_imm(r.mask, r.mask, 1);
+    }
+}
+
+void emit_sigfpe_placeholder_return(Emitter& em, bool emit_ret_on_terminator) {
+    em.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
+    if (emit_ret_on_terminator) {
+        em.ret();
+    } else {
+        abi::emit_block_epilogue_and_ret(em);
+    }
+}
+
+void emit_divisor_zero_sigfpe_guard(Emitter& em,
+                                    arm64::Reg divisor,
+                                    bool emit_ret_on_terminator) {
+    const auto ok = em.create_label();
+    em.cbnz(divisor, ok);
+    emit_sigfpe_placeholder_return(em, emit_ret_on_terminator);
+    em.bind(ok);
+}
+
+void emit_unsigned_wide_div_overflow_guard(Emitter& em,
+                                           arm64::Reg high,
+                                           arm64::Reg divisor,
+                                           bool emit_ret_on_terminator) {
+    const auto ok = em.create_label();
+    em.cmp(high, divisor);
+    em.branch_cc(ok, ir::CondCode::Ult);
+    emit_sigfpe_placeholder_return(em, emit_ret_on_terminator);
+    em.bind(ok);
+}
+
+void emit_signed_wide_div_quotient_overflow_guard(Emitter& em,
+                                                  arm64::Reg quotient,
+                                                  bool emit_ret_on_terminator,
+                                                  const WideDivWorkRegs& r) {
+    const auto negative = em.create_label();
+    const auto done = em.create_label();
+
+    em.mov_imm64(r.mask, 63);
+    em.cbnz(r.bit, negative);
+    em.lsr(r.overflow, quotient, r.mask);
+    em.cbz(r.overflow, done);
+    emit_sigfpe_placeholder_return(em, emit_ret_on_terminator);
+
+    em.bind(negative);
+    em.mov_imm64(r.mask, 1ull << 63);
+    em.cmp(quotient, r.mask);
+    em.branch_cc(done, ir::CondCode::Ule);
+    emit_sigfpe_placeholder_return(em, emit_ret_on_terminator);
+
+    em.bind(done);
+}
+
+void emit_apply_signed_wide_div_result(Emitter& em,
+                                       arm64::Reg dst,
+                                       arm64::Reg high,
+                                       arm64::Reg divisor,
+                                       ir::WideDivResult result,
+                                       const WideDivWorkRegs& r) {
+    const auto done = em.create_label();
+    em.lsr_imm(r.bit, high, 63);
+    if (result == ir::WideDivResult::Quotient) {
+        em.lsr_imm(r.overflow, divisor, 63);
+        em.eor(r.bit, r.bit, r.overflow);
+    }
+    em.cbz(r.bit, done);
+    em.neg(dst, dst);
+    em.bind(done);
+}
+
+constexpr std::uint64_t kPcmpLenLhsExplicit = 1;
+constexpr std::uint64_t kPcmpLenRhsExplicit = 2;
+
+struct PcmpStrEval {
+    std::uint16_t intres{0};
+    std::size_t max_lanes{0};
+    std::size_t lane_bytes{0};
+    std::size_t lhs_len{0};
+    std::size_t rhs_len{0};
+};
+
+struct PcmpMaskResult {
+    std::uint64_t lo;
+    std::uint64_t hi;
+};
+
+std::array<std::uint8_t, 16> pcmp_bytes(std::uint64_t lo, std::uint64_t hi) {
+    std::array<std::uint8_t, 16> out{};
+    for (unsigned i = 0; i < 8; ++i) {
+        out[i] = static_cast<std::uint8_t>((lo >> (i * 8u)) & 0xffu);
+        out[i + 8] = static_cast<std::uint8_t>((hi >> (i * 8u)) & 0xffu);
+    }
+    return out;
+}
+
+std::uint16_t pcmp_lane_unsigned(const std::array<std::uint8_t, 16>& bytes,
+                                 std::size_t lane,
+                                 std::size_t lane_bytes) {
+    if (lane_bytes == 1) return bytes[lane];
+    return static_cast<std::uint16_t>(
+        bytes[lane * 2] | (static_cast<std::uint16_t>(bytes[lane * 2 + 1]) << 8));
+}
+
+std::int16_t pcmp_lane_signed(const std::array<std::uint8_t, 16>& bytes,
+                              std::size_t lane,
+                              std::size_t lane_bytes) {
+    if (lane_bytes == 1) {
+        return static_cast<std::int16_t>(
+            static_cast<std::int8_t>(bytes[lane]));
+    }
+    return static_cast<std::int16_t>(pcmp_lane_unsigned(bytes, lane, lane_bytes));
+}
+
+std::size_t pcmp_effective_len(const std::array<std::uint8_t, 16>& bytes,
+                               std::size_t lane_bytes,
+                               std::uint64_t raw_len,
+                               bool explicit_len) {
+    const std::size_t max_lanes = 16 / lane_bytes;
+    if (explicit_len) {
+        const auto signed_len =
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(raw_len));
+        const std::uint32_t abs_len = signed_len < 0
+            ? static_cast<std::uint32_t>(-static_cast<std::int64_t>(signed_len))
+            : static_cast<std::uint32_t>(signed_len);
+        return std::min<std::size_t>(abs_len, max_lanes);
+    }
+    for (std::size_t i = 0; i < max_lanes; ++i) {
+        if (pcmp_lane_unsigned(bytes, i, lane_bytes) == 0) return i;
+    }
+    return max_lanes;
+}
+
+PcmpStrEval eval_pcmpstr(std::uint64_t lhs_lo,
+                         std::uint64_t lhs_hi,
+                         std::uint64_t rhs_lo,
+                         std::uint64_t rhs_hi,
+                         std::uint64_t lhs_len_raw,
+                         std::uint64_t rhs_len_raw,
+                         std::uint64_t len_mode,
+                         std::uint8_t imm8) {
+    const auto lhs = pcmp_bytes(lhs_lo, lhs_hi);
+    const auto rhs = pcmp_bytes(rhs_lo, rhs_hi);
+    const std::size_t lane_bytes = (imm8 & 1u) == 0 ? 1u : 2u;
+    const std::size_t max_lanes = 16 / lane_bytes;
+    const bool is_signed = (imm8 & 0x02u) != 0;
+    const std::uint8_t aggregation = (imm8 >> 2) & 0x03u;
+    const std::uint8_t polarity = (imm8 >> 4) & 0x03u;
+    const std::size_t lhs_len = pcmp_effective_len(
+        lhs, lane_bytes, lhs_len_raw, (len_mode & kPcmpLenLhsExplicit) != 0);
+    const std::size_t rhs_len = pcmp_effective_len(
+        rhs, lane_bytes, rhs_len_raw, (len_mode & kPcmpLenRhsExplicit) != 0);
+
+    std::uint16_t bits = 0;
+    for (std::size_t i = 0; i < max_lanes; ++i) {
+        const bool lhs_valid = i < lhs_len;
+        bool matched = false;
+        if (lhs_valid) {
+            switch (aggregation) {
+                case 0:
+                    for (std::size_t j = 0; j < rhs_len && !matched; ++j) {
+                        matched = is_signed
+                            ? pcmp_lane_signed(lhs, i, lane_bytes) ==
+                                  pcmp_lane_signed(rhs, j, lane_bytes)
+                            : pcmp_lane_unsigned(lhs, i, lane_bytes) ==
+                                  pcmp_lane_unsigned(rhs, j, lane_bytes);
+                    }
+                    break;
+                case 1:
+                    for (std::size_t j = 0; j + 1 < rhs_len && !matched; j += 2) {
+                        if (is_signed) {
+                            const auto value = pcmp_lane_signed(lhs, i, lane_bytes);
+                            const auto low = pcmp_lane_signed(rhs, j, lane_bytes);
+                            const auto high = pcmp_lane_signed(rhs, j + 1, lane_bytes);
+                            matched = low <= value && value <= high;
+                        } else {
+                            const auto value = pcmp_lane_unsigned(lhs, i, lane_bytes);
+                            const auto low = pcmp_lane_unsigned(rhs, j, lane_bytes);
+                            const auto high = pcmp_lane_unsigned(rhs, j + 1, lane_bytes);
+                            matched = low <= value && value <= high;
+                        }
+                    }
+                    break;
+                case 2:
+                    matched = i < rhs_len &&
+                        (is_signed
+                            ? pcmp_lane_signed(lhs, i, lane_bytes) ==
+                                  pcmp_lane_signed(rhs, i, lane_bytes)
+                            : pcmp_lane_unsigned(lhs, i, lane_bytes) ==
+                                  pcmp_lane_unsigned(rhs, i, lane_bytes));
+                    break;
+                default:
+                    matched = rhs_len > 0 && i + rhs_len <= lhs_len;
+                    for (std::size_t j = 0; matched && j < rhs_len; ++j) {
+                        matched = is_signed
+                            ? pcmp_lane_signed(lhs, i + j, lane_bytes) ==
+                                  pcmp_lane_signed(rhs, j, lane_bytes)
+                            : pcmp_lane_unsigned(lhs, i + j, lane_bytes) ==
+                                  pcmp_lane_unsigned(rhs, j, lane_bytes);
+                    }
+                    break;
+            }
+        }
+
+        const bool valid_for_polarity = (polarity & 0x02u) != 0 ? lhs_valid : true;
+        if ((polarity & 0x01u) != 0 && valid_for_polarity) matched = !matched;
+        if (!lhs_valid && (polarity & 0x02u) != 0) matched = false;
+        if (matched) bits |= static_cast<std::uint16_t>(1u << i);
+    }
+    return PcmpStrEval{bits, max_lanes, lane_bytes, lhs_len, rhs_len};
+}
+
+std::uint64_t pcmpstr_index(PcmpStrEval eval, std::uint8_t imm8) {
+    if ((imm8 & 0x40u) == 0) {
+        for (std::size_t i = 0; i < eval.max_lanes; ++i) {
+            if ((eval.intres & (1u << i)) != 0) return i;
+        }
+    } else {
+        for (std::size_t i = eval.max_lanes; i-- > 0;) {
+            if ((eval.intres & (1u << i)) != 0) return i;
+        }
+    }
+    return eval.max_lanes;
+}
+
+PcmpMaskResult pcmpstr_mask(PcmpStrEval eval, std::uint8_t imm8) {
+    if ((imm8 & 0x40u) == 0) return {eval.intres, 0};
+
+    std::uint64_t lo = 0;
+    std::uint64_t hi = 0;
+    for (std::size_t i = 0; i < eval.max_lanes; ++i) {
+        if ((eval.intres & (1u << i)) == 0) continue;
+        const std::uint64_t lane_mask = eval.lane_bytes == 1 ? 0xffull : 0xffffull;
+        const std::size_t shift = i * eval.lane_bytes * 8;
+        if (shift < 64) {
+            lo |= lane_mask << shift;
+        } else {
+            hi |= lane_mask << (shift - 64);
+        }
+    }
+    return {lo, hi};
+}
+
+std::uint64_t pcmpstr_flags(PcmpStrEval eval) {
+    const std::uint64_t cf = eval.intres != 0 ? 1ull : 0ull;
+    const std::uint64_t zf = eval.rhs_len < eval.max_lanes ? 1ull : 0ull;
+    const std::uint64_t sf = eval.lhs_len < eval.max_lanes ? 1ull : 0ull;
+    const std::uint64_t of = (eval.intres & 1u) != 0 ? 1ull : 0ull;
+    return cf | (zf << 1) | (sf << 2) | (of << 3);
+}
+
+std::uint64_t prisma_backend_pcmpstr_index_helper(
+    std::uint64_t lhs_lo,
+    std::uint64_t lhs_hi,
+    std::uint64_t rhs_lo,
+    std::uint64_t rhs_hi,
+    std::uint64_t lhs_len,
+    std::uint64_t rhs_len,
+    std::uint64_t len_mode,
+    std::uint64_t imm8) {
+    const auto eval = eval_pcmpstr(
+        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode,
+        static_cast<std::uint8_t>(imm8));
+    return pcmpstr_index(eval, static_cast<std::uint8_t>(imm8));
+}
+
+PcmpMaskResult prisma_backend_pcmpstr_mask_helper(
+    std::uint64_t lhs_lo,
+    std::uint64_t lhs_hi,
+    std::uint64_t rhs_lo,
+    std::uint64_t rhs_hi,
+    std::uint64_t lhs_len,
+    std::uint64_t rhs_len,
+    std::uint64_t len_mode,
+    std::uint64_t imm8) {
+    const auto eval = eval_pcmpstr(
+        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode,
+        static_cast<std::uint8_t>(imm8));
+    return pcmpstr_mask(eval, static_cast<std::uint8_t>(imm8));
+}
+
+std::uint64_t prisma_backend_pcmpstr_flags_helper(
+    std::uint64_t lhs_lo,
+    std::uint64_t lhs_hi,
+    std::uint64_t rhs_lo,
+    std::uint64_t rhs_hi,
+    std::uint64_t lhs_len,
+    std::uint64_t rhs_len,
+    std::uint64_t len_mode,
+    std::uint64_t imm8) {
+    return pcmpstr_flags(eval_pcmpstr(
+        lhs_lo, lhs_hi, rhs_lo, rhs_hi, lhs_len, rhs_len, len_mode,
+        static_cast<std::uint8_t>(imm8)));
+}
+
+// W2-09 — F16C software conversions, bit-exact with the Rust backend
+// helpers so differential fixtures agree on every rounding mode and
+// NaN payload.
+
+std::uint32_t f16c_half_to_f32_bits(std::uint16_t h) {
+    const std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000u) << 16;
+    const std::uint16_t exp  = static_cast<std::uint16_t>((h >> 10) & 0x1fu);
+    const std::uint32_t frac = h & 0x03ffu;
+    if (exp == 0) {
+        if (frac == 0) return sign;
+        std::uint32_t mant = frac;
+        int e = -14;
+        while ((mant & 0x0400u) == 0) {
+            mant <<= 1;
+            --e;
+        }
+        mant &= 0x03ffu;
+        return sign | (static_cast<std::uint32_t>(e + 127) << 23) | (mant << 13);
+    }
+    if (exp == 0x1f) return sign | 0x7f800000u | (frac << 13);
+    return sign | ((static_cast<std::uint32_t>(exp) + 112u) << 23) | (frac << 13);
+}
+
+std::uint16_t f16c_overflow(std::uint16_t sign, std::uint8_t mode) {
+    const std::uint16_t inf = sign | 0x7c00u;
+    const std::uint16_t max = sign | 0x7bffu;
+    switch (mode) {
+        case 1:  return sign != 0 ? inf : max;  // toward -inf
+        case 2:  return sign == 0 ? inf : max;  // toward +inf
+        case 3:  return max;                    // truncate
+        default: return inf;                    // nearest-even
+    }
+}
+
+bool f16c_should_round(std::uint16_t sign, std::uint8_t mode,
+                       std::uint64_t remainder, std::uint64_t halfway,
+                       std::uint64_t lsb) {
+    switch (mode) {
+        case 1:  return sign != 0 && remainder != 0;
+        case 2:  return sign == 0 && remainder != 0;
+        case 3:  return false;
+        default: return remainder > halfway || (remainder == halfway && lsb != 0);
+    }
+}
+
+std::uint16_t f16c_f32_bits_to_half(std::uint32_t bits, std::uint8_t imm8) {
+    const std::uint8_t mode =
+        (imm8 & 0x04u) != 0 ? 0u : static_cast<std::uint8_t>(imm8 & 0x03u);
+    const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
+    const int exp = static_cast<int>((bits >> 23) & 0xffu);
+    const std::uint32_t frac = bits & 0x007fffffu;
+
+    if (exp == 0xff) {
+        if (frac == 0) return sign | 0x7c00u;
+        return static_cast<std::uint16_t>(
+            sign | 0x7e00u | static_cast<std::uint16_t>((frac >> 13) & 0x01ffu));
+    }
+
+    const int half_exp = exp - 127 + 15;
+    if (half_exp >= 0x1f) return f16c_overflow(sign, mode);
+
+    if (half_exp <= 0) {
+        if (half_exp < -10) {
+            const bool inc = (mode == 1 && sign != 0) || (mode == 2 && sign == 0);
+            return static_cast<std::uint16_t>(sign | (inc ? 1u : 0u));
+        }
+        const std::uint64_t mant  = frac | 0x00800000u;
+        const unsigned      shift = static_cast<unsigned>(14 - half_exp);
+        const std::uint64_t q     = mant >> shift;
+        const std::uint64_t rem   = mant & ((1ull << shift) - 1u);
+        const std::uint64_t halfway = 1ull << (shift - 1u);
+        const std::uint64_t rounded =
+            q + (f16c_should_round(sign, mode, rem, halfway, q & 1u) ? 1u : 0u);
+        return static_cast<std::uint16_t>(sign | rounded);
+    }
+
+    std::uint16_t half_exp_u = static_cast<std::uint16_t>(half_exp);
+    std::uint16_t mant       = static_cast<std::uint16_t>(frac >> 13);
+    const std::uint64_t rem  = frac & 0x1fffu;
+    if (f16c_should_round(sign, mode, rem, 0x1000u, mant & 1u)) {
+        mant = static_cast<std::uint16_t>(mant + 1u);
+        if (mant == 0x0400u) {
+            mant = 0;
+            ++half_exp_u;
+            if (half_exp_u >= 0x1f) return f16c_overflow(sign, mode);
+        }
+    }
+    return static_cast<std::uint16_t>(sign | (half_exp_u << 10) | mant);
+}
+
+PcmpMaskResult prisma_backend_f16c_ph2ps_helper(std::uint64_t src_lo) {
+    std::uint64_t lo = 0;
+    std::uint64_t hi = 0;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+        const auto h = static_cast<std::uint16_t>(src_lo >> (lane * 16));
+        lo |= static_cast<std::uint64_t>(f16c_half_to_f32_bits(h)) << (lane * 32);
+    }
+    for (unsigned lane = 2; lane < 4; ++lane) {
+        const auto h = static_cast<std::uint16_t>(src_lo >> (lane * 16));
+        hi |= static_cast<std::uint64_t>(f16c_half_to_f32_bits(h))
+              << ((lane - 2) * 32);
+    }
+    return {lo, hi};
+}
+
+PcmpMaskResult prisma_backend_f16c_ps2ph_helper(std::uint64_t src_lo,
+                                                std::uint64_t src_hi,
+                                                std::uint64_t imm8) {
+    const auto rounding = static_cast<std::uint8_t>(imm8);
+    std::uint64_t out = 0;
+    for (unsigned lane = 0; lane < 2; ++lane) {
+        const auto b = static_cast<std::uint32_t>(src_lo >> (lane * 32));
+        out |= static_cast<std::uint64_t>(f16c_f32_bits_to_half(b, rounding))
+               << (lane * 16);
+    }
+    for (unsigned lane = 0; lane < 2; ++lane) {
+        const auto b = static_cast<std::uint32_t>(src_hi >> (lane * 32));
+        out |= static_cast<std::uint64_t>(f16c_f32_bits_to_half(b, rounding))
+               << ((lane + 2) * 16);
+    }
+    return {out, 0};
+}
+
+arm64::Reg dummy_gpr_for_pair(arm64::Reg r) noexcept {
+    return r == arm64::Reg::X0 ? arm64::Reg::X1 : arm64::Reg::X0;
+}
+
+Emitter::FpReg dummy_fp_for_pair(Emitter::FpReg r) noexcept {
+    return r == Emitter::FpReg::V0 ? Emitter::FpReg::V1 : Emitter::FpReg::V0;
+}
+
+std::vector<std::pair<arm64::Reg, arm64::Reg>>
+make_gpr_save_pairs(std::vector<arm64::Reg> regs) {
+    std::sort(regs.begin(), regs.end(),
+              [](arm64::Reg a, arm64::Reg b) {
+                  return static_cast<std::uint8_t>(a) < static_cast<std::uint8_t>(b);
+              });
+    std::vector<std::pair<arm64::Reg, arm64::Reg>> pairs;
+    pairs.reserve((regs.size() + 1) / 2);
+    for (std::size_t i = 0; i < regs.size(); i += 2) {
+        const arm64::Reg second =
+            i + 1 < regs.size() ? regs[i + 1] : dummy_gpr_for_pair(regs[i]);
+        pairs.push_back({regs[i], second});
+    }
+    return pairs;
+}
+
+std::vector<std::pair<Emitter::FpReg, Emitter::FpReg>>
+make_fp_save_pairs(std::vector<Emitter::FpReg> regs) {
+    std::sort(regs.begin(), regs.end(),
+              [](Emitter::FpReg a, Emitter::FpReg b) {
+                  return static_cast<std::uint8_t>(a) < static_cast<std::uint8_t>(b);
+              });
+    std::vector<std::pair<Emitter::FpReg, Emitter::FpReg>> pairs;
+    pairs.reserve((regs.size() + 1) / 2);
+    for (std::size_t i = 0; i < regs.size(); i += 2) {
+        const Emitter::FpReg second =
+            i + 1 < regs.size() ? regs[i + 1] : dummy_fp_for_pair(regs[i]);
+        pairs.push_back({regs[i], second});
+    }
+    return pairs;
+}
+
+void save_gpr_pairs(Emitter& emitter,
+                    const std::vector<std::pair<arm64::Reg, arm64::Reg>>& pairs) {
+    for (const auto& [a, b] : pairs) emitter.push_pair(a, b);
+}
+
+void restore_gpr_pairs(Emitter& emitter,
+                       const std::vector<std::pair<arm64::Reg, arm64::Reg>>& pairs) {
+    for (auto it = pairs.rbegin(); it != pairs.rend(); ++it) {
+        emitter.pop_pair(it->first, it->second);
+    }
+}
+
+void save_fp_pairs(Emitter& emitter,
+                   const std::vector<std::pair<Emitter::FpReg, Emitter::FpReg>>& pairs) {
+    for (const auto& [a, b] : pairs) {
+        emitter.push_fp_q(a);
+        emitter.push_fp_q(b);
+    }
+}
+
+void restore_fp_pairs(Emitter& emitter,
+                      const std::vector<std::pair<Emitter::FpReg, Emitter::FpReg>>& pairs) {
+    for (auto it = pairs.rbegin(); it != pairs.rend(); ++it) {
+        emitter.pop_fp_q(it->second);
+        emitter.pop_fp_q(it->first);
+    }
+}
+
 }  // namespace
 
 bool Lowerer::allocate_scratch(ir::Ref ref, arm64::Reg& out) {
@@ -159,6 +703,233 @@ bool Lowerer::fp_reg_of(ir::Ref ref, Emitter::FpReg& out) {
     if (it == ref_to_fp_.end()) return false;
     out = it->second;
     return true;
+}
+
+LowerResult Lowerer::emit_pcmpstr_scalar_helper(ir::Ref lhs,
+                                                ir::Ref rhs,
+                                                std::optional<ir::Ref> lhs_len,
+                                                std::optional<ir::Ref> rhs_len,
+                                                std::uint8_t imm8,
+                                                std::uint64_t helper_addr,
+                                                const char* name,
+                                                ir::Ref result) {
+    Emitter::FpReg lhs_v, rhs_v;
+    if (!fp_reg_of(lhs, lhs_v)) return {false, LowerError::DanglingRef, "PcmpStr.lhs"};
+    if (!fp_reg_of(rhs, rhs_v)) return {false, LowerError::DanglingRef, "PcmpStr.rhs"};
+
+    std::optional<arm64::Reg> lhs_len_r;
+    std::optional<arm64::Reg> rhs_len_r;
+    if (lhs_len) {
+        arm64::Reg r;
+        if (!reg_of(*lhs_len, r)) return {false, LowerError::DanglingRef, "PcmpStr.lhs_len"};
+        lhs_len_r = r;
+    }
+    if (rhs_len) {
+        arm64::Reg r;
+        if (!reg_of(*rhs_len, r)) return {false, LowerError::DanglingRef, "PcmpStr.rhs_len"};
+        rhs_len_r = r;
+    }
+
+    arm64::Reg rd, dummy;
+    if (!allocate_scratch(result, rd) || !allocate_temporary(dummy)) {
+        return {false, LowerError::OutOfScratchRegs, name};
+    }
+
+    std::vector<arm64::Reg> live_gprs;
+    live_gprs.reserve(ref_to_scratch_.size());
+    for (const auto& [_, reg] : ref_to_scratch_) live_gprs.push_back(reg);
+    const auto gpr_pairs = make_gpr_save_pairs(std::move(live_gprs));
+
+    std::vector<Emitter::FpReg> live_fps;
+    live_fps.reserve(ref_to_fp_.size());
+    for (const auto& [_, reg] : ref_to_fp_) live_fps.push_back(reg);
+    const auto fp_pairs = make_fp_save_pairs(std::move(live_fps));
+
+    const std::int32_t result_offset = static_cast<std::int32_t>(
+        gpr_pairs.size() * 16u + fp_pairs.size() * 32u);
+    const std::uint64_t len_mode =
+        (lhs_len ? kPcmpLenLhsExplicit : 0) |
+        (rhs_len ? kPcmpLenRhsExplicit : 0);
+
+    emitter_.push_pair(arm64::Reg::X0, arm64::Reg::X0);  // result slot
+    save_gpr_pairs(emitter_, gpr_pairs);
+
+    if (lhs_len_r) emitter_.mov_reg_reg(arm64::Reg::X4, *lhs_len_r);
+    else           emitter_.mov_imm64(arm64::Reg::X4, 0);
+    if (rhs_len_r) emitter_.mov_reg_reg(arm64::Reg::X5, *rhs_len_r);
+    else           emitter_.mov_imm64(arm64::Reg::X5, 0);
+    emitter_.mov_imm64(arm64::Reg::X6, len_mode);
+    emitter_.mov_imm64(arm64::Reg::X7, imm8);
+    emitter_.vumov_w_from_lane(arm64::Reg::X0, lhs_v, 0, Emitter::VecLane::D2);
+    emitter_.vumov_w_from_lane(arm64::Reg::X1, lhs_v, 1, Emitter::VecLane::D2);
+    emitter_.vumov_w_from_lane(arm64::Reg::X2, rhs_v, 0, Emitter::VecLane::D2);
+    emitter_.vumov_w_from_lane(arm64::Reg::X3, rhs_v, 1, Emitter::VecLane::D2);
+
+    save_fp_pairs(emitter_, fp_pairs);
+    emitter_.mov_imm64(arm64::Reg::X9, helper_addr);
+    emitter_.blr(arm64::Reg::X9);
+    emitter_.sp_store(arm64::Reg::X0, result_offset);
+    restore_fp_pairs(emitter_, fp_pairs);
+    restore_gpr_pairs(emitter_, gpr_pairs);
+    emitter_.pop_pair(rd, dummy);
+    return {};
+}
+
+LowerResult Lowerer::emit_pcmpstr_mask_helper(ir::Ref lhs,
+                                              ir::Ref rhs,
+                                              std::optional<ir::Ref> lhs_len,
+                                              std::optional<ir::Ref> rhs_len,
+                                              std::uint8_t imm8,
+                                              ir::Ref result) {
+    Emitter::FpReg lhs_v, rhs_v;
+    if (!fp_reg_of(lhs, lhs_v)) return {false, LowerError::DanglingRef, "PcmpStrMask.lhs"};
+    if (!fp_reg_of(rhs, rhs_v)) return {false, LowerError::DanglingRef, "PcmpStrMask.rhs"};
+
+    std::optional<arm64::Reg> lhs_len_r;
+    std::optional<arm64::Reg> rhs_len_r;
+    if (lhs_len) {
+        arm64::Reg r;
+        if (!reg_of(*lhs_len, r)) return {false, LowerError::DanglingRef, "PcmpStrMask.lhs_len"};
+        lhs_len_r = r;
+    }
+    if (rhs_len) {
+        arm64::Reg r;
+        if (!reg_of(*rhs_len, r)) return {false, LowerError::DanglingRef, "PcmpStrMask.rhs_len"};
+        rhs_len_r = r;
+    }
+
+    Emitter::FpReg rd;
+    arm64::Reg lo, hi;
+    if (!allocate_fp_scratch(result, rd) ||
+        !allocate_temporary(lo) ||
+        !allocate_temporary(hi)) {
+        return {false, LowerError::OutOfScratchRegs, "PcmpStrMask"};
+    }
+
+    std::vector<arm64::Reg> live_gprs;
+    live_gprs.reserve(ref_to_scratch_.size());
+    for (const auto& [_, reg] : ref_to_scratch_) live_gprs.push_back(reg);
+    const auto gpr_pairs = make_gpr_save_pairs(std::move(live_gprs));
+
+    std::vector<Emitter::FpReg> live_fps;
+    live_fps.reserve(ref_to_fp_.size());
+    for (const auto& [_, reg] : ref_to_fp_) live_fps.push_back(reg);
+    const auto fp_pairs = make_fp_save_pairs(std::move(live_fps));
+
+    const std::int32_t result_offset = static_cast<std::int32_t>(
+        gpr_pairs.size() * 16u + fp_pairs.size() * 32u);
+    const std::uint64_t len_mode =
+        (lhs_len ? kPcmpLenLhsExplicit : 0) |
+        (rhs_len ? kPcmpLenRhsExplicit : 0);
+
+    emitter_.push_pair(arm64::Reg::X0, arm64::Reg::X0);  // lo/hi result slot
+    save_gpr_pairs(emitter_, gpr_pairs);
+
+    if (lhs_len_r) emitter_.mov_reg_reg(arm64::Reg::X4, *lhs_len_r);
+    else           emitter_.mov_imm64(arm64::Reg::X4, 0);
+    if (rhs_len_r) emitter_.mov_reg_reg(arm64::Reg::X5, *rhs_len_r);
+    else           emitter_.mov_imm64(arm64::Reg::X5, 0);
+    emitter_.mov_imm64(arm64::Reg::X6, len_mode);
+    emitter_.mov_imm64(arm64::Reg::X7, imm8);
+    emitter_.vumov_w_from_lane(arm64::Reg::X0, lhs_v, 0, Emitter::VecLane::D2);
+    emitter_.vumov_w_from_lane(arm64::Reg::X1, lhs_v, 1, Emitter::VecLane::D2);
+    emitter_.vumov_w_from_lane(arm64::Reg::X2, rhs_v, 0, Emitter::VecLane::D2);
+    emitter_.vumov_w_from_lane(arm64::Reg::X3, rhs_v, 1, Emitter::VecLane::D2);
+
+    save_fp_pairs(emitter_, fp_pairs);
+    emitter_.mov_imm64(
+        arm64::Reg::X9,
+        static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(&prisma_backend_pcmpstr_mask_helper)));
+    emitter_.blr(arm64::Reg::X9);
+    emitter_.sp_store(arm64::Reg::X0, result_offset);
+    emitter_.sp_store(arm64::Reg::X1, result_offset + 8);
+    restore_fp_pairs(emitter_, fp_pairs);
+    restore_gpr_pairs(emitter_, gpr_pairs);
+    emitter_.pop_pair(lo, hi);
+    emitter_.fmov_v_from_x(rd, lo, ir::FpSize::F64);
+    emitter_.vins_lane_from_w(rd, rd, 1, hi, Emitter::VecLane::D2);
+    return {};
+}
+
+LowerResult Lowerer::lower_pcmpstr_index(const ir::PcmpStrIndex& op,
+                                         ir::Ref result) {
+    return emit_pcmpstr_scalar_helper(
+        op.lhs, op.rhs, op.lhs_len, op.rhs_len, op.imm8,
+        static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(&prisma_backend_pcmpstr_index_helper)),
+        "PcmpStrIndex",
+        result);
+}
+
+LowerResult Lowerer::lower_pcmpstr_mask(const ir::PcmpStrMask& op,
+                                        ir::Ref result) {
+    return emit_pcmpstr_mask_helper(
+        op.lhs, op.rhs, op.lhs_len, op.rhs_len, op.imm8, result);
+}
+
+LowerResult Lowerer::lower_pcmpstr_flags(const ir::PcmpStrFlags& op,
+                                         ir::Ref result) {
+    return emit_pcmpstr_scalar_helper(
+        op.lhs, op.rhs, op.lhs_len, op.rhs_len, op.imm8,
+        static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(&prisma_backend_pcmpstr_flags_helper)),
+        "PcmpStrFlags",
+        result);
+}
+
+LowerResult Lowerer::lower_vec_f16cvt(const ir::VecF16Cvt& op,
+                                      ir::Ref result) {
+    Emitter::FpReg src_v;
+    if (!fp_reg_of(op.src, src_v)) {
+        return {false, LowerError::DanglingRef, "VecF16Cvt.src"};
+    }
+
+    Emitter::FpReg rd;
+    arm64::Reg lo, hi;
+    if (!allocate_fp_scratch(result, rd) ||
+        !allocate_temporary(lo) ||
+        !allocate_temporary(hi)) {
+        return {false, LowerError::OutOfScratchRegs, "VecF16Cvt"};
+    }
+
+    std::vector<arm64::Reg> live_gprs;
+    live_gprs.reserve(ref_to_scratch_.size());
+    for (const auto& [_, reg] : ref_to_scratch_) live_gprs.push_back(reg);
+    const auto gpr_pairs = make_gpr_save_pairs(std::move(live_gprs));
+
+    std::vector<Emitter::FpReg> live_fps;
+    live_fps.reserve(ref_to_fp_.size());
+    for (const auto& [_, reg] : ref_to_fp_) live_fps.push_back(reg);
+    const auto fp_pairs = make_fp_save_pairs(std::move(live_fps));
+
+    const std::int32_t result_offset = static_cast<std::int32_t>(
+        gpr_pairs.size() * 16u + fp_pairs.size() * 32u);
+
+    emitter_.push_pair(arm64::Reg::X0, arm64::Reg::X0);  // lo/hi result slot
+    save_gpr_pairs(emitter_, gpr_pairs);
+
+    if (op.kind == ir::VecF16CvtKind::PsToPh) {
+        emitter_.mov_imm64(arm64::Reg::X2, op.rounding);
+        emitter_.vumov_w_from_lane(arm64::Reg::X1, src_v, 1, Emitter::VecLane::D2);
+    }
+    emitter_.vumov_w_from_lane(arm64::Reg::X0, src_v, 0, Emitter::VecLane::D2);
+
+    save_fp_pairs(emitter_, fp_pairs);
+    const std::uint64_t helper_addr = static_cast<std::uint64_t>(
+        op.kind == ir::VecF16CvtKind::PhToPs
+            ? reinterpret_cast<std::uintptr_t>(&prisma_backend_f16c_ph2ps_helper)
+            : reinterpret_cast<std::uintptr_t>(&prisma_backend_f16c_ps2ph_helper));
+    emitter_.mov_imm64(arm64::Reg::X9, helper_addr);
+    emitter_.blr(arm64::Reg::X9);
+    emitter_.sp_store(arm64::Reg::X0, result_offset);
+    emitter_.sp_store(arm64::Reg::X1, result_offset + 8);
+    restore_fp_pairs(emitter_, fp_pairs);
+    restore_gpr_pairs(emitter_, gpr_pairs);
+    emitter_.pop_pair(lo, hi);
+    emitter_.fmov_v_from_x(rd, lo, ir::FpSize::F64);
+    emitter_.vins_lane_from_w(rd, rd, 1, hi, Emitter::VecLane::D2);
+    return {};
 }
 
 bool Lowerer::allocate_temporary(arm64::Reg& out) {
@@ -281,21 +1052,52 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             auto& entry = last_use_[*s.result];
             if (entry < i) entry = i;
         }
+        if (const auto* cas = std::get_if<ir::AtomicCmpxchgPair>(&s.op)) {
+            auto& entry = last_use_[cas->old_high];
+            if (entry < i) entry = i;
+        }
         std::visit([&](const auto& op) {
             using T = std::decay_t<decltype(op)>;
             if      constexpr (std::is_same_v<T, ir::BinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::WideDiv>)     { bump(op.high, i); bump(op.low, i); bump(op.divisor, i); }
             else if constexpr (std::is_same_v<T, ir::Compare>)     { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::Select>)      { bump(op.true_value, i); bump(op.false_value, i); }
             else if constexpr (std::is_same_v<T, ir::LoadMem>)     { bump(op.addr, i); }
             else if constexpr (std::is_same_v<T, ir::StoreMem>)    { bump(op.addr, i); bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::LoadMemTSO>)  { bump(op.addr, i); }
             else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) { bump(op.addr, i); bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::AtomicCmpxchg>) {
+                bump(op.addr, i);
+                bump(op.expected, i);
+                bump(op.new_value, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::AtomicCmpxchgPair>) {
+                bump(op.addr, i);
+                bump(op.expected_low, i);
+                bump(op.expected_high, i);
+                bump(op.new_low, i);
+                bump(op.new_high, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::StoreCarry>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreRflags>) { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::StoreRflagsFromNzcv>) {
+                if (op.pf) bump(*op.pf, i);
+                if (op.af) bump(*op.af, i);
+            }
+            else if constexpr (std::is_same_v<T, ir::StoreRflagsFromBits>) {
+                if (op.pf) bump(*op.pf, i);
+                if (op.af) bump(*op.af, i);
+                bump(op.zf, i);
+                bump(op.sf, i);
+                bump(op.of, i);
+            }
             else if constexpr (std::is_same_v<T, ir::StoreReg>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::CmpFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::AluFlags>)    { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::CondJump>)    { bump(op.cond, i); }
             else if constexpr (std::is_same_v<T, ir::JumpReg>)     { bump(op.target, i); }
             else if constexpr (std::is_same_v<T, ir::CallReg>)     { bump(op.target, i); }
+            else if constexpr (std::is_same_v<T, ir::TrapIf>)      { bump(op.condition, i); }
             else if constexpr (std::is_same_v<T, ir::Extend>)      { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::Truncate>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::FpBinOp>)       { bump(op.lhs, i); bump(op.rhs, i); }
@@ -303,6 +1105,8 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::ReadFlag>)      { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::CondJumpFlags>) { bump(op.flags, i); }
             else if constexpr (std::is_same_v<T, ir::VecBinOp>)      { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecClMul>)      { bump(op.lhs, i); bump(op.rhs, i); }
+            else if constexpr (std::is_same_v<T, ir::VecF16Cvt>)     { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVecReg>)   { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::StoreVecRegHi>) { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::VecFpBinOp>)    { bump(op.lhs, i); bump(op.rhs, i); }
@@ -315,6 +1119,9 @@ void Lowerer::compute_liveness(std::span<const ir::Stmt> stmts) {
             else if constexpr (std::is_same_v<T, ir::StoreVec>)      { bump(op.addr, i); bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::XmmFromGpr>)    { bump(op.value, i); }
             else if constexpr (std::is_same_v<T, ir::GprFromXmm>)    { bump(op.value, i); }
+            else if constexpr (std::is_same_v<T, ir::PcmpStrIndex>)  { bump(op.lhs, i); bump(op.rhs, i); if (op.lhs_len) bump(*op.lhs_len, i); if (op.rhs_len) bump(*op.rhs_len, i); }
+            else if constexpr (std::is_same_v<T, ir::PcmpStrMask>)   { bump(op.lhs, i); bump(op.rhs, i); if (op.lhs_len) bump(*op.lhs_len, i); if (op.rhs_len) bump(*op.rhs_len, i); }
+            else if constexpr (std::is_same_v<T, ir::PcmpStrFlags>)  { bump(op.lhs, i); bump(op.rhs, i); if (op.lhs_len) bump(*op.lhs_len, i); if (op.rhs_len) bump(*op.rhs_len, i); }
             else if constexpr (std::is_same_v<T, ir::VecCmp>)        { bump(op.lhs, i); bump(op.rhs, i); }
             else if constexpr (std::is_same_v<T, ir::VecShuffle32x4>) { bump(op.src, i); }
             else if constexpr (std::is_same_v<T, ir::VecUnpack>)     { bump(op.lhs, i); bump(op.rhs, i); }
@@ -611,6 +1418,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 if (!allocate_temporary(q)) {
                     return {false, LowerError::OutOfScratchRegs, "Mod temporary"};
                 }
+                emit_divisor_zero_sigfpe_guard(emitter_, rm, options_.emit_ret_on_terminator);
                 if (op.op == ir::BinOpKind::UMod) {
                     emitter_.udiv(q, rn, rm);
                 } else {
@@ -619,7 +1427,57 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 emitter_.msub(rd, q, rm, rn);  // rd = rn - q*rm
                 return {};
             }
+            if (op.op == ir::BinOpKind::UDiv || op.op == ir::BinOpKind::SDiv) {
+                emit_divisor_zero_sigfpe_guard(emitter_, rm, options_.emit_ret_on_terminator);
+            }
             return emit_binop(emitter_, op.op, rd, rn, rm);
+        }
+        else if constexpr (std::is_same_v<T, ir::WideDiv>) {
+            if (!s.result) return {false, LowerError::DanglingRef, "WideDiv without result ref"};
+            arm64::Reg high, low, divisor;
+            if (!reg_of(op.high, high)) return {false, LowerError::DanglingRef, "WideDiv.high"};
+            if (!reg_of(op.low, low)) return {false, LowerError::DanglingRef, "WideDiv.low"};
+            if (!reg_of(op.divisor, divisor)) return {false, LowerError::DanglingRef, "WideDiv.divisor"};
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "WideDiv"};
+            }
+            WideDivWorkRegs work{};
+            if (!allocate_temporary(work.rem) ||
+                !allocate_temporary(work.low) ||
+                !allocate_temporary(work.divisor) ||
+                !allocate_temporary(work.mask) ||
+                !allocate_temporary(work.bit) ||
+                !allocate_temporary(work.overflow)) {
+                return {false, LowerError::OutOfScratchRegs, "WideDiv temporaries"};
+            }
+
+            emit_divisor_zero_sigfpe_guard(emitter_, divisor, options_.emit_ret_on_terminator);
+            emitter_.mov_reg_reg(work.rem, high);
+            emitter_.mov_reg_reg(work.low, low);
+            emitter_.mov_reg_reg(work.divisor, divisor);
+            if (op.is_signed) {
+                emit_abs_signed_wide_div_inputs(emitter_, work);
+                emit_unsigned_wide_div_overflow_guard(
+                    emitter_, work.rem, work.divisor, options_.emit_ret_on_terminator);
+            } else {
+                emit_unsigned_wide_div_overflow_guard(
+                    emitter_, high, divisor, options_.emit_ret_on_terminator);
+            }
+
+            emit_wide_udiv_core(emitter_, rd, work);
+            if (op.result == ir::WideDivResult::Remainder) {
+                emitter_.mov_reg_reg(rd, work.rem);
+            }
+            if (op.is_signed) {
+                emitter_.lsr_imm(work.bit, high, 63);
+                emitter_.lsr_imm(work.overflow, divisor, 63);
+                emitter_.eor(work.bit, work.bit, work.overflow);
+                emit_signed_wide_div_quotient_overflow_guard(
+                    emitter_, rd, options_.emit_ret_on_terminator, work);
+                emit_apply_signed_wide_div_result(emitter_, rd, high, divisor, op.result, work);
+            }
+            return {};
         }
         else if constexpr (std::is_same_v<T, ir::Compare>) {
             // Compare produces a 0/1 value in an SSA ref. Lower to
@@ -692,6 +1550,101 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.store_release(rv, raddr, op.size);
             return {};
         }
+        else if constexpr (std::is_same_v<T, ir::AtomicCmpxchg>) {
+            if (!s.result) {
+                return {false, LowerError::DanglingRef,
+                        "AtomicCmpxchg without result ref"};
+            }
+            arm64::Reg raddr, expected, new_value;
+            if (!reg_of(op.addr, raddr)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchg.addr"};
+            }
+            if (!reg_of(op.expected, expected)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchg.expected"};
+            }
+            if (!reg_of(op.new_value, new_value)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchg.new_value"};
+            }
+
+            arm64::Reg old_value, status;
+            if (!allocate_scratch(*s.result, old_value)) {
+                return {false, LowerError::OutOfScratchRegs, "AtomicCmpxchg.old_value"};
+            }
+            if (!allocate_temporary(status)) {
+                return {false, LowerError::OutOfScratchRegs, "AtomicCmpxchg.status"};
+            }
+
+            Emitter::Label retry = emitter_.create_label();
+            Emitter::Label fail = emitter_.create_label();
+            Emitter::Label done = emitter_.create_label();
+
+            emitter_.bind(retry);
+            emitter_.ldaxr(old_value, raddr, op.size);
+            arm64::Reg cmp_lhs = old_value;
+            arm64::Reg cmp_rhs = expected;
+            auto aligned = align_flag_operands(old_value, expected, op.size,
+                                               cmp_lhs, cmp_rhs);
+            if (!aligned.success) return aligned;
+            emitter_.cmp(cmp_lhs, cmp_rhs);
+            emitter_.branch_cc(fail, ir::CondCode::Ne);
+            emitter_.stlxr(status, new_value, raddr, op.size);
+            emitter_.cbnz(status, retry);
+            emitter_.branch(done);
+            emitter_.bind(fail);
+            emitter_.clrex();
+            emitter_.bind(done);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::AtomicCmpxchgPair>) {
+            if (!s.result) {
+                return {false, LowerError::DanglingRef,
+                        "AtomicCmpxchgPair without low result ref"};
+            }
+            arm64::Reg raddr, expected_low, expected_high, new_low, new_high;
+            if (!reg_of(op.addr, raddr)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchgPair.addr"};
+            }
+            if (!reg_of(op.expected_low, expected_low)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchgPair.expected_low"};
+            }
+            if (!reg_of(op.expected_high, expected_high)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchgPair.expected_high"};
+            }
+            if (!reg_of(op.new_low, new_low)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchgPair.new_low"};
+            }
+            if (!reg_of(op.new_high, new_high)) {
+                return {false, LowerError::DanglingRef, "AtomicCmpxchgPair.new_high"};
+            }
+            arm64::Reg old_low, old_high, status;
+            if (!allocate_scratch(*s.result, old_low)) {
+                return {false, LowerError::OutOfScratchRegs, "AtomicCmpxchgPair.old_low"};
+            }
+            if (!allocate_scratch(op.old_high, old_high)) {
+                return {false, LowerError::OutOfScratchRegs, "AtomicCmpxchgPair.old_high"};
+            }
+            if (!allocate_temporary(status)) {
+                return {false, LowerError::OutOfScratchRegs, "AtomicCmpxchgPair.status"};
+            }
+
+            Emitter::Label retry = emitter_.create_label();
+            Emitter::Label fail = emitter_.create_label();
+            Emitter::Label done = emitter_.create_label();
+
+            emitter_.bind(retry);
+            emitter_.ldaxp(old_low, old_high, raddr);
+            emitter_.cmp(old_low, expected_low);
+            emitter_.branch_cc(fail, ir::CondCode::Ne);
+            emitter_.cmp(old_high, expected_high);
+            emitter_.branch_cc(fail, ir::CondCode::Ne);
+            emitter_.stlxp(status, new_low, new_high, raddr);
+            emitter_.cbnz(status, retry);
+            emitter_.branch(done);
+            emitter_.bind(fail);
+            emitter_.clrex();
+            emitter_.bind(done);
+            return {};
+        }
         else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             // Side-effecting: emits ARM64 `cmp`, leaves NZCV set for the
             // NEXT CondJumpRel / SetCC. No result ref; no scratch
@@ -720,22 +1673,31 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                     emitter_.cmp(fl, fr);
                     break;
                 case ir::BinOpKind::Add:
-                case ir::BinOpKind::And: {
+                case ir::BinOpKind::And:
+                case ir::BinOpKind::Or:
+                case ir::BinOpKind::Xor: {
                     arm64::Reg rd_tmp;
                     if (!allocate_temporary(rd_tmp)) {
                         return {false, LowerError::OutOfScratchRegs,
-                                "AluFlags(Add/And) needs a temp"};
+                                "AluFlags(Add/And/Or/Xor) needs a temp"};
                     }
                     if (op.op == ir::BinOpKind::Add) {
                         emitter_.adds(rd_tmp, fl, fr);
-                    } else {
+                    } else if (op.op == ir::BinOpKind::And) {
                         emitter_.ands(rd_tmp, fl, fr);
+                    } else {
+                        if (op.op == ir::BinOpKind::Or) {
+                            emitter_.orr(rd_tmp, fl, fr);
+                        } else {
+                            emitter_.eor(rd_tmp, fl, fr);
+                        }
+                        emitter_.ands(rd_tmp, rd_tmp, rd_tmp);
                     }
                     break;
                 }
                 default:
                     return {false, LowerError::UnsupportedOp,
-                            "AluFlags only supports Sub/Add/And today"};
+                            "AluFlags only supports Sub/Add/And/Or/Xor today"};
             }
             return {};
         }
@@ -762,6 +1724,17 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             // trap via block metadata; the machine code just returns.
             emitter_.mov_imm64(arm64::Reg::X0, /*kHaltSentinel=*/0);
             if (options_.emit_ret_on_terminator) emitter_.ret();
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::TrapIf>) {
+            arm64::Reg condition;
+            if (!reg_of(op.condition, condition)) {
+                return {false, LowerError::DanglingRef, "TrapIf.condition"};
+            }
+            const auto ok = emitter_.create_label();
+            emitter_.cbz(condition, ok);
+            emit_sigfpe_placeholder_return(emitter_, options_.emit_ret_on_terminator);
+            emitter_.bind(ok);
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Cpuid>) {
@@ -816,7 +1789,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.orr_w(t0, rcx, rcx);   // t0 = ECX (subleaf)
             emitter_.cbnz(t0, other);
             // CPUID.(EAX=7, ECX=0): EAX = max subleaf (0), EBX = the
-            // baked feature bits (SHA / BMI2, host-gated where the
+            // baked feature bits (BMI1 / BMI2 / SHA, host-gated where the
             // lowering needs host crypto).
             emitter_.mov_imm64(rax, 0);
             emitter_.mov_imm64(rbx, options_.cpuid_leaf7_ebx);
@@ -1002,6 +1975,231 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 ? runtime::CpuStateFrame::fs_base_offset()
                 : runtime::CpuStateFrame::gs_base_offset();
             emitter_.load_offset(rd, abi::kStatePtrReg, seg_off);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadCarry>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadCarry requires a result ref"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadCarry"};
+            }
+            emitter_.load_offset(rd, abi::kStatePtrReg,
+                                 runtime::CpuStateFrame::cf_offset());
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreCarry>) {
+            arm64::Reg value;
+            if (!reg_of(op.value, value)) {
+                return {false, LowerError::DanglingRef, "StoreCarry.value"};
+            }
+            arm64::Reg masked, rflags, clear_mask;
+            if (!allocate_temporary(masked) ||
+                !allocate_temporary(rflags) ||
+                !allocate_temporary(clear_mask)) {
+                return {false, LowerError::OutOfScratchRegs, "StoreCarry"};
+            }
+            emitter_.mov_imm64(clear_mask, 1);
+            emitter_.and_(masked, value, clear_mask);
+            emitter_.store_offset(masked, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::cf_offset());
+
+            emitter_.load_offset(rflags, abi::kStatePtrReg,
+                                 runtime::CpuStateFrame::rflags_offset());
+            emitter_.mov_imm64(clear_mask, 0xFFFFFFFFFFFFFFFEULL);
+            emitter_.and_(rflags, rflags, clear_mask);
+            emitter_.orr(rflags, rflags, masked);
+            emitter_.store_offset(rflags, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::rflags_offset());
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::LoadRflags>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "LoadRflags requires a result ref"};
+            }
+            arm64::Reg rd;
+            if (!allocate_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "LoadRflags"};
+            }
+            emitter_.load_offset(rd, abi::kStatePtrReg,
+                                 runtime::CpuStateFrame::rflags_offset());
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreRflags>) {
+            arm64::Reg value;
+            if (!reg_of(op.value, value)) {
+                return {false, LowerError::DanglingRef, "StoreRflags.value"};
+            }
+            arm64::Reg forced, mask, carry;
+            if (!allocate_temporary(forced) ||
+                !allocate_temporary(mask) ||
+                !allocate_temporary(carry)) {
+                return {false, LowerError::OutOfScratchRegs, "StoreRflags"};
+            }
+            emitter_.mov_imm64(mask, 2);
+            emitter_.orr(forced, value, mask);
+            emitter_.store_offset(forced, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::rflags_offset());
+
+            emitter_.mov_imm64(mask, 1);
+            emitter_.and_(carry, forced, mask);
+            emitter_.store_offset(carry, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::cf_offset());
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreRflagsFromNzcv>) {
+            constexpr std::uint64_t kCf = 1ull << 0;
+            constexpr std::uint64_t kPf = 1ull << 2;
+            constexpr std::uint64_t kAf = 1ull << 4;
+            constexpr std::uint64_t kZf = 1ull << 6;
+            constexpr std::uint64_t kSf = 1ull << 7;
+            constexpr std::uint64_t kOf = 1ull << 11;
+
+            arm64::Reg rflags, mask, bit, shift, carry;
+            if (!allocate_temporary(rflags) ||
+                !allocate_temporary(mask) ||
+                !allocate_temporary(bit) ||
+                !allocate_temporary(shift) ||
+                !allocate_temporary(carry)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "StoreRflagsFromNzcv"};
+            }
+
+            std::uint64_t clear_bits = kZf | kSf | kOf;
+            if (op.carry != ir::RflagsCarryMode::Preserve) clear_bits |= kCf;
+            if (op.pf.has_value()) clear_bits |= kPf;
+            if (op.af.has_value()) clear_bits |= kAf;
+
+            emitter_.load_offset(rflags, abi::kStatePtrReg,
+                                 runtime::CpuStateFrame::rflags_offset());
+            emitter_.mov_imm64(mask, ~clear_bits);
+            emitter_.and_(rflags, rflags, mask);
+            emitter_.mov_imm64(mask, 2);
+            emitter_.orr(rflags, rflags, mask);
+
+            auto or_bit_reg = [&](arm64::Reg value, unsigned rflags_shift) {
+                emitter_.mov_imm64(mask, 1);
+                emitter_.and_(bit, value, mask);
+                if (rflags_shift != 0) {
+                    emitter_.mov_imm64(shift, rflags_shift);
+                    emitter_.lsl(bit, bit, shift);
+                }
+                emitter_.orr(rflags, rflags, bit);
+            };
+
+            auto or_bit_ref = [&](std::optional<ir::Ref> ref,
+                                  unsigned rflags_shift,
+                                  const char* name) -> LowerResult {
+                if (!ref.has_value()) return {};
+                arm64::Reg value;
+                if (!reg_of(*ref, value)) {
+                    return {false, LowerError::DanglingRef, name};
+                }
+                or_bit_reg(value, rflags_shift);
+                return {};
+            };
+
+            auto or_condition = [&](ir::CondCode cc, unsigned rflags_shift) {
+                emitter_.cset(bit, cc);
+                if (rflags_shift != 0) {
+                    emitter_.mov_imm64(shift, rflags_shift);
+                    emitter_.lsl(bit, bit, shift);
+                }
+                emitter_.orr(rflags, rflags, bit);
+            };
+
+            or_condition(ir::CondCode::Eq, 6);
+            or_condition(ir::CondCode::Mi, 7);
+            or_condition(ir::CondCode::Ov, 11);
+            auto pf_res = or_bit_ref(op.pf, 2, "StoreRflagsFromNzcv.pf");
+            if (!pf_res.success) return pf_res;
+            auto af_res = or_bit_ref(op.af, 4, "StoreRflagsFromNzcv.af");
+            if (!af_res.success) return af_res;
+
+            switch (op.carry) {
+                case ir::RflagsCarryMode::ArmCarry:
+                    or_condition(ir::CondCode::Nc, 0);
+                    break;
+                case ir::RflagsCarryMode::InvertArmCarry:
+                    or_condition(ir::CondCode::Cc, 0);
+                    break;
+                case ir::RflagsCarryMode::Clear:
+                case ir::RflagsCarryMode::Preserve:
+                    break;
+            }
+
+            emitter_.store_offset(rflags, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::rflags_offset());
+            emitter_.mov_imm64(mask, 1);
+            emitter_.and_(carry, rflags, mask);
+            emitter_.store_offset(carry, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::cf_offset());
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::StoreRflagsFromBits>) {
+            constexpr std::uint64_t kPf = 1ull << 2;
+            constexpr std::uint64_t kAf = 1ull << 4;
+            constexpr std::uint64_t kZf = 1ull << 6;
+            constexpr std::uint64_t kSf = 1ull << 7;
+            constexpr std::uint64_t kOf = 1ull << 11;
+
+            arm64::Reg rflags, mask, bit, shift;
+            if (!allocate_temporary(rflags) ||
+                !allocate_temporary(mask) ||
+                !allocate_temporary(bit) ||
+                !allocate_temporary(shift)) {
+                return {false, LowerError::OutOfScratchRegs,
+                        "StoreRflagsFromBits"};
+            }
+
+            std::uint64_t clear_bits = kZf | kSf | kOf;
+            if (op.pf.has_value()) clear_bits |= kPf;
+            if (op.af.has_value()) clear_bits |= kAf;
+
+            emitter_.load_offset(rflags, abi::kStatePtrReg,
+                                 runtime::CpuStateFrame::rflags_offset());
+            emitter_.mov_imm64(mask, ~clear_bits);
+            emitter_.and_(rflags, rflags, mask);
+            emitter_.mov_imm64(mask, 2);
+            emitter_.orr(rflags, rflags, mask);
+
+            auto or_bit_ref = [&](ir::Ref ref,
+                                  unsigned rflags_shift,
+                                  const char* name) -> LowerResult {
+                arm64::Reg value;
+                if (!reg_of(ref, value)) {
+                    return {false, LowerError::DanglingRef, name};
+                }
+                emitter_.mov_imm64(mask, 1);
+                emitter_.and_(bit, value, mask);
+                if (rflags_shift != 0) {
+                    emitter_.mov_imm64(shift, rflags_shift);
+                    emitter_.lsl(bit, bit, shift);
+                }
+                emitter_.orr(rflags, rflags, bit);
+                return {};
+            };
+
+            if (op.pf) {
+                auto res = or_bit_ref(*op.pf, 2, "StoreRflagsFromBits.pf");
+                if (!res.success) return res;
+            }
+            if (op.af) {
+                auto res = or_bit_ref(*op.af, 4, "StoreRflagsFromBits.af");
+                if (!res.success) return res;
+            }
+            auto zf_res = or_bit_ref(op.zf, 6, "StoreRflagsFromBits.zf");
+            if (!zf_res.success) return zf_res;
+            auto sf_res = or_bit_ref(op.sf, 7, "StoreRflagsFromBits.sf");
+            if (!sf_res.success) return sf_res;
+            auto of_res = or_bit_ref(op.of, 11, "StoreRflagsFromBits.of");
+            if (!of_res.success) return of_res;
+
+            emitter_.store_offset(rflags, abi::kStatePtrReg,
+                                  runtime::CpuStateFrame::rflags_offset());
             return {};
         }
         else if constexpr (std::is_same_v<T, ir::Extend>) {
@@ -1263,25 +2461,34 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                     emitter_.cmp(fl, fr);
                     break;
                 case ir::BinOpKind::Add:
-                case ir::BinOpKind::And: {
-                    // adds / ands need a destination register. Allocate
-                    // a single-stmt temporary so the result value is
+                case ir::BinOpKind::And:
+                case ir::BinOpKind::Or:
+                case ir::BinOpKind::Xor: {
+                    // Flag-setting ALU forms need a destination register.
+                    // Allocate a single-stmt temporary so the result value is
                     // discarded but NZCV is set as a side effect.
                     arm64::Reg rd_tmp;
                     if (!allocate_temporary(rd_tmp)) {
                         return {false, LowerError::OutOfScratchRegs,
-                                "WriteFlags(Add/And) needs a temp"};
+                                "WriteFlags(Add/And/Or/Xor) needs a temp"};
                     }
                     if (op.op == ir::BinOpKind::Add) {
                         emitter_.adds(rd_tmp, fl, fr);
-                    } else {
+                    } else if (op.op == ir::BinOpKind::And) {
                         emitter_.ands(rd_tmp, fl, fr);
+                    } else {
+                        if (op.op == ir::BinOpKind::Or) {
+                            emitter_.orr(rd_tmp, fl, fr);
+                        } else {
+                            emitter_.eor(rd_tmp, fl, fr);
+                        }
+                        emitter_.ands(rd_tmp, rd_tmp, rd_tmp);
                     }
                     break;
                 }
                 default:
                     return {false, LowerError::UnsupportedOp,
-                            "WriteFlags only supports Sub/Add/And today"};
+                            "WriteFlags only supports Sub/Add/And/Or/Xor today"};
             }
             // Result Ref lives in NZCV; track it in flag_refs_ so
             // consumers verify their operand was a real WriteFlags
@@ -1506,6 +2713,32 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
                 case ir::VecBinOpKind::PairSubInt: emitter_.vsubp_q(rd, rl, rr, lane); break;
             }
             return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecClMul>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecClMul requires a result ref"};
+            }
+            Emitter::FpReg rl, rr;
+            if (!fp_reg_of(op.lhs, rl)) {
+                return {false, LowerError::DanglingRef, "VecClMul.lhs"};
+            }
+            if (!fp_reg_of(op.rhs, rr)) {
+                return {false, LowerError::DanglingRef, "VecClMul.rhs"};
+            }
+            Emitter::FpReg rd;
+            if (!allocate_fp_scratch(*s.result, rd)) {
+                return {false, LowerError::OutOfScratchRegs, "VecClMul"};
+            }
+            emitter_.vpclmulqdq(rd, rl, rr, op.lhs_high, op.rhs_high);
+            return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::VecF16Cvt>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef,
+                        "VecF16Cvt requires a result ref"};
+            }
+            return lower_vec_f16cvt(op, *s.result);
         }
         else if constexpr (std::is_same_v<T, ir::VecFpBinOp>) {
             // F2-IR-005. Packed-FP arithmetic — ADDPS/SUBPS/MULPS/DIVPS
@@ -2334,6 +3567,24 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             }
             emitter_.vst1_q(rv, raddr);
             return {};
+        }
+        else if constexpr (std::is_same_v<T, ir::PcmpStrIndex>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "PcmpStrIndex without result"};
+            }
+            return lower_pcmpstr_index(op, *s.result);
+        }
+        else if constexpr (std::is_same_v<T, ir::PcmpStrMask>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "PcmpStrMask without result"};
+            }
+            return lower_pcmpstr_mask(op, *s.result);
+        }
+        else if constexpr (std::is_same_v<T, ir::PcmpStrFlags>) {
+            if (!s.result.has_value()) {
+                return {false, LowerError::DanglingRef, "PcmpStrFlags without result"};
+            }
+            return lower_pcmpstr_flags(op, *s.result);
         }
         else if constexpr (std::is_same_v<T, ir::VecFpScalarFma>) {
             // F2-IR-006 — scalar FMA. ARM64 has 4-operand scalar FMA

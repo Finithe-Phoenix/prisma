@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <utility>
 #include <variant>
 
 namespace prisma::decoder {
@@ -108,6 +109,18 @@ std::variant<Decoded, DecodeError> decode_xadd_rm_r(
     bool address_size_override,
     ir::Ref& next_ref,
     ir::OpSize size);
+void append_alu_flags_and_rflags(std::vector<ir::Stmt>& stmts,
+                                 ir::Ref& next_ref,
+                                 ir::BinOpKind op,
+                                 ir::Ref lhs,
+                                 ir::Ref rhs,
+                                 ir::Ref result,
+                                 ir::OpSize size);
+void append_cmp_flags_and_rflags(std::vector<ir::Stmt>& stmts,
+                                 ir::Ref& next_ref,
+                                 ir::Ref lhs,
+                                 ir::Ref rhs,
+                                 ir::OpSize size);
 
 constexpr ir::Gpr gpr_from_index(unsigned idx) noexcept {
     return static_cast<ir::Gpr>(idx);
@@ -132,6 +145,8 @@ constexpr std::size_t kMaxInstructionBytes = 15;
 
 enum class OneByteDispatchKind : std::uint8_t {
     None,
+    Sahf,
+    Lahf,
     Pushfq,
     Popfq,
     PushReg,
@@ -140,6 +155,7 @@ enum class OneByteDispatchKind : std::uint8_t {
     PushImm32,
     ImulImm8,
     AluRmImm8,
+    ShiftOne,
     ShiftImm8,
     ShiftCl,
     ImulImm32,
@@ -148,6 +164,7 @@ enum class OneByteDispatchKind : std::uint8_t {
     XchgRmR,
     Group5,
     Group3,
+    Group3Byte,
 };
 
 struct OneByteDispatchEntry {
@@ -172,10 +189,14 @@ constexpr auto build_one_byte_dispatch_table() noexcept {
     table[0x83u] = {OneByteDispatchKind::AluRmImm8};
     table[0x85u] = {OneByteDispatchKind::TestRmR};
     table[0x87u] = {OneByteDispatchKind::XchgRmR};
+    table[0x9Eu] = {OneByteDispatchKind::Sahf};
+    table[0x9Fu] = {OneByteDispatchKind::Lahf};
     table[0x9Cu] = {OneByteDispatchKind::Pushfq};
     table[0x9Du] = {OneByteDispatchKind::Popfq};
     table[0xC1u] = {OneByteDispatchKind::ShiftImm8};
+    table[0xD1u] = {OneByteDispatchKind::ShiftOne};
     table[0xD3u] = {OneByteDispatchKind::ShiftCl};
+    table[0xF6u] = {OneByteDispatchKind::Group3Byte};
     table[0xF7u] = {OneByteDispatchKind::Group3};
     table[0xFFu] = {OneByteDispatchKind::Group5};
 
@@ -568,19 +589,28 @@ std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
 
     ir::Ref ref_addr = ir::kInvalidRef;
     ir::Ref ref_dst;
+    std::optional<ir::Gpr> dst_reg;
     if (m.mod == 0b11u) {
         ref_dst = next_ref++;
         d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+        dst_reg = m.base;
     } else {
         ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
         ref_dst = next_ref++;
-        d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, size}});
+        d.stmts.push_back({ref_dst,
+            ir::AtomicCmpxchg{ref_addr, ref_acc, ref_src, size}});
     }
 
     d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_acc, ref_dst, size}});
-    const ir::Ref ref_new_dst = next_ref++;
+    ir::Ref ref_new_dst = ir::kInvalidRef;
+    if (dst_reg.has_value()) {
+        ref_new_dst = next_ref++;
+    }
     const ir::Ref ref_new_rax = next_ref++;
-    d.stmts.push_back({ref_new_dst, ir::Select{ir::CondCode::Eq, ref_src, ref_dst, size}});
+    if (dst_reg.has_value()) {
+        d.stmts.push_back({ref_new_dst,
+            ir::Select{ir::CondCode::Eq, ref_src, ref_dst, size}});
+    }
     if (size == ir::OpSize::I16) {
         // r/m16 failure writes AX only. StoreReg(I16) preserves the
         // rest of RAX while still leaving the success path unchanged.
@@ -601,17 +631,15 @@ std::variant<Decoded, DecodeError> decode_cmpxchg_rm_r(
     d.stmts.push_back({std::nullopt,
         ir::StoreReg{ir::Gpr::Rax, ref_new_rax,
             size == ir::OpSize::I16 ? ir::OpSize::I16 : ir::OpSize::I64}});
-    if (m.mod == 0b11u) {
+    if (dst_reg.has_value()) {
         d.stmts.push_back(
-            {std::nullopt, ir::StoreReg{m.base, ref_new_dst, size}});
-    } else {
-        d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_new_dst, size}});
+            {std::nullopt, ir::StoreReg{*dst_reg, ref_new_dst, size}});
     }
     d.bytes_consumed = cursor;
     return d;
 }
 
-// CMPXCHG16B m128 (48 0F C7 /1), MVP placeholder.
+// CMPXCHG16B m128 (48 0F C7 /1).
 //
 // Encodes:
 //   if RDX:RAX == [mem:128]:
@@ -648,15 +676,15 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
     d.stmts.push_back({ref_rcx, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
 
     const ir::Ref ref_low_before = next_ref++;
-    d.stmts.push_back({ref_low_before, ir::LoadMemTSO{ref_mem_addr, ir::OpSize::I64}});
-
-    const ir::Ref ref_offset = next_ref++;
-    d.stmts.push_back({ref_offset, ir::Constant{8u, ir::OpSize::I64}});
-    const ir::Ref ref_high_addr = next_ref++;
-    d.stmts.push_back(
-        {ref_high_addr, ir::BinOp{ir::BinOpKind::Add, ref_mem_addr, ref_offset, ir::OpSize::I64}});
     const ir::Ref ref_high_before = next_ref++;
-    d.stmts.push_back({ref_high_before, ir::LoadMemTSO{ref_high_addr, ir::OpSize::I64}});
+    d.stmts.push_back({ref_low_before,
+        ir::AtomicCmpxchgPair{
+            ref_mem_addr,
+            ref_rax,
+            ref_rdx,
+            ref_rbx,
+            ref_rcx,
+            ref_high_before}});
 
     const ir::Ref ref_eq_low = next_ref++;
     d.stmts.push_back({ref_eq_low, ir::Compare{ir::CondCode::Eq, ref_low_before, ref_rax, ir::OpSize::I64}});
@@ -670,15 +698,6 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
     const ir::Ref ref_one = next_ref++;
     d.stmts.push_back({ref_one, ir::Constant{1u, ir::OpSize::I64}});
     d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_eq_pair, ref_one, ir::OpSize::I64}});
-
-    const ir::Ref ref_new_low = next_ref++;
-    d.stmts.push_back(
-        {ref_new_low, ir::Select{ir::CondCode::Eq, ref_rbx, ref_low_before, ir::OpSize::I64}});
-    const ir::Ref ref_new_high = next_ref++;
-    d.stmts.push_back(
-        {ref_new_high, ir::Select{ir::CondCode::Eq, ref_rcx, ref_high_before, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_mem_addr, ref_new_low, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_high_addr, ref_new_high, ir::OpSize::I64}});
 
     const ir::Ref ref_new_rax = next_ref++;
     d.stmts.push_back(
@@ -695,18 +714,10 @@ std::variant<Decoded, DecodeError> decode_cmpxchg16b_m128(
 
 // CMPXCHG8B m64 (0F C7 /1 without REX.W).
 // Compares EDX:EAX with m64 as a single 64-bit value; on match
-// stores ECX:EBX, else loads m64 into EDX:EAX. ZF = match. Unlike
-// the 16B form this uses one 64-bit TSO load/store, so the data
-// access has the same atomicity story as every other I64 access.
+// atomically stores ECX:EBX, else loads m64 into EDX:EAX. ZF = match.
 // On success EDX:EAX are not written (upper RAX/RDX preserved).
-//
-// KNOWN LIMITATION (whole atomics family, queued): the load/Select/
-// store split is not a true CAS — a concurrent guest writer between
-// the load and the store can be lost/reverted. Today's guests are
-// single-threaded; the real-atomic lowering (LSE casal, which the
-// emitter already exposes) needs a first-class Cas IR op and is the
-// Pillar-3 era work item. Flags: only ZF is architecturally defined;
-// CmpFlags also rewrites C/N/V (documented divergence).
+// Flags: only ZF is architecturally defined; CmpFlags also rewrites
+// C/N/V (documented divergence).
 std::variant<Decoded, DecodeError> decode_cmpxchg8b_m64(
     std::span<const Byte> bytes,
     std::size_t& cursor,
@@ -754,20 +765,14 @@ std::variant<Decoded, DecodeError> decode_cmpxchg8b_m64(
         ir::BinOp{ir::BinOpKind::Or, ref_new_hi, ref_ebx, ir::OpSize::I64}});
 
     const ir::Ref ref_mem = next_ref++;
-    d.stmts.push_back({ref_mem, ir::LoadMemTSO{ref_addr, ir::OpSize::I64}});
+    d.stmts.push_back({ref_mem,
+        ir::AtomicCmpxchg{
+            ref_addr, ref_cmp_val, ref_new_val, ir::OpSize::I64}});
 
     // ZF = (EDX:EAX == m64); CMP's other flags diverge from the SDM's
     // "unaffected" but ZF is the only architecturally defined output.
     d.stmts.push_back({std::nullopt,
         ir::CmpFlags{ref_cmp_val, ref_mem, ir::OpSize::I64}});
-
-    // DEST is always written (locked semantics): new value on match,
-    // its own value otherwise.
-    const ir::Ref ref_store_val = next_ref++;
-    d.stmts.push_back({ref_store_val,
-        ir::Select{ir::CondCode::Eq, ref_new_val, ref_mem, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt,
-        ir::StoreMemTSO{ref_addr, ref_store_val, ir::OpSize::I64}});
 
     const ir::Ref ref_mem_lo = next_ref++;
     d.stmts.push_back({ref_mem_lo, ir::Truncate{ref_mem, ir::OpSize::I32}});
@@ -818,8 +823,8 @@ std::variant<Decoded, DecodeError> decode_xadd_rm_r(
         d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
         const ir::Ref ref_sum = next_ref++;
         d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
-        d.stmts.push_back(
-            {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, ref_dst, ref_src, size}});
+        append_alu_flags_and_rflags(d.stmts, next_ref, ir::BinOpKind::Add,
+                                     ref_dst, ref_src, ref_sum, size);
         d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
         d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_sum, size}});
     } else {
@@ -827,8 +832,8 @@ std::variant<Decoded, DecodeError> decode_xadd_rm_r(
         d.stmts.push_back({ref_dst, ir::LoadMemTSO{ref_addr, size}});
         const ir::Ref ref_sum = next_ref++;
         d.stmts.push_back({ref_sum, ir::BinOp{ir::BinOpKind::Add, ref_dst, ref_src, size}});
-        d.stmts.push_back(
-            {std::nullopt, ir::AluFlags{ir::BinOpKind::Add, ref_dst, ref_src, size}});
+        append_alu_flags_and_rflags(d.stmts, next_ref, ir::BinOpKind::Add,
+                                     ref_dst, ref_src, ref_sum, size);
         d.stmts.push_back(
             {std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_dst, size}});
         d.stmts.push_back({std::nullopt, ir::StoreMemTSO{ref_addr, ref_sum, size}});
@@ -915,7 +920,7 @@ std::variant<Decoded, DecodeError> decode_cmps(ir::OpSize size,
                                                        : ref_rdi;
     const ir::Ref ref_rhs = next_ref++;
     d.stmts.push_back({ref_rhs, ir::LoadMemTSO{ref_dst_addr, size}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_lhs, ref_rhs, size}});
+    append_cmp_flags_and_rflags(d.stmts, next_ref, ref_lhs, ref_rhs, size);
     const ir::Ref ref_stride = next_ref++;
     const ir::Ref ref_next_rsi = next_ref++;
     const ir::Ref ref_next_rdi = next_ref++;
@@ -947,7 +952,7 @@ std::variant<Decoded, DecodeError> decode_scas(ir::OpSize size,
                                                    : ref_rdi;
     const ir::Ref ref_rhs = next_ref++;
     d.stmts.push_back({ref_rhs, ir::LoadMemTSO{ref_addr, size}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_acc, ref_rhs, size}});
+    append_cmp_flags_and_rflags(d.stmts, next_ref, ref_acc, ref_rhs, size);
     const ir::Ref ref_stride = next_ref++;
     const ir::Ref ref_next_rdi = next_ref++;
     d.stmts.push_back({ref_stride, ir::Constant{byte_width(size), ir::OpSize::I64}});
@@ -1163,9 +1168,462 @@ ir::Ref emit_address(
 }
 
 // Common shape for ALU register-register ops (mod=11 only for MVP).
-// Memory destination forms of ADD/OR/AND/SUB/XOR/ADC/SBB (mod != 11) are future
-// work — they require reading the memory operand, doing the op, and
-// writing it back atomically. Out of scope for this session.
+// Memory destination forms of ADD/OR/AND/SUB/XOR (mod != 11) are future
+// work. ADC/SBB have a separate helper below because they need persistent CF.
+ir::Ref push_constant_ref(std::vector<ir::Stmt>& stmts,
+                          ir::Ref& next_ref,
+                          std::uint64_t value,
+                          ir::OpSize size) {
+    const ir::Ref ref = next_ref++;
+    stmts.push_back({ref, ir::Constant{ir::mask_to_size(value, size), size}});
+    return ref;
+}
+
+ir::Ref push_binop_ref(std::vector<ir::Stmt>& stmts,
+                       ir::Ref& next_ref,
+                       ir::BinOpKind op,
+                       ir::Ref lhs,
+                       ir::Ref rhs,
+                       ir::OpSize size) {
+    const ir::Ref ref = next_ref++;
+    stmts.push_back({ref, ir::BinOp{op, lhs, rhs, size}});
+    return ref;
+}
+
+ir::Ref push_compare_ref(std::vector<ir::Stmt>& stmts,
+                         ir::Ref& next_ref,
+                         ir::CondCode cc,
+                         ir::Ref lhs,
+                         ir::Ref rhs,
+                         ir::OpSize size) {
+    const ir::Ref ref = next_ref++;
+    stmts.push_back({ref, ir::Compare{cc, lhs, rhs, size}});
+    return ref;
+}
+
+void emit_sigfpe_if(std::vector<ir::Stmt>& stmts, ir::Ref condition) {
+    stmts.push_back({std::nullopt, ir::TrapIf{condition, ir::TrapKind::Sigfpe}});
+}
+
+void emit_divisor_zero_trap(std::vector<ir::Stmt>& stmts,
+                            ir::Ref& next_ref,
+                            ir::Ref divisor) {
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, ir::OpSize::I64);
+    const ir::Ref is_zero =
+        push_compare_ref(stmts, next_ref, ir::CondCode::Eq, divisor, zero, ir::OpSize::I64);
+    emit_sigfpe_if(stmts, is_zero);
+}
+
+void emit_div_quotient_overflow_trap(std::vector<ir::Stmt>& stmts,
+                                     ir::Ref& next_ref,
+                                     ir::Ref quotient,
+                                     ir::OpSize out_size,
+                                     bool is_signed) {
+    const unsigned bits = ir::bit_width(out_size);
+    if (is_signed) {
+        const std::uint64_t max = (1ull << (bits - 1u)) - 1u;
+        const std::uint64_t min = (bits == 64u)
+            ? (1ull << 63u)
+            : ((~0ull << bits) | (1ull << (bits - 1u)));
+        const ir::Ref min_ref = push_constant_ref(stmts, next_ref, min, ir::OpSize::I64);
+        const ir::Ref max_ref = push_constant_ref(stmts, next_ref, max, ir::OpSize::I64);
+        const ir::Ref below_min =
+            push_compare_ref(stmts, next_ref, ir::CondCode::Slt, quotient, min_ref, ir::OpSize::I64);
+        const ir::Ref above_max =
+            push_compare_ref(stmts, next_ref, ir::CondCode::Sgt, quotient, max_ref, ir::OpSize::I64);
+        const ir::Ref overflow =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Or, below_min, above_max, ir::OpSize::I8);
+        emit_sigfpe_if(stmts, overflow);
+    } else {
+        const std::uint64_t max = bits == 64u ? ~0ull : ((1ull << bits) - 1u);
+        const ir::Ref max_ref = push_constant_ref(stmts, next_ref, max, ir::OpSize::I64);
+        const ir::Ref overflow =
+            push_compare_ref(stmts, next_ref, ir::CondCode::Ugt, quotient, max_ref, ir::OpSize::I64);
+        emit_sigfpe_if(stmts, overflow);
+    }
+}
+
+ir::Ref push_bit_ref_i8(std::vector<ir::Stmt>& stmts,
+                        ir::Ref& next_ref,
+                        ir::Ref value,
+                        std::uint64_t shift,
+                        ir::OpSize size) {
+    ir::Ref shifted = value;
+    if (shift != 0) {
+        const ir::Ref ref_shift = push_constant_ref(stmts, next_ref, shift, size);
+        shifted = push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                                 value, ref_shift, size);
+    }
+    const ir::Ref one = push_constant_ref(stmts, next_ref, 1u, size);
+    const ir::Ref masked = push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                                          shifted, one, size);
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+    const ir::Ref bit = next_ref++;
+    stmts.push_back({bit, ir::Compare{ir::CondCode::Ne, masked, zero, size}});
+    return bit;
+}
+
+ir::Ref push_even_parity_low_byte_ref(std::vector<ir::Stmt>& stmts,
+                                      ir::Ref& next_ref,
+                                      ir::Ref value,
+                                      ir::OpSize size) {
+    const ir::Ref byte_mask = push_constant_ref(stmts, next_ref, 0xffu, size);
+    const ir::Ref byte = push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                                        value, byte_mask, size);
+    const ir::Ref shift4 = push_constant_ref(stmts, next_ref, 4u, size);
+    const ir::Ref shr4 = push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                                        byte, shift4, size);
+    const ir::Ref fold4 = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                                         byte, shr4, size);
+    const ir::Ref shift2 = push_constant_ref(stmts, next_ref, 2u, size);
+    const ir::Ref shr2 = push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                                        fold4, shift2, size);
+    const ir::Ref fold2 = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                                         fold4, shr2, size);
+    const ir::Ref shift1 = push_constant_ref(stmts, next_ref, 1u, size);
+    const ir::Ref shr1 = push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                                        fold2, shift1, size);
+    const ir::Ref fold1 = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                                         fold2, shr1, size);
+    const ir::Ref odd = push_bit_ref_i8(stmts, next_ref, fold1, 0u, size);
+    const ir::Ref one_i8 = push_constant_ref(stmts, next_ref, 1u, ir::OpSize::I8);
+    return push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                          odd, one_i8, ir::OpSize::I8);
+}
+
+ir::Ref push_aux_flag_ref(std::vector<ir::Stmt>& stmts,
+                          ir::Ref& next_ref,
+                          ir::Ref lhs,
+                          ir::Ref rhs,
+                          ir::Ref result,
+                          ir::OpSize size) {
+    const ir::Ref lhs_xor_rhs = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                                               lhs, rhs, size);
+    const ir::Ref carry_nibble = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                                                lhs_xor_rhs, result, size);
+    return push_bit_ref_i8(stmts, next_ref, carry_nibble, 4u, size);
+}
+
+ir::Ref push_preserved_rflags_bit_ref(std::vector<ir::Stmt>& stmts,
+                                      ir::Ref& next_ref,
+                                      std::uint64_t shift) {
+    const ir::Ref rflags = next_ref++;
+    stmts.push_back({rflags, ir::LoadRflags{}});
+    return push_bit_ref_i8(stmts, next_ref, rflags, shift, ir::OpSize::I64);
+}
+
+void append_result_flags_from_bits(std::vector<ir::Stmt>& stmts,
+                                   ir::Ref& next_ref,
+                                   ir::Ref result,
+                                   ir::OpSize size,
+                                   ir::Ref cf,
+                                   bool preserve_sf) {
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+    const ir::Ref zf = next_ref++;
+    stmts.push_back({zf, ir::Compare{ir::CondCode::Eq, result, zero, size}});
+    const ir::Ref sf = preserve_sf
+        ? push_preserved_rflags_bit_ref(stmts, next_ref, 7u)
+        : push_bit_ref_i8(stmts, next_ref, result, ir::bit_width(size) - 1u, size);
+    const ir::Ref of = push_constant_ref(stmts, next_ref, 0u, ir::OpSize::I64);
+    stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{std::nullopt, std::nullopt, zf, sf, of}});
+}
+
+void append_zf_preserving_undefined_flags(std::vector<ir::Stmt>& stmts,
+                                          ir::Ref& next_ref,
+                                          ir::Ref lhs,
+                                          ir::Ref rhs,
+                                          ir::OpSize size) {
+    const ir::Ref zf = next_ref++;
+    stmts.push_back({zf, ir::Compare{ir::CondCode::Eq, lhs, rhs, size}});
+    const ir::Ref sf = push_preserved_rflags_bit_ref(stmts, next_ref, 7u);
+    const ir::Ref of = push_preserved_rflags_bit_ref(stmts, next_ref, 11u);
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{std::nullopt, std::nullopt, zf, sf, of}});
+}
+
+std::pair<std::optional<ir::Ref>, std::optional<ir::Ref>>
+push_pf_af_for_alu(std::vector<ir::Stmt>& stmts,
+                   ir::Ref& next_ref,
+                   ir::BinOpKind op,
+                   ir::Ref lhs,
+                   ir::Ref rhs,
+                   ir::Ref result,
+                   ir::OpSize size) {
+    std::optional<ir::Ref> pf =
+        push_even_parity_low_byte_ref(stmts, next_ref, result, size);
+    std::optional<ir::Ref> af;
+    if (op == ir::BinOpKind::Add || op == ir::BinOpKind::Sub) {
+        af = push_aux_flag_ref(stmts, next_ref, lhs, rhs, result, size);
+    }
+    return {pf, af};
+}
+
+std::optional<ir::RflagsCarryMode> rflags_carry_mode_for_alu(ir::BinOpKind op) {
+    switch (op) {
+        case ir::BinOpKind::Add:
+            return ir::RflagsCarryMode::ArmCarry;
+        case ir::BinOpKind::Sub:
+            return ir::RflagsCarryMode::InvertArmCarry;
+        case ir::BinOpKind::And:
+        case ir::BinOpKind::Or:
+        case ir::BinOpKind::Xor:
+            return ir::RflagsCarryMode::Clear;
+        default:
+            return std::nullopt;
+    }
+}
+
+void append_alu_flags_and_rflags(std::vector<ir::Stmt>& stmts,
+                                 ir::Ref& next_ref,
+                                 ir::BinOpKind op,
+                                 ir::Ref lhs,
+                                 ir::Ref rhs,
+                                 ir::Ref result,
+                                 ir::OpSize size) {
+    const auto carry = rflags_carry_mode_for_alu(op);
+    if (!carry.has_value()) return;
+    const auto [pf, af] =
+        push_pf_af_for_alu(stmts, next_ref, op, lhs, rhs, result, size);
+    stmts.push_back({std::nullopt, ir::AluFlags{op, lhs, rhs, size}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromNzcv{*carry, pf, af}});
+}
+
+void append_cmp_flags_and_rflags(std::vector<ir::Stmt>& stmts,
+                                 ir::Ref& next_ref,
+                                 ir::Ref lhs,
+                                 ir::Ref rhs,
+                                 ir::OpSize size) {
+    const ir::Ref result =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub, lhs, rhs, size);
+    const auto [pf, af] =
+        push_pf_af_for_alu(stmts, next_ref, ir::BinOpKind::Sub,
+                           lhs, rhs, result, size);
+    stmts.push_back({std::nullopt, ir::CmpFlags{lhs, rhs, size}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromNzcv{
+                         ir::RflagsCarryMode::InvertArmCarry, pf, af}});
+}
+
+void append_test_flags_and_rflags(std::vector<ir::Stmt>& stmts,
+                                  ir::Ref& next_ref,
+                                  ir::Ref lhs,
+                                  ir::Ref rhs,
+                                  ir::Ref result,
+                                  ir::OpSize size) {
+    const ir::Ref pf = push_even_parity_low_byte_ref(stmts, next_ref, result, size);
+    stmts.push_back({std::nullopt,
+                     ir::AluFlags{ir::BinOpKind::And, lhs, rhs, size}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromNzcv{
+                         ir::RflagsCarryMode::Clear, pf, std::nullopt}});
+}
+
+void append_pcmpxstr_flags(std::vector<ir::Stmt>& stmts,
+                           ir::Ref& next_ref,
+                           ir::Ref lhs,
+                           ir::Ref rhs,
+                           std::optional<ir::Ref> lhs_len,
+                           std::optional<ir::Ref> rhs_len,
+                           std::uint8_t imm8) {
+    const ir::Ref packed = next_ref++;
+    stmts.push_back({packed, ir::PcmpStrFlags{lhs, rhs, lhs_len, rhs_len, imm8}});
+    const ir::Ref cf = push_bit_ref_i8(stmts, next_ref, packed, 0u, ir::OpSize::I64);
+    const ir::Ref zf = push_bit_ref_i8(stmts, next_ref, packed, 1u, ir::OpSize::I64);
+    const ir::Ref sf = push_bit_ref_i8(stmts, next_ref, packed, 2u, ir::OpSize::I64);
+    const ir::Ref of = push_bit_ref_i8(stmts, next_ref, packed, 3u, ir::OpSize::I64);
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, ir::OpSize::I64);
+    stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{std::optional<ir::Ref>{zero},
+                                             std::optional<ir::Ref>{zero},
+                                             zf, sf, of}});
+}
+
+void append_mul_cf_of_flags(std::vector<ir::Stmt>& stmts,
+                            ir::Ref& next_ref,
+                            ir::Ref low,
+                            ir::Ref high,
+                            ir::OpSize size,
+                            bool is_signed) {
+    ir::Ref cf;
+    if (is_signed) {
+        const ir::Ref sign_shift =
+            push_constant_ref(stmts, next_ref, ir::bit_width(size) - 1u, size);
+        const ir::Ref sign_word =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                           low, sign_shift, size);
+        const ir::Ref one = push_constant_ref(stmts, next_ref, 1u, size);
+        const ir::Ref sign_bit =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                           sign_word, one, size);
+        const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+        const ir::Ref expected_high =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub,
+                           zero, sign_bit, size);
+        cf = next_ref++;
+        stmts.push_back({cf, ir::Compare{ir::CondCode::Ne, high, expected_high, size}});
+    } else {
+        const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+        cf = next_ref++;
+        stmts.push_back({cf, ir::Compare{ir::CondCode::Ne, high, zero, size}});
+    }
+
+    const ir::Ref zf = push_preserved_rflags_bit_ref(stmts, next_ref, 6u);
+    const ir::Ref sf = push_preserved_rflags_bit_ref(stmts, next_ref, 7u);
+    stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{std::nullopt, std::nullopt,
+                                             zf, sf, cf}});
+}
+
+void append_adc_sbb_rflags_bits(std::vector<ir::Stmt>& stmts,
+                                ir::Ref& next_ref,
+                                bool is_sbb,
+                                ir::Ref lhs,
+                                ir::Ref rhs,
+                                ir::Ref result,
+                                ir::OpSize size) {
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+    const ir::Ref zf = next_ref++;
+    stmts.push_back({zf, ir::Compare{ir::CondCode::Eq, result, zero, size}});
+    const ir::Ref sf =
+        push_bit_ref_i8(stmts, next_ref, result, ir::bit_width(size) - 1u, size);
+    const ir::Ref pf = push_even_parity_low_byte_ref(stmts, next_ref, result, size);
+    const ir::Ref af = push_aux_flag_ref(stmts, next_ref, lhs, rhs, result, size);
+
+    ir::Ref overflow_word;
+    if (is_sbb) {
+        const ir::Ref lhs_xor_rhs =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor, lhs, rhs, size);
+        const ir::Ref lhs_xor_result =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor, lhs, result, size);
+        overflow_word =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                           lhs_xor_rhs, lhs_xor_result, size);
+    } else {
+        const ir::Ref lhs_xor_result =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor, lhs, result, size);
+        const ir::Ref rhs_xor_result =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor, rhs, result, size);
+        overflow_word =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                           lhs_xor_result, rhs_xor_result, size);
+    }
+    const ir::Ref of =
+        push_bit_ref_i8(stmts, next_ref, overflow_word, ir::bit_width(size) - 1u, size);
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{pf, af, zf, sf, of}});
+}
+
+ir::Ref emit_adc_sbb_value(std::vector<ir::Stmt>& stmts,
+                           ir::Ref& next_ref,
+                           bool is_sbb,
+                           ir::Ref lhs,
+                           ir::Ref rhs,
+                           ir::OpSize size) {
+    auto truncate_if_needed = [&](ir::Ref value) -> ir::Ref {
+        if (size == ir::OpSize::I64) return value;
+        const ir::Ref narrowed = next_ref++;
+        stmts.push_back({narrowed, ir::Truncate{value, size}});
+        return narrowed;
+    };
+
+    const ir::Ref carry64 = next_ref++;
+    stmts.push_back({carry64, ir::LoadCarry{}});
+    const ir::Ref carry = truncate_if_needed(carry64);
+
+    const ir::BinOpKind op = is_sbb ? ir::BinOpKind::Sub : ir::BinOpKind::Add;
+
+    const ir::Ref first_raw = next_ref++;
+    stmts.push_back({first_raw, ir::BinOp{op, lhs, rhs, size}});
+    const ir::Ref first = truncate_if_needed(first_raw);
+
+    const ir::Ref carry_first = next_ref++;
+    if (is_sbb) {
+        stmts.push_back({carry_first,
+                         ir::Compare{ir::CondCode::Ult, lhs, rhs, size}});
+    } else {
+        stmts.push_back({carry_first,
+                         ir::Compare{ir::CondCode::Ult, first, lhs, size}});
+    }
+
+    const ir::Ref result_raw = next_ref++;
+    stmts.push_back({result_raw, ir::BinOp{op, first, carry, size}});
+    const ir::Ref result = truncate_if_needed(result_raw);
+
+    const ir::Ref carry_second = next_ref++;
+    stmts.push_back({carry_second,
+                     ir::Compare{ir::CondCode::Ult, is_sbb ? first : result,
+                                 is_sbb ? carry : first, size}});
+
+    const ir::Ref new_carry = next_ref++;
+    stmts.push_back({new_carry,
+                     ir::BinOp{ir::BinOpKind::Or, carry_first, carry_second,
+                               ir::OpSize::I8}});
+    stmts.push_back({std::nullopt, ir::StoreCarry{new_carry}});
+    return result;
+}
+
+void append_adc_sbb_transient_flags(std::vector<ir::Stmt>& stmts,
+                                    bool is_sbb,
+                                    ir::Ref lhs,
+                                    ir::Ref rhs,
+                                    ir::OpSize size) {
+    // Temporary C++ parity bridge: CF is now persisted explicitly above,
+    // but ZF/SF/OF still use the older transient ADD/SUB flag model.
+    stmts.push_back({std::nullopt,
+                     ir::AluFlags{is_sbb ? ir::BinOpKind::Sub
+                                          : ir::BinOpKind::Add,
+                                  lhs, rhs, size}});
+}
+
+std::variant<Decoded, DecodeError> decode_adc_sbb_rm_r(
+    std::span<const Byte> bytes,
+    std::size_t& cursor_in_out,
+    const RexPrefix& rex,
+    bool address_size_override,
+    std::uint64_t instruction_guest_pc,
+    bool is_sbb,
+    ir::Ref& next_ref,
+    ir::OpSize size) {
+    auto modrm = parse_modrm(bytes, cursor_in_out, rex, address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+
+    Decoded d;
+    ir::Ref ref_dst;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod == 0b11u) {
+        ref_dst = next_ref++;
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+    } else {
+        ref_addr = emit_address(d.stmts, m, next_ref,
+                                instruction_guest_pc + cursor_in_out);
+        ref_dst = next_ref++;
+        d.stmts.push_back({ref_dst, ir::LoadMem{*ref_addr, size}});
+    }
+
+    const ir::Ref ref_src = next_ref++;
+    d.stmts.push_back({ref_src, ir::LoadReg{gpr_from_index(m.reg), size}});
+
+    const ir::Ref ref_res =
+        emit_adc_sbb_value(d.stmts, next_ref, is_sbb, ref_dst, ref_src, size);
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_res, size}});
+    } else {
+        d.stmts.push_back({std::nullopt, ir::StoreMem{*ref_addr, ref_res, size}});
+    }
+    append_adc_sbb_rflags_bits(d.stmts, next_ref, is_sbb, ref_dst, ref_src, ref_res, size);
+    append_adc_sbb_transient_flags(d.stmts, is_sbb, ref_dst, ref_src, size);
+    d.bytes_consumed = cursor_in_out;
+    return d;
+}
+
 std::variant<Decoded, DecodeError> decode_alu_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor_in_out,
@@ -1191,14 +1649,10 @@ std::variant<Decoded, DecodeError> decode_alu_rm_r(
     d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_src, size}});
     d.stmts.push_back({std::nullopt,
                        ir::StoreReg{m.base, ref_res, size}});
-    // x86 ADD/SUB/AND set SF/ZF/OF/CF; emit the implicit flag write so a following
-    // Jcc reads them. Scoped to the kinds the AluFlags lowerer supports today, and
-    // must mirror the Rust decoder (decode_binop_rm_r) byte-for-byte under the
-    // cross-language differential.
-    if (op == ir::BinOpKind::Add || op == ir::BinOpKind::Sub ||
-        op == ir::BinOpKind::And) {
-        d.stmts.push_back({std::nullopt, ir::AluFlags{op, ref_dst, ref_src, size}});
-    }
+    // x86 ADD/SUB/AND set SF/ZF/OF/CF; emit the implicit flag write so a
+    // following Jcc reads them, then publish the supported persistent RFLAGS
+    // subset. Scoped to the kinds the AluFlags lowerer supports today.
+    append_alu_flags_and_rflags(d.stmts, next_ref, op, ref_dst, ref_src, ref_res, size);
     d.bytes_consumed = cursor_in_out;
     return d;
 }
@@ -1207,8 +1661,8 @@ std::variant<Decoded, DecodeError> decode_alu_rm_r(
 // Supported here:
 //   /0 ADD r/m, imm8
 //   /1 OR r/m, imm8
-//   /2 ADC r/m, imm8 (carry path placeholder: ADD)
-//   /3 SBB r/m, imm8 (borrow path placeholder: SUB)
+//   /2 ADC r/m, imm8
+//   /3 SBB r/m, imm8
 //   /4 AND r/m, imm8
 //   /5 SUB r/m, imm8
 //   /6 XOR r/m, imm8
@@ -1238,10 +1692,13 @@ std::variant<Decoded, DecodeError> decode_alu_rm_imm8(
         static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i8));
 
     Decoded d;
+    ir::Ref ref_dst;
+    ir::Ref ref_imm;
+    ir::Ref ref_res;
     if (m.mod == 0b11u) {
-        const ir::Ref ref_dst = next_ref++;
-        const ir::Ref ref_imm = next_ref++;
-        const ir::Ref ref_res = next_ref++;
+        ref_dst = next_ref++;
+        ref_imm = next_ref++;
+        ref_res = next_ref++;
         d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
         d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
         d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_imm, size}});
@@ -1250,15 +1707,68 @@ std::variant<Decoded, DecodeError> decode_alu_rm_imm8(
     } else {
         const ir::Ref ref_addr =
             emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor_in_out);
-        const ir::Ref ref_dst = next_ref++;
-        const ir::Ref ref_imm = next_ref++;
-        const ir::Ref ref_res = next_ref++;
+        ref_dst = next_ref++;
+        ref_imm = next_ref++;
+        ref_res = next_ref++;
         d.stmts.push_back({ref_dst, ir::LoadMem{ref_addr, size}});
         d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
         d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_imm, size}});
         d.stmts.push_back({std::nullopt,
                            ir::StoreMem{ref_addr, ref_res, size}});
     }
+    append_alu_flags_and_rflags(d.stmts, next_ref, op, ref_dst, ref_imm, ref_res, size);
+    d.bytes_consumed = cursor_in_out;
+    return d;
+}
+
+std::variant<Decoded, DecodeError> decode_adc_sbb_rm_imm8(
+    std::span<const Byte> bytes,
+    std::size_t& cursor_in_out,
+    const RexPrefix& rex,
+    bool address_size_override,
+    std::uint64_t instruction_guest_pc,
+    bool is_sbb,
+    ir::Ref& next_ref,
+    ir::OpSize size) {
+    auto modrm = parse_modrm(bytes, cursor_in_out, rex, address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+
+    auto imm = consume_le<1>(bytes, cursor_in_out);
+    if (std::holds_alternative<DecodeError>(imm)) {
+        return std::get<DecodeError>(imm);
+    }
+    const std::int32_t imm_i8 = sign_extend_i32<1>(std::get<std::uint64_t>(imm));
+    const std::uint64_t imm_u64 =
+        static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i8));
+
+    Decoded d;
+    ir::Ref ref_dst;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod == 0b11u) {
+        ref_dst = next_ref++;
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+    } else {
+        ref_addr = emit_address(d.stmts, m, next_ref,
+                                instruction_guest_pc + cursor_in_out);
+        ref_dst = next_ref++;
+        d.stmts.push_back({ref_dst, ir::LoadMem{*ref_addr, size}});
+    }
+
+    const ir::Ref ref_imm = next_ref++;
+    d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
+
+    const ir::Ref ref_res =
+        emit_adc_sbb_value(d.stmts, next_ref, is_sbb, ref_dst, ref_imm, size);
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_res, size}});
+    } else {
+        d.stmts.push_back({std::nullopt, ir::StoreMem{*ref_addr, ref_res, size}});
+    }
+    append_adc_sbb_rflags_bits(d.stmts, next_ref, is_sbb, ref_dst, ref_imm, ref_res, size);
+    append_adc_sbb_transient_flags(d.stmts, is_sbb, ref_dst, ref_imm, size);
     d.bytes_consumed = cursor_in_out;
     return d;
 }
@@ -1301,7 +1811,7 @@ std::variant<Decoded, DecodeError> decode_cmp_rm_imm8(
         d.stmts.push_back({ref_lhs, ir::LoadMem{ref_addr, size}});
         d.stmts.push_back({ref_rhs, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
     }
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_lhs, ref_rhs, size}});
+    append_cmp_flags_and_rflags(d.stmts, next_ref, ref_lhs, ref_rhs, size);
     d.bytes_consumed = cursor_in_out;
     return d;
 }
@@ -1383,11 +1893,10 @@ std::variant<Decoded, DecodeError> decode_mov_r_rm(
 //   %lhs = loadreg(base)
 //   %rhs = loadreg(reg)
 //   %tmp = and(lhs, rhs)
-//   %zero = const 0
-//   CmpFlags(tmp, zero)
+//   AluFlags(and, lhs, rhs)
 //
-// This keeps the current decoder/lowering pipeline flowing while exact
-// Carry/Overflow behavior for TEST is handled later.
+// This keeps NZCV exact for ZF/SF while clearing CF/OF through the AND flag
+// path, then publishes the supported persistent RFLAGS subset.
 std::variant<Decoded, DecodeError> decode_test_rm_r(
     std::span<const Byte> bytes,
     std::size_t& cursor_in_out,
@@ -1406,12 +1915,10 @@ std::variant<Decoded, DecodeError> decode_test_rm_r(
     const ir::Ref ref_lhs = next_ref++;
     const ir::Ref ref_rhs = next_ref++;
     const ir::Ref ref_tmp = next_ref++;
-    const ir::Ref ref_zero = next_ref++;
     d.stmts.push_back({ref_lhs, ir::LoadReg{m.base, size}});
     d.stmts.push_back({ref_rhs, ir::LoadReg{gpr_from_index(m.reg), size}});
     d.stmts.push_back({ref_tmp, ir::BinOp{ir::BinOpKind::And, ref_lhs, ref_rhs, size}});
-    d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_tmp, ref_zero, size}});
+    append_test_flags_and_rflags(d.stmts, next_ref, ref_lhs, ref_rhs, ref_tmp, size);
     d.bytes_consumed = cursor_in_out;
     return d;
 }
@@ -1432,123 +1939,350 @@ std::variant<Decoded, DecodeError> decode_incdec_from_rm(
     d.stmts.push_back({ref_delta, ir::Constant{1u, ir::OpSize::I64}});
     d.stmts.push_back({ref_dst, ir::BinOp{op, ref_src, ref_delta, size}});
     d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_dst, size}});
+    const auto [pf, af] =
+        push_pf_af_for_alu(d.stmts, next_ref, op, ref_src, ref_delta, ref_dst, size);
+    d.stmts.push_back({std::nullopt, ir::AluFlags{op, ref_src, ref_delta, size}});
+    d.stmts.push_back({std::nullopt,
+                       ir::StoreRflagsFromNzcv{ir::RflagsCarryMode::Preserve, pf, af}});
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
-// Group 3 operations for r/m64 (48 F7):
-//   /2: NOT (bitwise NOT, x ^ -1)
-//   /3: NEG (two's complement negation, 0 - x)
+// Group 3 operations:
+//   /2: NOT (bitwise NOT, x ^ -1; flags unaffected)
+//   /3: NEG (two's complement negation, 0 - x; flags published)
 //   /4: MUL (placeholder) 64x64 -> low64 in RAX, clear RDX
 //   /5: IMUL (placeholder) signed multiply, low64 in RAX, clear RDX
 //   /6: DIV (placeholder) 128/64 -> quotient in RAX, remainder in RDX
-// This keeps the decoder minimal while preserving existing lowering contracts.
 std::variant<Decoded, DecodeError> decode_neg_not_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::BinOpKind op,
     ir::OpSize size) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
     Decoded d;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ref_addr = emit_address(d.stmts, m, next_ref,
+                                instruction_guest_pc + bytes_consumed);
+    }
+
+    const ir::Ref ref_lhs = next_ref++;
     const ir::Ref ref_src = next_ref++;
-    const ir::Ref ref_rhs = next_ref++;
     const ir::Ref ref_dst = next_ref++;
 
     if (op == ir::BinOpKind::Xor) {
-        d.stmts.push_back({ref_src, ir::LoadReg{m.base, size}});
-        d.stmts.push_back({ref_rhs, ir::Constant{ir::mask_to_size(~0ULL, size), size}});
-        d.stmts.push_back({ref_dst, ir::BinOp{op, ref_src, ref_rhs, size}});
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({ref_lhs, ir::LoadReg{m.base, size}});
+        } else {
+            d.stmts.push_back({ref_lhs, ir::LoadMem{*ref_addr, size}});
+        }
+        d.stmts.push_back({ref_src, ir::Constant{ir::mask_to_size(~0ULL, size), size}});
+        d.stmts.push_back({ref_dst, ir::BinOp{op, ref_lhs, ref_src, size}});
     } else {
-        d.stmts.push_back({ref_src, ir::Constant{0u, size}});
-        d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
-        d.stmts.push_back({ref_dst, ir::BinOp{op, ref_src, ref_rhs, size}});
+        d.stmts.push_back({ref_lhs, ir::Constant{0u, size}});
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({ref_src, ir::LoadReg{m.base, size}});
+        } else {
+            d.stmts.push_back({ref_src, ir::LoadMem{*ref_addr, size}});
+        }
+        d.stmts.push_back({ref_dst, ir::BinOp{op, ref_lhs, ref_src, size}});
     }
 
-    d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_dst, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_dst, size}});
+    } else {
+        d.stmts.push_back({std::nullopt, ir::StoreMem{*ref_addr, ref_dst, size}});
+    }
+    if (op == ir::BinOpKind::Sub) {
+        append_cmp_flags_and_rflags(d.stmts, next_ref, ref_lhs, ref_src, size);
+    }
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
-// F2-BK-007 — DIV/IDIV r/m64. Treats the dividend as 64-bit (RAX
-// only; RDX is assumed zero / sign-extended). The full 128-bit
-// RDX:RAX dividend support is deferred — most compiler-generated code
-// zero-extends or sign-extends RDX before DIV, so this covers the
-// common case correctly. Divide-by-zero produces ARM64 UDIV/SDIV's
-// well-defined behaviour (zero quotient) rather than the x86 #DE
-// trap; the trap path is a follow-up.
+ir::Ref emit_extend_to_i64(
+    Decoded& d,
+    ir::Ref value,
+    ir::OpSize from_size,
+    bool is_signed,
+    ir::Ref& next_ref) {
+    if (from_size == ir::OpSize::I64) return value;
+    const ir::Ref extended = next_ref++;
+    d.stmts.push_back({extended,
+        ir::Extend{value, from_size, ir::OpSize::I64, is_signed}});
+    return extended;
+}
+
+ir::Ref emit_truncate(
+    Decoded& d,
+    ir::Ref value,
+    ir::OpSize to_size,
+    ir::Ref& next_ref) {
+    if (to_size == ir::OpSize::I64) return value;
+    const ir::Ref truncated = next_ref++;
+    d.stmts.push_back({truncated, ir::Truncate{value, to_size}});
+    return truncated;
+}
+
+// F2-BK-007 — DIV/IDIV r/m. Narrow forms use the architectural
+// dividend: AX for r/m8, DX:AX for r/m16, and EDX:EAX for r/m32.
+// The r/m64 form is explicit in IR as RDX:RAX via WideDiv; backend
+// helper lowering and x86 #DE trap behaviour remain follow-ups.
 std::variant<Decoded, DecodeError> decode_div_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::OpSize size,
     bool is_signed) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
     Decoded d;
-    const ir::Ref ref_dividend  = next_ref++;
-    const ir::Ref ref_divisor   = next_ref++;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ref_addr = emit_address(d.stmts, m, next_ref,
+                                instruction_guest_pc + bytes_consumed);
+    }
+
+    if (size == ir::OpSize::I64) {
+        const ir::Ref ref_low       = next_ref++;
+        const ir::Ref ref_high      = next_ref++;
+        const ir::Ref ref_divisor   = next_ref++;
+        const ir::Ref ref_quotient  = next_ref++;
+        const ir::Ref ref_remainder = next_ref++;
+
+        d.stmts.push_back({ref_low, ir::LoadReg{ir::Gpr::Rax, size}});
+        d.stmts.push_back({ref_high, ir::LoadReg{ir::Gpr::Rdx, size}});
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({ref_divisor, ir::LoadReg{m.base, size}});
+        } else {
+            d.stmts.push_back({ref_divisor, ir::LoadMem{*ref_addr, size}});
+        }
+        emit_divisor_zero_trap(d.stmts, next_ref, ref_divisor);
+        d.stmts.push_back({ref_quotient,
+            ir::WideDiv{ref_high, ref_low, ref_divisor, is_signed,
+                        ir::WideDivResult::Quotient}});
+        d.stmts.push_back({ref_remainder,
+            ir::WideDiv{ref_high, ref_low, ref_divisor, is_signed,
+                        ir::WideDivResult::Remainder}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_quotient,  size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_remainder, size}});
+
+        d.bytes_consumed = bytes_consumed;
+        return d;
+    }
+
+    const ir::Ref ref_divisor_raw = next_ref++;
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_divisor_raw, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_divisor_raw, ir::LoadMem{*ref_addr, size}});
+    }
+    const ir::Ref ref_divisor =
+        emit_extend_to_i64(d, ref_divisor_raw, size, is_signed, next_ref);
+    emit_divisor_zero_trap(d.stmts, next_ref, ref_divisor);
+
+    ir::Ref ref_dividend = 0;
+    if (size == ir::OpSize::I8) {
+        const ir::Ref ref_ax = next_ref++;
+        d.stmts.push_back({ref_ax, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I16}});
+        ref_dividend = emit_extend_to_i64(d, ref_ax, ir::OpSize::I16, is_signed, next_ref);
+    } else {
+        const ir::Ref ref_low_raw = next_ref++;
+        d.stmts.push_back({ref_low_raw, ir::LoadReg{ir::Gpr::Rax, size}});
+        const ir::Ref ref_low =
+            emit_extend_to_i64(d, ref_low_raw, size, /*is_signed=*/false, next_ref);
+        const ir::Ref ref_high_raw = next_ref++;
+        d.stmts.push_back({ref_high_raw, ir::LoadReg{ir::Gpr::Rdx, size}});
+        const ir::Ref ref_high =
+            emit_extend_to_i64(d, ref_high_raw, size, /*is_signed=*/false, next_ref);
+        const ir::Ref ref_shift = next_ref++;
+        d.stmts.push_back({ref_shift,
+            ir::Constant{static_cast<std::uint64_t>(ir::bit_width(size)), ir::OpSize::I64}});
+        const ir::Ref ref_shifted_high = next_ref++;
+        d.stmts.push_back({ref_shifted_high,
+            ir::BinOp{ir::BinOpKind::Shl, ref_high, ref_shift, ir::OpSize::I64}});
+        const ir::Ref ref_combined = next_ref++;
+        d.stmts.push_back({ref_combined,
+            ir::BinOp{ir::BinOpKind::Or, ref_shifted_high, ref_low, ir::OpSize::I64}});
+        if (is_signed && size == ir::OpSize::I16) {
+            ref_dividend = emit_extend_to_i64(
+                d, ref_combined, ir::OpSize::I32, /*is_signed=*/true, next_ref);
+        } else {
+            ref_dividend = ref_combined;
+        }
+    }
+
     const ir::Ref ref_quotient  = next_ref++;
     const ir::Ref ref_remainder = next_ref++;
-
-    d.stmts.push_back({ref_dividend, ir::LoadReg{ir::Gpr::Rax, size}});
-    d.stmts.push_back({ref_divisor,  ir::LoadReg{m.base,       size}});
     d.stmts.push_back({ref_quotient,
         ir::BinOp{is_signed ? ir::BinOpKind::SDiv : ir::BinOpKind::UDiv,
-                  ref_dividend, ref_divisor, size}});
+                  ref_dividend, ref_divisor, ir::OpSize::I64}});
     d.stmts.push_back({ref_remainder,
         ir::BinOp{is_signed ? ir::BinOpKind::SMod : ir::BinOpKind::UMod,
-                  ref_dividend, ref_divisor, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_quotient,  size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_remainder, size}});
+                  ref_dividend, ref_divisor, ir::OpSize::I64}});
+    emit_div_quotient_overflow_trap(d.stmts, next_ref, ref_quotient, size, is_signed);
+
+    if (size == ir::OpSize::I8) {
+        const ir::Ref ref_quotient_byte =
+            emit_truncate(d, ref_quotient, ir::OpSize::I8, next_ref);
+        const ir::Ref ref_remainder_byte =
+            emit_truncate(d, ref_remainder, ir::OpSize::I8, next_ref);
+        const ir::Ref ref_quotient_word = next_ref++;
+        d.stmts.push_back({ref_quotient_word,
+            ir::Extend{ref_quotient_byte, ir::OpSize::I8, ir::OpSize::I16,
+                       /*is_signed=*/false}});
+        const ir::Ref ref_remainder_word = next_ref++;
+        d.stmts.push_back({ref_remainder_word,
+            ir::Extend{ref_remainder_byte, ir::OpSize::I8, ir::OpSize::I16,
+                       /*is_signed=*/false}});
+        const ir::Ref ref_shift = next_ref++;
+        d.stmts.push_back({ref_shift, ir::Constant{8u, ir::OpSize::I16}});
+        const ir::Ref ref_rem_hi = next_ref++;
+        d.stmts.push_back({ref_rem_hi,
+            ir::BinOp{ir::BinOpKind::Shl, ref_remainder_word, ref_shift,
+                      ir::OpSize::I16}});
+        const ir::Ref ref_ax = next_ref++;
+        d.stmts.push_back({ref_ax,
+            ir::BinOp{ir::BinOpKind::Or, ref_rem_hi, ref_quotient_word,
+                      ir::OpSize::I16}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_ax, ir::OpSize::I16}});
+    } else {
+        const ir::Ref ref_quotient_out = emit_truncate(d, ref_quotient, size, next_ref);
+        const ir::Ref ref_remainder_out = emit_truncate(d, ref_remainder, size, next_ref);
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_quotient_out, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_remainder_out, size}});
+    }
 
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
-// F2-BK-007 — MUL/IMUL r/m64. Computes the full 128-bit product as
-// two 64-bit halves: low → RAX (BinOp::Mul), high → RDX (UMulHi for
-// MUL or SMulHi for IMUL). ARM64 MUL is sign-agnostic on the low
-// half, so both forms share the BinOp::Mul kind.
+// F2-BK-007 — MUL/IMUL r/m. Narrow forms write AX or DX:AX/EDX:EAX
+// from a widened product; r/m64 keeps the existing high-half op path.
 std::variant<Decoded, DecodeError> decode_mul_imul_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::BinOpKind op,
     ir::OpSize size,
     bool is_signed = false) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
     Decoded d;
-    const ir::Ref ref_rax = next_ref++;
-    const ir::Ref ref_rhs = next_ref++;
-    const ir::Ref ref_lo  = next_ref++;
-    const ir::Ref ref_hi  = next_ref++;
-    const ir::BinOpKind hi_kind =
-        is_signed ? ir::BinOpKind::SMulHi : ir::BinOpKind::UMulHi;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ref_addr = emit_address(d.stmts, m, next_ref,
+                                instruction_guest_pc + bytes_consumed);
+    }
 
-    d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, size}});
-    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base,       size}});
-    d.stmts.push_back({ref_lo,  ir::BinOp{op,      ref_rax, ref_rhs, size}});
-    d.stmts.push_back({ref_hi,  ir::BinOp{hi_kind, ref_rax, ref_rhs, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_lo, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_hi, size}});
+    if (size == ir::OpSize::I64) {
+        const ir::Ref ref_rax = next_ref++;
+        const ir::Ref ref_rhs = next_ref++;
+        const ir::Ref ref_lo  = next_ref++;
+        const ir::Ref ref_hi  = next_ref++;
+        const ir::BinOpKind hi_kind =
+            is_signed ? ir::BinOpKind::SMulHi : ir::BinOpKind::UMulHi;
+
+        d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, size}});
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
+        } else {
+            d.stmts.push_back({ref_rhs, ir::LoadMem{*ref_addr, size}});
+        }
+        d.stmts.push_back({ref_lo,  ir::BinOp{op,      ref_rax, ref_rhs, size}});
+        d.stmts.push_back({ref_hi,  ir::BinOp{hi_kind, ref_rax, ref_rhs, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_lo, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_hi, size}});
+        append_mul_cf_of_flags(d.stmts, next_ref, ref_lo, ref_hi, size, is_signed);
+
+        d.bytes_consumed = bytes_consumed;
+        return d;
+    }
+
+    const ir::Ref ref_lhs_raw = next_ref++;
+    const ir::Ref ref_rhs_raw = next_ref++;
+    d.stmts.push_back({ref_lhs_raw, ir::LoadReg{ir::Gpr::Rax, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_rhs_raw, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_rhs_raw, ir::LoadMem{*ref_addr, size}});
+    }
+    const ir::Ref ref_lhs =
+        emit_extend_to_i64(d, ref_lhs_raw, size, is_signed, next_ref);
+    const ir::Ref ref_rhs =
+        emit_extend_to_i64(d, ref_rhs_raw, size, is_signed, next_ref);
+    const ir::Ref ref_product = next_ref++;
+    d.stmts.push_back({ref_product,
+        ir::BinOp{op, ref_lhs, ref_rhs, ir::OpSize::I64}});
+
+    if (size == ir::OpSize::I8) {
+        const ir::Ref ref_lo = emit_truncate(d, ref_product, ir::OpSize::I8, next_ref);
+        const ir::Ref ref_shift = next_ref++;
+        d.stmts.push_back({ref_shift, ir::Constant{8u, ir::OpSize::I64}});
+        const ir::Ref ref_shifted = next_ref++;
+        d.stmts.push_back({ref_shifted,
+            ir::BinOp{ir::BinOpKind::Shr, ref_product, ref_shift, ir::OpSize::I64}});
+        const ir::Ref ref_hi = emit_truncate(d, ref_shifted, ir::OpSize::I8, next_ref);
+        const ir::Ref ref_ax = emit_truncate(d, ref_product, ir::OpSize::I16, next_ref);
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_ax, ir::OpSize::I16}});
+        append_mul_cf_of_flags(d.stmts, next_ref, ref_lo, ref_hi, size, is_signed);
+    } else {
+        const ir::Ref ref_lo = emit_truncate(d, ref_product, size, next_ref);
+        const ir::Ref ref_shift = next_ref++;
+        d.stmts.push_back({ref_shift,
+            ir::Constant{static_cast<std::uint64_t>(ir::bit_width(size)), ir::OpSize::I64}});
+        const ir::Ref ref_shifted = next_ref++;
+        d.stmts.push_back({ref_shifted,
+            ir::BinOp{ir::BinOpKind::Shr, ref_product, ref_shift, ir::OpSize::I64}});
+        const ir::Ref ref_hi = emit_truncate(d, ref_shifted, size, next_ref);
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_lo, size}});
+        d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rdx, ref_hi, size}});
+        append_mul_cf_of_flags(d.stmts, next_ref, ref_lo, ref_hi, size, is_signed);
+    }
 
     d.bytes_consumed = bytes_consumed;
     return d;
 }
 
-// IMUL r64, r/m64 (0F AF /r) — MVP register-direct only.
+std::pair<ir::Ref, ir::Ref> emit_signed_imul_low_high(
+    Decoded& d,
+    ir::Ref& next_ref,
+    ir::Ref lhs,
+    ir::Ref rhs,
+    ir::OpSize size) {
+    if (size == ir::OpSize::I64) {
+        const ir::Ref low = next_ref++;
+        const ir::Ref high = next_ref++;
+        d.stmts.push_back({low, ir::BinOp{ir::BinOpKind::Mul, lhs, rhs, size}});
+        d.stmts.push_back({high, ir::BinOp{ir::BinOpKind::SMulHi, lhs, rhs, size}});
+        return {low, high};
+    }
+
+    const ir::Ref lhs64 = emit_extend_to_i64(d, lhs, size, /*is_signed=*/true, next_ref);
+    const ir::Ref rhs64 = emit_extend_to_i64(d, rhs, size, /*is_signed=*/true, next_ref);
+    const ir::Ref product = next_ref++;
+    d.stmts.push_back({product,
+        ir::BinOp{ir::BinOpKind::Mul, lhs64, rhs64, ir::OpSize::I64}});
+    const ir::Ref low = emit_truncate(d, product, size, next_ref);
+    const ir::Ref shift = next_ref++;
+    d.stmts.push_back({shift,
+        ir::Constant{static_cast<std::uint64_t>(ir::bit_width(size)), ir::OpSize::I64}});
+    const ir::Ref shifted = next_ref++;
+    d.stmts.push_back({shifted,
+        ir::BinOp{ir::BinOpKind::Shr, product, shift, ir::OpSize::I64}});
+    const ir::Ref high = emit_truncate(d, shifted, size, next_ref);
+    return {low, high};
+}
+
+// IMUL r64, r/m64 (0F AF /r).
 // Encodes:
-//   dest = reg field, rhs = rm field, operation: dest = dest * rhs (signedness
-//   deferred, lower as plain integer multiply for now).
+//   dest = reg field, rhs = rm field, operation: dest = dest * rhs.
 std::variant<Decoded, DecodeError> decode_imul_r64_r_rm(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
     bool address_size_override,
-    std::uint64_t /*instruction_guest_pc*/,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::OpSize size) {
     auto modrm = parse_modrm(bytes, cursor, rex, address_size_override);
@@ -1556,30 +2290,38 @@ std::variant<Decoded, DecodeError> decode_imul_r64_r_rm(
         return std::get<DecodeError>(modrm);
     }
     const auto& m = std::get<ModRmOperand>(modrm);
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     Decoded d;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+    }
     const ir::Ref ref_dst_src = next_ref++;
     const ir::Ref ref_rhs = next_ref++;
-    const ir::Ref ref_product = next_ref++;
     d.stmts.push_back({ref_dst_src, ir::LoadReg{gpr_from_index(m.reg), size}});
-    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
-    d.stmts.push_back({ref_product, ir::BinOp{ir::BinOpKind::Mul, ref_dst_src, ref_rhs, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_rhs, ir::LoadMem{*ref_addr, size}});
+    }
+    const auto [ref_product, ref_high] =
+        emit_signed_imul_low_high(d, next_ref, ref_dst_src, ref_rhs, size);
     d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_product, size}});
+    append_mul_cf_of_flags(d.stmts, next_ref, ref_product, ref_high, size,
+                           /*is_signed=*/true);
     d.bytes_consumed = cursor;
     return d;
 }
 
-// IMUL r64, r/m64, imm32 (69 /r) — MVP register-direct only.
+// IMUL r64, r/m64, imm32 (69 /r).
 // Encodes:
-//   dest = reg field, operation: dest = signext(imm32) * r/m64 (implemented as mul).
-// The immediate is sign-extended to 64-bit and then multiplied as a placeholder.
+//   dest = reg field, operation: dest = signext(imm32) * r/m64.
 std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm32(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
     bool address_size_override,
-    std::uint64_t /*instruction_guest_pc*/,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::OpSize size) {
     auto modrm = parse_modrm(bytes, cursor, rex, address_size_override);
@@ -1587,7 +2329,6 @@ std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm32(
         return std::get<DecodeError>(modrm);
     }
     const auto& m = std::get<ModRmOperand>(modrm);
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     std::uint64_t imm_u64 = 0;
     if (size == ir::OpSize::I16) {
@@ -1607,27 +2348,36 @@ std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm32(
     }
 
     Decoded d;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+    }
     const ir::Ref ref_rhs = next_ref++;
     const ir::Ref ref_imm = next_ref++;
-    const ir::Ref ref_product = next_ref++;
-    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_rhs, ir::LoadMem{*ref_addr, size}});
+    }
     d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
-    d.stmts.push_back({ref_product, ir::BinOp{ir::BinOpKind::Mul, ref_rhs, ref_imm, size}});
+    const auto [ref_product, ref_high] =
+        emit_signed_imul_low_high(d, next_ref, ref_rhs, ref_imm, size);
     d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_product, size}});
+    append_mul_cf_of_flags(d.stmts, next_ref, ref_product, ref_high, size,
+                           /*is_signed=*/true);
     d.bytes_consumed = cursor;
     return d;
 }
 
-// IMUL r64, r/m64, imm8 (6B /r) — MVP register-direct only.
+// IMUL r64, r/m64, imm8 (6B /r).
 // Encodes:
-//   dest = reg field, operation: dest = signext(imm8) * r/m64 (implemented as mul).
-// The immediate is sign-extended to 64-bit and then multiplied as a placeholder.
+//   dest = reg field, operation: dest = signext(imm8) * r/m64.
 std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm8(
     std::span<const Byte> bytes,
     std::size_t& cursor,
     const RexPrefix& rex,
     bool address_size_override,
-    std::uint64_t /*instruction_guest_pc*/,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::OpSize size) {
     auto modrm = parse_modrm(bytes, cursor, rex, address_size_override);
@@ -1635,7 +2385,6 @@ std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm8(
         return std::get<DecodeError>(modrm);
     }
     const auto& m = std::get<ModRmOperand>(modrm);
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     auto imm = consume_le<1>(bytes, cursor);
     if (std::holds_alternative<DecodeError>(imm)) {
@@ -1645,13 +2394,23 @@ std::variant<Decoded, DecodeError> decode_imul_r64_rm_imm8(
     const std::uint64_t imm_u64 = static_cast<std::uint64_t>(static_cast<std::int64_t>(imm_i8));
 
     Decoded d;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ref_addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+    }
     const ir::Ref ref_rhs = next_ref++;
     const ir::Ref ref_imm = next_ref++;
-    const ir::Ref ref_product = next_ref++;
-    d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_rhs, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_rhs, ir::LoadMem{*ref_addr, size}});
+    }
     d.stmts.push_back({ref_imm, ir::Constant{ir::mask_to_size(imm_u64, size), size}});
-    d.stmts.push_back({ref_product, ir::BinOp{ir::BinOpKind::Mul, ref_rhs, ref_imm, size}});
+    const auto [ref_product, ref_high] =
+        emit_signed_imul_low_high(d, next_ref, ref_rhs, ref_imm, size);
     d.stmts.push_back({std::nullopt, ir::StoreReg{gpr_from_index(m.reg), ref_product, size}});
+    append_mul_cf_of_flags(d.stmts, next_ref, ref_product, ref_high, size,
+                           /*is_signed=*/true);
     d.bytes_consumed = cursor;
     return d;
 }
@@ -1663,30 +2422,44 @@ enum class BtSubOpcode : std::uint8_t {
     Btc = 3u,
 };
 
-// BT/BTS/BTR/BTC r/m64, imm8 (0F BA /4,/5,/6,/7) — MVP register-direct only.
+// BT/BTS/BTR/BTC r/m64, imm8 (0F BA /4,/5,/6,/7).
 //
 // These are decoded as:
 //   BT:  CF = (src & (1 << imm)) ? 1 : 0
 //   BTS: src = src | (1 << imm), CF = old bit
 //   BTR: src = src & ~(1 << imm), CF = old bit
 //   BTC: src = src ^ (1 << imm), CF = old bit
-// Carry/flag materialization is represented via CmpFlags(old_bit, 0), where
-// `old_bit` is either 0 or a single-bit mask.
+// Carry materialization is explicit: StoreCarry(old_bit != 0) persists CF and
+// mirrors RFLAGS bit 0. CmpFlags(bit, 1) leaves ARM C set iff the tested bit
+// was set for immediate carry-conditional consumers.
 std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
     std::span<const Byte> bytes,
     const ModRmOperand& m,
     std::size_t& cursor,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     BtSubOpcode op) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
     auto imm = consume_le<1>(bytes, cursor);
     if (std::holds_alternative<DecodeError>(imm)) {
         return std::get<DecodeError>(imm);
     }
     const std::uint64_t imm_u64 = std::get<std::uint64_t>(imm);
+    const std::uint64_t bit_index = imm_u64 & 63u;
 
     Decoded d;
+    std::optional<ir::Ref> ref_addr;
+    if (m.mod != 0b11u) {
+        ir::Ref addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+        const std::uint64_t qword_offset = (imm_u64 / 64u) * 8u;
+        if (qword_offset != 0u) {
+            const ir::Ref ref_offset =
+                push_constant_ref(d.stmts, next_ref, qword_offset, ir::OpSize::I64);
+            addr = push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Add,
+                                  addr, ref_offset, ir::OpSize::I64);
+        }
+        ref_addr = addr;
+    }
+
     const ir::Ref ref_src = next_ref++;
     const ir::Ref ref_shift = next_ref++;
     const ir::Ref ref_mask = next_ref++;
@@ -1694,8 +2467,12 @@ std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
     const ir::Ref ref_oldbit = next_ref++;
     const ir::Ref ref_zero = next_ref++;
 
-    d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
-    d.stmts.push_back({ref_shift, ir::Constant{imm_u64, ir::OpSize::I64}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_src, ir::LoadReg{m.base, ir::OpSize::I64}});
+    } else {
+        d.stmts.push_back({ref_src, ir::LoadMem{*ref_addr, ir::OpSize::I64}});
+    }
+    d.stmts.push_back({ref_shift, ir::Constant{bit_index, ir::OpSize::I64}});
     d.stmts.push_back({ref_one, ir::Constant{1u, ir::OpSize::I64}});
     d.stmts.push_back({ref_mask, ir::BinOp{ir::BinOpKind::Shl, ref_one, ref_shift, ir::OpSize::I64}});
     d.stmts.push_back({ref_oldbit, ir::BinOp{ir::BinOpKind::And, ref_src, ref_mask, ir::OpSize::I64}});
@@ -1710,11 +2487,12 @@ std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
                 break;
             }
             case BtSubOpcode::Btr: {
+                const ir::Ref ref_all_ones = next_ref++;
                 const ir::Ref ref_inv_mask = next_ref++;
                 d.stmts.push_back(
-                    {ref_inv_mask, ir::Constant{~0ULL, ir::OpSize::I64}});
+                    {ref_all_ones, ir::Constant{~0ULL, ir::OpSize::I64}});
                 d.stmts.push_back({ref_inv_mask,
-                                   ir::BinOp{ir::BinOpKind::Xor, ref_mask, ref_inv_mask, ir::OpSize::I64}});
+                                   ir::BinOp{ir::BinOpKind::Xor, ref_mask, ref_all_ones, ir::OpSize::I64}});
                 ref_newval = next_ref++;
                 d.stmts.push_back({ref_newval,
                                    ir::BinOp{ir::BinOpKind::And, ref_src, ref_inv_mask, ir::OpSize::I64}});
@@ -1729,11 +2507,22 @@ std::variant<Decoded, DecodeError> decode_bt_r64_rm_imm8_from_rm(
             default:
                 return {DecodeError::UnsupportedEncoding};
         }
-        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_newval, ir::OpSize::I64}});
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({std::nullopt,
+                               ir::StoreReg{m.base, ref_newval, ir::OpSize::I64}});
+        } else {
+            d.stmts.push_back({std::nullopt,
+                               ir::StoreMem{*ref_addr, ref_newval, ir::OpSize::I64}});
+        }
     }
 
     d.stmts.push_back({ref_zero, ir::Constant{0u, ir::OpSize::I64}});
-    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_oldbit, ref_zero, ir::OpSize::I64}});
+    const ir::Ref ref_bit = next_ref++;
+    d.stmts.push_back({ref_bit,
+                       ir::Compare{ir::CondCode::Ne, ref_oldbit, ref_zero,
+                                   ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreCarry{ref_bit}});
+    d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_bit, ref_one, ir::OpSize::I64}});
     d.bytes_consumed = cursor;
     return d;
 }
@@ -1784,6 +2573,8 @@ std::variant<Decoded, DecodeError> decode_bsf_bsr(
         ir::Select{ir::CondCode::Eq, ref_old, ref_cnt, size}});
     d.stmts.push_back({std::nullopt,
         ir::StoreReg{gpr_from_index(m.reg), ref_res, size}});
+    append_zf_preserving_undefined_flags(
+        d.stmts, next_ref, ref_src, ref_zero, size);
     d.bytes_consumed = bytes_consumed;
     return d;
 }
@@ -1969,10 +2760,9 @@ std::variant<Decoded, DecodeError> decode_push_imm32_r64(
     return d;
 }
 
-// PUSHFQ placeholder: opcode 9C.
+// PUSHFQ partial model: opcode 9C.
 //
-// There is no explicit flags register in the current IR yet, so this is
-// modelled as pushing a constant 0 to the current stack pointer.
+// Push the persistent RFLAGS subset with architectural reserved bit 1 forced.
 std::variant<Decoded, DecodeError> decode_pushfq(
     std::size_t bytes_consumed,
     ir::Ref& next_ref) {
@@ -1980,12 +2770,17 @@ std::variant<Decoded, DecodeError> decode_pushfq(
     const ir::Ref ref_rsp = next_ref++;
     const ir::Ref ref_eight = next_ref++;
     const ir::Ref ref_new_rsp = next_ref++;
+    const ir::Ref ref_rflags = next_ref++;
+    const ir::Ref ref_reserved = next_ref++;
     const ir::Ref ref_flags = next_ref++;
     d.stmts.push_back({ref_rsp, ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
     d.stmts.push_back({ref_eight, ir::Constant{8u, ir::OpSize::I64}});
     d.stmts.push_back(
         {ref_new_rsp, ir::BinOp{ir::BinOpKind::Sub, ref_rsp, ref_eight, ir::OpSize::I64}});
-    d.stmts.push_back({ref_flags, ir::Constant{0u, ir::OpSize::I64}});
+    d.stmts.push_back({ref_rflags, ir::LoadRflags{}});
+    d.stmts.push_back({ref_reserved, ir::Constant{2u, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_flags, ir::BinOp{ir::BinOpKind::Or, ref_rflags, ref_reserved, ir::OpSize::I64}});
     d.stmts.push_back(
         {std::nullopt, ir::StoreMemTSO{ref_new_rsp, ref_flags, ir::OpSize::I64}});
     d.stmts.push_back(
@@ -1994,10 +2789,10 @@ std::variant<Decoded, DecodeError> decode_pushfq(
     return d;
 }
 
-// POPFQ placeholder: opcode 9D.
+// POPFQ partial model: opcode 9D.
 //
-// There is no explicit flags bank in the current IR yet, so this is modelled
-// as a stack pop into a temporary that is intentionally discarded.
+// Restore the persistent RFLAGS subset from the popped value; StoreRflags
+// synchronizes the dedicated CF slot from bit 0.
 std::variant<Decoded, DecodeError> decode_popfq(
     std::size_t bytes_consumed,
     ir::Ref& next_ref) {
@@ -2008,11 +2803,83 @@ std::variant<Decoded, DecodeError> decode_popfq(
     const ir::Ref ref_new_rsp = next_ref++;
     d.stmts.push_back({ref_rsp, ir::LoadReg{ir::Gpr::Rsp, ir::OpSize::I64}});
     d.stmts.push_back({ref_flags, ir::LoadMemTSO{ref_rsp, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreRflags{ref_flags}});
     d.stmts.push_back({ref_eight, ir::Constant{8u, ir::OpSize::I64}});
     d.stmts.push_back(
         {ref_new_rsp, ir::BinOp{ir::BinOpKind::Add, ref_rsp, ref_eight, ir::OpSize::I64}});
     d.stmts.push_back(
         {std::nullopt, ir::StoreReg{ir::Gpr::Rsp, ref_new_rsp, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
+    return d;
+}
+
+// LAHF partial model: opcode 9F.
+std::variant<Decoded, DecodeError> decode_lahf(
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref) {
+    Decoded d;
+    const ir::Ref ref_rflags = next_ref++;
+    const ir::Ref ref_lahf_mask = next_ref++;
+    const ir::Ref ref_flags_byte = next_ref++;
+    const ir::Ref ref_ah_shift = next_ref++;
+    const ir::Ref ref_shifted_flags = next_ref++;
+    const ir::Ref ref_rax = next_ref++;
+    const ir::Ref ref_clear_ah = next_ref++;
+    const ir::Ref ref_rax_without_ah = next_ref++;
+    const ir::Ref ref_new_rax = next_ref++;
+    d.stmts.push_back({ref_rflags, ir::LoadRflags{}});
+    d.stmts.push_back({ref_lahf_mask, ir::Constant{0xD7u, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_flags_byte,
+         ir::BinOp{ir::BinOpKind::And, ref_rflags, ref_lahf_mask, ir::OpSize::I64}});
+    d.stmts.push_back({ref_ah_shift, ir::Constant{8u, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_shifted_flags,
+         ir::BinOp{ir::BinOpKind::Shl, ref_flags_byte, ref_ah_shift, ir::OpSize::I64}});
+    d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    d.stmts.push_back({ref_clear_ah, ir::Constant{~0xFF00ULL, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_rax_without_ah,
+         ir::BinOp{ir::BinOpKind::And, ref_rax, ref_clear_ah, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_new_rax,
+         ir::BinOp{ir::BinOpKind::Or, ref_rax_without_ah, ref_shifted_flags, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreReg{ir::Gpr::Rax, ref_new_rax, ir::OpSize::I64}});
+    d.bytes_consumed = bytes_consumed;
+    return d;
+}
+
+// SAHF partial model: opcode 9E.
+std::variant<Decoded, DecodeError> decode_sahf(
+    std::size_t bytes_consumed,
+    ir::Ref& next_ref) {
+    Decoded d;
+    const ir::Ref ref_rax = next_ref++;
+    const ir::Ref ref_ah_shift = next_ref++;
+    const ir::Ref ref_ah = next_ref++;
+    const ir::Ref ref_sahf_mask = next_ref++;
+    const ir::Ref ref_flags_from_ah = next_ref++;
+    const ir::Ref ref_rflags = next_ref++;
+    const ir::Ref ref_clear_sahf_bits = next_ref++;
+    const ir::Ref ref_preserved_rflags = next_ref++;
+    const ir::Ref ref_new_rflags = next_ref++;
+    d.stmts.push_back({ref_rax, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}});
+    d.stmts.push_back({ref_ah_shift, ir::Constant{8u, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_ah, ir::BinOp{ir::BinOpKind::Shr, ref_rax, ref_ah_shift, ir::OpSize::I64}});
+    d.stmts.push_back({ref_sahf_mask, ir::Constant{0xD5u, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_flags_from_ah,
+         ir::BinOp{ir::BinOpKind::And, ref_ah, ref_sahf_mask, ir::OpSize::I64}});
+    d.stmts.push_back({ref_rflags, ir::LoadRflags{}});
+    d.stmts.push_back({ref_clear_sahf_bits, ir::Constant{~0xD5ULL, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_preserved_rflags,
+         ir::BinOp{ir::BinOpKind::And, ref_rflags, ref_clear_sahf_bits, ir::OpSize::I64}});
+    d.stmts.push_back(
+        {ref_new_rflags,
+         ir::BinOp{ir::BinOpKind::Or, ref_preserved_rflags, ref_flags_from_ah, ir::OpSize::I64}});
+    d.stmts.push_back({std::nullopt, ir::StoreRflags{ref_new_rflags}});
     d.bytes_consumed = bytes_consumed;
     return d;
 }
@@ -2045,57 +2912,488 @@ std::variant<Decoded, DecodeError> decode_lea_r64_mem(
     return d;
 }
 
-// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m64, imm8 (48 C1 /4|/5|/7|/0|/1|/2|/3) — MVP register-direct only.
+bool is_rcl_rcr(ir::BinOpKind op) noexcept {
+    return op == ir::BinOpKind::Rcl || op == ir::BinOpKind::Rcr;
+}
+
+std::pair<ir::Ref, ir::Ref> emit_rcl_rcr_value_count(
+    std::vector<ir::Stmt>& stmts,
+    ir::Ref& next_ref,
+    bool is_rcr,
+    ir::Ref dst,
+    ir::Ref raw_count,
+    ir::OpSize size) {
+    const std::uint64_t width_value = ir::bit_width(size);
+    const std::uint64_t count_mask = size == ir::OpSize::I64 ? 0x3fu : 0x1fu;
+    const std::uint64_t rotate_width_value = width_value + 1u;
+
+    const ir::Ref cf = next_ref++;
+    stmts.push_back({cf, ir::LoadCarry{}});
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+    const ir::Ref one = push_constant_ref(stmts, next_ref, 1u, size);
+    const ir::Ref mask = push_constant_ref(stmts, next_ref, count_mask, size);
+    const ir::Ref width = push_constant_ref(stmts, next_ref, width_value, size);
+    const ir::Ref rotate_width =
+        push_constant_ref(stmts, next_ref, rotate_width_value, size);
+    const ir::Ref masked_count =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::And, raw_count, mask, size);
+    const ir::Ref count =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::UMod,
+                       masked_count, rotate_width, size);
+    const ir::Ref count_minus_one =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub, count, one, size);
+    const ir::Ref width_minus_count =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub, width, count, size);
+    const ir::Ref rotate_width_minus_count =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub,
+                       rotate_width, count, size);
+
+    auto cmp_and_select = [&](ir::Ref lhs,
+                              ir::Ref rhs,
+                              ir::CondCode cc,
+                              ir::Ref true_value,
+                              ir::Ref false_value) {
+        stmts.push_back({std::nullopt, ir::CmpFlags{lhs, rhs, size}});
+        const ir::Ref selected = next_ref++;
+        stmts.push_back({selected, ir::Select{cc, true_value, false_value, size}});
+        return selected;
+    };
+
+    ir::Ref rotated_dst;
+    ir::Ref rotated_cf;
+    if (is_rcr) {
+        const ir::Ref shifted =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr, dst, count, size);
+        const ir::Ref cf_top =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl,
+                           cf, width_minus_count, size);
+        const ir::Ref wrap_candidate =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl,
+                           dst, rotate_width_minus_count, size);
+        const ir::Ref wrap =
+            cmp_and_select(count, one, ir::CondCode::Eq, zero, wrap_candidate);
+        const ir::Ref dst_with_cf =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Or,
+                           shifted, cf_top, size);
+        rotated_dst =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Or,
+                           dst_with_cf, wrap, size);
+        const ir::Ref cf_candidate_shifted =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                           dst, count_minus_one, size);
+        rotated_cf =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                           cf_candidate_shifted, one, size);
+    } else {
+        const ir::Ref shifted =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl, dst, count, size);
+        const ir::Ref cf_insert =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl,
+                           cf, count_minus_one, size);
+        const ir::Ref wrap_candidate =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                           dst, rotate_width_minus_count, size);
+        const ir::Ref wrap =
+            cmp_and_select(count, one, ir::CondCode::Eq, zero, wrap_candidate);
+        const ir::Ref dst_with_cf =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Or,
+                           shifted, cf_insert, size);
+        rotated_dst =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Or,
+                           dst_with_cf, wrap, size);
+        const ir::Ref cf_candidate_shifted =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr,
+                           dst, width_minus_count, size);
+        rotated_cf =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::And,
+                           cf_candidate_shifted, one, size);
+    }
+
+    const ir::Ref final_dst =
+        cmp_and_select(count, zero, ir::CondCode::Eq, dst, rotated_dst);
+    const ir::Ref final_cf =
+        cmp_and_select(count, zero, ir::CondCode::Eq, cf, rotated_cf);
+    return {final_dst, final_cf};
+}
+
+void emit_rcl_rcr_reg_count(std::vector<ir::Stmt>& stmts,
+                            ir::Ref& next_ref,
+                            bool is_rcr,
+                            ir::Gpr dst_reg,
+                            ir::Ref raw_count,
+                            ir::OpSize size) {
+    const ir::Ref dst = next_ref++;
+    stmts.push_back({dst, ir::LoadReg{dst_reg, size}});
+    const auto [final_dst, final_cf] =
+        emit_rcl_rcr_value_count(stmts, next_ref, is_rcr, dst, raw_count, size);
+    stmts.push_back({std::nullopt, ir::StoreReg{dst_reg, final_dst, size}});
+    stmts.push_back({std::nullopt, ir::StoreCarry{final_cf}});
+}
+
+bool is_non_carry_shift_rotate(ir::BinOpKind op) noexcept {
+    return op == ir::BinOpKind::Rol || op == ir::BinOpKind::Ror ||
+           op == ir::BinOpKind::Shl || op == ir::BinOpKind::Shr ||
+           op == ir::BinOpKind::Sar;
+}
+
+void append_shift_rotate_one_flags(std::vector<ir::Stmt>& stmts,
+                                   ir::Ref& next_ref,
+                                   ir::BinOpKind op,
+                                   ir::Ref dst,
+                                   ir::Ref result,
+                                   ir::OpSize size) {
+    const std::uint64_t width = ir::bit_width(size);
+    const std::uint64_t high_bit = width - 1u;
+
+    ir::Ref cf;
+    ir::Ref zf;
+    ir::Ref sf;
+    ir::Ref of;
+    std::optional<ir::Ref> pf;
+
+    if (op == ir::BinOpKind::Rol || op == ir::BinOpKind::Ror) {
+        cf = push_bit_ref_i8(stmts, next_ref, result,
+                             op == ir::BinOpKind::Rol ? 0u : high_bit,
+                             size);
+        zf = push_preserved_rflags_bit_ref(stmts, next_ref, 6u);
+        sf = push_preserved_rflags_bit_ref(stmts, next_ref, 7u);
+        const ir::Ref msb = op == ir::BinOpKind::Ror
+            ? cf
+            : push_bit_ref_i8(stmts, next_ref, result, high_bit, size);
+        const ir::Ref other = op == ir::BinOpKind::Ror
+            ? push_bit_ref_i8(stmts, next_ref, result, high_bit - 1u, size)
+            : cf;
+        of = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor, msb, other,
+                            ir::OpSize::I8);
+    } else {
+        pf = push_even_parity_low_byte_ref(stmts, next_ref, result, size);
+        const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+        zf = next_ref++;
+        stmts.push_back({zf, ir::Compare{ir::CondCode::Eq, result, zero, size}});
+        sf = push_bit_ref_i8(stmts, next_ref, result, high_bit, size);
+
+        if (op == ir::BinOpKind::Shl) {
+            cf = push_bit_ref_i8(stmts, next_ref, dst, high_bit, size);
+            const ir::Ref result_msb =
+                push_bit_ref_i8(stmts, next_ref, result, high_bit, size);
+            of = push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                                result_msb, cf, ir::OpSize::I8);
+        } else {
+            cf = push_bit_ref_i8(stmts, next_ref, dst, 0u, size);
+            of = op == ir::BinOpKind::Shr
+                ? push_bit_ref_i8(stmts, next_ref, dst, high_bit, size)
+                : push_constant_ref(stmts, next_ref, 0u, ir::OpSize::I8);
+        }
+    }
+
+    stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{pf, std::nullopt, zf, sf, of}});
+}
+
+ir::Ref select_after_cmp(std::vector<ir::Stmt>& stmts,
+                         ir::Ref& next_ref,
+                         ir::Ref lhs,
+                         ir::Ref rhs,
+                         ir::CondCode cc,
+                         ir::Ref true_value,
+                         ir::Ref false_value,
+                         ir::OpSize cmp_size,
+                         ir::OpSize select_size) {
+    stmts.push_back({std::nullopt, ir::CmpFlags{lhs, rhs, cmp_size}});
+    const ir::Ref selected = next_ref++;
+    stmts.push_back({selected, ir::Select{cc, true_value, false_value, select_size}});
+    return selected;
+}
+
+ir::Ref push_dynamic_bit_ref_i8(std::vector<ir::Stmt>& stmts,
+                                ir::Ref& next_ref,
+                                ir::Ref value,
+                                ir::Ref shift,
+                                ir::OpSize value_size) {
+    const ir::Ref shifted =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr, value, shift, value_size);
+    const ir::Ref one = push_constant_ref(stmts, next_ref, 1u, value_size);
+    const ir::Ref masked =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::And, shifted, one, value_size);
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, value_size);
+    const ir::Ref bit = next_ref++;
+    stmts.push_back({bit, ir::Compare{ir::CondCode::Ne, masked, zero, value_size}});
+    return bit;
+}
+
+ir::Ref emit_group2_effective_count(std::vector<ir::Stmt>& stmts,
+                                    ir::Ref& next_ref,
+                                    ir::BinOpKind op,
+                                    ir::Ref raw_count,
+                                    ir::OpSize size) {
+    const std::uint64_t count_mask = size == ir::OpSize::I64 ? 0x3fu : 0x1fu;
+    const ir::Ref mask = push_constant_ref(stmts, next_ref, count_mask, ir::OpSize::I64);
+    const ir::Ref masked =
+        push_binop_ref(stmts, next_ref, ir::BinOpKind::And, raw_count, mask,
+                       ir::OpSize::I64);
+    if (op == ir::BinOpKind::Rol || op == ir::BinOpKind::Ror) {
+        const ir::Ref width =
+            push_constant_ref(stmts, next_ref, ir::bit_width(size), ir::OpSize::I64);
+        return push_binop_ref(stmts, next_ref, ir::BinOpKind::UMod,
+                              masked, width, ir::OpSize::I64);
+    }
+    return masked;
+}
+
+ir::Ref select_preserved_when_zero(std::vector<ir::Stmt>& stmts,
+                                   ir::Ref& next_ref,
+                                   ir::Ref count,
+                                   ir::Ref preserved,
+                                   ir::Ref computed) {
+    const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, ir::OpSize::I64);
+    return select_after_cmp(stmts, next_ref, count, zero, ir::CondCode::Eq,
+                            preserved, computed, ir::OpSize::I64, ir::OpSize::I8);
+}
+
+ir::Ref select_defined_shift_bit(std::vector<ir::Stmt>& stmts,
+                                 ir::Ref& next_ref,
+                                 ir::Ref count,
+                                 ir::Ref preserved,
+                                 ir::Ref computed,
+                                 ir::OpSize size) {
+    const ir::Ref width =
+        push_constant_ref(stmts, next_ref, ir::bit_width(size), ir::OpSize::I64);
+    const ir::Ref in_range =
+        select_after_cmp(stmts, next_ref, count, width, ir::CondCode::Ule,
+                         computed, preserved, ir::OpSize::I64, ir::OpSize::I8);
+    return select_preserved_when_zero(stmts, next_ref, count, preserved, in_range);
+}
+
+void append_shift_rotate_count_flags(std::vector<ir::Stmt>& stmts,
+                                     ir::Ref& next_ref,
+                                     ir::BinOpKind op,
+                                     ir::Ref dst,
+                                     ir::Ref result,
+                                     ir::Ref count,
+                                     ir::OpSize size) {
+    const std::uint64_t width = ir::bit_width(size);
+    const std::uint64_t high_bit = width - 1u;
+
+    const ir::Ref old_cf = push_preserved_rflags_bit_ref(stmts, next_ref, 0u);
+    const ir::Ref old_pf = push_preserved_rflags_bit_ref(stmts, next_ref, 2u);
+    const ir::Ref old_zf = push_preserved_rflags_bit_ref(stmts, next_ref, 6u);
+    const ir::Ref old_sf = push_preserved_rflags_bit_ref(stmts, next_ref, 7u);
+    const ir::Ref old_of = push_preserved_rflags_bit_ref(stmts, next_ref, 11u);
+
+    ir::Ref final_cf;
+    ir::Ref final_pf = old_pf;
+    ir::Ref final_zf = old_zf;
+    ir::Ref final_sf = old_sf;
+    ir::Ref final_of = old_of;
+
+    if (op == ir::BinOpKind::Rol || op == ir::BinOpKind::Ror) {
+        const ir::Ref computed_cf =
+            push_bit_ref_i8(stmts, next_ref, result,
+                            op == ir::BinOpKind::Rol ? 0u : high_bit, size);
+        final_cf =
+            select_preserved_when_zero(stmts, next_ref, count, old_cf, computed_cf);
+
+        const ir::Ref msb = op == ir::BinOpKind::Ror
+            ? computed_cf
+            : push_bit_ref_i8(stmts, next_ref, result, high_bit, size);
+        const ir::Ref other = op == ir::BinOpKind::Ror
+            ? push_bit_ref_i8(stmts, next_ref, result, high_bit - 1u, size)
+            : computed_cf;
+        const ir::Ref computed_of =
+            push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor, msb, other,
+                           ir::OpSize::I8);
+        const ir::Ref one = push_constant_ref(stmts, next_ref, 1u, ir::OpSize::I64);
+        final_of =
+            select_after_cmp(stmts, next_ref, count, one, ir::CondCode::Eq,
+                             computed_of, old_of, ir::OpSize::I64, ir::OpSize::I8);
+    } else {
+        const ir::Ref computed_pf =
+            push_even_parity_low_byte_ref(stmts, next_ref, result, size);
+        const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
+        const ir::Ref computed_zf = next_ref++;
+        stmts.push_back({computed_zf,
+                         ir::Compare{ir::CondCode::Eq, result, zero, size}});
+        const ir::Ref computed_sf =
+            push_bit_ref_i8(stmts, next_ref, result, high_bit, size);
+        final_pf =
+            select_defined_shift_bit(stmts, next_ref, count, old_pf, computed_pf, size);
+        final_zf =
+            select_defined_shift_bit(stmts, next_ref, count, old_zf, computed_zf, size);
+        final_sf =
+            select_defined_shift_bit(stmts, next_ref, count, old_sf, computed_sf, size);
+
+        ir::Ref computed_cf;
+        if (op == ir::BinOpKind::Shl) {
+            const ir::Ref width_ref =
+                push_constant_ref(stmts, next_ref, width, ir::OpSize::I64);
+            const ir::Ref cf_shift =
+                push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub,
+                               width_ref, count, ir::OpSize::I64);
+            computed_cf =
+                push_dynamic_bit_ref_i8(stmts, next_ref, dst, cf_shift, size);
+            const ir::Ref result_msb =
+                push_bit_ref_i8(stmts, next_ref, result, high_bit, size);
+            const ir::Ref computed_of =
+                push_binop_ref(stmts, next_ref, ir::BinOpKind::Xor,
+                               result_msb, computed_cf, ir::OpSize::I8);
+            const ir::Ref one =
+                push_constant_ref(stmts, next_ref, 1u, ir::OpSize::I64);
+            final_of =
+                select_after_cmp(stmts, next_ref, count, one, ir::CondCode::Eq,
+                                 computed_of, old_of, ir::OpSize::I64, ir::OpSize::I8);
+        } else {
+            const ir::Ref one =
+                push_constant_ref(stmts, next_ref, 1u, ir::OpSize::I64);
+            const ir::Ref cf_shift =
+                push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub,
+                               count, one, ir::OpSize::I64);
+            computed_cf =
+                push_dynamic_bit_ref_i8(stmts, next_ref, dst, cf_shift, size);
+            const ir::Ref computed_of = op == ir::BinOpKind::Shr
+                ? push_bit_ref_i8(stmts, next_ref, dst, high_bit, size)
+                : push_constant_ref(stmts, next_ref, 0u, ir::OpSize::I8);
+            final_of =
+                select_after_cmp(stmts, next_ref, count, one, ir::CondCode::Eq,
+                                 computed_of, old_of, ir::OpSize::I64, ir::OpSize::I8);
+        }
+        final_cf =
+            select_defined_shift_bit(stmts, next_ref, count, old_cf, computed_cf, size);
+    }
+
+    stmts.push_back({std::nullopt, ir::StoreCarry{final_cf}});
+    stmts.push_back({std::nullopt,
+                     ir::StoreRflagsFromBits{final_pf, std::nullopt,
+                                             final_zf, final_sf, final_of}});
+}
+
+// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m64, imm8 (48 C1 /4|/5|/7|/0|/1|/2|/3).
 // Encodes:
 //   r/m64 <- reg-shift-operation(r/m64, imm8).
-// The immediate is loaded as a zero-extended u64; lowering handles shift count
-// masking rules.
 std::variant<Decoded, DecodeError> decode_shift_r64_rm_imm8_from_rm(
     std::span<const Byte> bytes,
     const ModRmOperand& m,
     std::size_t& cursor,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::BinOpKind op,
     ir::OpSize size) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
     auto imm = consume_le<1>(bytes, cursor);
     if (std::holds_alternative<DecodeError>(imm)) {
         return std::get<DecodeError>(imm);
     }
 
     Decoded d;
+    std::optional<ir::Ref> addr;
+    if (m.mod != 0b11u) {
+        addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+    }
+
+    if (is_rcl_rcr(op)) {
+        const ir::Ref raw_count = next_ref++;
+        d.stmts.push_back({raw_count,
+                           ir::Constant{std::get<std::uint64_t>(imm), size}});
+        const ir::Ref dst = next_ref++;
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({dst, ir::LoadReg{m.base, size}});
+        } else {
+            d.stmts.push_back({dst, ir::LoadMem{*addr, size}});
+        }
+        const auto [result, cf] =
+            emit_rcl_rcr_value_count(d.stmts, next_ref,
+                                     op == ir::BinOpKind::Rcr,
+                                     dst, raw_count, size);
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, result, size}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, result, size}});
+        }
+        d.stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+        d.bytes_consumed = cursor;
+        return d;
+    }
+
     const ir::Ref ref_dst = next_ref++;
     const ir::Ref ref_imm = next_ref++;
-    const ir::Ref ref_res = next_ref++;
-    d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_dst, ir::LoadMem{*addr, size}});
+    }
     d.stmts.push_back({ref_imm, ir::Constant{std::get<std::uint64_t>(imm), ir::OpSize::I64}});
-    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_imm, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_res, size}});
+    const ir::Ref effective_count =
+        emit_group2_effective_count(d.stmts, next_ref, op, ref_imm, size);
+    const ir::Ref ref_res = next_ref++;
+    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, effective_count, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_res, size}});
+    } else {
+        d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, ref_res, size}});
+    }
+    append_shift_rotate_count_flags(d.stmts, next_ref, op, ref_dst, ref_res,
+                                    effective_count, size);
     d.bytes_consumed = cursor;
     return d;
 }
 
-// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m64, CL (48 D3 /4|/5|/7|/0|/1|/2|/3) — MVP register-direct only.
+// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m64, CL (48 D3 /4|/5|/7|/0|/1|/2|/3).
 // Encodes:
 //   r/m64 <- reg-shift-operation(r/m64, cl).
-// The shift amount is loaded from CL as I64.
 std::variant<Decoded, DecodeError> decode_shift_r64_rm_cl_from_rm(
     const ModRmOperand& m,
     std::size_t bytes_consumed,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref,
     ir::BinOpKind op,
     ir::OpSize size) {
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
-
     Decoded d;
+    std::optional<ir::Ref> addr;
+    if (m.mod != 0b11u) {
+        addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + bytes_consumed);
+    }
+
+    if (is_rcl_rcr(op)) {
+        const ir::Ref raw_count = next_ref++;
+        d.stmts.push_back({raw_count, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
+        const ir::Ref dst = next_ref++;
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({dst, ir::LoadReg{m.base, size}});
+        } else {
+            d.stmts.push_back({dst, ir::LoadMem{*addr, size}});
+        }
+        const auto [result, cf] =
+            emit_rcl_rcr_value_count(d.stmts, next_ref,
+                                     op == ir::BinOpKind::Rcr,
+                                     dst, raw_count, size);
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, result, size}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, result, size}});
+        }
+        d.stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+        d.bytes_consumed = bytes_consumed;
+        return d;
+    }
+
     const ir::Ref ref_dst = next_ref++;
     const ir::Ref ref_shift = next_ref++;
-    const ir::Ref ref_res = next_ref++;
-    d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({ref_dst, ir::LoadReg{m.base, size}});
+    } else {
+        d.stmts.push_back({ref_dst, ir::LoadMem{*addr, size}});
+    }
     d.stmts.push_back({ref_shift, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
-    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, ref_shift, size}});
-    d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_res, size}});
+    const ir::Ref effective_count =
+        emit_group2_effective_count(d.stmts, next_ref, op, ref_shift, size);
+    const ir::Ref ref_res = next_ref++;
+    d.stmts.push_back({ref_res, ir::BinOp{op, ref_dst, effective_count, size}});
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, ref_res, size}});
+    } else {
+        d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, ref_res, size}});
+    }
+    append_shift_rotate_count_flags(d.stmts, next_ref, op, ref_dst, ref_res,
+                                    effective_count, size);
     d.bytes_consumed = bytes_consumed;
     return d;
 }
@@ -2141,6 +3439,7 @@ DispatchDecodeResult decode_shift_group_imm8_dispatch(
     const RexPrefix& rex,
     bool has_operand_size_override,
     bool has_address_size_override,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref) {
     const auto size = checked_operand_size(rex, has_operand_size_override);
     if (!size) return DecodeError::UnsupportedEncoding;
@@ -2152,7 +3451,70 @@ DispatchDecodeResult decode_shift_group_imm8_dispatch(
     const auto& m = std::get<ModRmOperand>(modrm);
     const auto op = shift_group_binop(m.reg);
     if (!op) return DecodeError::UnsupportedEncoding;
-    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, *op, *size);
+    return decode_shift_r64_rm_imm8_from_rm(bytes, m, cursor, instruction_guest_pc,
+                                            next_ref, *op, *size);
+}
+
+DispatchDecodeResult decode_shift_group_one_dispatch(
+    std::span<const Byte> bytes,
+    std::size_t& cursor,
+    const RexPrefix& rex,
+    bool has_operand_size_override,
+    bool has_address_size_override,
+    std::uint64_t instruction_guest_pc,
+    ir::Ref& next_ref) {
+    const auto size = checked_operand_size(rex, has_operand_size_override);
+    if (!size) return DecodeError::UnsupportedEncoding;
+
+    auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
+    if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+    }
+    const auto& m = std::get<ModRmOperand>(modrm);
+    const auto op = shift_group_binop(m.reg);
+    if (!op) return DecodeError::UnsupportedEncoding;
+
+    Decoded d;
+    const ir::Ref one = next_ref++;
+    d.stmts.push_back({one, ir::Constant{1u, *size}});
+
+    std::optional<ir::Ref> addr;
+    if (m.mod != 0b11u) {
+        addr = emit_address(d.stmts, m, next_ref, instruction_guest_pc + cursor);
+    }
+
+    const ir::Ref dst = next_ref++;
+    if (m.mod == 0b11u) {
+        d.stmts.push_back({dst, ir::LoadReg{m.base, *size}});
+    } else {
+        d.stmts.push_back({dst, ir::LoadMem{*addr, *size}});
+    }
+
+    if (is_rcl_rcr(*op)) {
+        const auto [result, cf] =
+            emit_rcl_rcr_value_count(d.stmts, next_ref,
+                                     *op == ir::BinOpKind::Rcr,
+                                     dst, one, *size);
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, result, *size}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, result, *size}});
+        }
+        d.stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+    } else {
+        const ir::Ref result = next_ref++;
+        d.stmts.push_back({result, ir::BinOp{*op, dst, one, *size}});
+        if (m.mod == 0b11u) {
+            d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, result, *size}});
+        } else {
+            d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, result, *size}});
+        }
+        if (is_non_carry_shift_rotate(*op)) {
+            append_shift_rotate_one_flags(d.stmts, next_ref, *op, dst, result, *size);
+        }
+    }
+    d.bytes_consumed = cursor;
+    return d;
 }
 
 DispatchDecodeResult decode_shift_group_cl_dispatch(
@@ -2161,6 +3523,7 @@ DispatchDecodeResult decode_shift_group_cl_dispatch(
     const RexPrefix& rex,
     bool has_operand_size_override,
     bool has_address_size_override,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref) {
     const auto size = checked_operand_size(rex, has_operand_size_override);
     if (!size) return DecodeError::UnsupportedEncoding;
@@ -2172,7 +3535,8 @@ DispatchDecodeResult decode_shift_group_cl_dispatch(
     const auto& m = std::get<ModRmOperand>(modrm);
     const auto op = shift_group_binop(m.reg);
     if (!op) return DecodeError::UnsupportedEncoding;
-    return decode_shift_r64_rm_cl_from_rm(m, cursor, next_ref, *op, *size);
+    return decode_shift_r64_rm_cl_from_rm(m, cursor, instruction_guest_pc,
+                                          next_ref, *op, *size);
 }
 
 DispatchDecodeResult decode_group5_dispatch(
@@ -2232,8 +3596,12 @@ DispatchDecodeResult decode_group3_dispatch(
     const RexPrefix& rex,
     bool has_operand_size_override,
     bool has_address_size_override,
-    ir::Ref& next_ref) {
-    const auto size = checked_operand_size(rex, has_operand_size_override);
+    std::uint64_t instruction_guest_pc,
+    ir::Ref& next_ref,
+    std::optional<ir::OpSize> forced_size = std::nullopt) {
+    const auto size = forced_size.has_value()
+        ? forced_size
+        : checked_operand_size(rex, has_operand_size_override);
     if (!size) return DecodeError::UnsupportedEncoding;
 
     auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
@@ -2243,20 +3611,23 @@ DispatchDecodeResult decode_group3_dispatch(
     const auto& m = std::get<ModRmOperand>(modrm);
 
     if (m.reg == 2u) {
-        return decode_neg_not_from_rm(m, cursor, next_ref, ir::BinOpKind::Xor, *size);
+        return decode_neg_not_from_rm(m, cursor, instruction_guest_pc,
+                                      next_ref, ir::BinOpKind::Xor, *size);
     }
     if (m.reg == 3u) {
-        return decode_neg_not_from_rm(m, cursor, next_ref, ir::BinOpKind::Sub, *size);
+        return decode_neg_not_from_rm(m, cursor, instruction_guest_pc,
+                                      next_ref, ir::BinOpKind::Sub, *size);
     }
     if (m.reg == 4u || m.reg == 5u) {
         // /4 = MUL (unsigned), /5 = IMUL (signed).
-        return decode_mul_imul_from_rm(m, cursor, next_ref,
+        return decode_mul_imul_from_rm(m, cursor, instruction_guest_pc, next_ref,
                                        ir::BinOpKind::Mul, *size,
                                        /*is_signed=*/m.reg == 5u);
     }
     if (m.reg == 6u || m.reg == 7u) {
         // /6 = DIV (unsigned), /7 = IDIV (signed).
-        return decode_div_from_rm(m, cursor, next_ref, *size, /*is_signed=*/m.reg == 7u);
+        return decode_div_from_rm(m, cursor, instruction_guest_pc, next_ref,
+                                  *size, /*is_signed=*/m.reg == 7u);
     }
     return DecodeError::UnsupportedEncoding;
 }
@@ -2266,17 +3637,18 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
     std::size_t& cursor,
     const RexPrefix& rex,
     bool has_address_size_override,
+    std::uint64_t instruction_guest_pc,
     ir::Ref& next_ref) {
     auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
     if (std::holds_alternative<DecodeError>(modrm)) {
         return std::get<DecodeError>(modrm);
     }
     const auto& m = std::get<ModRmOperand>(modrm);
-    if (m.mod != 0b11u) return DecodeError::UnsupportedEncoding;
 
     const auto op = bt_subopcode_from_reg(m.reg);
     if (!op) return DecodeError::UnsupportedEncoding;
-    return decode_bt_r64_rm_imm8_from_rm(bytes, m, cursor, next_ref, *op);
+    return decode_bt_r64_rm_imm8_from_rm(
+        bytes, m, cursor, instruction_guest_pc, next_ref, *op);
 }
 
 [[maybe_unused]] std::optional<DispatchDecodeResult> try_decode_two_byte_dispatch(
@@ -2366,7 +3738,8 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
         }
         case TwoByteDispatchKind::BtImmGroup:
             return DispatchDecodeResult{decode_bt_group_imm8_dispatch(
-                bytes, cursor, rex, has_address_size_override, next_ref)};
+                bytes, cursor, rex, has_address_size_override,
+                instruction_guest_pc, next_ref)};
         case TwoByteDispatchKind::Cmpxchg:
             if ((has_f2 || has_f3) && !has_lock) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if (rex.w && has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
@@ -2468,6 +3841,20 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
     switch (entry.kind) {
         case OneByteDispatchKind::None:
             return std::nullopt;
+        case OneByteDispatchKind::Sahf:
+            if (has_operand_size_override || has_address_size_override) {
+                return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            }
+            if (has_f3) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (rex.present) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            return DispatchDecodeResult{decode_sahf(cursor, next_ref)};
+        case OneByteDispatchKind::Lahf:
+            if (has_operand_size_override || has_address_size_override) {
+                return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            }
+            if (has_f3) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (rex.present) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            return DispatchDecodeResult{decode_lahf(cursor, next_ref)};
         case OneByteDispatchKind::Pushfq:
             if (has_operand_size_override) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
             if (has_f3) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
@@ -2518,14 +3905,14 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
                     ir::BinOpKind::Or, next_ref, *size)};
             }
             if (subop == 2u) {
-                return DispatchDecodeResult{decode_alu_rm_imm8(
+                return DispatchDecodeResult{decode_adc_sbb_rm_imm8(
                     bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
-                    ir::BinOpKind::Add, next_ref, *size)};
+                    false, next_ref, *size)};
             }
             if (subop == 3u) {
-                return DispatchDecodeResult{decode_alu_rm_imm8(
+                return DispatchDecodeResult{decode_adc_sbb_rm_imm8(
                     bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
-                    ir::BinOpKind::Sub, next_ref, *size)};
+                    true, next_ref, *size)};
             }
             if (subop == 4u) {
                 return DispatchDecodeResult{decode_alu_rm_imm8(
@@ -2555,15 +3942,26 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
             return DispatchDecodeResult{decode_imul_r64_rm_imm32(
                 bytes, cursor, rex, has_address_size_override, instruction_guest_pc, next_ref, *size)};
         }
+        case OneByteDispatchKind::ShiftOne:
+            return DispatchDecodeResult{decode_shift_group_one_dispatch(
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override,
+                instruction_guest_pc, next_ref)};
         case OneByteDispatchKind::ShiftImm8:
             return DispatchDecodeResult{decode_shift_group_imm8_dispatch(
-                bytes, cursor, rex, has_operand_size_override, has_address_size_override, next_ref)};
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override,
+                instruction_guest_pc, next_ref)};
         case OneByteDispatchKind::ShiftCl:
             return DispatchDecodeResult{decode_shift_group_cl_dispatch(
-                bytes, cursor, rex, has_operand_size_override, has_address_size_override, next_ref)};
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override,
+                instruction_guest_pc, next_ref)};
         case OneByteDispatchKind::AluRmR: {
             const auto size = checked_operand_size(rex, has_operand_size_override);
             if (!size) return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            if (opcode == 0x11u || opcode == 0x19u) {
+                return DispatchDecodeResult{decode_adc_sbb_rm_r(
+                    bytes, cursor, rex, has_address_size_override, instruction_guest_pc,
+                    opcode == 0x19u, next_ref, *size)};
+            }
             return DispatchDecodeResult{decode_alu_rm_r(
                 bytes, cursor, rex, has_address_size_override, instruction_guest_pc, entry.binop, next_ref, *size)};
         }
@@ -2585,7 +3983,15 @@ DispatchDecodeResult decode_bt_group_imm8_dispatch(
                 bytes, cursor, rex, has_operand_size_override, has_address_size_override, instruction_guest_pc, next_ref, real_call_ret)};
         case OneByteDispatchKind::Group3:
             return DispatchDecodeResult{decode_group3_dispatch(
-                bytes, cursor, rex, has_operand_size_override, has_address_size_override, next_ref)};
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override,
+                instruction_guest_pc, next_ref)};
+        case OneByteDispatchKind::Group3Byte:
+            if (has_operand_size_override || rex.w) {
+                return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
+            }
+            return DispatchDecodeResult{decode_group3_dispatch(
+                bytes, cursor, rex, has_operand_size_override, has_address_size_override,
+                instruction_guest_pc, next_ref, ir::OpSize::I8)};
     }
 
     return std::nullopt;
@@ -3414,7 +4820,7 @@ std::variant<Decoded, DecodeError> decode_one(
         const ir::Ref ref_rhs = next_ref++;
         d.stmts.push_back({ref_lhs, ir::LoadReg{m.base, size}});
         d.stmts.push_back({ref_rhs, ir::LoadReg{gpr_from_index(m.reg), size}});
-        d.stmts.push_back({std::nullopt, ir::CmpFlags{ref_lhs, ref_rhs, size}});
+        append_cmp_flags_and_rflags(d.stmts, next_ref, ref_lhs, ref_rhs, size);
         d.bytes_consumed = cursor;
         return d;
     }
@@ -3751,6 +5157,168 @@ std::variant<Decoded, DecodeError> decode_one(
                 return std::get<DecodeError>(third);
             }
             const Byte sub3 = static_cast<Byte>(std::get<std::uint64_t>(third));
+
+            // W2-08: PCLMULQDQ xmm1, xmm2/m128, imm8 and
+            // VPCLMULQDQ xmm1, xmm2, xmm3/m128, imm8.
+            // Legacy form aliases dst as src1; VEX.128 uses vvvv as src1.
+            if (sub3 == 0x44u) {
+                if (vex.present && vex.L) {
+                    return DecodeError::UnsupportedEncoding;
+                }
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+
+                Decoded d;
+                const std::uint8_t dst =
+                    static_cast<std::uint8_t>(m.reg);
+                const std::uint8_t lhs_xmm = vex.present
+                    ? static_cast<std::uint8_t>(vex.vvvv)
+                    : dst;
+
+                const ir::Ref lhs = next_ref++;
+                d.stmts.push_back({lhs, ir::LoadVecReg{lhs_xmm}});
+
+                ir::Ref rhs;
+                if (m.mod == 0b11) {
+                    rhs = next_ref++;
+                    d.stmts.push_back({rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref addr = emit_address(
+                        d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                    rhs = next_ref++;
+                    d.stmts.push_back({rhs, ir::LoadVec{addr}});
+                }
+
+                const ir::Ref result = next_ref++;
+                d.stmts.push_back({result,
+                    ir::VecClMul{lhs, rhs,
+                                 (imm8 & 0x01u) != 0,
+                                 (imm8 & 0x10u) != 0}});
+                d.stmts.push_back({std::nullopt, ir::StoreVecReg{dst, result}});
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // W2-09 — F16C VCVTPS2PH xmm/m64, xmm, imm8
+            // (VEX.128.66.0F3A.W0 1D /r ib). imm8 selects the rounding
+            // mode; the upper 64 bits of a register destination zero.
+            if (sub3 == 0x1Du && vex.present && !vex.L && !rex.w &&
+                vex.vvvv == 0) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+
+                Decoded d;
+                const ir::Ref src = next_ref++;
+                d.stmts.push_back({src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+                const ir::Ref result = next_ref++;
+                d.stmts.push_back({result,
+                    ir::VecF16Cvt{ir::VecF16CvtKind::PsToPh, src, imm8}});
+                if (m.mod == 0b11) {
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base)), result}});
+                } else {
+                    const ir::Ref addr = emit_address(
+                        d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                    const ir::Ref bits = next_ref++;
+                    d.stmts.push_back({bits,
+                        ir::GprFromXmm{result, ir::OpSize::I64}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreMem{addr, bits, ir::OpSize::I64}});
+                }
+                d.bytes_consumed = cursor;
+                return d;
+            }
+
+            // SSE4.2 PCMPxSTRx string compare family:
+            //   66 0F 3A 60 /r ib - PCMPESTRM, explicit lengths EAX/EDX
+            //   66 0F 3A 61 /r ib - PCMPESTRI, explicit lengths EAX/EDX
+            //   66 0F 3A 62 /r ib - PCMPISTRM, implicit NUL-terminated lengths
+            //   66 0F 3A 63 /r ib - PCMPISTRI, implicit NUL-terminated lengths
+            if (!vex.present && sub3 >= 0x60u && sub3 <= 0x63u) {
+                auto modrm = parse_modrm(bytes, cursor, rex,
+                                         has_address_size_override);
+                if (std::holds_alternative<DecodeError>(modrm)) {
+                    return std::get<DecodeError>(modrm);
+                }
+                const auto& m = std::get<ModRmOperand>(modrm);
+                auto imm = consume_le<1>(bytes, cursor);
+                if (std::holds_alternative<DecodeError>(imm)) {
+                    return std::get<DecodeError>(imm);
+                }
+                const std::uint8_t imm8 =
+                    static_cast<std::uint8_t>(std::get<std::uint64_t>(imm));
+
+                Decoded d;
+                const ir::Ref lhs = next_ref++;
+                d.stmts.push_back({lhs,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(m.reg)}});
+
+                ir::Ref rhs;
+                if (m.mod == 0b11) {
+                    rhs = next_ref++;
+                    d.stmts.push_back({rhs,
+                        ir::LoadVecReg{static_cast<std::uint8_t>(
+                            static_cast<unsigned>(m.base))}});
+                } else {
+                    const ir::Ref addr = emit_address(
+                        d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                    rhs = next_ref++;
+                    d.stmts.push_back({rhs, ir::LoadVec{addr}});
+                }
+
+                std::optional<ir::Ref> lhs_len;
+                std::optional<ir::Ref> rhs_len;
+                if (sub3 == 0x60u || sub3 == 0x61u) {
+                    lhs_len = next_ref++;
+                    d.stmts.push_back({*lhs_len,
+                        ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I32}});
+                    rhs_len = next_ref++;
+                    d.stmts.push_back({*rhs_len,
+                        ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I32}});
+                }
+
+                const ir::Ref result = next_ref++;
+                if (sub3 == 0x60u || sub3 == 0x62u) {
+                    d.stmts.push_back({result,
+                        ir::PcmpStrMask{lhs, rhs, lhs_len, rhs_len, imm8}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreVecReg{0u, result}});
+                } else {
+                    d.stmts.push_back({result,
+                        ir::PcmpStrIndex{lhs, rhs, lhs_len, rhs_len, imm8}});
+                    d.stmts.push_back({std::nullopt,
+                        ir::StoreReg{ir::Gpr::Rcx, result, ir::OpSize::I32}});
+                }
+
+                append_pcmpxstr_flags(d.stmts, next_ref, lhs, rhs,
+                                      lhs_len, rhs_len, imm8);
+                d.bytes_consumed = cursor;
+                return d;
+            }
 
             // F2-IR-058 — AESKEYGENASSIST xmm1, xmm2/m128, imm8.
             // Unlike AESENC/AESDEC, the destination is not read; ModRM.r/m
@@ -4571,6 +6139,211 @@ std::variant<Decoded, DecodeError> decode_one(
             return d;
         }
 
+        // BMI1 ANDN (VEX.LZ.0F38.W0/1 F2 /r):
+        //   dst = (~vex.vvvv) & r/m
+        //   CF=0, OF=0, SF/ZF from result; AF/PF undefined.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && !has_f2 && !has_f3 &&
+            cursor < bytes.size() && bytes[cursor] == 0xF2u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const std::uint64_t all_ones =
+                rex.w ? ~0ULL : 0xFFFF'FFFFULL;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+
+            Decoded d;
+            const ir::Ref r_src1    = next_ref++;
+            const ir::Ref r_src2    = next_ref++;
+            const ir::Ref r_ones    = next_ref++;
+            const ir::Ref r_not     = next_ref++;
+            const ir::Ref r_result  = next_ref++;
+            d.stmts.push_back({r_src1,
+                ir::LoadReg{reg_at(vex.vvvv), size}});
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src2,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src2, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_ones,
+                ir::Constant{all_ones, size}});
+            d.stmts.push_back({r_not,
+                ir::BinOp{ir::BinOpKind::Xor, r_src1, r_ones, size}});
+            d.stmts.push_back({r_result,
+                ir::BinOp{ir::BinOpKind::And, r_not, r_src2, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_result, size}});
+            const ir::Ref r_cf = push_constant_ref(d.stmts, next_ref, 0u, size);
+            append_result_flags_from_bits(
+                d.stmts, next_ref, r_result, size, r_cf, /*preserve_sf=*/false);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // BMI1 BLSR/BLSMSK/BLSI (VEX.LZ.0F38.W0/1 F3 /1,/2,/3):
+        //   /1 BLSR   dst = src & (src - 1)
+        //   /2 BLSMSK dst = src ^ (src - 1)
+        //   /3 BLSI   dst = src & -src
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && !has_f2 && !has_f3 &&
+            cursor < bytes.size() && bytes[cursor] == 0xF3u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            if (m.reg < 1u || m.reg > 3u) {
+                return DecodeError::UnsupportedEncoding;
+            }
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+
+            Decoded d;
+            const ir::Ref r_src    = next_ref++;
+            const ir::Ref r_zero   = next_ref++;
+            const ir::Ref r_one    = next_ref++;
+            const ir::Ref r_tmp    = next_ref++;
+            const ir::Ref r_result = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_zero, ir::Constant{0u, size}});
+            d.stmts.push_back({r_one,  ir::Constant{1u, size}});
+            if (m.reg == 3u) {
+                d.stmts.push_back({r_tmp,
+                    ir::BinOp{ir::BinOpKind::Sub, r_zero, r_src, size}});
+                d.stmts.push_back({r_result,
+                    ir::BinOp{ir::BinOpKind::And, r_src, r_tmp, size}});
+            } else {
+                d.stmts.push_back({r_tmp,
+                    ir::BinOp{ir::BinOpKind::Sub, r_src, r_one, size}});
+                d.stmts.push_back({r_result,
+                    ir::BinOp{m.reg == 1u ? ir::BinOpKind::And : ir::BinOpKind::Xor,
+                              r_src, r_tmp, size}});
+            }
+            const ir::Ref r_cf = next_ref++;
+            d.stmts.push_back({r_cf,
+                ir::Compare{m.reg == 3u ? ir::CondCode::Ne : ir::CondCode::Eq,
+                            r_src, r_zero, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(vex.vvvv), r_result, size}});
+            append_result_flags_from_bits(
+                d.stmts, next_ref, r_result, size, r_cf, /*preserve_sf=*/false);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
+        // BMI1 BEXTR (VEX.LZ.0F38.W0/1 F7 /r):
+        //   dst = (src >> start) & ((1 << len) - 1), control in vex.vvvv.
+        //   CF=0, OF=0, ZF from result; AF/PF undefined and SF preserved.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            !has_operand_size_override && !has_f2 && !has_f3 &&
+            cursor < bytes.size() && bytes[cursor] == 0xF7u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            const ir::OpSize size = rex.w ? ir::OpSize::I64 : ir::OpSize::I32;
+            const std::uint64_t bit_width = rex.w ? 64u : 32u;
+            const std::uint64_t all_ones =
+                rex.w ? ~0ULL : 0xFFFF'FFFFULL;
+            const auto reg_at = [&](unsigned n) -> ir::Gpr {
+                return static_cast<ir::Gpr>(n);
+            };
+
+            Decoded d;
+            const ir::Ref r_src        = next_ref++;
+            const ir::Ref r_control    = next_ref++;
+            const ir::Ref r_byte_mask  = next_ref++;
+            const ir::Ref r_start      = next_ref++;
+            const ir::Ref r_eight      = next_ref++;
+            const ir::Ref r_len_shift  = next_ref++;
+            const ir::Ref r_len        = next_ref++;
+            const ir::Ref r_shifted    = next_ref++;
+            const ir::Ref r_one        = next_ref++;
+            const ir::Ref r_mask_plus  = next_ref++;
+            const ir::Ref r_mask_cand  = next_ref++;
+            const ir::Ref r_all_ones   = next_ref++;
+            const ir::Ref r_width      = next_ref++;
+            const ir::Ref r_mask       = next_ref++;
+            const ir::Ref r_masked     = next_ref++;
+            const ir::Ref r_zero       = next_ref++;
+            const ir::Ref r_result     = next_ref++;
+            if (m.mod == 0b11) {
+                d.stmts.push_back({r_src,
+                    ir::LoadReg{reg_at(static_cast<unsigned>(m.base)), size}});
+            } else {
+                const ir::Ref r_addr = emit_address(d.stmts, m, next_ref,
+                                                    instruction_guest_pc + cursor);
+                d.stmts.push_back({r_src, ir::LoadMem{r_addr, size}});
+            }
+            d.stmts.push_back({r_control,
+                ir::LoadReg{reg_at(vex.vvvv), size}});
+            d.stmts.push_back({r_byte_mask,
+                ir::Constant{0xFFu, size}});
+            d.stmts.push_back({r_start,
+                ir::BinOp{ir::BinOpKind::And, r_control, r_byte_mask, size}});
+            d.stmts.push_back({r_eight,
+                ir::Constant{8u, size}});
+            d.stmts.push_back({r_len_shift,
+                ir::BinOp{ir::BinOpKind::Shr, r_control, r_eight, size}});
+            d.stmts.push_back({r_len,
+                ir::BinOp{ir::BinOpKind::And, r_len_shift, r_byte_mask, size}});
+            d.stmts.push_back({r_shifted,
+                ir::BinOp{ir::BinOpKind::Shr, r_src, r_start, size}});
+            d.stmts.push_back({r_one,
+                ir::Constant{1u, size}});
+            d.stmts.push_back({r_mask_plus,
+                ir::BinOp{ir::BinOpKind::Shl, r_one, r_len, size}});
+            d.stmts.push_back({r_mask_cand,
+                ir::BinOp{ir::BinOpKind::Sub, r_mask_plus, r_one, size}});
+            d.stmts.push_back({r_all_ones,
+                ir::Constant{all_ones, size}});
+            d.stmts.push_back({r_width,
+                ir::Constant{bit_width, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::CmpFlags{r_len, r_width, size}});
+            d.stmts.push_back({r_mask,
+                ir::Select{ir::CondCode::Uge, r_all_ones, r_mask_cand, size}});
+            d.stmts.push_back({r_masked,
+                ir::BinOp{ir::BinOpKind::And, r_shifted, r_mask, size}});
+            d.stmts.push_back({r_zero,
+                ir::Constant{0u, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::CmpFlags{r_start, r_width, size}});
+            d.stmts.push_back({r_result,
+                ir::Select{ir::CondCode::Uge, r_zero, r_masked, size}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreReg{reg_at(m.reg), r_result, size}});
+            const ir::Ref r_cf = push_constant_ref(d.stmts, next_ref, 0u, size);
+            append_result_flags_from_bits(
+                d.stmts, next_ref, r_result, size, r_cf, /*preserve_sf=*/true);
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         // F2-IR-053 followup — BMI2 BZHI (0F 38 F5, no prefix):
         // dst = src & mask_of_count, where the mask keeps the low
         // `count` bits and zeroes the rest. Edge case from Intel SDM:
@@ -4753,6 +6526,46 @@ std::variant<Decoded, DecodeError> decode_one(
         // opcodes. BMI2 with pp=01 (SHLX) goes through THIS branch,
         // not the legacy gate, because the legacy gate handles a
         // disjoint set of `sub3` values.
+        // W2-09 — F16C VCVTPH2PS xmm1, xmm2/m64
+        // (VEX.128.66.0F38.W0 13 /r). Four half lanes in src[63:0]
+        // widen to four f32 lanes.
+        if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
+            has_operand_size_override && !has_f2 && !has_f3 && !rex.w &&
+            vex.vvvv == 0 &&
+            cursor < bytes.size() && bytes[cursor] == 0x13u) {
+            (void)consume_le<1>(bytes, cursor);
+            auto modrm = parse_modrm(bytes, cursor, rex,
+                                     has_address_size_override);
+            if (std::holds_alternative<DecodeError>(modrm)) {
+                return std::get<DecodeError>(modrm);
+            }
+            const auto& m = std::get<ModRmOperand>(modrm);
+            Decoded d;
+            ir::Ref src;
+            if (m.mod == 0b11) {
+                src = next_ref++;
+                d.stmts.push_back({src,
+                    ir::LoadVecReg{static_cast<std::uint8_t>(
+                        static_cast<unsigned>(m.base))}});
+            } else {
+                const ir::Ref addr = emit_address(
+                    d.stmts, m, next_ref, instruction_guest_pc + cursor);
+                const ir::Ref bits = next_ref++;
+                d.stmts.push_back({bits,
+                    ir::LoadMem{addr, ir::OpSize::I64}});
+                src = next_ref++;
+                d.stmts.push_back({src,
+                    ir::XmmFromGpr{bits, ir::OpSize::I64}});
+            }
+            const ir::Ref result = next_ref++;
+            d.stmts.push_back({result,
+                ir::VecF16Cvt{ir::VecF16CvtKind::PhToPs, src, 0}});
+            d.stmts.push_back({std::nullopt,
+                ir::StoreVecReg{static_cast<std::uint8_t>(m.reg), result}});
+            d.bytes_consumed = cursor;
+            return d;
+        }
+
         if (subop == 0x38u && vex.present && !vex.L && !has_lock &&
             cursor < bytes.size() && bytes[cursor] == 0xF7u) {
             ir::BinOpKind shift_kind = ir::BinOpKind::Shl;

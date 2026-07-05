@@ -66,6 +66,8 @@ redundant_load_eliminate(const std::vector<ir::Stmt>& stmts) {
         }
         else if (std::holds_alternative<ir::StoreMem>(s.op)
               || std::holds_alternative<ir::StoreMemTSO>(s.op)
+              || std::holds_alternative<ir::AtomicCmpxchg>(s.op)
+              || std::holds_alternative<ir::AtomicCmpxchgPair>(s.op)
               || std::holds_alternative<ir::Fence>(s.op)) {
             // Any store could alias any tracked address. A fence can make
             // surrounding memory operations observable, so do not forward

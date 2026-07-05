@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <type_traits>
 #include <variant>
 
@@ -127,12 +128,27 @@ enum class OpKind : std::uint8_t {
     kRdtsc              = 91,
     kAluFlags           = 92,
     kWriteFlagsCountZero = 93,
+    kAtomicCmpxchgPair  = 94,
+    kAtomicCmpxchg      = 95,
+    kLoadCarry          = 96,
+    kStoreCarry         = 97,
+    kLoadRflags         = 98,
+    kStoreRflags        = 99,
+    kStoreRflagsFromNzcv = 100,
+    kStoreRflagsFromBits = 101,
+    kWideDiv             = 102,
+    kPcmpStrIndex        = 103,
+    kPcmpStrMask         = 104,
+    kPcmpStrFlags        = 105,
+    kTrapIf              = 106,
+    kVecClMul            = 107,
+    kVecF16Cvt           = 108,
 };
 
 // Highest tag the current version knows about. Anything higher in a
 // stream → `UnknownOpKind`.
 constexpr std::uint8_t kMaxOpKind =
-    static_cast<std::uint8_t>(OpKind::kWriteFlagsCountZero);
+    static_cast<std::uint8_t>(OpKind::kVecF16Cvt);
 
 // ---- Little-endian writers --------------------------------------------
 
@@ -155,6 +171,13 @@ void put_u32(std::vector<std::uint8_t>& out, std::uint32_t v) {
 void put_u64(std::vector<std::uint8_t>& out, std::uint64_t v) {
     for (int i = 0; i < 8; ++i) {
         out.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+    }
+}
+
+void put_optional_ref(std::vector<std::uint8_t>& out, std::optional<Ref> v) {
+    put_u8(out, v.has_value() ? 1u : 0u);
+    if (v.has_value()) {
+        put_u32(out, *v);
     }
 }
 
@@ -200,6 +223,21 @@ struct Cursor {
     }
 };
 
+DeserializeError take_optional_ref(Cursor& c, std::optional<Ref>& out) {
+    if (!c.remaining(1)) return DeserializeError::Truncated;
+    const std::uint8_t tag = c.take_u8();
+    if (tag == 0) {
+        out = std::nullopt;
+        return DeserializeError::Ok;
+    }
+    if (tag != 1) {
+        return DeserializeError::BadSize;
+    }
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    out = c.take_u32();
+    return DeserializeError::Ok;
+}
+
 // ---- Enum range guards -----------------------------------------------
 
 [[nodiscard]] bool is_valid_size(std::uint8_t v) noexcept {
@@ -244,6 +282,12 @@ struct Cursor {
 [[nodiscard]] bool is_valid_flagbit(std::uint8_t v) noexcept {
     return v <= static_cast<std::uint8_t>(FlagBit::Aux);
 }
+[[nodiscard]] bool is_valid_rflags_carry(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(RflagsCarryMode::Preserve);
+}
+[[nodiscard]] bool is_valid_wide_div_result(std::uint8_t v) noexcept {
+    return v <= static_cast<std::uint8_t>(WideDivResult::Remainder);
+}
 
 // ---- OpKind dispatch on serialize side --------------------------------
 
@@ -254,13 +298,22 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, LoadReg>)     return OpKind::kLoadReg;
         else if constexpr (std::is_same_v<T, StoreReg>)    return OpKind::kStoreReg;
         else if constexpr (std::is_same_v<T, LoadSegBase>) return OpKind::kLoadSegBase;
+        else if constexpr (std::is_same_v<T, LoadCarry>)   return OpKind::kLoadCarry;
+        else if constexpr (std::is_same_v<T, StoreCarry>)  return OpKind::kStoreCarry;
+        else if constexpr (std::is_same_v<T, LoadRflags>)  return OpKind::kLoadRflags;
+        else if constexpr (std::is_same_v<T, StoreRflags>) return OpKind::kStoreRflags;
+        else if constexpr (std::is_same_v<T, StoreRflagsFromNzcv>) return OpKind::kStoreRflagsFromNzcv;
+        else if constexpr (std::is_same_v<T, StoreRflagsFromBits>) return OpKind::kStoreRflagsFromBits;
         else if constexpr (std::is_same_v<T, BinOp>)       return OpKind::kBinOp;
+        else if constexpr (std::is_same_v<T, WideDiv>)     return OpKind::kWideDiv;
         else if constexpr (std::is_same_v<T, Compare>)     return OpKind::kCompare;
         else if constexpr (std::is_same_v<T, Select>)      return OpKind::kSelect;
         else if constexpr (std::is_same_v<T, LoadMem>)     return OpKind::kLoadMem;
         else if constexpr (std::is_same_v<T, StoreMem>)    return OpKind::kStoreMem;
         else if constexpr (std::is_same_v<T, LoadMemTSO>)  return OpKind::kLoadMemTSO;
         else if constexpr (std::is_same_v<T, StoreMemTSO>) return OpKind::kStoreMemTSO;
+        else if constexpr (std::is_same_v<T, AtomicCmpxchg>) return OpKind::kAtomicCmpxchg;
+        else if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) return OpKind::kAtomicCmpxchgPair;
         else if constexpr (std::is_same_v<T, Jump>)        return OpKind::kJump;
         else if constexpr (std::is_same_v<T, CondJump>)    return OpKind::kCondJump;
         else if constexpr (std::is_same_v<T, Return>)      return OpKind::kReturn;
@@ -275,6 +328,7 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, Cpuid>)       return OpKind::kCpuid;
         else if constexpr (std::is_same_v<T, Syscall>)     return OpKind::kSyscall;
         else if constexpr (std::is_same_v<T, Trap>)        return OpKind::kTrap;
+        else if constexpr (std::is_same_v<T, TrapIf>)      return OpKind::kTrapIf;
         else if constexpr (std::is_same_v<T, Extend>)      return OpKind::kExtend;
         else if constexpr (std::is_same_v<T, Truncate>)    return OpKind::kTruncate;
         else if constexpr (std::is_same_v<T, Fence>)       return OpKind::kFence;
@@ -288,12 +342,17 @@ struct Cursor {
         else if constexpr (std::is_same_v<T, RspAdjust>)     return OpKind::kRspAdjust;
         else if constexpr (std::is_same_v<T, VecConstant>)   return OpKind::kVecConstant;
         else if constexpr (std::is_same_v<T, VecBinOp>)      return OpKind::kVecBinOp;
+        else if constexpr (std::is_same_v<T, VecClMul>)      return OpKind::kVecClMul;
+        else if constexpr (std::is_same_v<T, VecF16Cvt>)     return OpKind::kVecF16Cvt;
         else if constexpr (std::is_same_v<T, LoadVecReg>)    return OpKind::kLoadVecReg;
         else if constexpr (std::is_same_v<T, StoreVecReg>)   return OpKind::kStoreVecReg;
         else if constexpr (std::is_same_v<T, VecFpBinOp>)    return OpKind::kVecFpBinOp;
         else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) return OpKind::kVecFpScalarBinOp;
         else if constexpr (std::is_same_v<T, LoadVec>)       return OpKind::kLoadVec;
         else if constexpr (std::is_same_v<T, StoreVec>)      return OpKind::kStoreVec;
+        else if constexpr (std::is_same_v<T, PcmpStrIndex>)  return OpKind::kPcmpStrIndex;
+        else if constexpr (std::is_same_v<T, PcmpStrMask>)   return OpKind::kPcmpStrMask;
+        else if constexpr (std::is_same_v<T, PcmpStrFlags>)  return OpKind::kPcmpStrFlags;
         else if constexpr (std::is_same_v<T, XmmFromGpr>)    return OpKind::kXmmFromGpr;
         else if constexpr (std::is_same_v<T, GprFromXmm>)    return OpKind::kGprFromXmm;
         else if constexpr (std::is_same_v<T, VecCmp>)        return OpKind::kVecCmp;
@@ -364,11 +423,42 @@ void write_payload(std::vector<std::uint8_t>& out, const StoreReg& x) {
 void write_payload(std::vector<std::uint8_t>& out, const LoadSegBase& x) {
     put_u8(out, static_cast<std::uint8_t>(x.seg));
 }
+void write_payload(std::vector<std::uint8_t>& /*out*/, const LoadCarry&) {
+    // empty payload
+}
+void write_payload(std::vector<std::uint8_t>& out, const StoreCarry& x) {
+    put_u32(out, x.value);
+}
+void write_payload(std::vector<std::uint8_t>& /*out*/, const LoadRflags&) {
+    // empty payload
+}
+void write_payload(std::vector<std::uint8_t>& out, const StoreRflags& x) {
+    put_u32(out, x.value);
+}
+void write_payload(std::vector<std::uint8_t>& out, const StoreRflagsFromNzcv& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.carry));
+    put_optional_ref(out, x.pf);
+    put_optional_ref(out, x.af);
+}
+void write_payload(std::vector<std::uint8_t>& out, const StoreRflagsFromBits& x) {
+    put_optional_ref(out, x.pf);
+    put_optional_ref(out, x.af);
+    put_u32(out, x.zf);
+    put_u32(out, x.sf);
+    put_u32(out, x.of);
+}
 void write_payload(std::vector<std::uint8_t>& out, const BinOp& x) {
     put_u8(out, static_cast<std::uint8_t>(x.op));
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
     put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const WideDiv& x) {
+    put_u32(out, x.high);
+    put_u32(out, x.low);
+    put_u32(out, x.divisor);
+    put_u8(out, x.is_signed ? 1u : 0u);
+    put_u8(out, static_cast<std::uint8_t>(x.result));
 }
 void write_payload(std::vector<std::uint8_t>& out, const Compare& x) {
     put_u8(out, static_cast<std::uint8_t>(x.cc));
@@ -399,6 +489,20 @@ void write_payload(std::vector<std::uint8_t>& out, const StoreMemTSO& x) {
     put_u32(out, x.addr);
     put_u32(out, x.value);
     put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const AtomicCmpxchg& x) {
+    put_u32(out, x.addr);
+    put_u32(out, x.expected);
+    put_u32(out, x.new_value);
+    put_u8(out, static_cast<std::uint8_t>(x.size));
+}
+void write_payload(std::vector<std::uint8_t>& out, const AtomicCmpxchgPair& x) {
+    put_u32(out, x.addr);
+    put_u32(out, x.expected_low);
+    put_u32(out, x.expected_high);
+    put_u32(out, x.new_low);
+    put_u32(out, x.new_high);
+    put_u32(out, x.old_high);
 }
 void write_payload(std::vector<std::uint8_t>& out, const Jump& x) {
     put_u32(out, x.target_block);
@@ -451,6 +555,10 @@ void write_payload(std::vector<std::uint8_t>& /*out*/, const Syscall&) {
     // empty payload
 }
 void write_payload(std::vector<std::uint8_t>& out, const Trap& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.kind));
+}
+void write_payload(std::vector<std::uint8_t>& out, const TrapIf& x) {
+    put_u32(out, x.condition);
     put_u8(out, static_cast<std::uint8_t>(x.kind));
 }
 void write_payload(std::vector<std::uint8_t>& out, const Extend& x) {
@@ -517,6 +625,17 @@ void write_payload(std::vector<std::uint8_t>& out, const VecBinOp& x) {
     put_u32(out, x.lhs);
     put_u32(out, x.rhs);
     put_u8(out, static_cast<std::uint8_t>(x.lane));
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecClMul& x) {
+    put_u32(out, x.lhs);
+    put_u32(out, x.rhs);
+    put_u8(out, x.lhs_high ? 1u : 0u);
+    put_u8(out, x.rhs_high ? 1u : 0u);
+}
+void write_payload(std::vector<std::uint8_t>& out, const VecF16Cvt& x) {
+    put_u8(out, static_cast<std::uint8_t>(x.kind));
+    put_u32(out, x.src);
+    put_u8(out, x.rounding);
 }
 void write_payload(std::vector<std::uint8_t>& out, const LoadVecReg& x) {
     put_u8(out, x.xmm_index);
@@ -594,6 +713,30 @@ void write_payload(std::vector<std::uint8_t>& out, const LoadVec& x) {
 void write_payload(std::vector<std::uint8_t>& out, const StoreVec& x) {
     put_u32(out, x.addr);
     put_u32(out, x.value);
+}
+void write_pcmpstr_payload(std::vector<std::uint8_t>& out,
+                           Ref lhs,
+                           Ref rhs,
+                           std::optional<Ref> lhs_len,
+                           std::optional<Ref> rhs_len,
+                           std::uint8_t imm8) {
+    put_u32(out, lhs);
+    put_u32(out, rhs);
+    const std::uint8_t flags = static_cast<std::uint8_t>(
+        (lhs_len ? 0x01u : 0u) | (rhs_len ? 0x02u : 0u));
+    put_u8(out, flags);
+    if (lhs_len) put_u32(out, *lhs_len);
+    if (rhs_len) put_u32(out, *rhs_len);
+    put_u8(out, imm8);
+}
+void write_payload(std::vector<std::uint8_t>& out, const PcmpStrIndex& x) {
+    write_pcmpstr_payload(out, x.lhs, x.rhs, x.lhs_len, x.rhs_len, x.imm8);
+}
+void write_payload(std::vector<std::uint8_t>& out, const PcmpStrMask& x) {
+    write_pcmpstr_payload(out, x.lhs, x.rhs, x.lhs_len, x.rhs_len, x.imm8);
+}
+void write_payload(std::vector<std::uint8_t>& out, const PcmpStrFlags& x) {
+    write_pcmpstr_payload(out, x.lhs, x.rhs, x.lhs_len, x.rhs_len, x.imm8);
 }
 void write_payload(std::vector<std::uint8_t>& out, const XmmFromGpr& x) {
     put_u32(out, x.value);
@@ -844,6 +987,57 @@ DeserializeError read_payload_load_seg_base(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_payload_load_carry(Cursor& /*c*/, Stmt& s) {
+    s.op = LoadCarry{};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_store_carry(Cursor& c, Stmt& s) {
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    s.op = StoreCarry{c.take_u32()};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_load_rflags(Cursor& /*c*/, Stmt& s) {
+    s.op = LoadRflags{};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_store_rflags(Cursor& c, Stmt& s) {
+    if (!c.remaining(4)) return DeserializeError::Truncated;
+    s.op = StoreRflags{c.take_u32()};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_store_rflags_from_nzcv(Cursor& c, Stmt& s) {
+    if (!c.remaining(1)) return DeserializeError::Truncated;
+    const std::uint8_t carry = c.take_u8();
+    if (!is_valid_rflags_carry(carry)) return DeserializeError::BadSize;
+    std::optional<Ref> pf;
+    auto err = take_optional_ref(c, pf);
+    if (err != DeserializeError::Ok) return err;
+    std::optional<Ref> af;
+    err = take_optional_ref(c, af);
+    if (err != DeserializeError::Ok) return err;
+    s.op = StoreRflagsFromNzcv{static_cast<RflagsCarryMode>(carry), pf, af};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_store_rflags_from_bits(Cursor& c, Stmt& s) {
+    std::optional<Ref> pf;
+    auto err = take_optional_ref(c, pf);
+    if (err != DeserializeError::Ok) return err;
+    std::optional<Ref> af;
+    err = take_optional_ref(c, af);
+    if (err != DeserializeError::Ok) return err;
+    if (!c.remaining(4 + 4 + 4)) return DeserializeError::Truncated;
+    const std::uint32_t zf = c.take_u32();
+    const std::uint32_t sf = c.take_u32();
+    const std::uint32_t of = c.take_u32();
+    s.op = StoreRflagsFromBits{pf, af, zf, sf, of};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_binop(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t op = c.take_u8();
@@ -853,6 +1047,20 @@ DeserializeError read_payload_binop(Cursor& c, Stmt& s) {
     if (!is_valid_binop(op)) return DeserializeError::BadSize;
     if (!is_valid_size(sz))  return DeserializeError::BadSize;
     s.op = BinOp{static_cast<BinOpKind>(op), lhs, rhs, static_cast<OpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_wide_div(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 4 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t high = c.take_u32();
+    const std::uint32_t low = c.take_u32();
+    const std::uint32_t divisor = c.take_u32();
+    const std::uint8_t is_signed = c.take_u8();
+    const std::uint8_t result = c.take_u8();
+    if (is_signed > 1u) return DeserializeError::BadSize;
+    if (!is_valid_wide_div_result(result)) return DeserializeError::BadSize;
+    s.op = WideDiv{high, low, divisor, is_signed == 1u,
+                   static_cast<WideDivResult>(result)};
     return DeserializeError::Ok;
 }
 
@@ -915,6 +1123,29 @@ DeserializeError read_payload_store_mem_tso(Cursor& c, Stmt& s) {
     const std::uint8_t sz   = c.take_u8();
     if (!is_valid_size(sz)) return DeserializeError::BadSize;
     s.op = StoreMemTSO{addr, val, static_cast<OpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_atomic_cmpxchg(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t addr = c.take_u32();
+    const std::uint32_t expected = c.take_u32();
+    const std::uint32_t new_value = c.take_u32();
+    const std::uint8_t sz = c.take_u8();
+    if (!is_valid_size(sz)) return DeserializeError::BadSize;
+    s.op = AtomicCmpxchg{addr, expected, new_value, static_cast<OpSize>(sz)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_atomic_cmpxchg_pair(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 4 + 4 + 4 + 4)) return DeserializeError::Truncated;
+    const std::uint32_t addr = c.take_u32();
+    const std::uint32_t expected_low = c.take_u32();
+    const std::uint32_t expected_high = c.take_u32();
+    const std::uint32_t new_low = c.take_u32();
+    const std::uint32_t new_high = c.take_u32();
+    const std::uint32_t old_high = c.take_u32();
+    s.op = AtomicCmpxchgPair{addr, expected_low, expected_high, new_low, new_high, old_high};
     return DeserializeError::Ok;
 }
 
@@ -1017,6 +1248,15 @@ DeserializeError read_payload_trap(Cursor& c, Stmt& s) {
     const std::uint8_t k = c.take_u8();
     if (!is_valid_trap(k)) return DeserializeError::BadSize;
     s.op = Trap{static_cast<TrapKind>(k)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_trap_if(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t condition = c.take_u32();
+    const std::uint8_t  k = c.take_u8();
+    if (!is_valid_trap(k)) return DeserializeError::BadSize;
+    s.op = TrapIf{condition, static_cast<TrapKind>(k)};
     return DeserializeError::Ok;
 }
 
@@ -1161,6 +1401,28 @@ DeserializeError read_payload_vec_binop(Cursor& c, Stmt& s) {
     if (!is_valid_veclane(lane)) return DeserializeError::BadSize;
     s.op = VecBinOp{static_cast<VecBinOpKind>(op), lhs, rhs,
                     static_cast<VecLane>(lane)};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_vec_clmul(Cursor& c, Stmt& s) {
+    if (!c.remaining(4 + 4 + 1 + 1)) return DeserializeError::Truncated;
+    const std::uint32_t lhs = c.take_u32();
+    const std::uint32_t rhs = c.take_u32();
+    const std::uint8_t lhs_high = c.take_u8();
+    const std::uint8_t rhs_high = c.take_u8();
+    if (lhs_high > 1u || rhs_high > 1u) return DeserializeError::BadSize;
+    s.op = VecClMul{lhs, rhs, lhs_high != 0u, rhs_high != 0u};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_vec_f16cvt(Cursor& c, Stmt& s) {
+    if (!c.remaining(1 + 4 + 1)) return DeserializeError::Truncated;
+    const std::uint8_t  kind     = c.take_u8();
+    const std::uint32_t src      = c.take_u32();
+    const std::uint8_t  rounding = c.take_u8();
+    if (kind > static_cast<std::uint8_t>(VecF16CvtKind::PsToPh))
+        return DeserializeError::BadSize;
+    s.op = VecF16Cvt{static_cast<VecF16CvtKind>(kind), src, rounding};
     return DeserializeError::Ok;
 }
 
@@ -1694,6 +1956,60 @@ DeserializeError read_payload_store_vec(Cursor& c, Stmt& s) {
     return DeserializeError::Ok;
 }
 
+DeserializeError read_pcmpstr_payload(Cursor& c,
+                                      Ref& lhs,
+                                      Ref& rhs,
+                                      std::optional<Ref>& lhs_len,
+                                      std::optional<Ref>& rhs_len,
+                                      std::uint8_t& imm8) {
+    if (!c.remaining(4 + 4 + 1)) return DeserializeError::Truncated;
+    lhs = c.take_u32();
+    rhs = c.take_u32();
+    const std::uint8_t flags = c.take_u8();
+    if ((flags & ~0x03u) != 0) return DeserializeError::BadSize;
+    if ((flags & 0x01u) != 0) {
+        if (!c.remaining(4)) return DeserializeError::Truncated;
+        lhs_len = c.take_u32();
+    }
+    if ((flags & 0x02u) != 0) {
+        if (!c.remaining(4)) return DeserializeError::Truncated;
+        rhs_len = c.take_u32();
+    }
+    if (!c.remaining(1)) return DeserializeError::Truncated;
+    imm8 = c.take_u8();
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_pcmp_str_index(Cursor& c, Stmt& s) {
+    Ref lhs = 0, rhs = 0;
+    std::optional<Ref> lhs_len, rhs_len;
+    std::uint8_t imm8 = 0;
+    const auto err = read_pcmpstr_payload(c, lhs, rhs, lhs_len, rhs_len, imm8);
+    if (err != DeserializeError::Ok) return err;
+    s.op = PcmpStrIndex{lhs, rhs, lhs_len, rhs_len, imm8};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_pcmp_str_mask(Cursor& c, Stmt& s) {
+    Ref lhs = 0, rhs = 0;
+    std::optional<Ref> lhs_len, rhs_len;
+    std::uint8_t imm8 = 0;
+    const auto err = read_pcmpstr_payload(c, lhs, rhs, lhs_len, rhs_len, imm8);
+    if (err != DeserializeError::Ok) return err;
+    s.op = PcmpStrMask{lhs, rhs, lhs_len, rhs_len, imm8};
+    return DeserializeError::Ok;
+}
+
+DeserializeError read_payload_pcmp_str_flags(Cursor& c, Stmt& s) {
+    Ref lhs = 0, rhs = 0;
+    std::optional<Ref> lhs_len, rhs_len;
+    std::uint8_t imm8 = 0;
+    const auto err = read_pcmpstr_payload(c, lhs, rhs, lhs_len, rhs_len, imm8);
+    if (err != DeserializeError::Ok) return err;
+    s.op = PcmpStrFlags{lhs, rhs, lhs_len, rhs_len, imm8};
+    return DeserializeError::Ok;
+}
+
 DeserializeError read_payload_vec_fp_scalar_binop(Cursor& c, Stmt& s) {
     if (!c.remaining(1 + 4 + 4 + 1)) return DeserializeError::Truncated;
     const std::uint8_t  op   = c.take_u8();
@@ -1728,13 +2044,22 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kLoadReg:     return read_payload_load_reg(c, s);
         case OpKind::kStoreReg:    return read_payload_store_reg(c, s);
         case OpKind::kLoadSegBase: return read_payload_load_seg_base(c, s);
+        case OpKind::kLoadCarry:   return read_payload_load_carry(c, s);
+        case OpKind::kStoreCarry:  return read_payload_store_carry(c, s);
+        case OpKind::kLoadRflags:  return read_payload_load_rflags(c, s);
+        case OpKind::kStoreRflags: return read_payload_store_rflags(c, s);
+        case OpKind::kStoreRflagsFromNzcv: return read_payload_store_rflags_from_nzcv(c, s);
+        case OpKind::kStoreRflagsFromBits: return read_payload_store_rflags_from_bits(c, s);
         case OpKind::kBinOp:       return read_payload_binop(c, s);
+        case OpKind::kWideDiv:     return read_payload_wide_div(c, s);
         case OpKind::kCompare:     return read_payload_compare(c, s);
         case OpKind::kSelect:      return read_payload_select(c, s);
         case OpKind::kLoadMem:     return read_payload_load_mem(c, s);
         case OpKind::kStoreMem:    return read_payload_store_mem(c, s);
         case OpKind::kLoadMemTSO:  return read_payload_load_mem_tso(c, s);
         case OpKind::kStoreMemTSO: return read_payload_store_mem_tso(c, s);
+        case OpKind::kAtomicCmpxchg: return read_payload_atomic_cmpxchg(c, s);
+        case OpKind::kAtomicCmpxchgPair: return read_payload_atomic_cmpxchg_pair(c, s);
         case OpKind::kJump:        return read_payload_jump(c, s);
         case OpKind::kCondJump:    return read_payload_cond_jump(c, s);
         case OpKind::kReturn:      return read_payload_return(c, s);
@@ -1749,6 +2074,7 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kCpuid:       return read_payload_cpuid(c, s);
         case OpKind::kSyscall:     return read_payload_syscall(c, s);
         case OpKind::kTrap:        return read_payload_trap(c, s);
+        case OpKind::kTrapIf:      return read_payload_trap_if(c, s);
         case OpKind::kExtend:      return read_payload_extend(c, s);
         case OpKind::kTruncate:    return read_payload_truncate(c, s);
         case OpKind::kFence:       return read_payload_fence(c, s);
@@ -1762,12 +2088,17 @@ DeserializeError read_stmt(Cursor& c, Stmt& s) {
         case OpKind::kRspAdjust:   return read_payload_rsp_adjust(c, s);
         case OpKind::kVecConstant: return read_payload_vec_constant(c, s);
         case OpKind::kVecBinOp:    return read_payload_vec_binop(c, s);
+        case OpKind::kVecClMul:    return read_payload_vec_clmul(c, s);
+        case OpKind::kVecF16Cvt:   return read_payload_vec_f16cvt(c, s);
         case OpKind::kLoadVecReg:  return read_payload_load_vec_reg(c, s);
         case OpKind::kStoreVecReg: return read_payload_store_vec_reg(c, s);
         case OpKind::kVecFpBinOp:  return read_payload_vec_fp_binop(c, s);
         case OpKind::kVecFpScalarBinOp: return read_payload_vec_fp_scalar_binop(c, s);
         case OpKind::kLoadVec:     return read_payload_load_vec(c, s);
         case OpKind::kStoreVec:    return read_payload_store_vec(c, s);
+        case OpKind::kPcmpStrIndex: return read_payload_pcmp_str_index(c, s);
+        case OpKind::kPcmpStrMask:  return read_payload_pcmp_str_mask(c, s);
+        case OpKind::kPcmpStrFlags: return read_payload_pcmp_str_flags(c, s);
         case OpKind::kXmmFromGpr:  return read_payload_xmm_from_gpr(c, s);
         case OpKind::kGprFromXmm:  return read_payload_gpr_from_xmm(c, s);
         case OpKind::kVecCmp:      return read_payload_vec_cmp(c, s);

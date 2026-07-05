@@ -6,7 +6,9 @@
 // alias) — the disassembler view is the stable one.
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "prisma/emitter.hpp"
 #include "prisma/ir.hpp"
@@ -231,6 +233,55 @@ TEST_CASE("Lowerer: BMI2 PDEP/PEXT emit software bit loops") {
     }
 }
 
+TEST_CASE("Lowerer: WideDiv emits qword long-division core") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{0u, ir::OpSize::I64}},
+        {1u, ir::Constant{42u, ir::OpSize::I64}},
+        {2u, ir::Constant{3u, ir::OpSize::I64}},
+        {3u, ir::WideDiv{0u, 1u, 2u, false, ir::WideDivResult::Quotient}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("lsr") != std::string::npos);
+    REQUIRE(d.find("cmp") != std::string::npos);
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("sub") != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: WideDiv remainder and signed result paths lower") {
+    auto lower_wide = [](bool is_signed, ir::WideDivResult result) {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::Constant{is_signed ? ~0ull : 0ull, ir::OpSize::I64}},
+            {1u, ir::Constant{100u, ir::OpSize::I64}},
+            {2u, ir::Constant{is_signed ? static_cast<std::uint64_t>(-7ll) : 7u,
+                              ir::OpSize::I64}},
+            {3u, ir::WideDiv{0u, 1u, 2u, is_signed, result}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        return std::pair{ok, d};
+    };
+
+    {
+        auto [ok, d] = lower_wide(false, ir::WideDivResult::Remainder);
+        INFO("unsigned remainder disasm: " << d);
+        REQUIRE(ok);
+        REQUIRE(d.find("mov x3") != std::string::npos);
+    }
+    {
+        auto [ok, d] = lower_wide(true, ir::WideDivResult::Quotient);
+        INFO("signed quotient disasm: " << d);
+        REQUIRE(ok);
+        REQUIRE(d.find("neg") != std::string::npos);
+        REQUIRE(d.find("eor") != std::string::npos);
+        REQUIRE(d.find("cbz") != std::string::npos);
+    }
+}
+
 TEST_CASE("Lowerer: DanglingRef error on StoreReg that references unknown Ref") {
     // Missing the Constant that should bind %0.
     std::vector<ir::Stmt> stmts = {
@@ -422,6 +473,21 @@ TEST_CASE("Lowerer: Trap(sigtrap) returns the placeholder terminator sequence") 
     REQUIRE(d.find("ret") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: TrapIf(sigfpe) branches around the placeholder return") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{1u, ir::OpSize::I64}},
+        {std::nullopt, ir::TrapIf{0u, ir::TrapKind::Sigfpe}},
+        {std::nullopt, ir::Return{}},
+    };
+
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("cbz") != std::string::npos);
+    REQUIRE(d.find("x0") != std::string::npos);
+    REQUIRE(d.find("ret") != std::string::npos);
+}
+
 TEST_CASE("Lowerer: Compare → cmp + cset emits the right ARM64") {
     std::vector<ir::Stmt> stmts = {
         {0u, ir::Constant{10, ir::OpSize::I64}},
@@ -511,6 +577,125 @@ TEST_CASE("Lowerer: StoreMemTSO emits stlr") {
     const std::string d = lower_to_disasm(stmts, ok);
     REQUIRE(ok);
     REQUIRE(d.find("stlr x1, [x0]") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: LoadCarry reads CpuStateFrame cf slot") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadCarry{}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 0u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldr") != std::string::npos);
+    REQUIRE(d.find("#816") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: StoreCarry masks CF and mirrors RFLAGS bit zero") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{3u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreCarry{0u}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("and") != std::string::npos);
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+    REQUIRE(d.find("#816") != std::string::npos);
+    REQUIRE(d.find("#824") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: LoadRflags and StoreRflags use CpuStateFrame slots") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadRflags{}},
+        {std::nullopt, ir::StoreRflags{0u}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldr") != std::string::npos);
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("and") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+    REQUIRE(d.find("#824") != std::string::npos);
+    REQUIRE(d.find("#816") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: StoreRflagsFromNzcv publishes NZCV and syncs CF") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{1u, ir::OpSize::I8}},
+        {1u, ir::Constant{0u, ir::OpSize::I8}},
+        {std::nullopt, ir::CmpFlags{0u, 1u, ir::OpSize::I8}},
+        {std::nullopt,
+         ir::StoreRflagsFromNzcv{ir::RflagsCarryMode::InvertArmCarry, 0u, 1u}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("cset") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+    REQUIRE(d.find("#824") != std::string::npos);
+    REQUIRE(d.find("#816") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: StoreRflagsFromBits writes explicit bit refs") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::Constant{1u, ir::OpSize::I8}},
+        {1u, ir::Constant{0u, ir::OpSize::I8}},
+        {2u, ir::Constant{1u, ir::OpSize::I8}},
+        {3u, ir::Constant{0u, ir::OpSize::I8}},
+        {4u, ir::Constant{1u, ir::OpSize::I8}},
+        {std::nullopt, ir::StoreRflagsFromBits{0u, 1u, 2u, 3u, 4u}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("orr") != std::string::npos);
+    REQUIRE(d.find("str") != std::string::npos);
+    REQUIRE(d.find("#824") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: AtomicCmpxchg emits exclusive CAS loop") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {2u, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {3u, ir::AtomicCmpxchg{0u, 1u, 2u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rdx, 3u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldaxr") != std::string::npos);
+    REQUIRE(d.find("stlxr") != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
+    REQUIRE(d.find("clrex") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: AtomicCmpxchgPair emits exclusive pair CAS loop") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+        {1u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+        {2u, ir::LoadReg{ir::Gpr::Rdx, ir::OpSize::I64}},
+        {3u, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
+        {4u, ir::LoadReg{ir::Gpr::Rsi, ir::OpSize::I64}},
+        {5u, ir::AtomicCmpxchgPair{0u, 1u, 2u, 3u, 4u, 6u}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rdi, 5u, ir::OpSize::I64}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::R8, 6u, ir::OpSize::I64}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    REQUIRE(ok);
+    REQUIRE(d.find("ldaxp") != std::string::npos);
+    REQUIRE(d.find("stlxp") != std::string::npos);
+    REQUIRE(d.find("cbnz") != std::string::npos);
+    REQUIRE(d.find("clrex") != std::string::npos);
 }
 
 TEST_CASE("Lowerer: x87 stack ops touch TOS and 64-bit stack slots") {
@@ -1514,6 +1699,47 @@ TEST_CASE("Lowerer: WriteFlags(And) emits ands") {
     REQUIRE(d.find("ands") != std::string::npos);
 }
 
+TEST_CASE("Lowerer: WriteFlags logical Or/Xor sets NZCV from the logical result") {
+    auto try_op = [](ir::BinOpKind op, std::string_view mnemonic) {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+            {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+            {2u, ir::WriteFlags{op, 0u, 1u, ir::OpSize::I64}},
+            {3u, ir::ReadFlag{2u, ir::FlagBit::Zero}},
+            {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 3u, ir::OpSize::I8}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find(mnemonic) != std::string::npos);
+        REQUIRE(d.find("ands") != std::string::npos);
+        REQUIRE(d.find("cset") != std::string::npos);
+    };
+
+    try_op(ir::BinOpKind::Or, "orr");
+    try_op(ir::BinOpKind::Xor, "eor");
+}
+
+TEST_CASE("Lowerer: AluFlags logical Or/Xor sets transient NZCV") {
+    auto try_op = [](ir::BinOpKind op, std::string_view mnemonic) {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::LoadReg{ir::Gpr::Rax, ir::OpSize::I64}},
+            {1u, ir::LoadReg{ir::Gpr::Rbx, ir::OpSize::I64}},
+            {std::nullopt, ir::AluFlags{op, 0u, 1u, ir::OpSize::I64}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        REQUIRE(ok);
+        REQUIRE(d.find(mnemonic) != std::string::npos);
+        REQUIRE(d.find("ands") != std::string::npos);
+    };
+
+    try_op(ir::BinOpKind::Or, "orr");
+    try_op(ir::BinOpKind::Xor, "eor");
+}
+
 TEST_CASE("Lowerer: ReadFlag without a prior WriteFlags is rejected") {
     std::vector<ir::Stmt> stmts = {
         // Ref 7 is undefined as a Flags ref.
@@ -1692,6 +1918,39 @@ TEST_CASE("Lowerer: PADDD via default pipeline still lowers") {
     REQUIRE(ok);
 }
 
+TEST_CASE("Lowerer: VecClMul emits ARM PMULL") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::VecConstant{0xAAu, 0x02u}},
+        {1u, ir::VecConstant{0x55u, 0x03u}},
+        {2u, ir::VecClMul{0u, 1u, true, true}},
+        {std::nullopt, ir::StoreVecReg{0u, 2u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("pmull") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: VecF16Cvt lowers through software helper") {
+    for (const auto kind :
+         {ir::VecF16CvtKind::PhToPs, ir::VecF16CvtKind::PsToPh}) {
+        std::vector<ir::Stmt> stmts = {
+            {0u, ir::VecConstant{0x3C00'4000'4200'4400ull, 0ull}},
+            {1u, ir::VecF16Cvt{kind, 0u, 0x0Bu}},
+            {std::nullopt, ir::StoreVecReg{0u, 1u}},
+            {std::nullopt, ir::Return{}},
+        };
+        bool ok;
+        const std::string d = lower_to_disasm(stmts, ok);
+        INFO("disasm: " << d);
+        REQUIRE(ok);
+        REQUIRE(d.find("blr") != std::string::npos);
+        REQUIRE(d.find("str q") != std::string::npos);
+    }
+}
+
 TEST_CASE("Lowerer: LoadVec + StoreVec emit ldr/str Q forms") {
     std::vector<ir::Stmt> stmts = {
         {0u,           ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}},
@@ -1704,6 +1963,60 @@ TEST_CASE("Lowerer: LoadVec + StoreVec emit ldr/str Q forms") {
     REQUIRE(ok);
     REQUIRE(d.find("ldr") != std::string::npos);
     REQUIRE(d.find("str") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: PcmpStrIndex lowers through semantic helper") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::VecConstant{0x004300420041ull, 0ull}},
+        {1u, ir::VecConstant{0x000000000041ull, 0ull}},
+        {2u, ir::PcmpStrIndex{0u, 1u, std::nullopt, std::nullopt, 0x00u}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rcx, 2u, ir::OpSize::I32}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("blr") != std::string::npos);
+    REQUIRE(d.find("v0.d[0]") != std::string::npos);
+    REQUIRE(d.find("w11") != std::string::npos);  // ECX pinned register.
+}
+
+TEST_CASE("Lowerer: PcmpStrMask lowers helper result back to Vec128") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::VecConstant{0x004300420041ull, 0ull}},
+        {1u, ir::VecConstant{0x000000000041ull, 0ull}},
+        {2u, ir::Constant{3u, ir::OpSize::I32}},
+        {3u, ir::Constant{1u, ir::OpSize::I32}},
+        {4u, ir::PcmpStrMask{0u, 1u, 2u, 3u, 0x08u}},
+        {std::nullopt, ir::StoreVecReg{0u, 4u}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("blr") != std::string::npos);
+    REQUIRE(d.find("v31.d[1]") != std::string::npos);
+    REQUIRE(d.find("str q") != std::string::npos);
+}
+
+TEST_CASE("Lowerer: PcmpStrFlags lowers through semantic helper") {
+    std::vector<ir::Stmt> stmts = {
+        {0u, ir::VecConstant{0x004300420041ull, 0ull}},
+        {1u, ir::VecConstant{0x000000000041ull, 0ull}},
+        {2u, ir::Constant{3u, ir::OpSize::I32}},
+        {3u, ir::Constant{1u, ir::OpSize::I32}},
+        {4u, ir::PcmpStrFlags{0u, 1u, 2u, 3u, 0x08u}},
+        {std::nullopt, ir::StoreReg{ir::Gpr::Rax, 4u, ir::OpSize::I64}},
+        {std::nullopt, ir::Return{}},
+    };
+    bool ok;
+    const std::string d = lower_to_disasm(stmts, ok);
+    INFO("disasm: " << d);
+    REQUIRE(ok);
+    REQUIRE(d.find("blr") != std::string::npos);
+    REQUIRE(d.find("x10") != std::string::npos);  // RAX pinned register.
 }
 
 TEST_CASE("Lowerer: bitwise VecBinOp(And/Or/Xor) emits 16b NEON forms") {

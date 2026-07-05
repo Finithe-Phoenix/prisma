@@ -44,6 +44,21 @@ enum class OpTag : std::uint8_t {
     CondJumpFlags = 29,
     AluFlags = 30,
     WriteFlagsCountZero = 31,
+    AtomicCmpxchgPair = 32,
+    AtomicCmpxchg = 33,
+    LoadCarry = 34,
+    StoreCarry = 35,
+    LoadRflags = 36,
+    StoreRflags = 37,
+    StoreRflagsFromNzcv = 38,
+    StoreRflagsFromBits = 39,
+    WideDiv = 40,
+    PcmpStrIndex = 41,
+    PcmpStrMask = 42,
+    PcmpStrFlags = 43,
+    TrapIf = 44,
+    VecClMul = 45,
+    VecF16Cvt = 46,
 };
 
 constexpr std::uint32_t kMaxDeserializedItems = 1'000'000u;
@@ -68,6 +83,13 @@ public:
     void u64(std::uint64_t value) {
         for (unsigned shift = 0; shift < 64; shift += 8) {
             u8(static_cast<std::uint8_t>((value >> shift) & 0xFFu));
+        }
+    }
+
+    void optional_ref(std::optional<Ref> value) {
+        u8(value.has_value() ? 1u : 0u);
+        if (value.has_value()) {
+            u32(*value);
         }
     }
 
@@ -124,6 +146,28 @@ private:
             } else if constexpr (std::is_same_v<T, LoadSegBase>) {
                 enum8(OpTag::LoadSegBase);
                 enum8(x.seg);
+            } else if constexpr (std::is_same_v<T, LoadCarry>) {
+                enum8(OpTag::LoadCarry);
+            } else if constexpr (std::is_same_v<T, StoreCarry>) {
+                enum8(OpTag::StoreCarry);
+                u32(x.value);
+            } else if constexpr (std::is_same_v<T, LoadRflags>) {
+                enum8(OpTag::LoadRflags);
+            } else if constexpr (std::is_same_v<T, StoreRflags>) {
+                enum8(OpTag::StoreRflags);
+                u32(x.value);
+            } else if constexpr (std::is_same_v<T, StoreRflagsFromNzcv>) {
+                enum8(OpTag::StoreRflagsFromNzcv);
+                enum8(x.carry);
+                optional_ref(x.pf);
+                optional_ref(x.af);
+            } else if constexpr (std::is_same_v<T, StoreRflagsFromBits>) {
+                enum8(OpTag::StoreRflagsFromBits);
+                optional_ref(x.pf);
+                optional_ref(x.af);
+                u32(x.zf);
+                u32(x.sf);
+                u32(x.of);
             } else if constexpr (std::is_same_v<T, StoreReg>) {
                 enum8(OpTag::StoreReg);
                 enum8(x.reg);
@@ -135,6 +179,45 @@ private:
                 u32(x.lhs);
                 u32(x.rhs);
                 enum8(x.size);
+            } else if constexpr (std::is_same_v<T, WideDiv>) {
+                enum8(OpTag::WideDiv);
+                u32(x.high);
+                u32(x.low);
+                u32(x.divisor);
+                u8(x.is_signed ? 1u : 0u);
+                enum8(x.result);
+            } else if constexpr (std::is_same_v<T, PcmpStrIndex>) {
+                enum8(OpTag::PcmpStrIndex);
+                u32(x.lhs);
+                u32(x.rhs);
+                optional_ref(x.lhs_len);
+                optional_ref(x.rhs_len);
+                u8(x.imm8);
+            } else if constexpr (std::is_same_v<T, PcmpStrMask>) {
+                enum8(OpTag::PcmpStrMask);
+                u32(x.lhs);
+                u32(x.rhs);
+                optional_ref(x.lhs_len);
+                optional_ref(x.rhs_len);
+                u8(x.imm8);
+            } else if constexpr (std::is_same_v<T, PcmpStrFlags>) {
+                enum8(OpTag::PcmpStrFlags);
+                u32(x.lhs);
+                u32(x.rhs);
+                optional_ref(x.lhs_len);
+                optional_ref(x.rhs_len);
+                u8(x.imm8);
+            } else if constexpr (std::is_same_v<T, VecClMul>) {
+                enum8(OpTag::VecClMul);
+                u32(x.lhs);
+                u32(x.rhs);
+                u8(x.lhs_high ? 1u : 0u);
+                u8(x.rhs_high ? 1u : 0u);
+            } else if constexpr (std::is_same_v<T, VecF16Cvt>) {
+                enum8(OpTag::VecF16Cvt);
+                enum8(x.kind);
+                u32(x.src);
+                u8(x.rounding);
             } else if constexpr (std::is_same_v<T, Extend>) {
                 enum8(OpTag::Extend);
                 u32(x.value);
@@ -175,6 +258,20 @@ private:
                 u32(x.addr);
                 u32(x.value);
                 enum8(x.size);
+            } else if constexpr (std::is_same_v<T, AtomicCmpxchg>) {
+                enum8(OpTag::AtomicCmpxchg);
+                u32(x.addr);
+                u32(x.expected);
+                u32(x.new_value);
+                enum8(x.size);
+            } else if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) {
+                enum8(OpTag::AtomicCmpxchgPair);
+                u32(x.addr);
+                u32(x.expected_low);
+                u32(x.expected_high);
+                u32(x.new_low);
+                u32(x.new_high);
+                u32(x.old_high);
             } else if constexpr (std::is_same_v<T, GuestPc>) {
                 enum8(OpTag::GuestPc);
                 u64(x.pc);
@@ -233,6 +330,10 @@ private:
                 enum8(OpTag::Syscall);
             } else if constexpr (std::is_same_v<T, Trap>) {
                 enum8(OpTag::Trap);
+                enum8(x.kind);
+            } else if constexpr (std::is_same_v<T, TrapIf>) {
+                enum8(OpTag::TrapIf);
+                u32(x.condition);
                 enum8(x.kind);
             } else if constexpr (std::is_same_v<T, Fence>) {
                 enum8(OpTag::Fence);
@@ -340,7 +441,7 @@ private:
 }
 
 [[nodiscard]] bool decode_trap(std::uint8_t raw, TrapKind& out) {
-    if (raw != static_cast<std::uint8_t>(TrapKind::Sigtrap)) return false;
+    if (raw > static_cast<std::uint8_t>(TrapKind::Sigfpe)) return false;
     out = static_cast<TrapKind>(raw);
     return true;
 }
@@ -351,9 +452,27 @@ private:
     return true;
 }
 
+[[nodiscard]] bool decode_rflags_carry(std::uint8_t raw, RflagsCarryMode& out) {
+    if (raw > static_cast<std::uint8_t>(RflagsCarryMode::Preserve)) return false;
+    out = static_cast<RflagsCarryMode>(raw);
+    return true;
+}
+
+[[nodiscard]] bool decode_wide_div_result(std::uint8_t raw, WideDivResult& out) {
+    if (raw > static_cast<std::uint8_t>(WideDivResult::Remainder)) return false;
+    out = static_cast<WideDivResult>(raw);
+    return true;
+}
+
+[[nodiscard]] bool decode_vec_f16cvt_kind(std::uint8_t raw, VecF16CvtKind& out) {
+    if (raw > static_cast<std::uint8_t>(VecF16CvtKind::PsToPh)) return false;
+    out = static_cast<VecF16CvtKind>(raw);
+    return true;
+}
+
 [[nodiscard]] bool decode_tag(std::uint8_t raw, OpTag& out) {
     if (raw < static_cast<std::uint8_t>(OpTag::Constant)
-        || raw > static_cast<std::uint8_t>(OpTag::WriteFlagsCountZero)) {
+        || raw > static_cast<std::uint8_t>(OpTag::VecF16Cvt)) {
         return false;
     }
     out = static_cast<OpTag>(raw);
@@ -374,6 +493,20 @@ template <typename E, typename Decode>
     if (!reader.u8(raw)) return reader.error();
     if (raw > 1u) return IrDeserializeError::InvalidBool;
     return raw == 1u;
+}
+
+[[nodiscard]] std::variant<std::optional<Ref>, IrDeserializeError>
+read_optional_ref(Reader& reader) {
+    auto present = read_bool(reader);
+    if (std::holds_alternative<IrDeserializeError>(present)) {
+        return std::get<IrDeserializeError>(present);
+    }
+    if (!std::get<bool>(present)) {
+        return std::optional<Ref>{};
+    }
+    Ref value{};
+    if (!reader.u32(value)) return reader.error();
+    return std::optional<Ref>{value};
 }
 
 [[nodiscard]] std::variant<Op, IrDeserializeError> read_op(Reader& reader) {
@@ -410,6 +543,56 @@ template <typename E, typename Decode>
             }
             return Op{LoadSegBase{std::get<SegmentReg>(segment)}};
         }
+        case OpTag::LoadCarry:
+            return Op{LoadCarry{}};
+        case OpTag::StoreCarry: {
+            Ref value{};
+            if (!reader.u32(value)) return reader.error();
+            return Op{StoreCarry{value}};
+        }
+        case OpTag::LoadRflags:
+            return Op{LoadRflags{}};
+        case OpTag::StoreRflags: {
+            Ref value{};
+            if (!reader.u32(value)) return reader.error();
+            return Op{StoreRflags{value}};
+        }
+        case OpTag::StoreRflagsFromNzcv: {
+            auto carry = read_enum<RflagsCarryMode>(reader, decode_rflags_carry);
+            if (std::holds_alternative<IrDeserializeError>(carry)) {
+                return std::get<IrDeserializeError>(carry);
+            }
+            auto pf = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(pf)) {
+                return std::get<IrDeserializeError>(pf);
+            }
+            auto af = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(af)) {
+                return std::get<IrDeserializeError>(af);
+            }
+            return Op{StoreRflagsFromNzcv{std::get<RflagsCarryMode>(carry),
+                                          std::get<std::optional<Ref>>(pf),
+                                          std::get<std::optional<Ref>>(af)}};
+        }
+        case OpTag::StoreRflagsFromBits: {
+            auto pf = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(pf)) {
+                return std::get<IrDeserializeError>(pf);
+            }
+            auto af = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(af)) {
+                return std::get<IrDeserializeError>(af);
+            }
+            Ref zf{};
+            Ref sf{};
+            Ref of{};
+            if (!reader.u32(zf) || !reader.u32(sf) || !reader.u32(of)) {
+                return reader.error();
+            }
+            return Op{StoreRflagsFromBits{std::get<std::optional<Ref>>(pf),
+                                          std::get<std::optional<Ref>>(af),
+                                          zf, sf, of}};
+        }
         case OpTag::StoreReg: {
             auto reg = read_enum<Gpr>(reader, decode_gpr);
             if (std::holds_alternative<IrDeserializeError>(reg)) {
@@ -436,6 +619,108 @@ template <typename E, typename Decode>
                 return std::get<IrDeserializeError>(size);
             }
             return Op{BinOp{std::get<BinOpKind>(op), lhs, rhs, std::get<OpSize>(size)}};
+        }
+        case OpTag::WideDiv: {
+            Ref high{};
+            Ref low{};
+            Ref divisor{};
+            if (!reader.u32(high) || !reader.u32(low) || !reader.u32(divisor)) {
+                return reader.error();
+            }
+            auto is_signed = read_bool(reader);
+            if (std::holds_alternative<IrDeserializeError>(is_signed)) {
+                return std::get<IrDeserializeError>(is_signed);
+            }
+            auto result = read_enum<WideDivResult>(reader, decode_wide_div_result);
+            if (std::holds_alternative<IrDeserializeError>(result)) {
+                return std::get<IrDeserializeError>(result);
+            }
+            return Op{WideDiv{high, low, divisor, std::get<bool>(is_signed),
+                              std::get<WideDivResult>(result)}};
+        }
+        case OpTag::PcmpStrIndex: {
+            Ref lhs{};
+            Ref rhs{};
+            if (!reader.u32(lhs) || !reader.u32(rhs)) return reader.error();
+            auto lhs_len = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(lhs_len)) {
+                return std::get<IrDeserializeError>(lhs_len);
+            }
+            auto rhs_len = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(rhs_len)) {
+                return std::get<IrDeserializeError>(rhs_len);
+            }
+            std::uint8_t imm8 = 0;
+            if (!reader.u8(imm8)) return reader.error();
+            return Op{PcmpStrIndex{lhs, rhs,
+                                   std::get<std::optional<Ref>>(lhs_len),
+                                   std::get<std::optional<Ref>>(rhs_len),
+                                   imm8}};
+        }
+        case OpTag::PcmpStrMask: {
+            Ref lhs{};
+            Ref rhs{};
+            if (!reader.u32(lhs) || !reader.u32(rhs)) return reader.error();
+            auto lhs_len = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(lhs_len)) {
+                return std::get<IrDeserializeError>(lhs_len);
+            }
+            auto rhs_len = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(rhs_len)) {
+                return std::get<IrDeserializeError>(rhs_len);
+            }
+            std::uint8_t imm8 = 0;
+            if (!reader.u8(imm8)) return reader.error();
+            return Op{PcmpStrMask{lhs, rhs,
+                                  std::get<std::optional<Ref>>(lhs_len),
+                                  std::get<std::optional<Ref>>(rhs_len),
+                                  imm8}};
+        }
+        case OpTag::PcmpStrFlags: {
+            Ref lhs{};
+            Ref rhs{};
+            if (!reader.u32(lhs) || !reader.u32(rhs)) return reader.error();
+            auto lhs_len = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(lhs_len)) {
+                return std::get<IrDeserializeError>(lhs_len);
+            }
+            auto rhs_len = read_optional_ref(reader);
+            if (std::holds_alternative<IrDeserializeError>(rhs_len)) {
+                return std::get<IrDeserializeError>(rhs_len);
+            }
+            std::uint8_t imm8 = 0;
+            if (!reader.u8(imm8)) return reader.error();
+            return Op{PcmpStrFlags{lhs, rhs,
+                                   std::get<std::optional<Ref>>(lhs_len),
+                                   std::get<std::optional<Ref>>(rhs_len),
+                                   imm8}};
+        }
+        case OpTag::VecClMul: {
+            Ref lhs{};
+            Ref rhs{};
+            if (!reader.u32(lhs) || !reader.u32(rhs)) return reader.error();
+            auto lhs_high = read_bool(reader);
+            if (std::holds_alternative<IrDeserializeError>(lhs_high)) {
+                return std::get<IrDeserializeError>(lhs_high);
+            }
+            auto rhs_high = read_bool(reader);
+            if (std::holds_alternative<IrDeserializeError>(rhs_high)) {
+                return std::get<IrDeserializeError>(rhs_high);
+            }
+            return Op{VecClMul{lhs, rhs,
+                               std::get<bool>(lhs_high),
+                               std::get<bool>(rhs_high)}};
+        }
+        case OpTag::VecF16Cvt: {
+            auto kind = read_enum<VecF16CvtKind>(reader, decode_vec_f16cvt_kind);
+            if (std::holds_alternative<IrDeserializeError>(kind)) {
+                return std::get<IrDeserializeError>(kind);
+            }
+            Ref src{};
+            if (!reader.u32(src)) return reader.error();
+            std::uint8_t rounding = 0;
+            if (!reader.u8(rounding)) return reader.error();
+            return Op{VecF16Cvt{std::get<VecF16CvtKind>(kind), src, rounding}};
         }
         case OpTag::Extend: {
             std::uint32_t value = 0;
@@ -530,6 +815,40 @@ template <typename E, typename Decode>
                 return std::get<IrDeserializeError>(size);
             }
             return Op{StoreMemTSO{addr, value, std::get<OpSize>(size)}};
+        }
+        case OpTag::AtomicCmpxchg: {
+            Ref addr{};
+            Ref expected{};
+            Ref new_value{};
+            if (!reader.u32(addr) ||
+                !reader.u32(expected) ||
+                !reader.u32(new_value)) {
+                return reader.error();
+            }
+            auto size = read_enum<OpSize>(reader, decode_size);
+            if (std::holds_alternative<IrDeserializeError>(size)) {
+                return std::get<IrDeserializeError>(size);
+            }
+            return Op{AtomicCmpxchg{
+                addr, expected, new_value, std::get<OpSize>(size)}};
+        }
+        case OpTag::AtomicCmpxchgPair: {
+            Ref addr{};
+            Ref expected_low{};
+            Ref expected_high{};
+            Ref new_low{};
+            Ref new_high{};
+            Ref old_high{};
+            if (!reader.u32(addr) ||
+                !reader.u32(expected_low) ||
+                !reader.u32(expected_high) ||
+                !reader.u32(new_low) ||
+                !reader.u32(new_high) ||
+                !reader.u32(old_high)) {
+                return reader.error();
+            }
+            return Op{AtomicCmpxchgPair{
+                addr, expected_low, expected_high, new_low, new_high, old_high}};
         }
         case OpTag::GuestPc: {
             std::uint64_t pc = 0;
@@ -638,6 +957,15 @@ template <typename E, typename Decode>
                 return std::get<IrDeserializeError>(kind);
             }
             return Op{Trap{std::get<TrapKind>(kind)}};
+        }
+        case OpTag::TrapIf: {
+            Ref condition{};
+            if (!reader.u32(condition)) return reader.error();
+            auto kind = read_enum<TrapKind>(reader, decode_trap);
+            if (std::holds_alternative<IrDeserializeError>(kind)) {
+                return std::get<IrDeserializeError>(kind);
+            }
+            return Op{TrapIf{condition, std::get<TrapKind>(kind)}};
         }
         case OpTag::Fence: {
             auto kind = read_enum<FenceKind>(reader, decode_fence);

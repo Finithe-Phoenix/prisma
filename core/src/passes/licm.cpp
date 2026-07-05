@@ -46,9 +46,15 @@ bool stmt_is_pure(const ir::Op& op) noexcept {
             || std::is_same_v<T, ir::LoadReg>
             || std::is_same_v<T, ir::LoadSegBase>
             || std::is_same_v<T, ir::BinOp>
+            || std::is_same_v<T, ir::WideDiv>
             || std::is_same_v<T, ir::Compare>
             || std::is_same_v<T, ir::Extend>
-            || std::is_same_v<T, ir::Truncate>;
+            || std::is_same_v<T, ir::Truncate>
+            || std::is_same_v<T, ir::VecClMul>
+            || std::is_same_v<T, ir::VecF16Cvt>
+            || std::is_same_v<T, ir::PcmpStrIndex>
+            || std::is_same_v<T, ir::PcmpStrMask>
+            || std::is_same_v<T, ir::PcmpStrFlags>;
     }, op);
 }
 
@@ -57,12 +63,30 @@ void collect_operand_refs(const ir::Op& op, std::vector<ir::Ref>& into) {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, ir::BinOp>) {
             into.push_back(x.lhs); into.push_back(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::WideDiv>) {
+            into.push_back(x.high); into.push_back(x.low); into.push_back(x.divisor);
         } else if constexpr (std::is_same_v<T, ir::Compare>) {
             into.push_back(x.lhs); into.push_back(x.rhs);
         } else if constexpr (std::is_same_v<T, ir::Extend>) {
             into.push_back(x.value);
         } else if constexpr (std::is_same_v<T, ir::Truncate>) {
             into.push_back(x.value);
+        } else if constexpr (std::is_same_v<T, ir::VecClMul>) {
+            into.push_back(x.lhs); into.push_back(x.rhs);
+        } else if constexpr (std::is_same_v<T, ir::VecF16Cvt>) {
+            into.push_back(x.src);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrIndex>) {
+            into.push_back(x.lhs); into.push_back(x.rhs);
+            if (x.lhs_len) into.push_back(*x.lhs_len);
+            if (x.rhs_len) into.push_back(*x.rhs_len);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrMask>) {
+            into.push_back(x.lhs); into.push_back(x.rhs);
+            if (x.lhs_len) into.push_back(*x.lhs_len);
+            if (x.rhs_len) into.push_back(*x.rhs_len);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrFlags>) {
+            into.push_back(x.lhs); into.push_back(x.rhs);
+            if (x.lhs_len) into.push_back(*x.lhs_len);
+            if (x.rhs_len) into.push_back(*x.rhs_len);
         }
         // Constant / LoadReg / LoadSegBase have no operand refs.
     }, op);

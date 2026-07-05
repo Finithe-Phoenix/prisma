@@ -31,11 +31,16 @@ std::optional<OpSize> result_size_static(const Op& op) {
         if      constexpr (std::is_same_v<T, Constant>)    return x.size;
         else if constexpr (std::is_same_v<T, LoadReg>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadSegBase>) return OpSize::I64;
+        else if constexpr (std::is_same_v<T, LoadCarry>)   return OpSize::I64;
+        else if constexpr (std::is_same_v<T, LoadRflags>)  return OpSize::I64;
         else if constexpr (std::is_same_v<T, BinOp>)       return x.size;
+        else if constexpr (std::is_same_v<T, WideDiv>)     return OpSize::I64;
         else if constexpr (std::is_same_v<T, Compare>)     return OpSize::I8;
         else if constexpr (std::is_same_v<T, Select>)      return x.size;
         else if constexpr (std::is_same_v<T, LoadMem>)     return x.size;
         else if constexpr (std::is_same_v<T, LoadMemTSO>)  return x.size;
+        else if constexpr (std::is_same_v<T, AtomicCmpxchg>) return x.size;
+        else if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) return OpSize::I64;
         else if constexpr (std::is_same_v<T, X87Load>)     return OpSize::I64;
         else if constexpr (std::is_same_v<T, X87Pop>)      return OpSize::I64;
         else if constexpr (std::is_same_v<T, Extend>)      return x.to_size;
@@ -52,93 +57,90 @@ template <typename F>
 void for_each_operand_ref(const Op& op, F&& visit) {
     std::visit([&](const auto& x) {
         using T = std::decay_t<decltype(x)>;
-        if      constexpr (std::is_same_v<T, BinOp>)      { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, Compare>)    { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, Select>)     { visit(x.true_value); visit(x.false_value); }
-        else if constexpr (std::is_same_v<T, LoadMem>)    { visit(x.addr); }
-        else if constexpr (std::is_same_v<T, StoreMem>)   { visit(x.addr); visit(x.value); }
-        else if constexpr (std::is_same_v<T, LoadMemTSO>) { visit(x.addr); }
-        else if constexpr (std::is_same_v<T, StoreMemTSO>){ visit(x.addr); visit(x.value); }
-        else if constexpr (std::is_same_v<T, StoreReg>)   { visit(x.value); }
-        else if constexpr (std::is_same_v<T, CmpFlags>)   { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, AluFlags>)   { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); }
-        else if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); }
-        else if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); }
-        else if constexpr (std::is_same_v<T, Extend>)     { visit(x.value); }
-        else if constexpr (std::is_same_v<T, Truncate>)   { visit(x.value); }
-        else if constexpr (std::is_same_v<T, FpBinOp>)    { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, WriteFlags>)    { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, ReadFlag>)      { visit(x.flags); }
-        else if constexpr (std::is_same_v<T, CondJumpFlags>) { visit(x.flags); }
-        else if constexpr (std::is_same_v<T, VecBinOp>)      { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, StoreVecReg>)   { visit(x.value); }
-        else if constexpr (std::is_same_v<T, VecFpBinOp>)    { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecFpScalarBinOp>) { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, LoadVec>)       { visit(x.addr); }
-        else if constexpr (std::is_same_v<T, StoreVec>)      { visit(x.addr); visit(x.value); }
-        else if constexpr (std::is_same_v<T, XmmFromGpr>)    { visit(x.value); }
-        else if constexpr (std::is_same_v<T, GprFromXmm>)    { visit(x.value); }
-        else if constexpr (std::is_same_v<T, VecCmp>)        { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecShuffle32x4>) { visit(x.src); }
-        else if constexpr (std::is_same_v<T, VecUnpack>)     { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecShiftImm>)   { visit(x.src); }
-        else if constexpr (std::is_same_v<T, VecShiftBytes>) { visit(x.src); }
-        else if constexpr (std::is_same_v<T, IntToFpScalar>) { visit(x.value); }
-        else if constexpr (std::is_same_v<T, FpToIntScalar>) { visit(x.value); }
-        else if constexpr (std::is_same_v<T, FpCvtScalar>)   { visit(x.lhs); visit(x.src); }
-        else if constexpr (std::is_same_v<T, VecShuffle2Src>) { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecInsertLane>)  { visit(x.lhs_xmm); visit(x.value); }
-        else if constexpr (std::is_same_v<T, VecExtractLaneU>) { visit(x.src_xmm); }
-        else if constexpr (std::is_same_v<T, VecMaskMsb>)    { visit(x.src_xmm); }
-        else if constexpr (std::is_same_v<T, WriteFlagsFp>)  { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecShuffleH4>)  { visit(x.src); }
-        else if constexpr (std::is_same_v<T, VecMaskFp>)     { visit(x.src_xmm); }
-        else if constexpr (std::is_same_v<T, VecFpCompare>)  { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecPshufb>)     { visit(x.src); visit(x.mask); }
-        else if constexpr (std::is_same_v<T, VecAbs>)        { visit(x.src); }
-        else if constexpr (std::is_same_v<T, VecAlignr>)     { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, VecExtend>)     { visit(x.src); }
-        else if constexpr (std::is_same_v<T, VecFpRound>)    { visit(x.lhs); visit(x.src); }
-        else if constexpr (std::is_same_v<T, Popcnt>)        { visit(x.value); }
-        else if constexpr (std::is_same_v<T, Lzcnt>)         { visit(x.value); }
-        else if constexpr (std::is_same_v<T, Tzcnt>)         { visit(x.value); }
-        else if constexpr (std::is_same_v<T, WriteFlagsCountZero>) { visit(x.src); visit(x.result); }
-        else if constexpr (std::is_same_v<T, VecBlend>)      { visit(x.dst); visit(x.src); visit(x.mask); }
-        else if constexpr (std::is_same_v<T, WriteFlagsPtest>) { visit(x.lhs); visit(x.rhs); }
-        else if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) {
-            visit(x.lo_lhs); visit(x.lo_rhs); visit(x.hi_lhs); visit(x.hi_rhs);
-        }
-        else if constexpr (std::is_same_v<T, VecTbl2>) {
-            visit(x.src_lo); visit(x.src_hi); visit(x.idx);
-        }
-        else if constexpr (std::is_same_v<T, VecAes>) {
-            visit(x.src); visit(x.key);
-        }
-        else if constexpr (std::is_same_v<T, VecAesKeygenAssist>) {
-            visit(x.src);
-        }
-        else if constexpr (std::is_same_v<T, VecSha>) {
-            visit(x.a); visit(x.b); visit(x.wk);
-        }
-        else if constexpr (std::is_same_v<T, Bswap>) {
-            visit(x.value);
-        }
-        else if constexpr (std::is_same_v<T, Crc32c>) {
-            visit(x.crc); visit(x.data);
-        }
-        else if constexpr (std::is_same_v<T, VecGather>) {
-            visit(x.base); visit(x.index); visit(x.mask); visit(x.prev);
-        }
-        else if constexpr (std::is_same_v<T, StoreVecRegHi>) { visit(x.value); }
-        else if constexpr (std::is_same_v<T, VecFpFma>)      { visit(x.a); visit(x.b); visit(x.c); }
-        else if constexpr (std::is_same_v<T, VecFpScalarFma>) { visit(x.a); visit(x.b); visit(x.c); visit(x.scalar_upper); }
-        else if constexpr (std::is_same_v<T, RepStos>)       { (void)x; }   // no operand refs
-        else if constexpr (std::is_same_v<T, RepMovs>)       { (void)x; }
-        else if constexpr (std::is_same_v<T, X87Load>)       { (void)x; }   // no operand refs
-        else if constexpr (std::is_same_v<T, X87Store>)      { visit(x.value); }
-        else if constexpr (std::is_same_v<T, X87Push>)       { visit(x.value); }
-        else if constexpr (std::is_same_v<T, X87Pop>)        { (void)x; }   // no operand refs
+        if constexpr (std::is_same_v<T, BinOp>)      { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, WideDiv>)    { visit(x.high); visit(x.low); visit(x.divisor); return; }
+        if constexpr (std::is_same_v<T, Compare>)    { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, Select>)     { visit(x.true_value); visit(x.false_value); return; }
+        if constexpr (std::is_same_v<T, LoadMem>)    { visit(x.addr); return; }
+        if constexpr (std::is_same_v<T, StoreMem>)   { visit(x.addr); visit(x.value); return; }
+        if constexpr (std::is_same_v<T, LoadMemTSO>) { visit(x.addr); return; }
+        if constexpr (std::is_same_v<T, StoreMemTSO>){ visit(x.addr); visit(x.value); return; }
+        if constexpr (std::is_same_v<T, AtomicCmpxchg>) { visit(x.addr); visit(x.expected); visit(x.new_value); return; }
+        if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) { visit(x.addr); visit(x.expected_low); visit(x.expected_high); visit(x.new_low); visit(x.new_high); return; }
+        if constexpr (std::is_same_v<T, StoreCarry>) { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, StoreRflags>) { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, StoreRflagsFromNzcv>) { if (x.pf) visit(*x.pf); if (x.af) visit(*x.af); return; }
+        if constexpr (std::is_same_v<T, StoreRflagsFromBits>) { if (x.pf) visit(*x.pf); if (x.af) visit(*x.af); visit(x.zf); visit(x.sf); visit(x.of); return; }
+        if constexpr (std::is_same_v<T, StoreReg>)   { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, CmpFlags>)   { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, AluFlags>)   { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, CondJump>)   { visit(x.cond); return; }
+        if constexpr (std::is_same_v<T, JumpReg>)    { visit(x.target); return; }
+        if constexpr (std::is_same_v<T, CallReg>)    { visit(x.target); return; }
+        if constexpr (std::is_same_v<T, TrapIf>)     { visit(x.condition); return; }
+        if constexpr (std::is_same_v<T, Extend>)     { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, Truncate>)   { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, FpBinOp>)    { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, WriteFlags>)    { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, ReadFlag>)      { visit(x.flags); return; }
+        if constexpr (std::is_same_v<T, CondJumpFlags>) { visit(x.flags); return; }
+        if constexpr (std::is_same_v<T, VecBinOp>)      { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecClMul>)      { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecF16Cvt>)     { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, StoreVecReg>)   { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, VecFpBinOp>)    { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecFpScalarBinOp>) { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, LoadVec>)       { visit(x.addr); return; }
+        if constexpr (std::is_same_v<T, StoreVec>)      { visit(x.addr); visit(x.value); return; }
+        if constexpr (std::is_same_v<T, PcmpStrIndex>)  { visit(x.lhs); visit(x.rhs); if (x.lhs_len) visit(*x.lhs_len); if (x.rhs_len) visit(*x.rhs_len); return; }
+        if constexpr (std::is_same_v<T, PcmpStrMask>)   { visit(x.lhs); visit(x.rhs); if (x.lhs_len) visit(*x.lhs_len); if (x.rhs_len) visit(*x.rhs_len); return; }
+        if constexpr (std::is_same_v<T, PcmpStrFlags>)  { visit(x.lhs); visit(x.rhs); if (x.lhs_len) visit(*x.lhs_len); if (x.rhs_len) visit(*x.rhs_len); return; }
+        if constexpr (std::is_same_v<T, XmmFromGpr>)    { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, GprFromXmm>)    { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, VecCmp>)        { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecShuffle32x4>) { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecUnpack>)     { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecShiftImm>)   { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecShiftBytes>) { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, IntToFpScalar>) { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, FpToIntScalar>) { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, FpCvtScalar>)   { visit(x.lhs); visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecShuffle2Src>) { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecInsertLane>)  { visit(x.lhs_xmm); visit(x.value); return; }
+        if constexpr (std::is_same_v<T, VecExtractLaneU>) { visit(x.src_xmm); return; }
+        if constexpr (std::is_same_v<T, VecMaskMsb>)    { visit(x.src_xmm); return; }
+        if constexpr (std::is_same_v<T, WriteFlagsFp>)  { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecShuffleH4>)  { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecMaskFp>)     { visit(x.src_xmm); return; }
+        if constexpr (std::is_same_v<T, VecFpCompare>)  { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecPshufb>)     { visit(x.src); visit(x.mask); return; }
+        if constexpr (std::is_same_v<T, VecAbs>)        { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecAlignr>)     { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, VecExtend>)     { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecFpRound>)    { visit(x.lhs); visit(x.src); return; }
+        if constexpr (std::is_same_v<T, Popcnt>)        { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, Lzcnt>)         { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, Tzcnt>)         { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, WriteFlagsCountZero>) { visit(x.src); visit(x.result); return; }
+        if constexpr (std::is_same_v<T, VecBlend>)      { visit(x.dst); visit(x.src); visit(x.mask); return; }
+        if constexpr (std::is_same_v<T, WriteFlagsPtest>) { visit(x.lhs); visit(x.rhs); return; }
+        if constexpr (std::is_same_v<T, WriteFlagsPtestYmm>) { visit(x.lo_lhs); visit(x.lo_rhs); visit(x.hi_lhs); visit(x.hi_rhs); return; }
+        if constexpr (std::is_same_v<T, VecTbl2>) { visit(x.src_lo); visit(x.src_hi); visit(x.idx); return; }
+        if constexpr (std::is_same_v<T, VecAes>) { visit(x.src); visit(x.key); return; }
+        if constexpr (std::is_same_v<T, VecAesKeygenAssist>) { visit(x.src); return; }
+        if constexpr (std::is_same_v<T, VecSha>) { visit(x.a); visit(x.b); visit(x.wk); return; }
+        if constexpr (std::is_same_v<T, Bswap>) { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, Crc32c>) { visit(x.crc); visit(x.data); return; }
+        if constexpr (std::is_same_v<T, VecGather>) { visit(x.base); visit(x.index); visit(x.mask); visit(x.prev); return; }
+        if constexpr (std::is_same_v<T, StoreVecRegHi>) { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, VecFpFma>)      { visit(x.a); visit(x.b); visit(x.c); return; }
+        if constexpr (std::is_same_v<T, VecFpScalarFma>) { visit(x.a); visit(x.b); visit(x.c); visit(x.scalar_upper); return; }
+        if constexpr (std::is_same_v<T, RepStos>)       { (void)x; return; }   // no operand refs
+        if constexpr (std::is_same_v<T, RepMovs>)       { (void)x; return; }
+        if constexpr (std::is_same_v<T, X87Load>)       { (void)x; return; }   // no operand refs
+        if constexpr (std::is_same_v<T, X87Store>)      { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, X87Push>)       { visit(x.value); return; }
+        if constexpr (std::is_same_v<T, X87Pop>)        { (void)x; return; }   // no operand refs
         // Constant, LoadReg, LoadSegBase, Jump, JumpRel, CondJumpRel,
         // Return, CallRel, RetAdjusted, Cpuid, Syscall, Trap, Fence,
         // GuestPc, InlineAsm, FpConstant, VecConstant, LoadVecReg,
@@ -154,7 +156,10 @@ bool op_is_pure(const Op& op) {
         return std::is_same_v<T, Constant>
             || std::is_same_v<T, LoadReg>
             || std::is_same_v<T, LoadSegBase>
+            || std::is_same_v<T, LoadCarry>
+            || std::is_same_v<T, LoadRflags>
             || std::is_same_v<T, BinOp>
+            || std::is_same_v<T, WideDiv>
             || std::is_same_v<T, Compare>
             || std::is_same_v<T, Select>
             || std::is_same_v<T, LoadMem>
@@ -167,10 +172,15 @@ bool op_is_pure(const Op& op) {
             || std::is_same_v<T, ReadFlag>
             || std::is_same_v<T, VecConstant>
             || std::is_same_v<T, VecBinOp>
+            || std::is_same_v<T, VecClMul>
+            || std::is_same_v<T, VecF16Cvt>
             || std::is_same_v<T, LoadVecReg>
             || std::is_same_v<T, VecFpBinOp>
             || std::is_same_v<T, VecFpScalarBinOp>
             || std::is_same_v<T, LoadVec>
+            || std::is_same_v<T, PcmpStrIndex>
+            || std::is_same_v<T, PcmpStrMask>
+            || std::is_same_v<T, PcmpStrFlags>
             || std::is_same_v<T, XmmFromGpr>
             || std::is_same_v<T, GprFromXmm>
             || std::is_same_v<T, VecCmp>
@@ -236,6 +246,8 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
                     || x.op == BinOpKind::Rcr);
             if (rhs_is_count) return std::nullopt;
             if (r == x.lhs || r == x.rhs) return x.size;
+        } else if constexpr (std::is_same_v<T, WideDiv>) {
+            if (r == x.high || r == x.low || r == x.divisor) return OpSize::I64;
         } else if constexpr (std::is_same_v<T, Compare>) {
             if (r == x.lhs || r == x.rhs) return x.size;
         } else if constexpr (std::is_same_v<T, CmpFlags>) {
@@ -244,12 +256,28 @@ std::optional<OpSize> required_operand_size(const Op& op, Ref r) {
             if (r == x.true_value || r == x.false_value) return x.size;
         } else if constexpr (std::is_same_v<T, StoreReg>) {
             (void)x; (void)r;
+        } else if constexpr (std::is_same_v<T, StoreRflagsFromNzcv>) {
+            if ((x.pf && r == *x.pf) || (x.af && r == *x.af)) return OpSize::I8;
+        } else if constexpr (std::is_same_v<T, StoreRflagsFromBits>) {
+            if ((x.pf && r == *x.pf) || (x.af && r == *x.af) ||
+                r == x.zf || r == x.sf || r == x.of) {
+                return OpSize::I8;
+            }
         } else if constexpr (std::is_same_v<T, StoreMem>) {
             if (r == x.value) return x.size;
             if (r == x.addr)  return OpSize::I64;
         } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
             if (r == x.value) return x.size;
             if (r == x.addr)  return OpSize::I64;
+        } else if constexpr (std::is_same_v<T, AtomicCmpxchg>) {
+            if (r == x.addr) return OpSize::I64;
+            if (r == x.expected || r == x.new_value) return x.size;
+        } else if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) {
+            if (r == x.addr) return OpSize::I64;
+            if (r == x.expected_low || r == x.expected_high ||
+                r == x.new_low || r == x.new_high) {
+                return OpSize::I64;
+            }
         } else if constexpr (std::is_same_v<T, X87Store>) {
             if (r == x.value) return OpSize::I64;
         } else if constexpr (std::is_same_v<T, X87Push>) {
@@ -294,11 +322,17 @@ ValidationResult validate(const std::vector<Stmt>& stmts) {
 
         // Rule 3/4: result presence must match op category.
         const bool pure = op_is_pure(s.op);
+        const bool atomic_cmpxchg = std::holds_alternative<AtomicCmpxchg>(s.op);
+        const bool atomic_pair = std::holds_alternative<AtomicCmpxchgPair>(s.op);
         if (pure && !s.result) {
             return err(ValidationCode::PureLacksResult, i, 0,
                        "pure op has no result ref");
         }
-        if (!pure && s.result) {
+        if ((atomic_cmpxchg || atomic_pair) && !s.result) {
+            return err(ValidationCode::PureLacksResult, i, 0,
+                       "atomic cmpxchg op has no result ref");
+        }
+        if (!pure && s.result && !atomic_cmpxchg && !atomic_pair) {
             return err(ValidationCode::ImpureHasResult, i, *s.result,
                        "side-effecting op has a result ref");
         }
@@ -355,6 +389,13 @@ ValidationResult validate(const std::vector<Stmt>& stmts) {
             if (auto sz = result_size_static(s.op)) {
                 ref_size[*s.result] = *sz;
             }
+        }
+        if (const auto* cas = std::get_if<AtomicCmpxchgPair>(&s.op)) {
+            if (!defs.insert(cas->old_high).second) {
+                return err(ValidationCode::DuplicateResult, i, cas->old_high,
+                           "atomic pair old_high ref already defined by an earlier stmt");
+            }
+            ref_size[cas->old_high] = OpSize::I64;
         }
     }
     return {true, std::nullopt};

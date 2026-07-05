@@ -4,9 +4,10 @@
 //
 // Flag writers in our IR are `CmpFlags`, `AluFlags`, `Compare`, and
 // `WriteFlagsCountZero`.
-// Flag READERS are `CondJumpRel` (branches on NZCV) and `Select`
+// Flag READERS are `CondJumpRel` (branches on NZCV), `Select`
 // (lowers to csel, which reads the NZCV set by the most recent
-// flag writer — the CMOV / BZHI / CMPXCHG / BSF decode pattern).
+// flag writer — the CMOV / BZHI / CMPXCHG / BSF decode pattern),
+// and `StoreRflagsFromNzcv` (publishes NZCV into persistent RFLAGS).
 // The pass walks forward, tracking the most-recent flag writer; on
 // each flag reader it pins the writer as needed; on a fresh flag
 // writer it drops the previous one if no reader pinned it.
@@ -59,7 +60,8 @@ flag_write_elimination(const std::vector<ir::Stmt>& stmts) {
             pending_writer      = i;
             pending_is_droppable = false;
         } else if (std::holds_alternative<ir::CondJumpRel>(st.op)
-                   || std::holds_alternative<ir::Select>(st.op)) {
+                   || std::holds_alternative<ir::Select>(st.op)
+                   || std::holds_alternative<ir::StoreRflagsFromNzcv>(st.op)) {
             // Flag reader: pin the most recent writer. Select lowers
             // to csel and consumes NZCV exactly like a conditional
             // branch — dropping its CmpFlags left csel reading stale

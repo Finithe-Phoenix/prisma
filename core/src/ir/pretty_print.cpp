@@ -67,8 +67,26 @@ constexpr std::string_view cc_name(CondCode cc) noexcept {
     return "?";
 }
 
+constexpr std::string_view rflags_carry_name(RflagsCarryMode mode) noexcept {
+    switch (mode) {
+        case RflagsCarryMode::ArmCarry: return "armcarry";
+        case RflagsCarryMode::InvertArmCarry: return "invertarmcarry";
+        case RflagsCarryMode::Clear: return "clear";
+        case RflagsCarryMode::Preserve: return "preserve";
+    }
+    return "?";
+}
+
 void print_ref(std::ostream& os, Ref r) {
     if (r == kInvalidRef) { os << "%?"; } else { os << "%" << r; }
+}
+
+void print_optional_ref(std::ostream& os, std::optional<Ref> r) {
+    if (r.has_value()) {
+        print_ref(os, *r);
+    } else {
+        os << "-";
+    }
 }
 
 }  // namespace
@@ -95,9 +113,43 @@ std::string pretty_print(const Op& op) {
                 case SegmentReg::Gs: s = "gs"; break;
             }
             os << "segbase " << s;
+        } else if constexpr (std::is_same_v<T, LoadCarry>) {
+            os << "loadcarry";
+        } else if constexpr (std::is_same_v<T, StoreCarry>) {
+            os << "storecarry ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, LoadRflags>) {
+            os << "loadrflags";
+        } else if constexpr (std::is_same_v<T, StoreRflags>) {
+            os << "storerflags ";
+            print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, StoreRflagsFromNzcv>) {
+            os << "storerflags.nzcv " << rflags_carry_name(x.carry)
+               << ", pf=";
+            print_optional_ref(os, x.pf);
+            os << ", af=";
+            print_optional_ref(os, x.af);
+        } else if constexpr (std::is_same_v<T, StoreRflagsFromBits>) {
+            os << "storerflags.bits pf=";
+            print_optional_ref(os, x.pf);
+            os << ", af=";
+            print_optional_ref(os, x.af);
+            os << ", zf=";
+            print_ref(os, x.zf);
+            os << ", sf=";
+            print_ref(os, x.sf);
+            os << ", of=";
+            print_ref(os, x.of);
         } else if constexpr (std::is_same_v<T, BinOp>) {
             os << binop_name(x.op) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, WideDiv>) {
+            os << (x.is_signed ? "s" : "u") << "widediv."
+               << (x.result == WideDivResult::Quotient ? "quot" : "rem")
+               << ".i64 ";
+            print_ref(os, x.high); os << ", ";
+            print_ref(os, x.low); os << ", ";
+            print_ref(os, x.divisor);
         } else if constexpr (std::is_same_v<T, Compare>) {
             os << "cmp." << cc_name(x.cc) << "." << size_suffix(x.size) << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
@@ -115,6 +167,19 @@ std::string pretty_print(const Op& op) {
         } else if constexpr (std::is_same_v<T, StoreMemTSO>) {
             os << "store.tso." << size_suffix(x.size) << " ["; print_ref(os, x.addr);
             os << "], "; print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, AtomicCmpxchg>) {
+            os << "atomic.cmpxchg." << size_suffix(x.size) << " [";
+            print_ref(os, x.addr); os << "], expected=";
+            print_ref(os, x.expected); os << ", new=";
+            print_ref(os, x.new_value);
+        } else if constexpr (std::is_same_v<T, AtomicCmpxchgPair>) {
+            os << "atomic.cmpxchg.pair.i64 [";
+            print_ref(os, x.addr); os << "], expected=(";
+            print_ref(os, x.expected_low); os << ", ";
+            print_ref(os, x.expected_high); os << "), new=(";
+            print_ref(os, x.new_low); os << ", ";
+            print_ref(os, x.new_high); os << "), old_high=";
+            print_ref(os, x.old_high);
         } else if constexpr (std::is_same_v<T, Jump>) {
             os << "jmp bb" << x.target_block;
         } else if constexpr (std::is_same_v<T, JumpReg>) {
@@ -162,6 +227,16 @@ std::string pretty_print(const Op& op) {
                 case TrapKind::Sigfpe:  k = "sigfpe";  break;
             }
             os << "trap " << k;
+        } else if constexpr (std::is_same_v<T, TrapIf>) {
+            const char* k = "?";
+            switch (x.kind) {
+                case TrapKind::Sigtrap: k = "sigtrap"; break;
+                case TrapKind::Sigill:  k = "sigill";  break;
+                case TrapKind::Sigfpe:  k = "sigfpe";  break;
+            }
+            os << "trapif ";
+            print_ref(os, x.condition);
+            os << ", " << k;
         } else if constexpr (std::is_same_v<T, Extend>) {
             os << (x.is_signed ? "sext." : "zext.")
                << size_suffix(x.from_size) << "->" << size_suffix(x.to_size) << " ";
@@ -226,6 +301,24 @@ std::string pretty_print(const Op& op) {
             os << "storexmm xmm" << std::dec
                << static_cast<unsigned>(x.xmm_index) << ", ";
             print_ref(os, x.value);
+        } else if constexpr (std::is_same_v<T, PcmpStrIndex>) {
+            os << "pcmpstri ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            if (x.lhs_len) { os << ", lhs_len="; print_ref(os, *x.lhs_len); }
+            if (x.rhs_len) { os << ", rhs_len="; print_ref(os, *x.rhs_len); }
+            os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
+        } else if constexpr (std::is_same_v<T, PcmpStrMask>) {
+            os << "pcmpstrm ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            if (x.lhs_len) { os << ", lhs_len="; print_ref(os, *x.lhs_len); }
+            if (x.rhs_len) { os << ", rhs_len="; print_ref(os, *x.rhs_len); }
+            os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
+        } else if constexpr (std::is_same_v<T, PcmpStrFlags>) {
+            os << "pcmpstrf ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+            if (x.lhs_len) { os << ", lhs_len="; print_ref(os, *x.lhs_len); }
+            if (x.rhs_len) { os << ", rhs_len="; print_ref(os, *x.rhs_len); }
+            os << ", imm=0x" << std::hex << static_cast<unsigned>(x.imm8) << std::dec;
         } else if constexpr (std::is_same_v<T, LoadVecRegHi>) {
             os << "loadymmhi ymm" << std::dec
                << static_cast<unsigned>(x.ymm_index);
@@ -304,6 +397,18 @@ std::string pretty_print(const Op& op) {
             }
             os << op_n << "." << lane_n << " ";
             print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecClMul>) {
+            os << "vpclmulqdq.";
+            os << (x.lhs_high ? "hi" : "lo") << ".";
+            os << (x.rhs_high ? "hi" : "lo") << " ";
+            print_ref(os, x.lhs); os << ", "; print_ref(os, x.rhs);
+        } else if constexpr (std::is_same_v<T, VecF16Cvt>) {
+            if (x.kind == VecF16CvtKind::PhToPs) {
+                os << "vcvtph2ps ";
+            } else {
+                os << "vcvtps2ph.rc" << static_cast<unsigned>(x.rounding) << " ";
+            }
+            print_ref(os, x.src);
         } else if constexpr (std::is_same_v<T, VecFpBinOp>) {
             const char* op_n = "?";
             switch (x.op) {

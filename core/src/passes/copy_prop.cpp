@@ -36,6 +36,11 @@ ir::Ref resolve(ir::Ref r,
 // same shape as before; side-effecting ops may also carry refs.
 ir::Op rewrite(ir::Op op,
                const std::unordered_map<ir::Ref, ir::Ref>& alias) {
+    auto rewrite_optional = [&](std::optional<ir::Ref>& ref) {
+        if (ref.has_value()) {
+            ref = resolve(*ref, alias);
+        }
+    };
     return std::visit([&](auto x) -> ir::Op {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, ir::StoreReg>) {
@@ -43,12 +48,20 @@ ir::Op rewrite(ir::Op op,
         } else if constexpr (std::is_same_v<T, ir::BinOp>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::WideDiv>) {
+            x.high = resolve(x.high, alias);
+            x.low = resolve(x.low, alias);
+            x.divisor = resolve(x.divisor, alias);
         } else if constexpr (std::is_same_v<T, ir::Compare>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);
         } else if constexpr (std::is_same_v<T, ir::Select>) {
             x.true_value  = resolve(x.true_value,  alias);
             x.false_value = resolve(x.false_value, alias);
+        } else if constexpr (std::is_same_v<T, ir::Extend>) {
+            x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::Truncate>) {
+            x.value = resolve(x.value, alias);
         } else if constexpr (std::is_same_v<T, ir::LoadMem>) {
             x.addr = resolve(x.addr, alias);
         } else if constexpr (std::is_same_v<T, ir::StoreMem>) {
@@ -59,6 +72,29 @@ ir::Op rewrite(ir::Op op,
         } else if constexpr (std::is_same_v<T, ir::StoreMemTSO>) {
             x.addr  = resolve(x.addr,  alias);
             x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::AtomicCmpxchg>) {
+            x.addr = resolve(x.addr, alias);
+            x.expected = resolve(x.expected, alias);
+            x.new_value = resolve(x.new_value, alias);
+        } else if constexpr (std::is_same_v<T, ir::AtomicCmpxchgPair>) {
+            x.addr = resolve(x.addr, alias);
+            x.expected_low = resolve(x.expected_low, alias);
+            x.expected_high = resolve(x.expected_high, alias);
+            x.new_low = resolve(x.new_low, alias);
+            x.new_high = resolve(x.new_high, alias);
+        } else if constexpr (std::is_same_v<T, ir::StoreCarry>) {
+            x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::StoreRflags>) {
+            x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::StoreRflagsFromNzcv>) {
+            rewrite_optional(x.pf);
+            rewrite_optional(x.af);
+        } else if constexpr (std::is_same_v<T, ir::StoreRflagsFromBits>) {
+            rewrite_optional(x.pf);
+            rewrite_optional(x.af);
+            x.zf = resolve(x.zf, alias);
+            x.sf = resolve(x.sf, alias);
+            x.of = resolve(x.of, alias);
         } else if constexpr (std::is_same_v<T, ir::CmpFlags>) {
             x.lhs = resolve(x.lhs, alias);
             x.rhs = resolve(x.rhs, alias);
@@ -75,12 +111,37 @@ ir::Op rewrite(ir::Op op,
             x.value = resolve(x.value, alias);
         } else if constexpr (std::is_same_v<T, ir::GprFromXmm>) {
             x.value = resolve(x.value, alias);
+        } else if constexpr (std::is_same_v<T, ir::VecBinOp>) {
+            x.lhs = resolve(x.lhs, alias);
+            x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::VecClMul>) {
+            x.lhs = resolve(x.lhs, alias);
+            x.rhs = resolve(x.rhs, alias);
+        } else if constexpr (std::is_same_v<T, ir::VecF16Cvt>) {
+            x.src = resolve(x.src, alias);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrIndex>) {
+            x.lhs = resolve(x.lhs, alias);
+            x.rhs = resolve(x.rhs, alias);
+            rewrite_optional(x.lhs_len);
+            rewrite_optional(x.rhs_len);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrMask>) {
+            x.lhs = resolve(x.lhs, alias);
+            x.rhs = resolve(x.rhs, alias);
+            rewrite_optional(x.lhs_len);
+            rewrite_optional(x.rhs_len);
+        } else if constexpr (std::is_same_v<T, ir::PcmpStrFlags>) {
+            x.lhs = resolve(x.lhs, alias);
+            x.rhs = resolve(x.rhs, alias);
+            rewrite_optional(x.lhs_len);
+            rewrite_optional(x.rhs_len);
         } else if constexpr (std::is_same_v<T, ir::CondJump>) {
             x.cond = resolve(x.cond, alias);
         } else if constexpr (std::is_same_v<T, ir::JumpReg>) {
             x.target = resolve(x.target, alias);
         } else if constexpr (std::is_same_v<T, ir::CallReg>) {
             x.target = resolve(x.target, alias);
+        } else if constexpr (std::is_same_v<T, ir::TrapIf>) {
+            x.condition = resolve(x.condition, alias);
         } else if constexpr (std::is_same_v<T, ir::X87Store>) {
             x.value = resolve(x.value, alias);
         } else if constexpr (std::is_same_v<T, ir::X87Push>) {

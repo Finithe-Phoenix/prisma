@@ -56,6 +56,12 @@ bool is_flushing_op(const ir::Op& op) noexcept {
         return std::is_same_v<T, ir::StoreReg>
             || std::is_same_v<T, ir::StoreMem>
             || std::is_same_v<T, ir::StoreMemTSO>
+            || std::is_same_v<T, ir::AtomicCmpxchg>
+            || std::is_same_v<T, ir::AtomicCmpxchgPair>
+            || std::is_same_v<T, ir::StoreCarry>
+            || std::is_same_v<T, ir::StoreRflags>
+            || std::is_same_v<T, ir::StoreRflagsFromNzcv>
+            || std::is_same_v<T, ir::StoreRflagsFromBits>
             || std::is_same_v<T, ir::CmpFlags>
             || std::is_same_v<T, ir::AluFlags>
             || std::is_same_v<T, ir::WriteFlagsCountZero>
