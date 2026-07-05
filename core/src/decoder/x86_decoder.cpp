@@ -3016,20 +3016,6 @@ std::pair<ir::Ref, ir::Ref> emit_rcl_rcr_value_count(
     return {final_dst, final_cf};
 }
 
-void emit_rcl_rcr_reg_count(std::vector<ir::Stmt>& stmts,
-                            ir::Ref& next_ref,
-                            bool is_rcr,
-                            ir::Gpr dst_reg,
-                            ir::Ref raw_count,
-                            ir::OpSize size) {
-    const ir::Ref dst = next_ref++;
-    stmts.push_back({dst, ir::LoadReg{dst_reg, size}});
-    const auto [final_dst, final_cf] =
-        emit_rcl_rcr_value_count(stmts, next_ref, is_rcr, dst, raw_count, size);
-    stmts.push_back({std::nullopt, ir::StoreReg{dst_reg, final_dst, size}});
-    stmts.push_back({std::nullopt, ir::StoreCarry{final_cf}});
-}
-
 bool is_non_carry_shift_rotate(ir::BinOpKind op) noexcept {
     return op == ir::BinOpKind::Rol || op == ir::BinOpKind::Ror ||
            op == ir::BinOpKind::Shl || op == ir::BinOpKind::Shr ||
