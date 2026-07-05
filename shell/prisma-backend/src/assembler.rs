@@ -91,6 +91,11 @@ impl Arm64Assembler {
         self.emit_word(mrs_cntvct(dst));
     }
 
+    /// Emits `MRS Xt, NZCV`.
+    pub fn mrs_nzcv(&mut self, dst: u8) {
+        self.emit_word(mrs_nzcv(dst));
+    }
+
     /// Emits `MSR NZCV, Xt`.
     pub fn msr_nzcv(&mut self, src: u8) {
         self.emit_word(msr_nzcv(src));
@@ -99,6 +104,11 @@ impl Arm64Assembler {
     /// Emits the ARM64 barrier corresponding to an x86 fence.
     pub fn fence(&mut self, kind: FenceKind) {
         self.emit_word(fence(kind));
+    }
+
+    /// Emits `CLREX`.
+    pub fn clrex(&mut self) {
+        self.emit_word(clrex());
     }
 
     /// Emits `B imm26`.
@@ -407,6 +417,31 @@ impl Arm64Assembler {
         self.emit_word(ldrb_unsigned(dst, base, imm_bytes));
     }
 
+    /// Emits `LDAXR Xt, [Xn]`.
+    pub fn ldaxr_x(&mut self, dst: u8, base: u8) {
+        self.emit_word(ldaxr_x(dst, base));
+    }
+
+    /// Emits `LDAXP Xt1, Xt2, [Xn]`.
+    pub fn ldaxp_x(&mut self, dst_low: u8, dst_high: u8, base: u8) {
+        self.emit_word(ldaxp_x(dst_low, dst_high, base));
+    }
+
+    /// Emits `LDAXR Wt, [Xn]`.
+    pub fn ldaxr_w(&mut self, dst: u8, base: u8) {
+        self.emit_word(ldaxr_w(dst, base));
+    }
+
+    /// Emits `LDAXRH Wt, [Xn]`.
+    pub fn ldaxrh(&mut self, dst: u8, base: u8) {
+        self.emit_word(ldaxrh(dst, base));
+    }
+
+    /// Emits `LDAXRB Wt, [Xn]`.
+    pub fn ldaxrb(&mut self, dst: u8, base: u8) {
+        self.emit_word(ldaxrb(dst, base));
+    }
+
     /// Emits `STR Xt, [Xn, #imm]`.
     pub fn str_x_unsigned(&mut self, src: u8, base: u8, imm_bytes: u16) {
         self.emit_word(str_x_unsigned(src, base, imm_bytes));
@@ -425,6 +460,31 @@ impl Arm64Assembler {
     /// Emits `STRB Wt, [Xn, #imm]`.
     pub fn strb_unsigned(&mut self, src: u8, base: u8, imm_bytes: u16) {
         self.emit_word(strb_unsigned(src, base, imm_bytes));
+    }
+
+    /// Emits `STLXR Ws, Xt, [Xn]`.
+    pub fn stlxr_x(&mut self, status: u8, src: u8, base: u8) {
+        self.emit_word(stlxr_x(status, src, base));
+    }
+
+    /// Emits `STLXP Ws, Xt1, Xt2, [Xn]`.
+    pub fn stlxp_x(&mut self, status: u8, src_low: u8, src_high: u8, base: u8) {
+        self.emit_word(stlxp_x(status, src_low, src_high, base));
+    }
+
+    /// Emits `STLXR Ws, Wt, [Xn]`.
+    pub fn stlxr_w(&mut self, status: u8, src: u8, base: u8) {
+        self.emit_word(stlxr_w(status, src, base));
+    }
+
+    /// Emits `STLXRH Ws, Wt, [Xn]`.
+    pub fn stlxrh(&mut self, status: u8, src: u8, base: u8) {
+        self.emit_word(stlxrh(status, src, base));
+    }
+
+    /// Emits `STLXRB Ws, Wt, [Xn]`.
+    pub fn stlxrb(&mut self, status: u8, src: u8, base: u8) {
+        self.emit_word(stlxrb(status, src, base));
     }
 
     /// Emits `STP Xt1, Xt2, [SP, #imm]!`.
@@ -495,6 +555,17 @@ pub fn mrs_cntvct(dst: u8) -> u32 {
     0xD53B_E040 | u32::from(dst)
 }
 
+/// Encodes `MRS Xt, NZCV`.
+///
+/// # Panics
+///
+/// Panics if `dst` is outside the `AArch64` register range `0..32`.
+#[must_use]
+pub fn mrs_nzcv(dst: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    0xD53B_4200 | u32::from(dst)
+}
+
 /// Encodes `MSR NZCV, Xt`.
 ///
 /// # Panics
@@ -514,6 +585,12 @@ pub const fn fence(kind: FenceKind) -> u32 {
         FenceKind::Lfence => 0xD503_39BF,
         FenceKind::Sfence => 0xD503_3ABF,
     }
+}
+
+/// Encodes `CLREX`.
+#[must_use]
+pub const fn clrex() -> u32 {
+    0xD503_3F5F
 }
 
 /// Encodes `RET`.
@@ -1129,6 +1206,56 @@ pub fn ldrb_unsigned(dst: u8, base_reg: u8, imm_bytes: u16) -> u32 {
     encode_unsigned_offset(0x3940_0000, dst, base_reg, imm_bytes, 1)
 }
 
+/// Encodes `LDAXR Xt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn ldaxr_x(dst: u8, base_reg: u8) -> u32 {
+    encode_exclusive_load(0xC85F_FC00, dst, base_reg)
+}
+
+/// Encodes `LDAXP Xt1, Xt2, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn ldaxp_x(dst_low: u8, dst_high: u8, base_reg: u8) -> u32 {
+    encode_exclusive_pair_load(0xC87F_8000, dst_low, dst_high, base_reg)
+}
+
+/// Encodes `LDAXR Wt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn ldaxr_w(dst: u8, base_reg: u8) -> u32 {
+    encode_exclusive_load(0x885F_FC00, dst, base_reg)
+}
+
+/// Encodes `LDAXRH Wt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn ldaxrh(dst: u8, base_reg: u8) -> u32 {
+    encode_exclusive_load(0x485F_FC00, dst, base_reg)
+}
+
+/// Encodes `LDAXRB Wt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn ldaxrb(dst: u8, base_reg: u8) -> u32 {
+    encode_exclusive_load(0x085F_FC00, dst, base_reg)
+}
+
 /// Encodes `STR Xt, [Xn, #imm]`.
 ///
 /// # Panics
@@ -1171,6 +1298,56 @@ pub fn strh_unsigned(src: u8, base_reg: u8, imm_bytes: u16) -> u32 {
 #[must_use]
 pub fn strb_unsigned(src: u8, base_reg: u8, imm_bytes: u16) -> u32 {
     encode_unsigned_offset(0x3900_0000, src, base_reg, imm_bytes, 1)
+}
+
+/// Encodes `STLXR Ws, Xt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn stlxr_x(status: u8, src: u8, base_reg: u8) -> u32 {
+    encode_exclusive_store(0xC800_FC00, status, src, base_reg)
+}
+
+/// Encodes `STLXP Ws, Xt1, Xt2, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn stlxp_x(status: u8, src_low: u8, src_high: u8, base_reg: u8) -> u32 {
+    encode_exclusive_pair_store(0xC820_8000, status, src_low, src_high, base_reg)
+}
+
+/// Encodes `STLXR Ws, Wt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn stlxr_w(status: u8, src: u8, base_reg: u8) -> u32 {
+    encode_exclusive_store(0x8800_FC00, status, src, base_reg)
+}
+
+/// Encodes `STLXRH Ws, Wt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn stlxrh(status: u8, src: u8, base_reg: u8) -> u32 {
+    encode_exclusive_store(0x4800_FC00, status, src, base_reg)
+}
+
+/// Encodes `STLXRB Ws, Wt, [Xn]`.
+///
+/// # Panics
+///
+/// Panics if a register is outside `0..32`.
+#[must_use]
+pub fn stlxrb(status: u8, src: u8, base_reg: u8) -> u32 {
+    encode_exclusive_store(0x0800_FC00, status, src, base_reg)
 }
 
 /// Encodes `STP Xt1, Xt2, [SP, #imm]!`.
@@ -1333,6 +1510,37 @@ fn encode_unsigned_offset(base: u32, rt: u8, base_reg: u8, imm_bytes: u16, scale
     base | (u32::from(scaled) << 10) | (u32::from(base_reg) << 5) | u32::from(rt)
 }
 
+fn encode_exclusive_pair_load(base: u32, rt: u8, rt2: u8, base_reg: u8) -> u32 {
+    assert!(rt < 32, "first transfer register out of range");
+    assert!(rt2 < 32, "second transfer register out of range");
+    assert!(base_reg < 32, "base register out of range");
+    base | (u32::from(rt2) << 10) | (u32::from(base_reg) << 5) | u32::from(rt)
+}
+
+fn encode_exclusive_pair_store(base: u32, status: u8, rt: u8, rt2: u8, base_reg: u8) -> u32 {
+    assert!(status < 32, "status register out of range");
+    assert!(rt < 32, "first transfer register out of range");
+    assert!(rt2 < 32, "second transfer register out of range");
+    assert!(base_reg < 32, "base register out of range");
+    base | (u32::from(status) << 16)
+        | (u32::from(rt2) << 10)
+        | (u32::from(base_reg) << 5)
+        | u32::from(rt)
+}
+
+fn encode_exclusive_load(base: u32, rt: u8, base_reg: u8) -> u32 {
+    assert!(rt < 32, "target register out of range");
+    assert!(base_reg < 32, "base register out of range");
+    base | (u32::from(base_reg) << 5) | u32::from(rt)
+}
+
+fn encode_exclusive_store(base: u32, status: u8, rt: u8, base_reg: u8) -> u32 {
+    assert!(status < 32, "status register out of range");
+    assert!(rt < 32, "source register out of range");
+    assert!(base_reg < 32, "base register out of range");
+    base | (u32::from(status) << 16) | (u32::from(base_reg) << 5) | u32::from(rt)
+}
+
 fn encode_pair_sp_indexed(base: u32, rt: u8, rt2: u8, imm_bytes: i16) -> u32 {
     assert!(rt < 32, "first register out of range");
     assert!(rt2 < 32, "second register out of range");
@@ -1383,11 +1591,14 @@ mod tests {
     fn encodes_system_counter_and_fences() {
         assert_eq!(mrs_cntvct(0), 0xD53B_E040);
         assert_eq!(mrs_cntvct(9), 0xD53B_E049);
+        assert_eq!(mrs_nzcv(0), 0xD53B_4200);
+        assert_eq!(mrs_nzcv(9), 0xD53B_4209);
         assert_eq!(msr_nzcv(0), 0xD51B_4200);
         assert_eq!(msr_nzcv(9), 0xD51B_4209);
         assert_eq!(fence(FenceKind::Mfence), 0xD503_3BBF);
         assert_eq!(fence(FenceKind::Lfence), 0xD503_39BF);
         assert_eq!(fence(FenceKind::Sfence), 0xD503_3ABF);
+        assert_eq!(clrex(), 0xD503_3F5F);
     }
 
     #[test]
@@ -1584,6 +1795,21 @@ mod tests {
         assert_eq!(str_x_unsigned(10, 9, 0), 0xF900_012A);
         assert_eq!(ldr_x_unsigned(11, 9, 0), 0xF940_012B);
         assert_eq!(ldr_x_unsigned(11, 9, 16), 0xF940_092B);
+    }
+
+    #[test]
+    fn encodes_exclusive_memory_ops() {
+        assert_eq!(ldaxr_x(0, 0), 0xC85F_FC00);
+        assert_eq!(ldaxr_w(1, 2), 0x885F_FC41);
+        assert_eq!(ldaxrh(3, 4), 0x485F_FC83);
+        assert_eq!(ldaxrb(5, 6), 0x085F_FCC5);
+        assert_eq!(ldaxp_x(0, 1, 2), 0xC87F_8440);
+
+        assert_eq!(stlxr_x(0, 1, 2), 0xC800_FC41);
+        assert_eq!(stlxr_w(3, 4, 5), 0x8803_FCA4);
+        assert_eq!(stlxrh(6, 7, 8), 0x4806_FD07);
+        assert_eq!(stlxrb(9, 10, 11), 0x0809_FD6A);
+        assert_eq!(stlxp_x(0, 1, 2, 3), 0xC820_8861);
     }
 
     #[test]
