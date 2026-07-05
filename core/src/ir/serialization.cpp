@@ -323,7 +323,7 @@ private:
                 u64(x.return_guest_pc);
             } else if constexpr (std::is_same_v<T, RetAdjusted>) {
                 enum8(OpTag::RetAdjusted);
-                u32(x.pop_bytes);
+                u64(x.pop_bytes);
             } else if constexpr (std::is_same_v<T, Cpuid>) {
                 enum8(OpTag::Cpuid);
             } else if constexpr (std::is_same_v<T, Syscall>) {
@@ -943,8 +943,8 @@ read_optional_ref(Reader& reader) {
             return Op{CallReg{target, return_guest_pc}};
         }
         case OpTag::RetAdjusted: {
-            std::uint32_t pop_bytes = 0;
-            if (!reader.u32(pop_bytes)) return reader.error();
+            std::uint64_t pop_bytes = 0;
+            if (!reader.u64(pop_bytes)) return reader.error();
             return Op{RetAdjusted{pop_bytes}};
         }
         case OpTag::Cpuid:
