@@ -37,6 +37,7 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -105,6 +106,22 @@ enum X64Sysno : std::uint64_t {
     kX64EpollCreate1 = 291,
     kX64EpollCtl     = 233,
     kX64EpollWait    = 232,
+    kX64Socket       = 41,
+    kX64Connect      = 42,
+    kX64Accept       = 43,
+    kX64Sendto       = 44,
+    kX64Recvfrom     = 45,
+    kX64Sendmsg      = 46,
+    kX64Recvmsg      = 47,
+    kX64Shutdown     = 48,
+    kX64Bind         = 49,
+    kX64Listen       = 50,
+    kX64Getsockname  = 51,
+    kX64Getpeername  = 52,
+    kX64Socketpair   = 53,
+    kX64Setsockopt   = 54,
+    kX64Getsockopt   = 55,
+    kX64Accept4      = 288,
 };
 
 }  // namespace prisma::runtime
@@ -175,6 +192,22 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64EpollCreate1: return "epoll_create1";
         case kX64EpollCtl:    return "epoll_ctl";
         case kX64EpollWait:   return "epoll_wait";
+        case kX64Socket:      return "socket";
+        case kX64Connect:     return "connect";
+        case kX64Accept:      return "accept";
+        case kX64Sendto:      return "sendto";
+        case kX64Recvfrom:    return "recvfrom";
+        case kX64Sendmsg:     return "sendmsg";
+        case kX64Recvmsg:     return "recvmsg";
+        case kX64Shutdown:    return "shutdown";
+        case kX64Bind:        return "bind";
+        case kX64Listen:      return "listen";
+        case kX64Getsockname: return "getsockname";
+        case kX64Getpeername: return "getpeername";
+        case kX64Socketpair:  return "socketpair";
+        case kX64Setsockopt:  return "setsockopt";
+        case kX64Getsockopt:  return "getsockopt";
+        case kX64Accept4:     return "accept4";
         default:              return "???";
     }
 }
@@ -686,6 +719,157 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 static_cast<int>(a3),
                 static_cast<int>(a4)));
             if (result < 0) result = -errno;
+            break;
+        }
+
+        // -- F2-SY-015/016: socket families -----------------------------------
+        case kX64Socket: {
+            result = ::socket(static_cast<int>(a1), static_cast<int>(a2),
+                              static_cast<int>(a3));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Connect: {
+            result = ::connect(
+                static_cast<int>(a1),
+                reinterpret_cast<const struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<::socklen_t>(a3));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Accept: {
+            result = ::accept(
+                static_cast<int>(a1),
+                reinterpret_cast<struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                reinterpret_cast<::socklen_t*>(
+                    static_cast<std::uintptr_t>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Sendto: {
+            result = static_cast<std::int64_t>(::sendto(
+                static_cast<int>(a1),
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a2)),
+                static_cast<std::size_t>(a3),
+                static_cast<int>(a4),
+                reinterpret_cast<const struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a5)),
+                static_cast<::socklen_t>(a6)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Recvfrom: {
+            result = static_cast<std::int64_t>(::recvfrom(
+                static_cast<int>(a1),
+                reinterpret_cast<void*>(static_cast<std::uintptr_t>(a2)),
+                static_cast<std::size_t>(a3),
+                static_cast<int>(a4),
+                reinterpret_cast<struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a5)),
+                reinterpret_cast<::socklen_t*>(
+                    static_cast<std::uintptr_t>(a6))));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Sendmsg: {
+            result = static_cast<std::int64_t>(::sendmsg(
+                static_cast<int>(a1),
+                reinterpret_cast<const struct ::msghdr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Recvmsg: {
+            result = static_cast<std::int64_t>(::recvmsg(
+                static_cast<int>(a1),
+                reinterpret_cast<struct ::msghdr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Shutdown: {
+            result = ::shutdown(static_cast<int>(a1), static_cast<int>(a2));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Bind: {
+            result = ::bind(
+                static_cast<int>(a1),
+                reinterpret_cast<const struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<::socklen_t>(a3));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Listen: {
+            result = ::listen(static_cast<int>(a1), static_cast<int>(a2));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Getsockname: {
+            result = ::getsockname(
+                static_cast<int>(a1),
+                reinterpret_cast<struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                reinterpret_cast<::socklen_t*>(
+                    static_cast<std::uintptr_t>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Getpeername: {
+            result = ::getpeername(
+                static_cast<int>(a1),
+                reinterpret_cast<struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                reinterpret_cast<::socklen_t*>(
+                    static_cast<std::uintptr_t>(a3)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Socketpair: {
+            result = ::socketpair(static_cast<int>(a1), static_cast<int>(a2),
+                                  static_cast<int>(a3),
+                                  reinterpret_cast<int*>(
+                                      static_cast<std::uintptr_t>(a4)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Setsockopt: {
+            result = ::setsockopt(
+                static_cast<int>(a1), static_cast<int>(a2),
+                static_cast<int>(a3),
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a4)),
+                static_cast<::socklen_t>(a5));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Getsockopt: {
+            result = ::getsockopt(
+                static_cast<int>(a1), static_cast<int>(a2),
+                static_cast<int>(a3),
+                reinterpret_cast<void*>(static_cast<std::uintptr_t>(a4)),
+                reinterpret_cast<::socklen_t*>(
+                    static_cast<std::uintptr_t>(a5)));
+            if (result < 0) result = -errno;
+            break;
+        }
+        case kX64Accept4: {
+#if defined(__APPLE__)
+            result = -ENOSYS; // macOS doesn't have accept4
+#else
+            result = ::accept4(
+                static_cast<int>(a1),
+                reinterpret_cast<struct ::sockaddr*>(
+                    static_cast<std::uintptr_t>(a2)),
+                reinterpret_cast<::socklen_t*>(
+                    static_cast<std::uintptr_t>(a3)),
+                static_cast<int>(a4));
+            if (result < 0) result = -errno;
+#endif
             break;
         }
 
