@@ -427,8 +427,8 @@ translator on a reference Linux ARM64 box.
 - [x] (abbe81c) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
 - [x] (9ba0dd9) F2-SY-013: Implement fcntl (subset).
 - [x] (9ba0dd9) F2-SY-014: Implement ioctl (passthrough with struct translation).
-- [~|gemini] F2-SY-015: Implement socket / bind / listen / accept / connect.
-- [~|gemini] F2-SY-016: Implement read / write socket families.
+- [x] (08e672d) F2-SY-015: Implement socket / bind / listen / accept / connect.
+- [x] (08e672d) F2-SY-016: Implement read / write socket families.
 - [ ] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
 - [ ] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
 - [x] (abbe81c,9ba0dd9) F2-SY-019: Implement getcwd / chdir / fchdir.
