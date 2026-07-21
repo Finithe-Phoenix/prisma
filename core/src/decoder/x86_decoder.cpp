@@ -8429,6 +8429,23 @@ std::variant<Decoded, DecodeError> decode_one(std::span<const Byte> bytes, ir::R
       return d;
     }
 
+    // F2-IR-009: MMX ops stub
+    // For MMX-only cases like MOVD mm, r/m32 (0F 6E) and MOVQ mm, mm/m64 (0F 6F)
+    // without 66/F2/F3 prefixes, we emit an InlineAsm fallback.
+    if (!has_operand_size_override && !has_lock && !has_f2 && !has_f3 &&
+        (subop == 0x6Eu || subop == 0x6Fu)) {
+      auto modrm = parse_modrm(bytes, cursor, rex, has_address_size_override);
+      if (std::holds_alternative<DecodeError>(modrm)) {
+        return std::get<DecodeError>(modrm);
+      }
+      Decoded d;
+      std::vector<std::uint8_t> raw(bytes.begin(),
+                                    bytes.begin() + static_cast<std::ptrdiff_t>(cursor));
+      d.stmts.push_back({std::nullopt, ir::InlineAsm{std::move(raw)}});
+      d.bytes_consumed = cursor;
+      return d;
+    }
+
     // F2-IR-008: MOVD / MOVQ between xmm and r/m32-or-r/m64.
     //   66 0F 6E /r — MOVD xmm, r/m32   (REX.W → MOVQ xmm, r/m64)
     //   66 0F 7E /r — MOVD r/m32, xmm   (REX.W → MOVQ r/m64, xmm)

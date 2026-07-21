@@ -79,6 +79,8 @@ constexpr int FUTEX_PRIVATE_FLAG = 128;
 
 thread_local std::uint64_t tls_clear_child_tid = 0;
 thread_local std::atomic<bool> tls_thread_exit_flag{false};
+thread_local std::uint64_t tls_robust_list_head = 0;
+thread_local std::size_t tls_robust_list_len = 0;
 
 void handle_thread_exit() {
     if (tls_clear_child_tid != 0) {
@@ -134,7 +136,10 @@ enum X64Sysno : std::uint64_t {
     kX64Getppid      = 110,
     kX64Getgid       = 104,
     kX64Getegid      = 108,
+    kX64SetRobustList = 273,
+    kX64GetRobustList = 274,
     kX64Exit         = 60,
+    kX64Execve       = 59,
     kX64ExitGroup    = 231,
     kX64Wait4        = 61,
     kX64Uname        = 63,
@@ -237,7 +242,10 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Getppid:     return "getppid";
         case kX64Getgid:      return "getgid";
         case kX64Getegid:     return "getegid";
+        case kX64SetRobustList: return "set_robust_list";
+        case kX64GetRobustList: return "get_robust_list";
         case kX64Exit:        return "exit";
+        case kX64Execve:      return "execve";
         case kX64ExitGroup:   return "exit_group";
         case kX64Wait4:       return "wait4";
         case kX64Uname:       return "uname";
@@ -396,6 +404,31 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
         case kX64ExitGroup: {
             g_process_exit.store(true, std::memory_order_relaxed);
             ::exit(static_cast<int>(a1));
+            break;
+        }
+
+        // -- F2-SY-011: execve ------------------------------------------------
+        case kX64Execve: {
+            const char* path = reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1));
+            int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                unsigned char header[20];
+                ssize_t bytes_read = ::read(fd, header, sizeof(header));
+                ::close(fd);
+                if (bytes_read >= 20 && header[0] == 0x7F && header[1] == 'E' && header[2] == 'L' && header[3] == 'F') {
+                    std::uint16_t e_machine = static_cast<std::uint16_t>(header[18]) | (static_cast<std::uint16_t>(header[19]) << 8);
+                    if (e_machine == 62) {
+                        std::fprintf(stderr, "execve: cross-ISA re-entry not yet implemented\n");
+                        result = -ENOSYS;
+                    } else {
+                        result = -ENOEXEC;
+                    }
+                } else {
+                    result = -ENOEXEC;
+                }
+            } else {
+                result = -errno;
+            }
             break;
         }
 
@@ -763,6 +796,29 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
+        // -- F2-SY-032: robust_futex -------------------------------------------
+        case kX64SetRobustList: {
+            tls_robust_list_head = a1;
+            tls_robust_list_len = static_cast<std::size_t>(a2);
+            result = 0;
+            break;
+        }
+        case kX64GetRobustList: {
+            const int pid = static_cast<int>(a1);
+            if (pid != 0) {
+                result = -EPERM;
+            } else {
+                if (a2 != 0) {
+                    *reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(a2)) = tls_robust_list_head;
+                }
+                if (a3 != 0) {
+                    *reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(a3)) = static_cast<std::uint64_t>(tls_robust_list_len);
+                }
+                result = 0;
+            }
+            break;
+        }
+
         // -- F2-SY-020: readlink ----------------------------------------------
         case kX64Readlink: {
             result = static_cast<std::int64_t>(::readlink(
@@ -792,11 +848,39 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
-        // -- F2-SY-014: ioctl (passthrough) -----------------------------------
+        // -- F2-SY-014 / F2-SY-036: ioctl (passthrough) ------------------------
         case kX64Ioctl: {
-            result = ::ioctl(static_cast<int>(a1),
-                             static_cast<unsigned long>(a2), a3);
-            if (result < 0) result = -errno;
+            const int fd = static_cast<int>(a1);
+            const unsigned long cmd = static_cast<unsigned long>(a2);
+            
+            if (cmd == 0x5401) { // TCGETS
+                if (!::isatty(fd)) {
+                    result = -ENOTTY;
+                } else {
+                    result = ::ioctl(fd, cmd, a3);
+                    if (result < 0) result = -errno;
+                }
+            } else if (cmd == 0x5413) { // TIOCGWINSZ
+                struct GuestWinsize {
+                    unsigned short ws_row;
+                    unsigned short ws_col;
+                    unsigned short ws_xpixel;
+                    unsigned short ws_ypixel;
+                };
+                if (a3 != 0) {
+                    auto* ws = reinterpret_cast<GuestWinsize*>(static_cast<std::uintptr_t>(a3));
+                    ws->ws_row = 24;
+                    ws->ws_col = 80;
+                    ws->ws_xpixel = 0;
+                    ws->ws_ypixel = 0;
+                    result = 0;
+                } else {
+                    result = -EFAULT;
+                }
+            } else {
+                result = ::ioctl(fd, cmd, a3);
+                if (result < 0) result = -errno;
+            }
             break;
         }
 

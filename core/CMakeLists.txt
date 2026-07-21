@@ -252,6 +252,7 @@ add_library(prisma_passes STATIC
     src/passes/tail_call.cpp
     src/passes/peephole.cpp
     src/passes/pass_manager.cpp
+    src/passes/inline_short_helpers.cpp
 )
 
 target_include_directories(prisma_passes
