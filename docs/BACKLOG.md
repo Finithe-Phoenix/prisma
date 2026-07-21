@@ -429,8 +429,8 @@ translator on a reference Linux ARM64 box.
 - [x] (9ba0dd9) F2-SY-014: Implement ioctl (passthrough with struct translation).
 - [x] (08e672d) F2-SY-015: Implement socket / bind / listen / accept / connect.
 - [x] (08e672d) F2-SY-016: Implement read / write socket families.
-- [ ] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
-- [ ] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
+- [~|gemini] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
+- [~|gemini] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
 - [x] (abbe81c,9ba0dd9) F2-SY-019: Implement getcwd / chdir / fchdir.
 - [x] (9ba0dd9) F2-SY-020: Implement unlink / rename / mkdir / rmdir.
 - [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
