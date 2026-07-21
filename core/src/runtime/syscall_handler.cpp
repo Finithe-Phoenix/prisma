@@ -17,6 +17,15 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <array>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <unordered_map>
+#include <vector>
+
+#include "prisma/dispatcher.hpp"
 #include <cstdio>
 #include <cstdlib>
 
@@ -49,6 +58,41 @@
 #include <unistd.h>
 
 namespace prisma::runtime {
+
+namespace {
+
+// -- Threading Support --------------------------------------------------------
+
+constexpr std::uint64_t CLONE_VM = 0x00000100;
+constexpr std::uint64_t CLONE_FS = 0x00000200;
+constexpr std::uint64_t CLONE_FILES = 0x00000400;
+constexpr std::uint64_t CLONE_SIGHAND = 0x00000800;
+constexpr std::uint64_t CLONE_PARENT_SETTID = 0x00100000;
+constexpr std::uint64_t CLONE_CHILD_CLEARTID = 0x00200000;
+constexpr std::uint64_t CLONE_THREAD = 0x00010000;
+constexpr std::uint64_t CLONE_SETTLS = 0x00080000;
+constexpr std::uint64_t CLONE_CHILD_SETTID = 0x01000000;
+
+constexpr int FUTEX_WAIT = 0;
+constexpr int FUTEX_WAKE = 1;
+constexpr int FUTEX_PRIVATE_FLAG = 128;
+
+thread_local std::uint64_t tls_clear_child_tid = 0;
+thread_local std::atomic<bool> tls_thread_exit_flag{false};
+
+void handle_thread_exit() {
+    if (tls_clear_child_tid != 0) {
+        auto* addr = reinterpret_cast<std::atomic_ref<std::uint32_t>::value_type*>(tls_clear_child_tid);
+        std::atomic_ref<std::uint32_t> atom(*addr);
+        atom.store(0, std::memory_order_seq_cst);
+        atom.notify_all();
+    }
+}
+
+// Global process-wide exit flag for exit_group
+std::atomic<bool> g_process_exit{false};
+
+} // namespace
 
 // x86_64 Linux syscall numbers used in this file.
 enum X64Sysno : std::uint64_t {
@@ -100,8 +144,6 @@ enum X64Sysno : std::uint64_t {
     kX64ClockGettime = 228,
     kX64Gettimeofday = 96,
     kX64Time         = 201,
-    kX64RtSigaction  = 13,
-    kX64RtSigprocmask = 14,
     kX64RtSigreturn  = 15,
     kX64RtSigsuspend = 130,
     kX64ArchPrctl    = 158,
@@ -125,6 +167,8 @@ enum X64Sysno : std::uint64_t {
     kX64Socketpair   = 53,
     kX64Setsockopt   = 54,
     kX64Getsockopt   = 55,
+    kX64Clone        = 56,
+    kX64Futex        = 202,
     kX64Accept4      = 288,
 };
 
@@ -197,6 +241,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64ExitGroup:   return "exit_group";
         case kX64Wait4:       return "wait4";
         case kX64Uname:       return "uname";
+        case kX64Futex:       return "futex";
         case kX64Getdents:    return "getdents";
         case kX64Getdents64:  return "getdents64";
         case kX64SetTidAddress: return "set_tid_address";
@@ -228,6 +273,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Socketpair:  return "socketpair";
         case kX64Setsockopt:  return "setsockopt";
         case kX64Getsockopt:  return "getsockopt";
+        case kX64Clone:       return "clone";
         case kX64Accept4:     return "accept4";
         default:              return "???";
     }
@@ -338,10 +384,17 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 
         // -- F2-SY-010: exit ---------------------------------------------------
         case kX64Exit: {
-            ::exit(static_cast<int>(a1));
-            break;
+            handle_thread_exit();
+            tls_thread_exit_flag.store(true, std::memory_order_relaxed);
+            // Instead of ::exit, we just tell this thread to stop.
+            if (!tls_current_dispatcher) ::exit(static_cast<int>(a1));
+            // Let the dispatcher naturally return out of its loop.
+            // We set the halt sentinel so that it stops immediately.
+            state->guest_pc = CpuStateFrame::kHaltSentinel;
+            return;
         }
         case kX64ExitGroup: {
+            g_process_exit.store(true, std::memory_order_relaxed);
             ::exit(static_cast<int>(a1));
             break;
         }
@@ -567,13 +620,146 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             if (result < 0) result = -errno;
             break;
         }
-        case kX64Writev: {
-            result = static_cast<std::int64_t>(::writev(
-                static_cast<int>(a1),
-                reinterpret_cast<const struct ::iovec*>(
-                    static_cast<std::uintptr_t>(a2)),
-                static_cast<int>(a3)));
-            if (result < 0) result = -errno;
+        // -- F2-SY-006: clone --------------------------------------------------
+        case kX64Clone: {
+            const std::uint64_t flags = a1;
+            const std::uint64_t child_stack = a2;
+            const std::uint64_t parent_tidptr = a3;
+            const std::uint64_t child_tidptr = a4;
+            const std::uint64_t tls = a5;
+
+            // In Prisma, we only support threads sharing memory (CLONE_VM).
+            // A fork() emulation without CLONE_VM would require process forking.
+            if ((flags & CLONE_VM) == 0) {
+                result = -ENOSYS;
+                break;
+            }
+
+            Dispatcher* parent_dispatcher = tls_current_dispatcher;
+            if (!parent_dispatcher) {
+                result = -ENOSYS;
+                break;
+            }
+
+            // Capture the parent state before making modifications for the child.
+            CpuStateFrame child_state = *state;
+            
+            // The child returns 0.
+            child_state.gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0;
+            
+            // Set the child stack if provided.
+            if (child_stack != 0) {
+                child_state.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] = child_stack;
+            }
+
+            // Set TLS if requested.
+            if ((flags & CLONE_SETTLS) != 0) {
+                child_state.fs_base = tls;
+            }
+
+            // We must simulate the host TID. We use the child's host gettid().
+            // But we don't have the child TID until it starts.
+            // We use a promise/future to retrieve the child's TID before returning to the parent guest.
+            // (Alternatively, we can use a condvar to wait for the child to publish its TID).
+            
+            struct ChildStartup {
+                std::mutex mu;
+                std::condition_variable cv;
+                pid_t tid = 0;
+            };
+            auto startup = std::make_shared<ChildStartup>();
+
+            std::thread child_thread([parent_dispatcher, child_state, flags, child_tidptr, startup]() {
+                // Initialize thread-local dispatcher for the child
+                Dispatcher child_dispatcher(parent_dispatcher->translator(),
+                                            parent_dispatcher->reader());
+                child_dispatcher.set_state(child_state);
+                child_dispatcher.set_exit_flag(&tls_thread_exit_flag);
+
+                // Publish the TID to the parent
+                pid_t host_tid = ::gettid();
+                {
+                    std::lock_guard<std::mutex> lock(startup->mu);
+                    startup->tid = host_tid;
+                }
+                startup->cv.notify_one();
+
+                // Handle child tid pointers
+                if ((flags & CLONE_CHILD_SETTID) != 0 && child_tidptr != 0) {
+                    *reinterpret_cast<std::uint32_t*>(child_tidptr) = host_tid;
+                }
+                if ((flags & CLONE_CHILD_CLEARTID) != 0) {
+                    tls_clear_child_tid = child_tidptr;
+                } else {
+                    tls_clear_child_tid = 0;
+                }
+
+                // Run the child
+                while (!g_process_exit.load(std::memory_order_relaxed)) {
+                    // child_state.guest_pc is pointing to the next instruction after syscall
+                    auto res = child_dispatcher.run(child_dispatcher.state().guest_pc, 10000);
+                    if (res.exit == DispatchExit::Halted || 
+                        res.exit == DispatchExit::FetchFailed || 
+                        res.exit == DispatchExit::TranslationFailed) {
+                        break;
+                    }
+                }
+
+                handle_thread_exit();
+            });
+
+            child_thread.detach();
+
+            // Wait for child to initialize and give us its TID
+            std::unique_lock<std::mutex> lock(startup->mu);
+            startup->cv.wait(lock, [&]() { return startup->tid != 0; });
+            
+            pid_t child_tid = startup->tid;
+
+            if ((flags & CLONE_PARENT_SETTID) != 0 && parent_tidptr != 0) {
+                *reinterpret_cast<std::uint32_t*>(parent_tidptr) = child_tid;
+            }
+
+            result = child_tid;
+            break;
+        }
+
+        // -- F2-SY-007: futex --------------------------------------------------
+        case kX64Futex: {
+            const std::uint64_t uaddr = a1;
+            const int futex_op = static_cast<int>(a2);
+            const std::uint32_t val = static_cast<std::uint32_t>(a3);
+            // const std::uint64_t timeout = a4; // Optional timeout struct ptr
+
+            const int cmd = futex_op & ~FUTEX_PRIVATE_FLAG;
+            auto* addr = reinterpret_cast<std::atomic_ref<std::uint32_t>::value_type*>(uaddr);
+            std::atomic_ref<std::uint32_t> atom(*addr);
+
+            if (cmd == FUTEX_WAIT) {
+                // Wait blockingly.
+                // In C++20, atomic_wait returns void, but if the value doesn't match 'val' it returns immediately.
+                if (atom.load(std::memory_order_seq_cst) != val) {
+                    result = -EAGAIN;
+                } else {
+                    // Note: proper timeout handling requires waiting with timeout,
+                    // but C++20 atomic_wait doesn't support timeout!
+                    // For Prisma Fase 2 MVP, we'll do an infinite wait.
+                    // If timeout was passed, we'd theoretically need a custom condvar fallback or host syscall.
+                    atom.wait(val, std::memory_order_seq_cst);
+                    result = 0;
+                }
+            } else if (cmd == FUTEX_WAKE) {
+                // Wake up to 'val' threads.
+                // In C++20, we can only notify_one() or notify_all().
+                if (val == 1) {
+                    atom.notify_one();
+                } else {
+                    atom.notify_all();
+                }
+                result = val; // return number of awakened (heuristic)
+            } else {
+                result = -ENOSYS;
+            }
             break;
         }
 
@@ -706,9 +892,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 
         // -- F2-SY-030: set_tid_address ----------------------------------------
         case kX64SetTidAddress:
-            // glibc calls set_tid_address during startup. For single-threaded
-            // guests the tid (== pid == gettid()) is sufficient; the tidptr
-            // write-on-thread-exit is a no-op until we implement threads.
+            tls_clear_child_tid = a1;
             result = static_cast<std::int64_t>(::gettid());
             break;
 

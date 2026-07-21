@@ -46,6 +46,8 @@ bool direct_thread_candidate(const translator::TranslatedBlock& block,
 
 }  // namespace
 
+thread_local Dispatcher* tls_current_dispatcher = nullptr;
+
 Dispatcher::Dispatcher(translator::Translator& t, GuestMemoryReader r)
     : translator_(t), reader_(std::move(r)) {
     halt_pcs_.insert(CpuStateFrame::kHaltSentinel);
@@ -73,6 +75,14 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
 
     std::uint64_t pc = entry_pc;
     state_.guest_pc = pc;
+
+    struct ScopedDispatcherTls {
+        Dispatcher* prev;
+        ScopedDispatcherTls(Dispatcher* cur) : prev(tls_current_dispatcher) {
+            tls_current_dispatcher = cur;
+        }
+        ~ScopedDispatcherTls() { tls_current_dispatcher = prev; }
+    } scoped_tls(this);
 
     std::size_t step = 0;
     auto account_executed =
@@ -197,6 +207,11 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
         // tombstones; the invalidation callbacks run here, in normal
         // context). Near-free when nothing is pending.
         (void)drain_smc_invalidations();
+
+        if (exit_flag_ && exit_flag_->load(std::memory_order_relaxed)) {
+            stats.unique_pcs_seen = seen_pcs.size();
+            return {DispatchExit::Halted, pc, stats, "Host requested thread exit"};
+        }
 
         // Halt-before-execute so the caller can configure halt PCs that
         // include the entry.

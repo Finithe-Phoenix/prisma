@@ -37,6 +37,8 @@
 #include <unordered_set>
 #include <variant>
 
+#include <atomic>
+
 #include "prisma/cpu_state.hpp"
 #include "prisma/translator.hpp"
 
@@ -104,6 +106,16 @@ public:
     [[nodiscard]] CpuStateFrame& state() noexcept { return state_; }
     [[nodiscard]] const CpuStateFrame& state() const noexcept { return state_; }
 
+    // Inject a pre-initialized state (e.g., from clone syscall).
+    void set_state(const CpuStateFrame& state) noexcept { state_ = state; }
+
+    // Allow external host threads to request this dispatcher to exit.
+    void set_exit_flag(std::atomic<bool>* flag) noexcept { exit_flag_ = flag; }
+
+    // Accessors for cloning
+    translator::Translator& translator() const noexcept { return translator_; }
+    const GuestMemoryReader& reader() const noexcept { return reader_; }
+
     // Helper for tests that opt into real CALL/RET semantics on the
     // translator (`translator::Translator::set_real_call_ret(true)`).
     // Allocates a small internal halt-return stack (16 × u64 = 128 B,
@@ -128,6 +140,9 @@ private:
     std::size_t return_stack_depth_{0};
     static constexpr std::size_t kHaltReturnStackSlots = 16;
     alignas(8) std::uint64_t halt_return_stack_[kHaltReturnStackSlots]{};
+    std::atomic<bool>* exit_flag_{nullptr};
 };
+
+extern thread_local Dispatcher* tls_current_dispatcher;
 
 }  // namespace prisma::runtime
