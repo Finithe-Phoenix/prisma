@@ -1974,6 +1974,11 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             emitter_.store_offset(host, arm64::Reg::X27, off);
           }
 
+          // Advance guest_pc to the next instruction before the handler is called.
+          // The handler can overwrite it if it needs to (e.g. rt_sigreturn).
+          emitter_.mov_imm64(arm64::Reg::X9, op.next_pc);
+          emitter_.store_offset(arm64::Reg::X9, arm64::Reg::X27, runtime::CpuStateFrame::guest_pc_offset());
+
           // If a syscall handler has been configured, emit blr to it.
           // The handler reads guest regs from the state frame, performs
           // the host operation, and writes results (including RAX / CF)
@@ -1996,6 +2001,11 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
             const std::int32_t off = runtime::CpuStateFrame::gpr_offset_bytes(g);
             emitter_.load_offset(host, arm64::Reg::X27, off);
           }
+          // The block ends here. The next block will start at whatever guest_pc is.
+          // Syscall handler may have changed it (e.g., rt_sigreturn).
+          emitter_.load_offset(arm64::Reg::X0, arm64::Reg::X27, runtime::CpuStateFrame::guest_pc_offset());
+          if (options_.emit_ret_on_terminator)
+            emitter_.ret();
           return {};
         } else if constexpr (std::is_same_v<T, ir::CondJumpRel>) {
           // Invariant: some earlier op (CmpFlags in MVP) set NZCV and

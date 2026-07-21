@@ -100,6 +100,10 @@ enum X64Sysno : std::uint64_t {
     kX64ClockGettime = 228,
     kX64Gettimeofday = 96,
     kX64Time         = 201,
+    kX64RtSigaction  = 13,
+    kX64RtSigprocmask = 14,
+    kX64RtSigreturn  = 15,
+    kX64RtSigsuspend = 130,
     kX64ArchPrctl    = 158,
     kX64Prctl        = 157,
     kX64Prlimit64    = 302,
@@ -125,6 +129,19 @@ enum X64Sysno : std::uint64_t {
 };
 
 }  // namespace prisma::runtime
+
+namespace {
+    std::mutex g_sigaction_mutex;
+    std::array<prisma::runtime::GuestSigaction, 65> g_guest_sigactions{};
+}
+
+namespace prisma::runtime {
+    GuestSigaction get_guest_sigaction(int sig) {
+        if (sig < 1 || sig >= 65) return {};
+        std::lock_guard<std::mutex> lk(g_sigaction_mutex);
+        return g_guest_sigactions[sig];
+    }
+}
 
 // F2-SY-038: strace-like syscall logger. Check PRISMA_STRACE env var once.
 static bool strace_enabled() noexcept {
@@ -189,6 +206,10 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64ArchPrctl:   return "arch_prctl";
         case kX64Prctl:       return "prctl";
         case kX64Prlimit64:   return "prlimit64";
+        case kX64RtSigaction: return "rt_sigaction";
+        case kX64RtSigprocmask: return "rt_sigprocmask";
+        case kX64RtSigreturn: return "rt_sigreturn";
+        case kX64RtSigsuspend: return "rt_sigsuspend";
         case kX64EpollCreate1: return "epoll_create1";
         case kX64EpollCtl:    return "epoll_ctl";
         case kX64EpollWait:   return "epoll_wait";
@@ -870,6 +891,127 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 static_cast<int>(a4));
             if (result < 0) result = -errno;
 #endif
+            break;
+        }
+
+        // -- F2-SY-017/018: Señales al guest -----------------------------------
+        case kX64RtSigaction: {
+            // rt_sigaction(sig, act, oact, sigsetsize)
+            int sig = static_cast<int>(a1);
+            const auto* act = reinterpret_cast<const prisma::runtime::GuestSigaction*>(
+                static_cast<std::uintptr_t>(a2));
+            auto* oact = reinterpret_cast<prisma::runtime::GuestSigaction*>(
+                static_cast<std::uintptr_t>(a3));
+            std::size_t sigsetsize = static_cast<std::size_t>(a4);
+
+            if (sigsetsize != 8) {
+                result = -EINVAL;
+                break;
+            }
+            if (sig < 1 || sig >= 65 || sig == SIGKILL || sig == SIGSTOP) {
+                result = -EINVAL;
+                break;
+            }
+
+            std::lock_guard<std::mutex> lk(g_sigaction_mutex);
+            if (oact != nullptr) {
+                *oact = g_guest_sigactions[sig];
+            }
+            if (act != nullptr) {
+                g_guest_sigactions[sig] = *act;
+                // If it's not a synchronous signal we already handle, maybe
+                // we should install a host handler so the host kernel delivers it to us.
+                // For this implementation, we just rely on whatever host signals 
+                // we've set up, or the fact that this is mainly for Segv/Ill etc.
+            }
+            result = 0;
+            break;
+        }
+        case kX64RtSigprocmask: {
+            // rt_sigprocmask(how, set, oset, sigsetsize)
+            int how = static_cast<int>(a1);
+            const auto* set = reinterpret_cast<const std::uint64_t*>(
+                static_cast<std::uintptr_t>(a2));
+            auto* oset = reinterpret_cast<std::uint64_t*>(
+                static_cast<std::uintptr_t>(a3));
+            std::size_t sigsetsize = static_cast<std::size_t>(a4);
+
+            if (sigsetsize != 8) {
+                result = -EINVAL;
+                break;
+            }
+
+            if (oset != nullptr) {
+                *oset = state->blocked_signals;
+            }
+            if (set != nullptr) {
+                std::uint64_t unblockable = (1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1));
+                std::uint64_t new_mask = *set & ~unblockable;
+                
+                if (how == SIG_BLOCK) {
+                    state->blocked_signals |= new_mask;
+                } else if (how == SIG_UNBLOCK) {
+                    state->blocked_signals &= ~new_mask;
+                } else if (how == SIG_SETMASK) {
+                    state->blocked_signals = new_mask;
+                } else {
+                    result = -EINVAL;
+                    break;
+                }
+            }
+            result = 0;
+            break;
+        }
+        case kX64RtSigreturn: {
+            // The guest handler did `ret`, which popped the restorer address.
+            // Now RSP points directly to the `ucontext_t` (or siginfo + ucontext_t).
+            // Actually, Linux ABI says `ucontext_t` is at RSP.
+            std::uint64_t rsp = state->gpr[static_cast<std::size_t>(Gpr::Rsp)];
+            
+            // For safety, we should really use a GuestMemoryReader, but syscall_handler
+            // assumes direct memory access.
+            const auto* uc = reinterpret_cast<const GuestUcontext*>(static_cast<std::uintptr_t>(rsp));
+            
+            // Restore GPRs
+            state->gpr[static_cast<std::size_t>(Gpr::R8)] = uc->uc_mcontext.r8;
+            state->gpr[static_cast<std::size_t>(Gpr::R9)] = uc->uc_mcontext.r9;
+            state->gpr[static_cast<std::size_t>(Gpr::R10)] = uc->uc_mcontext.r10;
+            state->gpr[static_cast<std::size_t>(Gpr::R11)] = uc->uc_mcontext.r11;
+            state->gpr[static_cast<std::size_t>(Gpr::R12)] = uc->uc_mcontext.r12;
+            state->gpr[static_cast<std::size_t>(Gpr::R13)] = uc->uc_mcontext.r13;
+            state->gpr[static_cast<std::size_t>(Gpr::R14)] = uc->uc_mcontext.r14;
+            state->gpr[static_cast<std::size_t>(Gpr::R15)] = uc->uc_mcontext.r15;
+            state->gpr[static_cast<std::size_t>(Gpr::Rdi)] = uc->uc_mcontext.rdi;
+            state->gpr[static_cast<std::size_t>(Gpr::Rsi)] = uc->uc_mcontext.rsi;
+            state->gpr[static_cast<std::size_t>(Gpr::Rbp)] = uc->uc_mcontext.rbp;
+            state->gpr[static_cast<std::size_t>(Gpr::Rbx)] = uc->uc_mcontext.rbx;
+            state->gpr[static_cast<std::size_t>(Gpr::Rdx)] = uc->uc_mcontext.rdx;
+            state->gpr[static_cast<std::size_t>(Gpr::Rax)] = uc->uc_mcontext.rax;
+            state->gpr[static_cast<std::size_t>(Gpr::Rcx)] = uc->uc_mcontext.rcx;
+            state->gpr[static_cast<std::size_t>(Gpr::Rsp)] = uc->uc_mcontext.rsp;
+            
+            state->guest_pc = uc->uc_mcontext.rip;
+            state->rflags = uc->uc_mcontext.eflags;
+            
+            // Restore signal mask
+            state->blocked_signals = uc->uc_sigmask;
+            
+            // We do NOT set `result` to anything that gets written to RAX,
+            // because `rt_sigreturn` restores RAX from the context!
+            // To prevent the common syscall epilogue from overwriting RAX and CF,
+            // we could either add a flag or just let it return normally and 
+            // modify the syscall epilogue in this file.
+            // Wait, the syscall epilogue in this file writes `result` to RAX!
+            // We must bypass it or set a special flag.
+            // Actually, we can just return directly from this switch case!
+            if (strace_enabled()) {
+                std::fprintf(stderr, " -> <restored rip=0x%llx>\n", (unsigned long long)state->guest_pc);
+            }
+            return; // EXIT EARLY to avoid overwriting RAX!
+        }
+        case kX64RtSigsuspend: {
+            // rt_sigsuspend(mask, sigsetsize)
+            result = -ENOSYS; // To be implemented with dispatcher coordination
             break;
         }
 

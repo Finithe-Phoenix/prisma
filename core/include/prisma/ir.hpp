@@ -383,7 +383,9 @@ struct RetAdjusted {
 // output. See `core/src/backend/lowering.cpp` for the current shapes.
 
 struct Cpuid {};
-struct Syscall {};
+struct Syscall {
+  std::uint64_t next_pc{0};
+};
 
 // XGETBV (NP 0F 01 D0) — reads the extended control register selected
 // by ECX into EDX:EAX. The lowering bakes XCR0 at translation time

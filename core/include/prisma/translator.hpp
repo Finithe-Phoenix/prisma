@@ -54,12 +54,13 @@ enum class BlockExitKind {
     Return,
     JumpRel,
     JumpReg,
-    CondJumpRel,
-    CallRel,
-    CallReg,
-    RetAdjusted,
-    RepStos,
-    RepMovs,
+    CondJumpRel = 3,
+    CallRel = 4,
+    CallReg = 5,
+    RetAdjusted = 6,
+    RepStos = 7,
+    RepMovs = 8,
+    Syscall = 9,
 };
 
 struct TranslatedBlock {

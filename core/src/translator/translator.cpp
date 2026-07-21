@@ -38,7 +38,7 @@ bool is_block_terminator(const ir::Op& op) noexcept {
          std::holds_alternative<ir::JumpReg>(op) || std::holds_alternative<ir::CondJumpRel>(op) ||
          std::holds_alternative<ir::CallRel>(op) || std::holds_alternative<ir::CallReg>(op) ||
          std::holds_alternative<ir::RetAdjusted>(op) || std::holds_alternative<ir::RepStos>(op) ||
-         std::holds_alternative<ir::RepMovs>(op);
+         std::holds_alternative<ir::RepMovs>(op) || std::holds_alternative<ir::Syscall>(op);
 }
 
 struct ExitMetadata {
@@ -72,6 +72,8 @@ ExitMetadata exit_metadata(const std::vector<ir::Stmt>& body) noexcept {
           return {BlockExitKind::RepStos, op.pc_of_rep, op.pc_after_rep, 0};
         } else if constexpr (std::is_same_v<T, ir::RepMovs>) {
           return {BlockExitKind::RepMovs, op.pc_of_rep, op.pc_after_rep, 0};
+        } else if constexpr (std::is_same_v<T, ir::Syscall>) {
+          return {BlockExitKind::Syscall, 0, 0, 0};
         } else {
           return {};
         }

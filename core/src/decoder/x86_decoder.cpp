@@ -2327,9 +2327,9 @@ std::variant<Decoded, DecodeError> decode_xgetbv(std::size_t bytes_consumed) {
   return d;
 }
 
-std::variant<Decoded, DecodeError> decode_syscall_placeholder(std::size_t bytes_consumed) {
+std::variant<Decoded, DecodeError> decode_syscall_placeholder(std::uint64_t instruction_guest_pc, std::size_t bytes_consumed) {
   Decoded d;
-  d.stmts.push_back({std::nullopt, ir::Syscall{}});
+  d.stmts.push_back({std::nullopt, ir::Syscall{instruction_guest_pc + bytes_consumed}});
   d.bytes_consumed = bytes_consumed;
   return d;
 }
@@ -3372,7 +3372,7 @@ try_decode_two_byte_dispatch(Byte subop, std::span<const Byte> bytes, std::size_
       }
       if (has_lock || has_f2 || has_f3)
         return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
-      return DispatchDecodeResult{decode_syscall_placeholder(cursor)};
+      return DispatchDecodeResult{decode_syscall_placeholder(instruction_guest_pc, cursor)};
     case TwoByteDispatchKind::Group01: {
       if (rex.present || has_operand_size_override || has_address_size_override) {
         return DispatchDecodeResult{DecodeError::UnsupportedEncoding};
