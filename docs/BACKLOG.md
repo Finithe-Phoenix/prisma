@@ -488,15 +488,15 @@ translator on a reference Linux ARM64 box.
 ### F2-BM — Benchmarks
 
 - [x] (533fc70) F2-BM-001: Dhrystone harness (Python driver + C source bundled).
-- [ ] F2-BM-002: CoreMark harness.
-- [ ] F2-BM-003: nbench harness.
-- [ ] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net).
-- [ ] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native.
+- [x] (pending commit) F2-BM-002: CoreMark harness.
+- [x] (pending commit) F2-BM-003: nbench harness.
+- [?] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net). **(Blocked: requires SPEC license from Danny)**
+- [?] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [x] (533fc70) F2-BM-006: Result schema (JSON) + aggregation.
-- [ ] F2-BM-007: Markdown / LaTeX report generation.
-- [ ] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired.
-- [ ] F2-BM-009: First public results table on prisma-emu.dev/benchmarks.
-- [ ] F2-BM-010: Performance target: 30-45% of native at end of Fase 2.
+- [x] (pending commit) F2-BM-007: Markdown / LaTeX report generation.
+- [?] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired. **(Blocked: requires Danny's ARM64 hardware to execute)**
+- [?] F2-BM-009: First public results table on prisma-emu.dev/benchmarks. **(Blocked: requires Danny's ARM64 hardware to execute)**
+- [?] F2-BM-010: Performance target: 30-45% of native at end of Fase 2. **(Blocked: requires Danny's ARM64 hardware to execute)**
 
 ### F2-AC — Academic (Fase 2 concern)
 
@@ -552,8 +552,8 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 ### F25-LN — Formal verification of TSO pass (Pillar 2)
 
-- [ ] F25-LN-001: Formalise classifier invariants in Lean.
-- [ ] F25-LN-002: Prove rewrite preserves observable semantics under invariants.
+- [x] F25-LN-001: Formalise classifier invariants in Lean. (TSORewrite.lean: Quiescent, WritePrivate)
+- [x] F25-LN-002: Prove rewrite preserves observable semantics under invariants. (TSORewrite.lean: M1-M4)
 - [ ] F25-LN-003: Connect runtime assertions to the Lean formal invariants.
 - [ ] F25-LN-004: Paper 3 draft: "Formally Verified IR for x86 DBT".
 
