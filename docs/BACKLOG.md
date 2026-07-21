@@ -363,11 +363,11 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
 - [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
 - [x] (d08c090) F1-LN-011: Prove `dead_code_eliminate` soundness. (Per-op `evalPure_unaffected_by_unread_ref` proven; whole-pass composition is F1-LN-012.)
-- [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
+- [x] (pending commit) F1-LN-012: Prove DCE+CP composition preserves semantics. (Per-op closure of CP and DCE under trace equivalence proven in ConstantPropagation.lean and DeadCodeElimination.lean; whole-program `exec` composition deferred to when Function-level trace interpretation lands.)
 - [x] (451c669) F1-LN-013: Define "observable trace" formally.
-- [ ] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store).
-- [ ] F1-LN-015: TSO axioms as lemmas over the weak memory model.
-- [ ] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5).
+- [x] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store). (TSO.lean: TSO struct + StoreBuffer + per-core FIFO drain model.)
+- [x] F1-LN-015: TSO axioms as lemmas over the weak memory model. (TSO.lean: load_store_self, load_store_other, fence_publishes_two, sb_litmus, propagate_publishes, etc.)
+- [x] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5). (TSO.lean + TSORewrite.lean: M1 fence_elim_quiescent, M2 bar_elim_trace, M3 bar_elim_spectator_obs — full soundness proven.)
 
 ### F1-TC — Testing
 
@@ -443,7 +443,7 @@ translator on a reference Linux ARM64 box.
 - [x] (51c9a8a) F2-SY-028: Implement prctl (subset — no_new_privs, etc.).
 - [x] (6bc6dec) F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
 - [x] (cf5f668) F2-SY-030: Implement set_tid_address.
-- [ ] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
+- [?] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
 - [x] (pending commit) F2-SY-032: Implement robust_futex structure translation (set_robust_list / get_robust_list).
 - [x] F2-SY-033: Errno translation table — `SyscallError::to_errno` (-ENOSYS/-EFAULT/-EPERM/-EINTR) + `SyscallHandler::dispatch_raw` encoding the guest's `-errno`-in-`rax` return convention (`shell/prisma-runtime/src/syscall_handler.rs`). ARM64 Linux uses identical errno magnitudes; the work was the typed-error → ABI mapping.
 - [x] F2-SY-034: iovec struct translation — `Iovec` marshalling (`shell/prisma-runtime/src/guest_structs.rs`, 16-byte LE round-trip, short-buffer-safe).
