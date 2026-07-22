@@ -17,6 +17,8 @@ namespace {
 [[maybe_unused]] constexpr std::uint64_t kX64Getuid = 102;
 [[maybe_unused]] constexpr std::uint64_t kX64Getgid = 104;
 [[maybe_unused]] constexpr std::uint64_t kX64Gettid = 186;
+[[maybe_unused]] constexpr std::uint64_t kX64SetTidAddress = 218;
+[[maybe_unused]] constexpr std::uint64_t kX64Rseq = 334;
 [[maybe_unused]] constexpr std::uint64_t kX64ArchPrctl = 158;
 [[maybe_unused]] constexpr std::uint64_t kX64Brk = 12;
 [[maybe_unused]] constexpr std::uint64_t kX64Getcwd = 79;
@@ -93,6 +95,37 @@ TEST_CASE("syscall_handler: gettid returns a positive thread id") {
     set_syscall(frame, kX64Gettid);
     prisma_syscall_handler(&frame);
     REQUIRE(frame[Gpr::Rax] > 0);
+}
+
+TEST_CASE("syscall_handler: gettid is stable within one guest thread") {
+    CpuStateFrame first{};
+    CpuStateFrame second{};
+
+    set_syscall(first, kX64Gettid);
+    set_syscall(second, kX64Gettid);
+    prisma_syscall_handler(&first);
+    prisma_syscall_handler(&second);
+
+    REQUIRE(first[Gpr::Rax] > 0);
+    REQUIRE(first[Gpr::Rax] == second[Gpr::Rax]);
+}
+
+TEST_CASE("syscall_handler: set_tid_address returns a positive thread id") {
+    CpuStateFrame frame{};
+    std::uint32_t clear_child_tid = 0;
+
+    set_syscall(frame, kX64SetTidAddress,
+                reinterpret_cast<std::uint64_t>(&clear_child_tid));
+    prisma_syscall_handler(&frame);
+
+    REQUIRE(frame[Gpr::Rax] > 0);
+}
+
+TEST_CASE("syscall_handler: rseq fallback is explicitly -ENOSYS") {
+    CpuStateFrame frame{};
+    set_syscall(frame, kX64Rseq, 0, 0, 0, 0);
+    prisma_syscall_handler(&frame);
+    REQUIRE(frame[Gpr::Rax] == static_cast<std::uint64_t>(-ENOSYS));
 }
 
 TEST_CASE("syscall_handler: getcwd returns current directory") {
