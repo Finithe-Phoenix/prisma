@@ -53,7 +53,8 @@ def generate_latex(data):
     columns = "l" + "c" * len(engines)
     lines.append(f"\\begin{{tabular}}{{{columns}}}")
     lines.append("\\hline")
-    lines.append("Benchmark & " + " & ".join(engines) + " \\\")
+    latex_line_break = chr(92) * 2
+    lines.append("Benchmark & " + " & ".join(engines) + " " + latex_line_break)
     lines.append("\\hline")
 
     for benchmark in benchmarks:
@@ -69,7 +70,7 @@ def generate_latex(data):
                     row.append(f"{mean:.3f}s ($\\pm${std:.3f}s)")
                 else:
                     row.append(f"{mean:.3f}s")
-        lines.append(" & ".join(row) + " \\\")
+        lines.append(" & ".join(row) + " " + latex_line_break)
 
     lines.extend(
         [
