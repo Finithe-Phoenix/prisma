@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 
@@ -18,7 +19,10 @@ namespace {
 [[maybe_unused]] constexpr std::uint64_t kX64Getgid = 104;
 [[maybe_unused]] constexpr std::uint64_t kX64Gettid = 186;
 [[maybe_unused]] constexpr std::uint64_t kX64SetTidAddress = 218;
+[[maybe_unused]] constexpr std::uint64_t kX64SetRobustList = 273;
 [[maybe_unused]] constexpr std::uint64_t kX64Rseq = 334;
+[[maybe_unused]] constexpr std::uint64_t kRobustListHeadSize =
+    3 * sizeof(std::uint64_t);
 [[maybe_unused]] constexpr std::uint64_t kX64ArchPrctl = 158;
 [[maybe_unused]] constexpr std::uint64_t kX64Brk = 12;
 [[maybe_unused]] constexpr std::uint64_t kX64Getcwd = 79;
@@ -110,15 +114,59 @@ TEST_CASE("syscall_handler: gettid is stable within one guest thread") {
     REQUIRE(first[Gpr::Rax] == second[Gpr::Rax]);
 }
 
-TEST_CASE("syscall_handler: set_tid_address returns a positive thread id") {
+TEST_CASE("syscall_handler: set_tid_address records clear-child-tid") {
     CpuStateFrame frame{};
     std::uint32_t clear_child_tid = 0;
+    const auto address =
+        reinterpret_cast<std::uint64_t>(&clear_child_tid);
 
-    set_syscall(frame, kX64SetTidAddress,
-                reinterpret_cast<std::uint64_t>(&clear_child_tid));
+    set_syscall(frame, kX64SetTidAddress, address);
     prisma_syscall_handler(&frame);
 
-    REQUIRE(frame[Gpr::Rax] > 0);
+    const GuestThreadStartupState startup =
+        current_guest_thread_startup_state();
+    REQUIRE(startup.tid > 0);
+    REQUIRE(frame[Gpr::Rax] == startup.tid);
+    REQUIRE(startup.clear_child_tid == address);
+}
+
+TEST_CASE("syscall_handler: set_robust_list records valid registration") {
+    CpuStateFrame frame{};
+    std::array<std::uint64_t, 3> robust_head{};
+    const auto address =
+        reinterpret_cast<std::uint64_t>(robust_head.data());
+
+    set_syscall(frame, kX64SetRobustList, address, kRobustListHeadSize);
+    prisma_syscall_handler(&frame);
+
+    const GuestThreadStartupState startup =
+        current_guest_thread_startup_state();
+    REQUIRE(frame[Gpr::Rax] == 0);
+    REQUIRE(startup.robust_list_head == address);
+    REQUIRE(startup.robust_list_len == kRobustListHeadSize);
+}
+
+TEST_CASE("syscall_handler: set_robust_list rejects an invalid length") {
+    CpuStateFrame frame{};
+    std::array<std::uint64_t, 3> robust_head{};
+    const auto address =
+        reinterpret_cast<std::uint64_t>(robust_head.data());
+
+    set_syscall(frame, kX64SetRobustList, address, kRobustListHeadSize);
+    prisma_syscall_handler(&frame);
+    REQUIRE(frame[Gpr::Rax] == 0);
+    const GuestThreadStartupState before =
+        current_guest_thread_startup_state();
+
+    set_syscall(frame, kX64SetRobustList, address + 8,
+                kRobustListHeadSize - 8);
+    prisma_syscall_handler(&frame);
+
+    const GuestThreadStartupState after =
+        current_guest_thread_startup_state();
+    REQUIRE(frame[Gpr::Rax] == static_cast<std::uint64_t>(-EINVAL));
+    REQUIRE(after.robust_list_head == before.robust_list_head);
+    REQUIRE(after.robust_list_len == before.robust_list_len);
 }
 
 TEST_CASE("syscall_handler: rseq fallback is explicitly -ENOSYS") {
