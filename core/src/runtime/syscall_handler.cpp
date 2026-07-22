@@ -63,19 +63,19 @@ namespace {
 
 // -- Threading Support --------------------------------------------------------
 
-constexpr std::uint64_t CLONE_VM = 0x00000100;
-constexpr std::uint64_t CLONE_FS = 0x00000200;
-constexpr std::uint64_t CLONE_FILES = 0x00000400;
-constexpr std::uint64_t CLONE_SIGHAND = 0x00000800;
-constexpr std::uint64_t CLONE_PARENT_SETTID = 0x00100000;
-constexpr std::uint64_t CLONE_CHILD_CLEARTID = 0x00200000;
-constexpr std::uint64_t CLONE_THREAD = 0x00010000;
-constexpr std::uint64_t CLONE_SETTLS = 0x00080000;
-constexpr std::uint64_t CLONE_CHILD_SETTID = 0x01000000;
+constexpr std::uint64_t kCloneVm = 0x00000100;
+constexpr std::uint64_t kCloneFs = 0x00000200;
+constexpr std::uint64_t kCloneFiles = 0x00000400;
+constexpr std::uint64_t kCloneSighand = 0x00000800;
+constexpr std::uint64_t kCloneParentSettid = 0x00100000;
+constexpr std::uint64_t kCloneChildCleartid = 0x00200000;
+constexpr std::uint64_t kCloneThread = 0x00010000;
+constexpr std::uint64_t kCloneSettls = 0x00080000;
+constexpr std::uint64_t kCloneChildSettid = 0x01000000;
 
-constexpr int FUTEX_WAIT = 0;
-constexpr int FUTEX_WAKE = 1;
-constexpr int FUTEX_PRIVATE_FLAG = 128;
+constexpr int kFutexWait = 0;
+constexpr int kFutexWake = 1;
+constexpr int kFutexPrivateFlag = 128;
 
 thread_local std::uint64_t tls_clear_child_tid = 0;
 thread_local std::atomic<bool> tls_thread_exit_flag{false};
@@ -188,7 +188,7 @@ namespace prisma::runtime {
     GuestSigaction get_guest_sigaction(int sig) {
         if (sig < 1 || sig >= 65) return {};
         std::lock_guard<std::mutex> lk(g_sigaction_mutex);
-        return g_guest_sigactions[sig];
+        return g_guest_sigactions[static_cast<std::size_t>(sig)];
     }
 }
 
@@ -259,8 +259,6 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64ArchPrctl:   return "arch_prctl";
         case kX64Prctl:       return "prctl";
         case kX64Prlimit64:   return "prlimit64";
-        case kX64RtSigaction: return "rt_sigaction";
-        case kX64RtSigprocmask: return "rt_sigprocmask";
         case kX64RtSigreturn: return "rt_sigreturn";
         case kX64RtSigsuspend: return "rt_sigsuspend";
         case kX64EpollCreate1: return "epoll_create1";
@@ -416,7 +414,9 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 ssize_t bytes_read = ::read(fd, header, sizeof(header));
                 ::close(fd);
                 if (bytes_read >= 20 && header[0] == 0x7F && header[1] == 'E' && header[2] == 'L' && header[3] == 'F') {
-                    std::uint16_t e_machine = static_cast<std::uint16_t>(header[18]) | (static_cast<std::uint16_t>(header[19]) << 8);
+                    const std::uint16_t e_machine = static_cast<std::uint16_t>(
+                        static_cast<unsigned int>(header[18])
+                        | (static_cast<unsigned int>(header[19]) << 8U));
                     if (e_machine == 62) {
                         std::fprintf(stderr, "execve: cross-ISA re-entry not yet implemented\n");
                         result = -ENOSYS;
@@ -661,9 +661,9 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             const std::uint64_t child_tidptr = a4;
             const std::uint64_t tls = a5;
 
-            // In Prisma, we only support threads sharing memory (CLONE_VM).
-            // A fork() emulation without CLONE_VM would require process forking.
-            if ((flags & CLONE_VM) == 0) {
+            // In Prisma, we only support threads sharing memory (kCloneVm).
+            // A fork() emulation without kCloneVm would require process forking.
+            if ((flags & kCloneVm) == 0) {
                 result = -ENOSYS;
                 break;
             }
@@ -678,15 +678,15 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             CpuStateFrame child_state = *state;
             
             // The child returns 0.
-            child_state.gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0;
+            child_state.gpr[static_cast<std::size_t>(Gpr::Rax)] = 0;
             
             // Set the child stack if provided.
             if (child_stack != 0) {
-                child_state.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] = child_stack;
+                child_state.gpr[static_cast<std::size_t>(Gpr::Rsp)] = child_stack;
             }
 
             // Set TLS if requested.
-            if ((flags & CLONE_SETTLS) != 0) {
+            if ((flags & kCloneSettls) != 0) {
                 child_state.fs_base = tls;
             }
 
@@ -718,10 +718,11 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 startup->cv.notify_one();
 
                 // Handle child tid pointers
-                if ((flags & CLONE_CHILD_SETTID) != 0 && child_tidptr != 0) {
-                    *reinterpret_cast<std::uint32_t*>(child_tidptr) = host_tid;
+                if ((flags & kCloneChildSettid) != 0 && child_tidptr != 0) {
+                    *reinterpret_cast<std::uint32_t*>(child_tidptr) =
+                        static_cast<std::uint32_t>(host_tid);
                 }
-                if ((flags & CLONE_CHILD_CLEARTID) != 0) {
+                if ((flags & kCloneChildCleartid) != 0) {
                     tls_clear_child_tid = child_tidptr;
                 } else {
                     tls_clear_child_tid = 0;
@@ -749,11 +750,12 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             
             pid_t child_tid = startup->tid;
 
-            if ((flags & CLONE_PARENT_SETTID) != 0 && parent_tidptr != 0) {
-                *reinterpret_cast<std::uint32_t*>(parent_tidptr) = child_tid;
+            if ((flags & kCloneParentSettid) != 0 && parent_tidptr != 0) {
+                *reinterpret_cast<std::uint32_t*>(parent_tidptr) =
+                    static_cast<std::uint32_t>(child_tid);
             }
 
-            result = child_tid;
+            result = static_cast<std::int64_t>(child_tid);
             break;
         }
 
@@ -764,11 +766,11 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             const std::uint32_t val = static_cast<std::uint32_t>(a3);
             // const std::uint64_t timeout = a4; // Optional timeout struct ptr
 
-            const int cmd = futex_op & ~FUTEX_PRIVATE_FLAG;
+            const int cmd = futex_op & ~kFutexPrivateFlag;
             auto* addr = reinterpret_cast<std::atomic_ref<std::uint32_t>::value_type*>(uaddr);
             std::atomic_ref<std::uint32_t> atom(*addr);
 
-            if (cmd == FUTEX_WAIT) {
+            if (cmd == kFutexWait) {
                 // Wait blockingly.
                 // In C++20, atomic_wait returns void, but if the value doesn't match 'val' it returns immediately.
                 if (atom.load(std::memory_order_seq_cst) != val) {
@@ -781,7 +783,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                     atom.wait(val, std::memory_order_seq_cst);
                     result = 0;
                 }
-            } else if (cmd == FUTEX_WAKE) {
+            } else if (cmd == kFutexWake) {
                 // Wake up to 'val' threads.
                 // In C++20, we can only notify_one() or notify_all().
                 if (val == 1) {
@@ -1183,10 +1185,10 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 
             std::lock_guard<std::mutex> lk(g_sigaction_mutex);
             if (oact != nullptr) {
-                *oact = g_guest_sigactions[sig];
+                *oact = g_guest_sigactions[static_cast<std::size_t>(sig)];
             }
             if (act != nullptr) {
-                g_guest_sigactions[sig] = *act;
+                g_guest_sigactions[static_cast<std::size_t>(sig)] = *act;
                 // If it's not a synchronous signal we already handle, maybe
                 // we should install a host handler so the host kernel delivers it to us.
                 // For this implementation, we just rely on whatever host signals 

@@ -21,7 +21,7 @@ namespace prisma::runtime {
 
 // x86_64 struct sigaction for kernel ABI
 struct GuestSigaction {
-    std::uint64_t sa_handler;
+    std::uint64_t handler;
     std::uint64_t sa_flags;
     std::uint64_t sa_restorer;
     std::uint64_t sa_mask;

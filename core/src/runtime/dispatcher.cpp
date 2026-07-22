@@ -149,7 +149,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
             else if (kind == FaultKind::Bus) sig = 7;
 
             auto sa = get_guest_sigaction(sig);
-            if (sa.sa_handler != 0 && sa.sa_handler != 1) { // not SIG_DFL or SIG_IGN
+            if (sa.handler != 0 && sa.handler != 1) { // not SIG_DFL or SIG_IGN
                 // Build x86_64 signal frame
                 std::uint64_t rsp = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)];
                 rsp -= 128; // Red Zone
@@ -189,10 +189,11 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
 
                 // Set up args for guest handler
                 state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] = rsp;
-                state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] = sig;
+                state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] =
+                    static_cast<std::uint64_t>(sig);
                 state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsi)] = 0; // info
                 state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] = rsp + 8; // ucontext
-                state_.guest_pc = sa.sa_handler;
+                state_.guest_pc = sa.handler;
                 pc = state_.guest_pc;
             } else {
                 stats.unique_pcs_seen = seen_pcs.size();
