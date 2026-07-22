@@ -1,0 +1,41 @@
+name: diagnose PR 312 build
+
+on:
+  push:
+    branches: [claude/w2-flags-isa-batch]
+
+jobs:
+  concise-core-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure and print only actionable build errors
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! cmake -S core -B core/build-diagnose -G Ninja \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_COMPILER=clang++-17 \
+              > configure.log 2>&1; then
+            echo "=== CMake configure failure ==="
+            tail -n 200 configure.log
+            exit 1
+          fi
+
+          if ! cmake --build core/build-diagnose > build.log 2>&1; then
+            echo "=== Filtered compiler diagnostics ==="
+            grep -n -E \
+              'FAILED:|fatal error:|error:|undefined reference|ninja: build stopped' \
+              build.log | head -n 240 || true
+            echo "=== Tail for context ==="
+            tail -n 120 build.log
+            exit 1
+          fi
+
+          echo "Core build succeeded; the previous failure was not reproducible."
