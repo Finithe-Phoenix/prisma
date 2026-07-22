@@ -1,0 +1,44 @@
+name: futex wait table
+
+on:
+  push:
+    paths:
+      - "core/include/prisma/futex_wait_table.hpp"
+      - "core/tests/futex_wait_table_smoke/**"
+      - ".github/workflows/futex-wait-table.yml"
+  pull_request:
+    paths:
+      - "core/include/prisma/futex_wait_table.hpp"
+      - "core/tests/futex_wait_table_smoke/**"
+      - ".github/workflows/futex-wait-table.yml"
+
+concurrency:
+  group: futex-wait-table-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure
+        run: >-
+          cmake
+          -S core/tests/futex_wait_table_smoke
+          -B build/futex-wait-table
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build/futex-wait-table --config Debug --parallel
+
+      - name: Test
+        run: >-
+          ctest
+          --test-dir build/futex-wait-table
+          --build-config Debug
+          --output-on-failure
