@@ -3,6 +3,7 @@ name: diagnose PR 312 build
 on:
   push:
     branches: [claude/w2-flags-isa-batch]
+  pull_request:
 
 jobs:
   concise-core-build:
