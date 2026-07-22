@@ -1,5 +1,6 @@
 name: diagnose PR 312 build
 
+# Temporary workflow; remove immediately after the core build is green.
 on:
   pull_request:
 
