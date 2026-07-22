@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.30)
 
 project(prisma_futex_wait_table_smoke LANGUAGES CXX)
 
+option(
+    PRISMA_FUTEX_ENABLE_TSAN
+    "Build the futex smoke target with ThreadSanitizer"
+    OFF
+)
+
 find_package(Threads REQUIRED)
 
 add_executable(prisma_futex_wait_table_smoke main.cpp)
@@ -35,6 +41,20 @@ else()
             -Wnull-dereference
             -Wdouble-promotion
             -Werror
+    )
+endif()
+
+if(PRISMA_FUTEX_ENABLE_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "ThreadSanitizer is unavailable with MSVC")
+    endif()
+    target_compile_options(
+        prisma_futex_wait_table_smoke
+        PRIVATE -fsanitize=thread -fno-omit-frame-pointer
+    )
+    target_link_options(
+        prisma_futex_wait_table_smoke
+        PRIVATE -fsanitize=thread
     )
 endif()
 
