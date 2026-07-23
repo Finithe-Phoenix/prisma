@@ -1,6 +1,7 @@
 name: diagnose PR 312 build
 
 # Temporary workflow; remove immediately after the core build is green.
+# This revision validates the refreshed PR merge reference after repair.
 on:
   pull_request:
 
