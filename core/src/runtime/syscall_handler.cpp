@@ -64,12 +64,8 @@ namespace {
 // -- Threading Support --------------------------------------------------------
 
 constexpr std::uint64_t kCloneVm = 0x00000100;
-constexpr std::uint64_t kCloneFs = 0x00000200;
-constexpr std::uint64_t kCloneFiles = 0x00000400;
-constexpr std::uint64_t kCloneSighand = 0x00000800;
 constexpr std::uint64_t kCloneParentSettid = 0x00100000;
 constexpr std::uint64_t kCloneChildCleartid = 0x00200000;
-constexpr std::uint64_t kCloneThread = 0x00010000;
 constexpr std::uint64_t kCloneSettls = 0x00080000;
 constexpr std::uint64_t kCloneChildSettid = 0x01000000;
 
