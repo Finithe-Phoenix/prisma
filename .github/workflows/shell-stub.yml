@@ -1,8 +1,7 @@
 name: shell (Rust) — stub
 
 # Rust shell validation plus a temporary read-only ARM64 preview for PR #312.
-# The diagnostic PR is never merged. The publisher creates only the already-
-# validated unreachable Git blob; the product ref is moved later by the Git API.
+# The diagnostic PR is never merged and only modifies its runner checkout.
 
 on:
   push:
@@ -34,8 +33,8 @@ jobs:
             echo "shell/Cargo.toml not yet present (Fase 3 not started). Scaffolding check only."
           fi
 
-  pr312-unary-arm64-preview:
-    name: pr312-unary-arm64-preview
+  pr312-cmpflags-arm64-preview:
+    name: pr312-cmpflags-arm64-preview
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 40
     steps:
@@ -51,14 +50,14 @@ jobs:
           fetch-depth: 0
           path: product
 
-      - name: Apply INC/DEC destination-order fix in runner workspace
+      - name: Apply CmpFlags lifetime-order fix in runner workspace
         shell: bash
         run: |
           set -euo pipefail
-          python3 diagnostic/tools/ci/apply_pr312_inc_dec_store_order.py product
+          python3 diagnostic/tools/ci/apply_pr312_cmpflags_order.py product
           cd product
           git diff --check
-          git diff --binary -- shell/prisma-decoder/src/decode.rs > ../inc-dec-store-order.patch
+          git diff --binary -- shell/prisma-decoder/src/decode.rs > ../cmpflags-order.patch
 
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt
@@ -66,86 +65,32 @@ jobs:
       - name: Check formatting
         run: cargo fmt --manifest-path product/shell/Cargo.toml --all -- --check
 
-      - name: Run native ARM64 unary ALU regressions
+      - name: Run native ARM64 differential loop
         shell: bash
         env:
           RUST_BACKTRACE: "1"
         run: |
           set -o pipefail
           cargo test --manifest-path product/shell/Cargo.toml \
-            -p prisma-runtime --test exec_unary_alu -- --nocapture \
-            2>&1 | tee unary-runtime-test.log
+            -p prisma-session --test diff_loop -- --nocapture \
+            2>&1 | tee cmpflags-diff-loop.log
 
       - name: Run complete decoder crate tests
         shell: bash
         run: |
           set -o pipefail
           cargo test --manifest-path product/shell/Cargo.toml \
-            -p prisma-decoder 2>&1 | tee unary-decoder-test.log
+            -p prisma-decoder 2>&1 | tee cmpflags-decoder-test.log
 
-      - name: Upload validated INC/DEC source preview
+      - name: Upload validated CmpFlags source preview
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr312-inc-dec-validated-source
+          name: pr312-cmpflags-validated-source
           retention-days: 2
           if-no-files-found: error
           path: |
             product/shell/prisma-decoder/src/decode.rs
-            inc-dec-store-order.patch
-            unary-runtime-test.log
-            unary-decoder-test.log
-
-  publish-pr312-inc-dec-validated-blob:
-    name: publish-pr312-inc-dec-validated-blob
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      VALIDATED_ARTIFACT_ID: "8579609995"
-      EXPECTED_SHA256: "de7d11ca8010df159bb61bfae31f8cfd3cacf84a980951af0525409f9cccc50c"
-      EXPECTED_BLOB_SHA: "c37233bf00172a74ef48684003c0d0e912b3c367"
-    steps:
-      - name: Download validated INC/DEC artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location --silent --show-error \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VALIDATED_ARTIFACT_ID}/zip" \
-            --output validated.zip
-          unzip -q validated.zip -d validated
-
-      - name: Verify bytes and publish unreachable Git blob
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_file="validated/product/shell/prisma-decoder/src/decode.rs"
-          actual_sha256="$(sha256sum "${source_file}" | cut -d' ' -f1)"
-          test "${actual_sha256}" = "${EXPECTED_SHA256}"
-
-          jq -Rs '{content: ., encoding: "utf-8"}' < "${source_file}" > blob-request.json
-          curl --fail --silent --show-error \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs" \
-            --data-binary @blob-request.json \
-            --output blob-response.json
-
-          blob_sha="$(jq -r '.sha // empty' blob-response.json)"
-          test "${blob_sha}" = "${EXPECTED_BLOB_SHA}"
-          printf '%s\n' "${blob_sha}" > validated-blob-sha.txt
-
-      - name: Upload validated blob receipt
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr312-inc-dec-blob-receipt
-          retention-days: 1
-          if-no-files-found: error
-          path: validated-blob-sha.txt
+            cmpflags-order.patch
+            cmpflags-diff-loop.log
+            cmpflags-decoder-test.log
