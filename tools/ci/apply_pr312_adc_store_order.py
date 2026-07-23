@@ -76,11 +76,91 @@ MEM_NEW = '''        stmts.push(Stmt::new(
         Ok(1 + used)
 '''
 
+REG64_ASSERT_OLD = '''            assert!(matches!(
+                d.stmts.last().unwrap().op,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I64,
+                    ..
+                })
+            ));
+'''
 
-def replace_once(text: str, old: str, new: str, name: str) -> str:
+REG64_ASSERT_NEW = '''            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| {
+                    matches!(
+                        &stmt.op,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            size: OpSize::I64,
+                            ..
+                        })
+                    )
+                })
+                .expect("ADC/SBB must publish RAX");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
+'''
+
+REG_SIZE_ASSERT_OLD = '''            assert!(matches!(
+                d.stmts.last().unwrap().op,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rax,
+                    size: actual,
+                    ..
+                }) if actual == size
+            ));
+'''
+
+REG_SIZE_ASSERT_NEW = '''            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| {
+                    matches!(
+                        &stmt.op,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            size: actual,
+                            ..
+                        }) if *actual == size
+                    )
+                })
+                .expect("ADC/SBB must publish RAX");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
+'''
+
+MEM_ASSERT_OLD = '''            assert!(matches!(d.stmts.last().unwrap().op, Op::StoreMem(_)));
+'''
+
+MEM_ASSERT_NEW = '''            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreMem(_)))
+                .expect("ADC/SBB must publish memory destination");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
+'''
+
+
+def replace_exact(text: str, old: str, new: str, name: str, expected: int = 1) -> str:
     count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"expected one {name} block, found {count}")
+    if count != expected:
+        raise SystemExit(f"expected {expected} {name} block(s), found {count}")
     return text.replace(old, new)
 
 
@@ -91,9 +171,18 @@ def main() -> None:
 
     path = args.checkout / "shell/prisma-decoder/src/decode.rs"
     text = path.read_text(encoding="utf-8")
-    text = replace_once(text, VALUE_OLD, VALUE_NEW, "value helper")
-    text = replace_once(text, REG_OLD, REG_NEW, "register destination")
-    text = replace_once(text, MEM_OLD, MEM_NEW, "memory destination")
+    text = replace_exact(text, VALUE_OLD, VALUE_NEW, "value helper")
+    text = replace_exact(text, REG_OLD, REG_NEW, "register destination")
+    text = replace_exact(text, MEM_OLD, MEM_NEW, "memory destination")
+    text = replace_exact(text, REG64_ASSERT_OLD, REG64_ASSERT_NEW, "I64 register assertion")
+    text = replace_exact(
+        text,
+        REG_SIZE_ASSERT_OLD,
+        REG_SIZE_ASSERT_NEW,
+        "sized register assertion",
+        expected=2,
+    )
+    text = replace_exact(text, MEM_ASSERT_OLD, MEM_ASSERT_NEW, "memory assertion")
     path.write_text(text, encoding="utf-8")
 
 
