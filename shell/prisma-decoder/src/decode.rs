@@ -3973,7 +3973,10 @@ fn emit_adc_sbb_value(
         None,
         Op::StoreCarry(StoreCarry { value: new_cf }),
     ));
-    push_adc_sbb_rflags_bits(stmts, is_sbb, lhs, rhs, res, size);
+    // The destination must be published before the expanded PF/AF/ZF/SF/OF
+    // graph allocates more SSA refs. The current migration backend maps refs
+    // through a bounded register ring, so delaying StoreReg/StoreMem can let a
+    // later flag constant overwrite the arithmetic result's physical register.
     res
 }
 
@@ -3995,6 +3998,7 @@ fn emit_adc_sbb(
             size,
         }),
     ));
+    push_adc_sbb_rflags_bits(stmts, is_sbb, lhs, rhs, res, size);
 }
 
 /// ADC/SBB r/m, r with real carry for both register and memory destinations.
@@ -4042,6 +4046,7 @@ fn decode_adc_sbb_rm_r(
                 size,
             }),
         ));
+        push_adc_sbb_rflags_bits(stmts, is_sbb, dst, src, result, size);
         Ok(1 + used)
     }
 }
@@ -5016,7 +5021,8 @@ fn decode_alu_rm_imm(
             return Ok(1 + modrm_bytes + imm_bytes);
         }
         if matches!(modrm.reg, 2 | 3) {
-            let result = emit_adc_sbb_value(stmts, modrm.reg == 3, mem_val, imm_ref, size);
+            let is_sbb = modrm.reg == 3;
+            let result = emit_adc_sbb_value(stmts, is_sbb, mem_val, imm_ref, size);
             stmts.push(Stmt::new(
                 None,
                 Op::StoreMem(StoreMem {
@@ -5025,6 +5031,7 @@ fn decode_alu_rm_imm(
                     size,
                 }),
             ));
+            push_adc_sbb_rflags_bits(stmts, is_sbb, mem_val, imm_ref, result, size);
             return Ok(1 + modrm_bytes + imm_bytes);
         }
         let result = alloc_ref(stmts);
@@ -10973,14 +10980,26 @@ mod tests {
                     ..
                 }) if *actual == from_sub
             )));
-            assert!(matches!(
-                d.stmts.last().unwrap().op,
-                Op::StoreReg(StoreReg {
-                    reg: Gpr::Rax,
-                    size: OpSize::I64,
-                    ..
+            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| {
+                    matches!(
+                        &stmt.op,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            size: OpSize::I64,
+                            ..
+                        })
+                    )
                 })
-            ));
+                .expect("ADC/SBB must publish RAX");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
         }
     }
 
@@ -11011,14 +11030,26 @@ mod tests {
                     ..
                 }) if *actual == from_sub
             )));
-            assert!(matches!(
-                d.stmts.last().unwrap().op,
-                Op::StoreReg(StoreReg {
-                    reg: Gpr::Rax,
-                    size: actual,
-                    ..
-                }) if actual == size
-            ));
+            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| {
+                    matches!(
+                        &stmt.op,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            size: actual,
+                            ..
+                        }) if *actual == size
+                    )
+                })
+                .expect("ADC/SBB must publish RAX");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
         }
     }
 
@@ -11044,14 +11075,26 @@ mod tests {
                     ..
                 }) if *actual == from_sub
             )));
-            assert!(matches!(
-                d.stmts.last().unwrap().op,
-                Op::StoreReg(StoreReg {
-                    reg: Gpr::Rax,
-                    size: actual,
-                    ..
-                }) if actual == size
-            ));
+            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| {
+                    matches!(
+                        &stmt.op,
+                        Op::StoreReg(StoreReg {
+                            reg: Gpr::Rax,
+                            size: actual,
+                            ..
+                        }) if *actual == size
+                    )
+                })
+                .expect("ADC/SBB must publish RAX");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
         }
     }
 
@@ -11123,7 +11166,17 @@ mod tests {
             assert!(d.stmts.iter().any(|s| matches!(s.op, Op::LoadCarry(_))));
             assert!(d.stmts.iter().any(|s| matches!(s.op, Op::StoreCarry(_))));
             assert_rflags_bits_publish(&d.stmts);
-            assert!(matches!(d.stmts.last().unwrap().op, Op::StoreMem(_)));
+            let destination_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreMem(_)))
+                .expect("ADC/SBB must publish memory destination");
+            let rflags_index = d
+                .stmts
+                .iter()
+                .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromBits(_)))
+                .expect("ADC/SBB must publish RFLAGS");
+            assert!(destination_index < rflags_index);
             assert!(d.stmts.iter().any(|s| matches!(
                 &s.op,
                 Op::ReadCarryOut(ReadCarryOut {
