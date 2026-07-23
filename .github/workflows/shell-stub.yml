@@ -1,7 +1,7 @@
 name: shell (Rust) — stub
 
-# Rust shell validation plus a temporary read-only ARM64 diagnostic for PR #312.
-# The diagnostic PR is never merged and only instruments its runner checkout.
+# Rust shell validation plus a temporary read-only ARM64 preview for PR #312.
+# The diagnostic PR is never merged and only modifies its runner checkout.
 
 on:
   push:
@@ -33,12 +33,12 @@ jobs:
             echo "shell/Cargo.toml not yet present (Fase 3 not started). Scaffolding check only."
           fi
 
-  pr312-unary-arm64-diagnostic:
-    name: pr312-unary-arm64-diagnostic
+  pr312-unary-arm64-preview:
+    name: pr312-unary-arm64-preview
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
-      - name: Checkout diagnostic controls
+      - name: Checkout preview controls
         uses: actions/checkout@v7
         with:
           path: diagnostic
@@ -50,24 +50,22 @@ jobs:
           fetch-depth: 0
           path: product
 
-      - name: Instrument product checkout only
-        run: python3 diagnostic/tools/ci/instrument_pr312_unary.py product
-
-      - name: Capture relevant source locations
+      - name: Apply INC/DEC destination-order fix in runner workspace
         shell: bash
         run: |
           set -euo pipefail
-          {
-            grep -n -E 'decode_group3|decode_group5|push_alu_flags|WriteFlags|StoreReg' \
-              product/shell/prisma-decoder/src/decode.rs
-            grep -n -E 'fn value_reg|WriteFlags|AluFlags|StoreReg' \
-              product/shell/prisma-backend/src/lowerer.rs
-          } > unary-source-locations.log || true
+          python3 diagnostic/tools/ci/apply_pr312_inc_dec_store_order.py product
+          cd product
+          git diff --check
+          git diff --binary -- shell/prisma-decoder/src/decode.rs > ../inc-dec-store-order.patch
 
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install stable --profile minimal --component rustfmt
 
-      - name: Run unary ALU tests with full output
+      - name: Check formatting
+        run: cargo fmt --manifest-path product/shell/Cargo.toml --all -- --check
+
+      - name: Run native ARM64 unary ALU regressions
         shell: bash
         env:
           RUST_BACKTRACE: "1"
@@ -75,15 +73,24 @@ jobs:
           set -o pipefail
           cargo test --manifest-path product/shell/Cargo.toml \
             -p prisma-runtime --test exec_unary_alu -- --nocapture \
-            2>&1 | tee unary-test.log
+            2>&1 | tee unary-runtime-test.log
 
-      - name: Upload unary ALU diagnostics
+      - name: Run complete decoder crate tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path product/shell/Cargo.toml \
+            -p prisma-decoder 2>&1 | tee unary-decoder-test.log
+
+      - name: Upload validated INC/DEC source preview
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr312-unary-arm64-diagnostics
+          name: pr312-inc-dec-validated-source
           retention-days: 2
           if-no-files-found: error
           path: |
-            unary-test.log
-            unary-source-locations.log
+            product/shell/prisma-decoder/src/decode.rs
+            inc-dec-store-order.patch
+            unary-runtime-test.log
+            unary-decoder-test.log
