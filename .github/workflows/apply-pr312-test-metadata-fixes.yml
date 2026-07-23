@@ -1,0 +1,114 @@
+name: apply PR 312 test and C API metadata fixes
+
+on:
+  push:
+    branches: [claude/w2-flags-isa-batch]
+    paths:
+      - ".github/workflows/apply-pr312-test-metadata-fixes.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: claude/w2-flags-isa-batch
+          fetch-depth: 0
+
+      - name: Apply assertion-based fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"{path}: expected one occurrence, found {count}: {old!r}"
+                  )
+              path.write_text(text.replace(old, new), encoding="utf-8")
+
+          capi_h = Path("core/include/prisma/capi.h")
+          replace_exact(
+              capi_h,
+              "    PRISMA_BLOCK_EXIT_REP_STOS = 8,\n"
+              "    PRISMA_BLOCK_EXIT_REP_MOVS = 9\n",
+              "    PRISMA_BLOCK_EXIT_REP_STOS = 8,\n"
+              "    PRISMA_BLOCK_EXIT_REP_MOVS = 9,\n"
+              "    PRISMA_BLOCK_EXIT_SYSCALL = 10\n",
+          )
+
+          capi_cpp = Path("core/src/capi/capi.cpp")
+          marker = """void fill_block_info(const prisma::translator::TranslatedBlock& b,
+                      prisma_block_info& out) {
+"""
+          mapping = """int32_t to_block_exit_kind(prisma::translator::BlockExitKind kind) {
+    using prisma::translator::BlockExitKind;
+    switch (kind) {
+        case BlockExitKind::None:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_NONE);
+        case BlockExitKind::Return:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_RETURN);
+        case BlockExitKind::JumpRel:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_JUMP_REL);
+        case BlockExitKind::JumpReg:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_JUMP_REG);
+        case BlockExitKind::CondJumpRel:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_COND_JUMP_REL);
+        case BlockExitKind::CallRel:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_CALL_REL);
+        case BlockExitKind::CallReg:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_CALL_REG);
+        case BlockExitKind::RetAdjusted:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_RET_ADJUSTED);
+        case BlockExitKind::RepStos:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_REP_STOS);
+        case BlockExitKind::RepMovs:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_REP_MOVS);
+        case BlockExitKind::Syscall:
+            return static_cast<int32_t>(PRISMA_BLOCK_EXIT_SYSCALL);
+    }
+    return static_cast<int32_t>(PRISMA_BLOCK_EXIT_NONE);
+}
+
+""" + marker
+          replace_exact(capi_cpp, marker, mapping)
+          replace_exact(
+              capi_cpp,
+              "    out.exit_kind = static_cast<int32_t>(b.exit_kind);\n",
+              "    out.exit_kind = to_block_exit_kind(b.exit_kind);\n",
+          )
+
+          passes_test = Path("core/tests/test_passes_mem.cpp")
+          replace_exact(
+              passes_test,
+              'TEST_CASE("PassManager: default_pipeline has 13 passes '
+              '(x87 + peephole + flag-write-elim)") {\n'
+              '    auto pm = passes::default_pipeline();\n'
+              '    REQUIRE(pm.size() == 13u);\n'
+              '}\n',
+              'TEST_CASE("PassManager: default_pipeline has 14 passes '
+              '(including inline-short-helpers)") {\n'
+              '    auto pm = passes::default_pipeline();\n'
+              '    REQUIRE(pm.size() == 14u);\n'
+              '}\n',
+          )
+          PY
+          git diff --check
+
+      - name: Commit fixes and remove one-shot files
+        run: |
+          git config user.name "prisma-ci"
+          git config user.email "prisma-ci@users.noreply.github.com"
+          git add \
+            core/include/prisma/capi.h \
+            core/src/capi/capi.cpp \
+            core/tests/test_passes_mem.cpp
+          git rm .ci/pr312-arm64-diagnostic.txt
+          git rm .github/workflows/apply-pr312-test-metadata-fixes.yml
+          git commit -m "fix(capi): map block exits explicitly and refresh pass count"
+          git push origin HEAD:claude/w2-flags-isa-batch
