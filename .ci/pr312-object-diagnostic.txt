@@ -1,0 +1,15 @@
+=== CMakeFiles/prisma_runtime.dir/src/runtime/dispatcher.cpp.o ===
+SUCCESS
+=== CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o ===
+2:FAILED: [code=1] CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o 
+4:/home/runner/work/prisma/prisma/core/src/runtime/syscall_handler.cpp:1278:69: error: use of old-style cast [-Werror,-Wold-style-cast]
+8:ninja: build stopped: subcommand failed.
+[1/1] Building CXX object CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o
+FAILED: [code=1] CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o 
+/usr/bin/clang++-17 -DVIXL_CODE_BUFFER_MALLOC -DVIXL_INCLUDE_TARGET_A64 -I/home/runner/work/prisma/prisma/core/include -I/home/runner/work/prisma/prisma/core/src -isystem /home/runner/work/prisma/prisma/core/build-objects/_deps/vixl_src-src/src -isystem /home/runner/work/prisma/prisma/core/build-objects/_deps/vixl_src-src/src/aarch64 -g -std=c++20 -fPIC -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -Wcast-align -Wunused -Woverloaded-virtual -Wnull-dereference -Wdouble-promotion -Werror -MD -MT CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o -MF CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o.d @CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o.modmap -o CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o -c /home/runner/work/prisma/prisma/core/src/runtime/syscall_handler.cpp
+/home/runner/work/prisma/prisma/core/src/runtime/syscall_handler.cpp:1278:69: error: use of old-style cast [-Werror,-Wold-style-cast]
+ 1278 |                 std::fprintf(stderr, " -> <restored rip=0x%llx>\n", (unsigned long long)state->guest_pc);
+      |                                                                     ^                   ~~~~~~~~~~~~~~~
+1 error generated.
+ninja: build stopped: subcommand failed.
+FAILED=1
