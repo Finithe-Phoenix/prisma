@@ -1,7 +1,8 @@
 name: shell (Rust) — stub
 
-# Rust shell validation. This temporary diagnostic branch adds one isolated,
-# read-only ARM64 preview against PR #312; it will be closed without merging.
+# Rust shell validation. This temporary diagnostic branch validates the PR #312
+# ADC/SBB ordering fix and publishes only the already-proven Git blob. It will
+# be closed without merging after the product commit is created by the Git API.
 
 on:
   push:
@@ -63,9 +64,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt
 
       - name: Check formatting of patched decoder
-        shell: bash
-        run: |
-          cargo fmt --manifest-path product/shell/Cargo.toml --all -- --check
+        run: cargo fmt --manifest-path product/shell/Cargo.toml --all -- --check
 
       - name: Run native ARM64 ADC/SBB regressions
         shell: bash
@@ -96,3 +95,57 @@ jobs:
             adc-store-order.patch
             adc-runtime-test.log
             adc-decoder-test.log
+
+  publish-pr312-adc-validated-blob:
+    name: publish-pr312-adc-validated-blob
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VALIDATED_ARTIFACT_ID: "8578717175"
+      EXPECTED_SHA256: "04cf8bb9e63f987724e3754700ebf3c43028424d82848a0f0b13e07a4adce3c3"
+      EXPECTED_BLOB_SHA: "015451d7622686d26e211edb45b05fc7a78c6e4b"
+    steps:
+      - name: Download validated ADC/SBB artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VALIDATED_ARTIFACT_ID}/zip" \
+            --output validated.zip
+          unzip -q validated.zip -d validated
+
+      - name: Verify bytes and publish unreachable Git blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file="validated/product/shell/prisma-decoder/src/decode.rs"
+          actual_sha256="$(sha256sum "${source_file}" | cut -d' ' -f1)"
+          test "${actual_sha256}" = "${EXPECTED_SHA256}"
+
+          jq -Rs '{content: ., encoding: "utf-8"}' < "${source_file}" > blob-request.json
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs" \
+            --data-binary @blob-request.json \
+            --output blob-response.json
+
+          blob_sha="$(jq -r '.sha // empty' blob-response.json)"
+          test "${blob_sha}" = "${EXPECTED_BLOB_SHA}"
+          printf '%s\n' "${blob_sha}" > validated-blob-sha.txt
+
+      - name: Upload validated blob receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr312-adc-blob-receipt
+          retention-days: 1
+          if-no-files-found: error
+          path: validated-blob-sha.txt
