@@ -1,5 +1,6 @@
 name: apply PR 312 WideDiv register-pressure fix
 
+# Updated once after creation so GitHub executes the one-shot workflow.
 on:
   push:
     branches: [claude/w2-flags-isa-batch]
