@@ -77,3 +77,57 @@ jobs:
           path: |
             clang-format.patch
             clang-format-files.txt
+
+  pr312-widediv-preview:
+    name: pr312-widediv-preview
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - name: Checkout CI control branch
+        uses: actions/checkout@v7
+        with:
+          path: ci-control
+
+      - name: Checkout PR 312 product branch
+        uses: actions/checkout@v7
+        with:
+          ref: claude/w2-flags-isa-batch
+          fetch-depth: 0
+          path: product
+
+      - name: Apply preview patch without committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ci-control/tools/ci/pr312_widediv_preview.py product
+          cd product
+          git diff --check
+          git diff --binary -- core/src/backend/lowering.cpp > ../widediv.patch
+
+      - name: Install ARM64 toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure and build core tests
+        run: |
+          cmake -S product/core -B product/core/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17
+          cmake --build product/core/build --target prisma_core_tests
+
+      - name: Run focused WideDiv regression
+        run: |
+          product/core/build/prisma_core_tests \
+            "e2e: DIV r/m64 full-width dividend - quotient and remainder"
+
+      - name: Upload validated source preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr312-widediv-validated-source
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            product/core/src/backend/lowering.cpp
+            widediv.patch
