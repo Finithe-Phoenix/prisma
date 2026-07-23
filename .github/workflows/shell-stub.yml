@@ -1,7 +1,7 @@
 name: shell (Rust) — stub
 
-# Stub workflow for the Rust shell/orchestrator. Activates once
-# shell/Cargo.toml exists (Fase 3, semana 93+).
+# Rust shell validation plus a temporary read-only ARM64 diagnostic for PR #312.
+# The diagnostic PR is never merged and only instruments its runner checkout.
 
 on:
   push:
@@ -32,3 +32,63 @@ jobs:
           else
             echo "shell/Cargo.toml not yet present (Fase 3 not started). Scaffolding check only."
           fi
+
+  pr312-muldiv-arm64-diagnostic:
+    name: pr312-muldiv-arm64-diagnostic
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - name: Checkout diagnostic controls
+        uses: actions/checkout@v7
+        with:
+          path: diagnostic
+
+      - name: Checkout PR 312 product branch
+        uses: actions/checkout@v7
+        with:
+          ref: claude/w2-flags-isa-batch
+          fetch-depth: 0
+          path: product
+
+      - name: Instrument product checkout only
+        run: python3 diagnostic/tools/ci/instrument_pr312_muldiv.py product
+
+      - name: Capture relevant source locations
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            grep -n -E 'emit_div_idiv_pair|emit_div_quotient_overflow_trap|fn value_reg|lower_mod_binop' \
+              product/shell/prisma-decoder/src/decode.rs \
+              product/shell/prisma-backend/src/lowerer.rs
+          } > muldiv-source-locations.log || true
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Run targeted narrow DIV/IDIV tests with full output
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          set -o pipefail
+          cargo test --manifest-path product/shell/Cargo.toml \
+            -p prisma-runtime --test exec_muldiv \
+            div_cx_uses_dx_ax_dividend -- --nocapture \
+            2>&1 | tee div16-test.log
+          cargo test --manifest-path product/shell/Cargo.toml \
+            -p prisma-runtime --test exec_muldiv \
+            idiv_ecx_uses_edx_eax_signed_dividend -- --nocapture \
+            2>&1 | tee idiv32-test.log
+
+      - name: Upload narrow DIV/IDIV diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr312-muldiv-arm64-diagnostics
+          retention-days: 2
+          if-no-files-found: error
+          path: |
+            div16-test.log
+            idiv32-test.log
+            muldiv-source-locations.log
