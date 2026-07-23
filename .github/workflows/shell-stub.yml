@@ -1,8 +1,7 @@
 name: shell (Rust) — stub
 
-# Rust shell validation plus a temporary read-only ARM64 preview for PR #312.
-# The diagnostic PR is never merged. The publisher creates only the already-
-# validated unreachable Git blob; the product ref is moved later by the Git API.
+# Rust shell validation plus a temporary read-only ARM64 diagnostic for PR #312.
+# The diagnostic PR is never merged and only instruments its runner checkout.
 
 on:
   push:
@@ -34,12 +33,12 @@ jobs:
             echo "shell/Cargo.toml not yet present (Fase 3 not started). Scaffolding check only."
           fi
 
-  pr312-muldiv-arm64-preview:
-    name: pr312-muldiv-arm64-preview
+  pr312-unary-arm64-diagnostic:
+    name: pr312-unary-arm64-diagnostic
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 40
+    timeout-minutes: 35
     steps:
-      - name: Checkout preview controls
+      - name: Checkout diagnostic controls
         uses: actions/checkout@v7
         with:
           path: diagnostic
@@ -51,101 +50,40 @@ jobs:
           fetch-depth: 0
           path: product
 
-      - name: Apply narrow DIV/IDIV lifetime fix in runner workspace
+      - name: Instrument product checkout only
+        run: python3 diagnostic/tools/ci/instrument_pr312_unary.py product
+
+      - name: Capture relevant source locations
         shell: bash
         run: |
           set -euo pipefail
-          python3 diagnostic/tools/ci/apply_pr312_narrow_div_order.py product
-          cd product
-          git diff --check
-          git diff --binary -- shell/prisma-decoder/src/decode.rs > ../narrow-div-order.patch
+          {
+            grep -n -E 'decode_group3|decode_group5|push_alu_flags|WriteFlags|StoreReg' \
+              product/shell/prisma-decoder/src/decode.rs
+            grep -n -E 'fn value_reg|WriteFlags|AluFlags|StoreReg' \
+              product/shell/prisma-backend/src/lowerer.rs
+          } > unary-source-locations.log || true
 
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component rustfmt
+        run: rustup toolchain install stable --profile minimal
 
-      - name: Check formatting
-        run: cargo fmt --manifest-path product/shell/Cargo.toml --all -- --check
-
-      - name: Run complete native ARM64 MUL/DIV regression file
+      - name: Run unary ALU tests with full output
         shell: bash
         env:
           RUST_BACKTRACE: "1"
         run: |
           set -o pipefail
           cargo test --manifest-path product/shell/Cargo.toml \
-            -p prisma-runtime --test exec_muldiv -- --nocapture \
-            2>&1 | tee muldiv-runtime-test.log
+            -p prisma-runtime --test exec_unary_alu -- --nocapture \
+            2>&1 | tee unary-test.log
 
-      - name: Run complete decoder crate tests
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo test --manifest-path product/shell/Cargo.toml \
-            -p prisma-decoder 2>&1 | tee muldiv-decoder-test.log
-
-      - name: Upload validated narrow DIV/IDIV source preview
+      - name: Upload unary ALU diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr312-narrow-div-validated-source
+          name: pr312-unary-arm64-diagnostics
           retention-days: 2
           if-no-files-found: error
           path: |
-            product/shell/prisma-decoder/src/decode.rs
-            narrow-div-order.patch
-            muldiv-runtime-test.log
-            muldiv-decoder-test.log
-
-  publish-pr312-narrow-div-validated-blob:
-    name: publish-pr312-narrow-div-validated-blob
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      VALIDATED_ARTIFACT_ID: "8579095612"
-      EXPECTED_SHA256: "dc3becce00edcf0f0803844a4a2ed145c54d75f03793b6499a208611b67f1372"
-      EXPECTED_BLOB_SHA: "2c19d8f64fc50c283dda099b1a2f1b98c79d6fe7"
-    steps:
-      - name: Download validated narrow DIV/IDIV artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location --silent --show-error \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VALIDATED_ARTIFACT_ID}/zip" \
-            --output validated.zip
-          unzip -q validated.zip -d validated
-
-      - name: Verify bytes and publish unreachable Git blob
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_file="validated/product/shell/prisma-decoder/src/decode.rs"
-          actual_sha256="$(sha256sum "${source_file}" | cut -d' ' -f1)"
-          test "${actual_sha256}" = "${EXPECTED_SHA256}"
-
-          jq -Rs '{content: ., encoding: "utf-8"}' < "${source_file}" > blob-request.json
-          curl --fail --silent --show-error \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs" \
-            --data-binary @blob-request.json \
-            --output blob-response.json
-
-          blob_sha="$(jq -r '.sha // empty' blob-response.json)"
-          test "${blob_sha}" = "${EXPECTED_BLOB_SHA}"
-          printf '%s\n' "${blob_sha}" > validated-blob-sha.txt
-
-      - name: Upload validated blob receipt
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr312-narrow-div-blob-receipt
-          retention-days: 1
-          if-no-files-found: error
-          path: validated-blob-sha.txt
+            unary-test.log
+            unary-source-locations.log
