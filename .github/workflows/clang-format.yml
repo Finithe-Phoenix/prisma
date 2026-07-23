@@ -116,10 +116,21 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-17
           cmake --build product/core/build --target prisma_core_tests
 
-      - name: Run focused WideDiv regression
+      - name: Capture matching tests
+        shell: bash
         run: |
+          set -o pipefail
           product/core/build/prisma_core_tests \
-            "e2e: DIV r/m64 full-width dividend - quotient and remainder"
+            "e2e: DIV r/m64 full-width dividend - quotient and remainder" \
+            --list-tests 2>&1 | tee widediv-list-tests.log
+
+      - name: Run focused WideDiv regression with assertions
+        shell: bash
+        run: |
+          set -o pipefail
+          product/core/build/prisma_core_tests \
+            "e2e: DIV r/m64 full-width dividend - quotient and remainder" \
+            --reporter console -s 2>&1 | tee widediv-test.log
 
       - name: Upload validated source preview
         if: always()
@@ -131,3 +142,5 @@ jobs:
           path: |
             product/core/src/backend/lowering.cpp
             widediv.patch
+            widediv-list-tests.log
+            widediv-test.log
