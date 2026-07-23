@@ -1,7 +1,8 @@
 name: shell (Rust) — stub
 
 # Rust shell validation plus a temporary read-only ARM64 preview for PR #312.
-# The diagnostic PR is never merged and only modifies its runner checkout.
+# The diagnostic PR is never merged. The publisher creates only the already-
+# validated unreachable Git blob; the product ref is moved later by the Git API.
 
 on:
   push:
@@ -94,3 +95,57 @@ jobs:
             narrow-div-order.patch
             muldiv-runtime-test.log
             muldiv-decoder-test.log
+
+  publish-pr312-narrow-div-validated-blob:
+    name: publish-pr312-narrow-div-validated-blob
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VALIDATED_ARTIFACT_ID: "8579095612"
+      EXPECTED_SHA256: "dc3becce00edcf0f0803844a4a2ed145c54d75f03793b6499a208611b67f1372"
+      EXPECTED_BLOB_SHA: "2c19d8f64fc50c283dda099b1a2f1b98c79d6fe7"
+    steps:
+      - name: Download validated narrow DIV/IDIV artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VALIDATED_ARTIFACT_ID}/zip" \
+            --output validated.zip
+          unzip -q validated.zip -d validated
+
+      - name: Verify bytes and publish unreachable Git blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file="validated/product/shell/prisma-decoder/src/decode.rs"
+          actual_sha256="$(sha256sum "${source_file}" | cut -d' ' -f1)"
+          test "${actual_sha256}" = "${EXPECTED_SHA256}"
+
+          jq -Rs '{content: ., encoding: "utf-8"}' < "${source_file}" > blob-request.json
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs" \
+            --data-binary @blob-request.json \
+            --output blob-response.json
+
+          blob_sha="$(jq -r '.sha // empty' blob-response.json)"
+          test "${blob_sha}" = "${EXPECTED_BLOB_SHA}"
+          printf '%s\n' "${blob_sha}" > validated-blob-sha.txt
+
+      - name: Upload validated blob receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr312-narrow-div-blob-receipt
+          retention-days: 1
+          if-no-files-found: error
+          path: validated-blob-sha.txt
