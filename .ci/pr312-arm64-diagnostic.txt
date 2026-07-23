@@ -1,0 +1,333 @@
+ARM64_TEST_FAILURE
+41:          Start   20: TranslationCache: load on missing file returns OpenFailed
+42:  20/1183 Test   #20: TranslationCache: load on missing file returns OpenFailed ...............................................   Passed    0.01 sec
+77:          Start   38: signal_handler: SIGILL recovery from an illegal ARM64 instruction
+78:  38/1183 Test   #38: signal_handler: SIGILL recovery from an illegal ARM64 instruction .......................................   Passed    0.01 sec
+89:          Start   44: Dispatcher: fetch failure when PC leaves known memory
+90:  44/1183 Test   #44: Dispatcher: fetch failure when PC leaves known memory ...................................................   Passed    0.01 sec
+461:          Start  230: signal_handler: SIGSEGV recovery via setjmp/longjmp
+462: 230/1183 Test  #230: signal_handler: SIGSEGV recovery via setjmp/longjmp .....................................................   Passed    0.01 sec
+748: 373/1183 Test  #373: e2e: DIV r/m64 → quotient in RAX, remainder in RDX (F2-BK-007) ........................................***Failed    0.01 sec
+762:/home/runner/work/prisma/prisma/core/tests/test_e2e_dispatcher.cpp:4456: FAILED:
+771:assertions: 1 | 1 failed
+872:          Start  423: Dispatcher: translation failure on undecodable bytes
+873: 423/1183 Test  #423: Dispatcher: translation failure on undecodable bytes ....................................................   Passed    0.01 sec
+1224:          Start  599: TranslationCache: async save to an invalid path returns OpenFailed
+1225: 599/1183 Test  #599: TranslationCache: async save to an invalid path returns OpenFailed ......................................   Passed    0.01 sec
+1553: 763/1183 Test  #763: capi: translate populates block info and hits the cache .................................................***Failed    0.01 sec
+1567:/home/runner/work/prisma/prisma/core/tests/test_capi.cpp:89: FAILED:
+1574:assertions: 5 | 4 passed | 1 failed
+1673:          Start  812: e2e: CMPXCHG8B success and failure paths + ZF direction
+1674: 812/1183 Test  #812: e2e: CMPXCHG8B success and failure paths + ZF direction .................................................   Passed    0.02 sec
+1787:          Start  869: Translator: decoder failure surfaces as DecodeFailed
+1788: 869/1183 Test  #869: Translator: decoder failure surfaces as DecodeFailed ....................................................   Passed    0.01 sec
+1813:          Start  882: signal_handler: SIGBUS recovery via setjmp/longjmp
+1814: 882/1183 Test  #882: signal_handler: SIGBUS recovery via setjmp/longjmp ......................................................   Passed    0.01 sec
+2102:1026/1183 Test #1026: PassManager: default_pipeline has 13 passes (x87 + peephole + flag-write-elim) ..........................***Failed    0.01 sec
+2116:/home/runner/work/prisma/prisma/core/tests/test_passes_mem.cpp:208: FAILED:
+2123:assertions: 1 | 1 failed
+2445:The following tests FAILED:
+2446:	373 - e2e: DIV r/m64 → quotient in RAX, remainder in RDX (F2-BK-007) (Failed)
+2447:	763 - capi: translate populates block info and hits the cache (Failed)
+2448:	1026 - PassManager: default_pipeline has 13 passes (x87 + peephole + flag-write-elim) (Failed)
+--- tail ---
+          Start 1039: Lowerer: Extend unsigned i8 → i64 emits uxtb
+1039/1183 Test #1039: Lowerer: Extend unsigned i8 → i64 emits uxtb ..........................................................   Passed    0.08 sec
+          Start 1040: TranslationCache: load leaves cache unchanged on error
+1040/1183 Test #1040: TranslationCache: load leaves cache unchanged on error ..................................................   Passed    0.01 sec
+          Start 1041: CpuStateFrame: read-write fs_base and gs_base through the frame
+1041/1183 Test #1041: CpuStateFrame: read-write fs_base and gs_base through the frame .........................................   Passed    0.01 sec
+          Start 1042: smc_guard: global pointer setter / getter round-trip
+1042/1183 Test #1042: smc_guard: global pointer setter / getter round-trip ....................................................   Passed    0.01 sec
+          Start 1043: decode SSE3 ADDSUBPS/PD and HSUBPS/PD synthesis
+1043/1183 Test #1043: decode SSE3 ADDSUBPS/PD and HSUBPS/PD synthesis .........................................................   Passed    0.01 sec
+          Start 1044: decode LZCNT rax, rax via F3 48 0F BD C0
+1044/1183 Test #1044: decode LZCNT rax, rax via F3 48 0F BD C0 ................................................................   Passed    0.01 sec
+          Start 1045: validate: shift count ref may use a different integer size
+1045/1183 Test #1045: validate: shift count ref may use a different integer size ..............................................   Passed    0.01 sec
+          Start 1046: Lowerer: FpConstant + FpBinOp(Add) emits fadd s/d
+1046/1183 Test #1046: Lowerer: FpConstant + FpBinOp(Add) emits fadd s/d .......................................................   Passed    0.08 sec
+          Start 1047: decode VPGATHERQQ rejects dest==mask (#UD) — F2-IR-059
+1047/1183 Test #1047: decode VPGATHERQQ rejects dest==mask (#UD) — F2-IR-059 ................................................   Passed    0.01 sec
+          Start 1048: CpuStateFrame: writing through offset_of produces correct values
+1048/1183 Test #1048: CpuStateFrame: writing through offset_of produces correct values ........................................   Passed    0.01 sec
+          Start 1049: Translator: exposes call/return terminator metadata
+1049/1183 Test #1049: Translator: exposes call/return terminator metadata .....................................................   Passed    0.01 sec
+          Start 1050: TranslationCache: destructor joins an in-flight async save
+1050/1183 Test #1050: TranslationCache: destructor joins an in-flight async save ..............................................   Passed    0.01 sec
+          Start 1051: decode non-carry Group 2 rax, 1 via D1 publishes persistent flags
+1051/1183 Test #1051: decode non-carry Group 2 rax, 1 via D1 publishes persistent flags .......................................   Passed    0.01 sec
+          Start 1052: host_features: test override returns the injected struct
+1052/1183 Test #1052: host_features: test override returns the injected struct ................................................   Passed    0.01 sec
+          Start 1053: Lowerer: SHA1MSG1 is EXT+EOR and avoids sha1su0 — F2-IR-060
+1053/1183 Test #1053: Lowerer: SHA1MSG1 is EXT+EOR and avoids sha1su0 — F2-IR-060 ...........................................   Passed    0.08 sec
+          Start 1054: decode PEXTRQ rax, xmm0, 1 (66 48 0F 3A 16 C0 01) — qword extract D2 via REX.W
+1054/1183 Test #1054: decode PEXTRQ rax, xmm0, 1 (66 48 0F 3A 16 C0 01) — qword extract D2 via REX.W ........................   Passed    0.01 sec
+          Start 1055: validate: simple well-formed program passes
+1055/1183 Test #1055: validate: simple well-formed program passes .............................................................   Passed    0.01 sec
+          Start 1056: decode SHUFPD xmm0, xmm1, 0x01 (66 0F C6 C1 01) — D2 form
+1056/1183 Test #1056: decode SHUFPD xmm0, xmm1, 0x01 (66 0F C6 C1 01) — D2 form .............................................   Passed    0.01 sec
+          Start 1057: decode PCMPISTRI xmm8, xmm9 (66 45 0F 3A 63 C1 00) - extended XMM regs
+1057/1183 Test #1057: decode PCMPISTRI xmm8, xmm9 (66 45 0F 3A 63 C1 00) - extended XMM regs ..................................   Passed    0.01 sec
+          Start 1058: decode Group 1 imm8 honors r/m register and REX.B
+1058/1183 Test #1058: decode Group 1 imm8 honors r/m register and REX.B .......................................................   Passed    0.01 sec
+          Start 1059: decode MOVAPS xmm0, xmm1 (0F 28 C1) — F2-IR-013 reg-reg load
+1059/1183 Test #1059: decode MOVAPS xmm0, xmm1 (0F 28 C1) — F2-IR-013 reg-reg load ..........................................   Passed    0.01 sec
+          Start 1060: decode PADDB with REX.R/B selects xmm8/xmm15 correctly
+1060/1183 Test #1060: decode PADDB with REX.R/B selects xmm8/xmm15 correctly ..................................................   Passed    0.01 sec
+          Start 1061: e2e: real CALL/RET round-trip — F2-IR-054 opt-in semantics
+1061/1183 Test #1061: e2e: real CALL/RET round-trip — F2-IR-054 opt-in semantics ............................................   Passed    0.01 sec
+          Start 1062: decode LEAVE (0xC9) → RSP := RBP; RBP := [RBP]
+1062/1183 Test #1062: decode LEAVE (0xC9) → RSP := RBP; RBP := [RBP] ........................................................   Passed    0.01 sec
+          Start 1063: dse: StoreMemTSO flushes the pending table (conservative)
+1063/1183 Test #1063: dse: StoreMemTSO flushes the pending table (conservative) ...............................................   Passed    0.01 sec
+          Start 1064: decode CVTSD2SS xmm0, xmm1 (F2 0F 5A C1) — double→single
+1064/1183 Test #1064: decode CVTSD2SS xmm0, xmm1 (F2 0F 5A C1) — double→single ............................................   Passed    0.01 sec
+          Start 1065: decode UCOMISD xmm0, xmm1 (66 0F 2E C1) — F64 form
+1065/1183 Test #1065: decode UCOMISD xmm0, xmm1 (66 0F 2E C1) — F64 form ....................................................   Passed    0.01 sec
+          Start 1066: decode CMPEQPS xmm0, xmm1 (0F C2 C1 00) — F2-IR-034 packed eq F32
+1066/1183 Test #1066: decode CMPEQPS xmm0, xmm1 (0F C2 C1 00) — F2-IR-034 packed eq F32 .....................................   Passed    0.01 sec
+          Start 1067: decode ADDPS xmm0, xmm1 (0F 58 C1) — VecFpBinOp.Add S4
+1067/1183 Test #1067: decode ADDPS xmm0, xmm1 (0F 58 C1) — VecFpBinOp.Add S4 ................................................   Passed    0.01 sec
+          Start 1068: dse: intervening LoadMem protects the first store
+1068/1183 Test #1068: dse: intervening LoadMem protects the first store .......................................................   Passed    0.01 sec
+          Start 1069: JitBuffer rejects oversized writes without changing written size
+1069/1183 Test #1069: JitBuffer rejects oversized writes without changing written size ........................................   Passed    0.01 sec
+          Start 1070: Lowerer: spill honours spill_slot_base_offset
+1070/1183 Test #1070: Lowerer: spill honours spill_slot_base_offset ...........................................................   Passed    0.08 sec
+          Start 1071: decode PSUBB xmm0, xmm1 (66 0F F8 C1) — Sub + B16
+1071/1183 Test #1071: decode PSUBB xmm0, xmm1 (66 0F F8 C1) — Sub + B16 .....................................................   Passed    0.01 sec
+          Start 1072: decode Group 2 memory imm8/CL publishes destination and flags
+1072/1183 Test #1072: decode Group 2 memory imm8/CL publishes destination and flags ...........................................   Passed    0.01 sec
+          Start 1073: Lowerer: Function Jump context does not leak into flat lowering
+1073/1183 Test #1073: Lowerer: Function Jump context does not leak into flat lowering .........................................   Passed    0.01 sec
+          Start 1074: Lowerer: byte and word StoreReg preserve upper guest-register bits
+1074/1183 Test #1074: Lowerer: byte and word StoreReg preserve upper guest-register bits ......................................   Passed    0.08 sec
+          Start 1075: postorder: linear chain is reverse of source order
+1075/1183 Test #1075: postorder: linear chain is reverse of source order ......................................................   Passed    0.01 sec
+          Start 1076: Emitter: casal emits cas with acquire-release ordering
+1076/1183 Test #1076: Emitter: casal emits cas with acquire-release ordering ..................................................   Passed    0.08 sec
+          Start 1077: decode FLD qword [rax] (DD 00) pushes reduced x87 FP64 bits
+1077/1183 Test #1077: decode FLD qword [rax] (DD 00) pushes reduced x87 FP64 bits .............................................   Passed    0.01 sec
+          Start 1078: dce: CallReg keeps its target ref live
+1078/1183 Test #1078: dce: CallReg keeps its target ref live ..................................................................   Passed    0.01 sec
+          Start 1079: ir_serialize: VecShiftBytes round-trip
+1079/1183 Test #1079: ir_serialize: VecShiftBytes round-trip ..................................................................   Passed    0.01 sec
+          Start 1080: e2e: PMULHW xmm0, xmm1 — F2-IR-025 signed high-half multiply
+1080/1183 Test #1080: e2e: PMULHW xmm0, xmm1 — F2-IR-025 signed high-half multiply ..........................................   Passed    0.01 sec
+          Start 1081: decode MOVD eax, xmm0 (66 0F 7E C0) — GprFromXmm.I32
+1081/1183 Test #1081: decode MOVD eax, xmm0 (66 0F 7E C0) — GprFromXmm.I32 ..................................................   Passed    0.01 sec
+          Start 1082: const_prop: Sub / And / Or / Xor all fold correctly
+1082/1183 Test #1082: const_prop: Sub / And / Or / Xor all fold correctly .....................................................   Passed    0.01 sec
+          Start 1083: decode CRC32 r64, r/m64 (F2 48 0F 38 F1 C1) — F2-IR-057
+1083/1183 Test #1083: decode CRC32 r64, r/m64 (F2 48 0F 38 F1 C1) — F2-IR-057 ...............................................   Passed    0.01 sec
+          Start 1084: decode MOV [rbx], eax for I32 memory form (89 /r)
+1084/1183 Test #1084: decode MOV [rbx], eax for I32 memory form (89 /r) .......................................................   Passed    0.01 sec
+          Start 1085: decode DIVPD xmm0, xmm1 (66 0F 5E C1) — VecFpBinOp.Div D2
+1085/1183 Test #1085: decode DIVPD xmm0, xmm1 (66 0F 5E C1) — VecFpBinOp.Div D2 .............................................   Passed    0.01 sec
+          Start 1086: e2e: MAXSD selects the larger double
+1086/1183 Test #1086: e2e: MAXSD selects the larger double ....................................................................   Passed    0.01 sec
+          Start 1087: decode XADD accepts the 32-bit form
+1087/1183 Test #1087: decode XADD accepts the 32-bit form .....................................................................   Passed    0.01 sec
+          Start 1088: guest_signal: with no handler, deliver returns LongjmpAbort
+1088/1183 Test #1088: guest_signal: with no handler, deliver returns LongjmpAbort .............................................   Passed    0.01 sec
+          Start 1089: Emitter: fadd / fsub / fmul / fdiv (f32) emit the right mnemonics
+1089/1183 Test #1089: Emitter: fadd / fsub / fmul / fdiv (f32) emit the right mnemonics .......................................   Passed    0.08 sec
+          Start 1090: flag_write_elimination: removes unused CmpFlags
+1090/1183 Test #1090: flag_write_elimination: removes unused CmpFlags .........................................................   Passed    0.01 sec
+          Start 1091: decode PADDD xmm0, xmm1 (66 0F FE C1) — S4 lane
+1091/1183 Test #1091: decode PADDD xmm0, xmm1 (66 0F FE C1) — S4 lane .......................................................   Passed    0.01 sec
+          Start 1092: decode SHUFPS xmm0, xmm1, 0xE4 (0F C6 C1 E4) — F2-IR-020 FP shuffle
+1092/1183 Test #1092: decode SHUFPS xmm0, xmm1, 0xE4 (0F C6 C1 E4) — F2-IR-020 FP shuffle ...................................   Passed    0.01 sec
+          Start 1093: validate: StoreReg rejects value too narrow for store size
+1093/1183 Test #1093: validate: StoreReg rejects value too narrow for store size ..............................................   Passed    0.01 sec
+          Start 1094: decode ROUNDSD xmm0, xmm1, 3 (66 0F 3A 0B C1 03) — scalar truncate F64
+1094/1183 Test #1094: decode ROUNDSD xmm0, xmm1, 3 (66 0F 3A 0B C1 03) — scalar truncate F64 ................................   Passed    0.01 sec
+          Start 1095: validate: Extend rejects from_size mismatch
+1095/1183 Test #1095: validate: Extend rejects from_size mismatch .............................................................   Passed    0.01 sec
+          Start 1096: e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4
+1096/1183 Test #1096: e2e: VBROADCASTSD ymm0, xmm1 — F2-IR-005 64-bit broadcast to all 4 ....................................   Passed    0.01 sec
+          Start 1097: PassManager: empty pipeline is the identity
+1097/1183 Test #1097: PassManager: empty pipeline is the identity .............................................................   Passed    0.01 sec
+          Start 1098: Stmt equality includes result binding
+1098/1183 Test #1098: Stmt equality includes result binding ...................................................................   Passed    0.01 sec
+          Start 1099: e2e: SHUFPS xmm0, xmm1, 0x4E — F2-IR-020 two-source FP shuffle
+1099/1183 Test #1099: e2e: SHUFPS xmm0, xmm1, 0x4E — F2-IR-020 two-source FP shuffle ........................................   Passed    0.01 sec
+          Start 1100: e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul
+1100/1183 Test #1100: e2e: VMULPD ymm2, ymm0, ymm1 — F2-IR-005 AVX-256 packed double mul ....................................   Passed    0.01 sec
+          Start 1101: sha256: max single-block input — 55 bytes
+1101/1183 Test #1101: sha256: max single-block input — 55 bytes .............................................................   Passed    0.01 sec
+          Start 1102: decode PADDB xmm0, xmm1 (66 0F FC C1) — Add + B16 lane
+1102/1183 Test #1102: decode PADDB xmm0, xmm1 (66 0F FC C1) — Add + B16 lane ................................................   Passed    0.01 sec
+          Start 1103: e2e: PXOR xmm0, xmm0 zeroes xmm0 (idiomatic SSE2 zero)
+1103/1183 Test #1103: e2e: PXOR xmm0, xmm0 zeroes xmm0 (idiomatic SSE2 zero) ..................................................   Passed    0.01 sec
+          Start 1104: decode CMPNLEPD xmm0, xmm1 (66 0F C2 C1 06) — packed nle F64
+1104/1183 Test #1104: decode CMPNLEPD xmm0, xmm1 (66 0F C2 C1 06) — packed nle F64 ..........................................   Passed    0.01 sec
+          Start 1105: e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1)
+1105/1183 Test #1105: e2e: LZCNT + TZCNT — leading/trailing zero counts (BMI1) ..............................................   Passed    0.01 sec
+          Start 1106: validate: impure op with result ref is flagged
+1106/1183 Test #1106: validate: impure op with result ref is flagged ..........................................................   Passed    0.01 sec
+          Start 1107: dominators: diamond — bb3's idom is bb0 (the merge point)
+1107/1183 Test #1107: dominators: diamond — bb3's idom is bb0 (the merge point) .............................................   Passed    0.01 sec
+          Start 1108: decode CVTSI2SD merges upper lanes (legacy dst, VEX vvvv)
+1108/1183 Test #1108: decode CVTSI2SD merges upper lanes (legacy dst, VEX vvvv) ...............................................   Passed    0.01 sec
+          Start 1109: CpuStateFrame: xmm[] is 16 entries × 16 bytes (256 bytes total)
+1109/1183 Test #1109: CpuStateFrame: xmm[] is 16 entries × 16 bytes (256 bytes total) ........................................   Passed    0.01 sec
+          Start 1110: Lowerer: VecGather emits per-lane mask test + guarded load
+1110/1183 Test #1110: Lowerer: VecGather emits per-lane mask test + guarded load ..............................................   Passed    0.08 sec
+          Start 1111: decode MOVDQA [rcx], xmm0 (66 0F 7F 01) — memory store form
+1111/1183 Test #1111: decode MOVDQA [rcx], xmm0 (66 0F 7F 01) — memory store form ...........................................   Passed    0.01 sec
+          Start 1112: e2e: VFMADDSUB132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating add/sub
+1112/1183 Test #1112: e2e: VFMADDSUB132PS xmm2, xmm0, xmm1 — F2-IR-006 alternating add/sub ..................................   Passed    0.01 sec
+          Start 1113: to_hex: all-0xFF digest
+1113/1183 Test #1113: to_hex: all-0xFF digest .................................................................................   Passed    0.01 sec
+          Start 1114: decode PSUBUSB xmm0, xmm1 (66 0F D8 C1) — unsigned sat sub B16
+1114/1183 Test #1114: decode PSUBUSB xmm0, xmm1 (66 0F D8 C1) — unsigned sat sub B16 ........................................   Passed    0.01 sec
+          Start 1115: decode SUB rdx, rcx → same shape, BinOpKind::Sub, 3 bytes
+1115/1183 Test #1115: decode SUB rdx, rcx → same shape, BinOpKind::Sub, 3 bytes .............................................   Passed    0.01 sec
+          Start 1116: ir_serialize: AtomicCmpxchg round-trip
+1116/1183 Test #1116: ir_serialize: AtomicCmpxchg round-trip ..................................................................   Passed    0.01 sec
+          Start 1117: Lowerer: SHA1MSG2 uses sha1su1 with lane reversal — F2-IR-060
+1117/1183 Test #1117: Lowerer: SHA1MSG2 uses sha1su1 with lane reversal — F2-IR-060 .........................................   Passed    0.08 sec
+          Start 1118: decode PMOVZXDQ xmm0, xmm1 (66 0F 38 35 C1) — zero-ext S4→D2
+1118/1183 Test #1118: decode PMOVZXDQ xmm0, xmm1 (66 0F 38 35 C1) — zero-ext S4→D2 ........................................   Passed    0.01 sec
+          Start 1119: decode POPFQ via 9D stores persistent RFLAGS subset
+1119/1183 Test #1119: decode POPFQ via 9D stores persistent RFLAGS subset .....................................................   Passed    0.01 sec
+          Start 1120: decode LAHF via 9F materializes AH from RFLAGS subset
+1120/1183 Test #1120: decode LAHF via 9F materializes AH from RFLAGS subset ...................................................   Passed    0.01 sec
+          Start 1121: e2e: SHA1MSG1 ignores src2 low half — F2-IR-060
+1121/1183 Test #1121: e2e: SHA1MSG1 ignores src2 low half — F2-IR-060 .......................................................   Passed    0.01 sec
+          Start 1122: Emitter: mov_imm64 of small value matches MOVZ with hw=0
+1122/1183 Test #1122: Emitter: mov_imm64 of small value matches MOVZ with hw=0 ................................................   Passed    0.01 sec
+          Start 1123: decode MOVSQ via 48 A5 copies qword [RSI] to [RDI] and advances by 8
+1123/1183 Test #1123: decode MOVSQ via 48 A5 copies qword [RSI] to [RDI] and advances by 8 ....................................   Passed    0.01 sec
+          Start 1124: decode PCMPEQQ xmm0, xmm1 (66 0F 38 29 C1) — SSE4.1 D2 equality
+1124/1183 Test #1124: decode PCMPEQQ xmm0, xmm1 (66 0F 38 29 C1) — SSE4.1 D2 equality .......................................   Passed    0.01 sec
+          Start 1125: ir_serialize: LoadMemTSO / StoreMemTSO round-trip
+1125/1183 Test #1125: ir_serialize: LoadMemTSO / StoreMemTSO round-trip .......................................................   Passed    0.01 sec
+          Start 1126: decode TZCNT rax, rcx (F3 48 0F BC C1) — BMI1 trailing-zero I64
+1126/1183 Test #1126: decode TZCNT rax, rcx (F3 48 0F BC C1) — BMI1 trailing-zero I64 .......................................   Passed    0.01 sec
+          Start 1127: rle: different sizes are NOT deduped
+1127/1183 Test #1127: rle: different sizes are NOT deduped ....................................................................   Passed    0.01 sec
+          Start 1128: decode PUSHFQ via 9C pushes persistent RFLAGS subset
+1128/1183 Test #1128: decode PUSHFQ via 9C pushes persistent RFLAGS subset ....................................................   Passed    0.01 sec
+          Start 1129: Emitter: width canonicalisation emits extend aliases
+1129/1183 Test #1129: Emitter: width canonicalisation emits extend aliases ....................................................   Passed    0.08 sec
+          Start 1130: Translator: first call misses cache, second call hits
+1130/1183 Test #1130: Translator: first call misses cache, second call hits ...................................................   Passed    0.01 sec
+          Start 1131: Emitter: multiple labels are independent
+1131/1183 Test #1131: Emitter: multiple labels are independent ................................................................   Passed    0.01 sec
+          Start 1132: dce: LoadReg is removed when its value is unused
+1132/1183 Test #1132: dce: LoadReg is removed when its value is unused ........................................................   Passed    0.01 sec
+          Start 1133: decode MOV [rbx], al with 88 /r (I8 memory form)
+1133/1183 Test #1133: decode MOV [rbx], al with 88 /r (I8 memory form) ........................................................   Passed    0.01 sec
+          Start 1134: Translator: retranslation unpatches stale incoming direct exits
+1134/1183 Test #1134: Translator: retranslation unpatches stale incoming direct exits .........................................   Passed    0.01 sec
+          Start 1135: copy_prop: rewrites BinOp operands through the alias
+1135/1183 Test #1135: copy_prop: rewrites BinOp operands through the alias ....................................................   Passed    0.01 sec
+          Start 1136: decode IMUL rax, rbx → RAX*RBX, 3 bytes
+1136/1183 Test #1136: decode IMUL rax, rbx → RAX*RBX, 3 bytes ...............................................................   Passed    0.01 sec
+          Start 1137: cache: set_max_entries enforces hard ceiling
+1137/1183 Test #1137: cache: set_max_entries enforces hard ceiling ............................................................   Passed    0.01 sec
+          Start 1138: is_terminator: all expected ops are terminators
+1138/1183 Test #1138: is_terminator: all expected ops are terminators .........................................................   Passed    0.01 sec
+          Start 1139: e2e executing: passes fold constants — output matches unoptimised
+1139/1183 Test #1139: e2e executing: passes fold constants — output matches unoptimised .....................................   Passed    0.01 sec
+          Start 1140: decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls back to xmm shape
+1140/1183 Test #1140: decode VPTEST xmm0, xmm1 (C4 E2 79 17 C1) — F2-IR-049 VEX.128 falls back to xmm shape .................   Passed    0.01 sec
+          Start 1141: TranslationCache: reset_hit_counts zeroes the tally
+1141/1183 Test #1141: TranslationCache: reset_hit_counts zeroes the tally .....................................................   Passed    0.01 sec
+          Start 1142: dce: JumpReg keeps its target ref alive
+1142/1183 Test #1142: dce: JumpReg keeps its target ref alive .................................................................   Passed    0.01 sec
+          Start 1143: validate: LoadMem with I64 addr and matching value sizes passes
+1143/1183 Test #1143: validate: LoadMem with I64 addr and matching value sizes passes .........................................   Passed    0.01 sec
+          Start 1144: decode MOVZX rcx, ax → zero-extend I16 via 48 0F B7 C8
+1144/1183 Test #1144: decode MOVZX rcx, ax → zero-extend I16 via 48 0F B7 C8 ................................................   Passed    0.01 sec
+          Start 1145: TranslationCache: load rejects a file with wrong magic
+1145/1183 Test #1145: TranslationCache: load rejects a file with wrong magic ..................................................   Passed    0.01 sec
+          Start 1146: fnv1a_64: known golden value for single byte 0x01
+1146/1183 Test #1146: fnv1a_64: known golden value for single byte 0x01 .......................................................   Passed    0.01 sec
+          Start 1147: OpCounter: Kind covers every Op variant
+1147/1183 Test #1147: OpCounter: Kind covers every Op variant .................................................................   Passed    0.01 sec
+          Start 1148: e2e: MOVDDUP — F2-IR-033 broadcast low qword to both D2 lanes
+1148/1183 Test #1148: e2e: MOVDDUP — F2-IR-033 broadcast low qword to both D2 lanes .........................................   Passed    0.01 sec
+          Start 1149: decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte concat-shift
+1149/1183 Test #1149: decode PALIGNR xmm0, xmm1, 4 (66 0F 3A 0F C1 04) — F2-IR-038 byte concat-shift ........................   Passed    0.01 sec
+          Start 1150: e2e: VPGATHERDD xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 masked gather
+1150/1183 Test #1150: e2e: VPGATHERDD xmm1, [rax + xmm2*4], xmm3 — F2-IR-059 masked gather ..................................   Passed    0.01 sec
+          Start 1151: Lowerer: Function Jump lowers to an ARM64 branch between block labels
+1151/1183 Test #1151: Lowerer: Function Jump lowers to an ARM64 branch between block labels ...................................   Passed    0.08 sec
+          Start 1152: e2e: SHA1RNDS4 all selectors vs SDM reference — F2-IR-060
+1152/1183 Test #1152: e2e: SHA1RNDS4 all selectors vs SDM reference — F2-IR-060 .............................................   Passed    0.01 sec
+          Start 1153: decode MOVZX rax, byte ptr [rbx] → zero-extend I8 via 48 0F B6 03
+1153/1183 Test #1153: decode MOVZX rax, byte ptr [rbx] → zero-extend I8 via 48 0F B6 03 .....................................   Passed    0.01 sec
+          Start 1154: decode ADC rax, rbx → persistent carry dataflow, 3 bytes
+1154/1183 Test #1154: decode ADC rax, rbx → persistent carry dataflow, 3 bytes ..............................................   Passed    0.01 sec
+          Start 1155: Error: HLT (F4) is rejected as UnsupportedEncoding
+1155/1183 Test #1155: Error: HLT (F4) is rejected as UnsupportedEncoding ......................................................   Passed    0.01 sec
+          Start 1156: decode VCVTPH2PS xmm2, [rax] (C4 E2 79 13 10) - F16C m64 source
+1156/1183 Test #1156: decode VCVTPH2PS xmm2, [rax] (C4 E2 79 13 10) - F16C m64 source .........................................   Passed    0.01 sec
+          Start 1157: decode PSADBW xmm0, xmm1 (66 0F F6 C1) — F2-IR-031 sum-abs-diff bytes
+1157/1183 Test #1157: decode PSADBW xmm0, xmm1 (66 0F F6 C1) — F2-IR-031 sum-abs-diff bytes .................................   Passed    0.01 sec
+          Start 1158: build_cfg: empty input → empty Function
+1158/1183 Test #1158: build_cfg: empty input → empty Function ...............................................................   Passed    0.01 sec
+          Start 1159: decode VCVTSS2SD merges the upper lanes from vvvv
+1159/1183 Test #1159: decode VCVTSS2SD merges the upper lanes from vvvv .......................................................   Passed    0.01 sec
+          Start 1160: decode PXOR xmm0, xmm0 (66 0F EF C0) — idiomatic zero, Xor
+1160/1183 Test #1160: decode PXOR xmm0, xmm0 (66 0F EF C0) — idiomatic zero, Xor ............................................   Passed    0.01 sec
+          Start 1161: natural_loops: while loop body is {bb1, bb2}
+1161/1183 Test #1161: natural_loops: while loop body is {bb1, bb2} ............................................................   Passed    0.01 sec
+          Start 1162: decode LDDQU xmm0, [rcx] (F2 0F F0 01) — F2-IR-035 SSE3 unaligned load
+1162/1183 Test #1162: decode LDDQU xmm0, [rcx] (F2 0F F0 01) — F2-IR-035 SSE3 unaligned load ................................   Passed    0.01 sec
+          Start 1163: decode SHR rax, cl publishes persistent flags via 48 D3 E8
+1163/1183 Test #1163: decode SHR rax, cl publishes persistent flags via 48 D3 E8 ..............................................   Passed    0.01 sec
+          Start 1164: zstd_compress + zstd_decompress round-trip
+1164/1183 Test #1164: zstd_compress + zstd_decompress round-trip ..............................................................   Passed    0.01 sec
+          Start 1165: decode VPGATHERDD rejects dest==mask (#UD) — F2-IR-059
+1165/1183 Test #1165: decode VPGATHERDD rejects dest==mask (#UD) — F2-IR-059 ................................................   Passed    0.01 sec
+          Start 1166: postorder: diamond has the expected shape
+1166/1183 Test #1166: postorder: diamond has the expected shape ...............................................................   Passed    0.01 sec
+          Start 1167: decode MOVBE r/m=reg is rejected (memory operand required)
+1167/1183 Test #1167: decode MOVBE r/m=reg is rejected (memory operand required) ..............................................   Passed    0.01 sec
+          Start 1168: ir_serialize: LoadCarry / StoreCarry round-trip
+1168/1183 Test #1168: ir_serialize: LoadCarry / StoreCarry round-trip .........................................................   Passed    0.01 sec
+          Start 1169: e2e: PMOVZXBW — F2-IR-041 zero-extend 8 bytes to 8 halfwords
+1169/1183 Test #1169: e2e: PMOVZXBW — F2-IR-041 zero-extend 8 bytes to 8 halfwords ..........................................   Passed    0.01 sec
+          Start 1170: Translator: stats accumulate across many calls
+1170/1183 Test #1170: Translator: stats accumulate across many calls ..........................................................   Passed    0.01 sec
+          Start 1171: cache: save_to_file / load_from_file with compression
+1171/1183 Test #1171: cache: save_to_file / load_from_file with compression ...................................................   Passed    0.01 sec
+          Start 1172: ir_serialize: LoadReg round-trip
+1172/1183 Test #1172: ir_serialize: LoadReg round-trip ........................................................................   Passed    0.01 sec
+          Start 1173: OpCounter: multiple calls to reset work correctly
+1173/1183 Test #1173: OpCounter: multiple calls to reset work correctly .......................................................   Passed    0.01 sec
+          Start 1174: JitBufferPool publishes executable buffers with stable indices
+1174/1183 Test #1174: JitBufferPool publishes executable buffers with stable indices ..........................................   Passed    0.01 sec
+          Start 1175: backend::abi: prologue saves all six callee-saved register pairs
+1175/1183 Test #1175: backend::abi: prologue saves all six callee-saved register pairs ........................................   Passed    0.08 sec
+          Start 1176: decode BT memory immediate folds qword offset into address
+1176/1183 Test #1176: decode BT memory immediate folds qword offset into address ..............................................   Passed    0.01 sec
+          Start 1177: e2e: register move — mov rcx, rax preserves value
+1177/1183 Test #1177: e2e: register move — mov rcx, rax preserves value .....................................................   Passed    0.01 sec
+          Start 1178: CpuStateFrame: GPR offsets are 0, 8, 16, ...
+1178/1183 Test #1178: CpuStateFrame: GPR offsets are 0, 8, 16, ... ............................................................   Passed    0.01 sec
+          Start 1179: Lowerer: Constant + StoreReg + Return → mov + mov + ret
+1179/1183 Test #1179: Lowerer: Constant + StoreReg + Return → mov + mov + ret ...............................................   Passed    0.08 sec
+          Start 1180: e2e: RDTSC is monotonic and non-zero — decoder gap sweep
+1180/1183 Test #1180: e2e: RDTSC is monotonic and non-zero — decoder gap sweep ..............................................   Passed    0.01 sec
+          Start 1181: ir_serialize: x87 stack ops round-trip
+1181/1183 Test #1181: ir_serialize: x87 stack ops round-trip ..................................................................   Passed    0.01 sec
+          Start 1182: Lowerer: SHA256RNDS2 runs sha256h + sha256h2 — F2-IR-060
+1182/1183 Test #1182: Lowerer: SHA256RNDS2 runs sha256h + sha256h2 — F2-IR-060 ..............................................   Passed    0.08 sec
+          Start 1183: guest_signal: handler can return LongjmpAbort to bail out
+1183/1183 Test #1183: guest_signal: handler can return LongjmpAbort to bail out ...............................................   Passed    0.01 sec
+
+99% tests passed, 3 tests failed out of 1183
+
+Total Test time (real) =  26.45 sec
+
+The following tests FAILED:
+	373 - e2e: DIV r/m64 → quotient in RAX, remainder in RDX (F2-BK-007) (Failed)
+	763 - capi: translate populates block info and hits the cache (Failed)
+	1026 - PassManager: default_pipeline has 13 passes (x87 + peephole + flag-write-elim) (Failed)
+Errors while running CTest
