@@ -4081,12 +4081,15 @@ fn push_store_rflags_from_nzcv(
 
 fn push_cmp_flags(stmts: &mut Vec<Stmt>, lhs: Ref, rhs: Ref, size: OpSize) -> Ref {
     let result = push_binop_ref(stmts, BinOpKind::Sub, lhs, rhs, size);
-    let (pf, af) = push_pf_af_for_alu(stmts, BinOpKind::Sub, lhs, rhs, result, size);
+    // Publish NZCV while lhs/rhs still occupy their original physical slots.
+    // The PF/AF graph below uses non-flag-setting operations, so NZCV remains
+    // valid until StoreRflagsFromNzcv serializes it to the guest frame.
     let flags = alloc_ref(stmts);
     stmts.push(Stmt::new(
         Some(flags),
         Op::CmpFlags(CmpFlags { lhs, rhs, size }),
     ));
+    let (pf, af) = push_pf_af_for_alu(stmts, BinOpKind::Sub, lhs, rhs, result, size);
     push_store_rflags_from_nzcv(stmts, RflagsCarryMode::InvertArmCarry, pf, af);
     flags
 }
