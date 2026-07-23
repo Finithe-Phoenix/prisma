@@ -1,24 +1,28 @@
 name: codeql
 
-# CodeQL security analysis for the core C++ engine and ir-spec Lean 4.
-# Scans every PR and push to main. Alerts appear as GitHub Security
-# tab findings and can block PR merges via the required check.
+# CodeQL security analysis for the core C++ engine. The manual build is split
+# into configure and compile phases and retains logs on failure, so a red
+# security check cannot hide an ordinary compiler problem.
 
 on:
   push:
     branches: [main]
   pull_request:
   schedule:
-    - cron: '0 6 * * 1'  # every Monday 06:00 UTC
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+
 jobs:
   analyze:
     name: analyze (cpp)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
@@ -41,19 +45,36 @@ jobs:
             paths:
               - core/src
               - core/include
-              - tests
+              - core/tests
 
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build clang-17
 
-      - name: Build with CodeQL tracing
+      - name: Configure traced build
         run: |
+          set -o pipefail
           cmake -S core -B core/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=clang++-17
-          cmake --build core/build
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            2>&1 | tee codeql-configure.log
+
+      - name: Build with CodeQL tracing
+        run: |
+          set -o pipefail
+          cmake --build core/build 2>&1 | tee codeql-build.log
+
+      - name: Preserve CodeQL build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-build-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            codeql-configure.log
+            codeql-build.log
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v4
