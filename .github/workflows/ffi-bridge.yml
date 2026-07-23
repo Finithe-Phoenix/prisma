@@ -1,22 +1,21 @@
-name: ffi bridge (C++/Rust)
+name: PR 312 ADC/SBB diagnostics
 
-# Temporary, read-only diagnostics for PR #312. This branch never edits or
-# pushes product source: it checks out the PR head, reproduces the two failing
-# platforms, and retains complete compiler/test logs as artifacts.
-# Diagnostic refresh target: f4eb3098b9850ad4b780c405f7ec17ff36958930.
+# Temporary read-only diagnostic for PR #312. It checks out the product branch,
+# instruments only the runner workspace, and prints optimized IR + emitted code
+# for the failing ARM64 ADC/SBB regression. It never commits or pushes product.
 
 on:
   pull_request:
 
 concurrency:
-  group: pr312-ffi-diagnostics-${{ github.ref }}
+  group: pr312-adc-diagnostics-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  pr312-ffi-arm64-diagnostic:
-    name: pr312-ffi-arm64-diagnostic
+  pr312-adc-arm64-diagnostic:
+    name: pr312-adc-arm64-diagnostic
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - name: Checkout PR 312 product branch
         uses: actions/checkout@v7
@@ -25,101 +24,69 @@ jobs:
           fetch-depth: 0
           path: product
 
-      - name: Install C++ toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang-17
-
-      - name: Configure C API library
+      - name: Instrument ADC/SBB test in runner workspace
         shell: bash
         run: |
-          set -o pipefail
-          cmake -S product/core -B product/core/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=clang++-17 \
-            -DPRISMA_BUILD_TESTS=OFF \
-            2>&1 | tee ffi-arm64-configure.log
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Build C API library
+          path = Path("product/shell/prisma-runtime/tests/exec_adc.rs")
+          text = path.read_text(encoding="utf-8")
+          old = '''fn translate(addr: u64, program: &[u8]) -> Vec<u8> {
+    let mut t = Translator::new();
+    let block = t
+        .translate_fused_block(addr, program, 64)
+        .expect("fused block translation");
+'''
+          new = '''fn translate(addr: u64, program: &[u8]) -> Vec<u8> {
+    let mut t = Translator::new();
+    let opt = t
+        .optimize_fused_block(addr, program, 64)
+        .expect("fused block optimization");
+    eprintln!("PROGRAM={program:02x?}\\nOPTIMIZED_IR={:#?}", opt.func);
+    let block = t
+        .translate_fused_block(addr, program, 64)
+        .expect("fused block translation");
+    eprintln!("ARM64_CODE={:02x?}", block.code);
+'''
+          if text.count(old) != 1:
+              raise SystemExit("translate helper not found exactly once")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+      - name: Capture relevant backend source locations
         shell: bash
         run: |
-          set -o pipefail
-          cmake --build product/core/build --target prisma_core_c \
-            2>&1 | tee ffi-arm64-build.log
+          set -euo pipefail
+          {
+            grep -n -E 'fn value_reg|fn lower_binop|LoadCarry|ReadCarryOut|StoreCarry' \
+              product/shell/prisma-backend/src/lowerer.rs
+            grep -n -E 'Adc|Sbb|LoadCarry|ReadCarryOut|StoreCarry' \
+              product/shell/prisma-decoder/src/decode.rs
+          } > adc-source-locations.log || true
 
       - name: Install Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal
-          rustup component add clippy
 
-      - name: Run cross-language tests with full output
+      - name: Run targeted ADC/SBB tests with full output
         shell: bash
         env:
-          PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/product/core/build
-          LD_LIBRARY_PATH: ${{ github.workspace }}/product/core/build
           RUST_BACKTRACE: "1"
         run: |
           set -o pipefail
-          cargo test --manifest-path product/shell/Cargo.toml --workspace \
-            -- --nocapture 2>&1 | tee ffi-arm64-test.log
+          cargo test --manifest-path product/shell/Cargo.toml \
+            -p prisma-runtime --test exec_adc -- --nocapture \
+            2>&1 | tee adc-test.log
 
-      - name: Upload ARM64 diagnostics
+      - name: Upload ADC/SBB diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr312-ffi-arm64-diagnostics
+          name: pr312-adc-arm64-diagnostics
           retention-days: 2
-          if-no-files-found: ignore
+          if-no-files-found: error
           path: |
-            ffi-arm64-configure.log
-            ffi-arm64-build.log
-            ffi-arm64-test.log
-
-  pr312-ffi-windows-diagnostic:
-    name: pr312-ffi-windows-diagnostic
-    runs-on: windows-2022
-    timeout-minutes: 45
-    steps:
-      - name: Checkout PR 312 product branch
-        uses: actions/checkout@v7
-        with:
-          ref: claude/w2-flags-isa-batch
-          fetch-depth: 0
-          path: product
-
-      - name: Configure MSVC build
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          cmake -S product/core -B product/core/build -G "Visual Studio 17 2022" -A x64 2>&1 |
-            Tee-Object -FilePath ffi-windows-configure.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build core tests
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          cmake --build product/core/build --config Debug --target prisma_core_tests 2>&1 |
-            Tee-Object -FilePath ffi-windows-build.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Run CTest smoke
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          ctest --test-dir product/core/build -C Debug --output-on-failure 2>&1 |
-            Tee-Object -FilePath ffi-windows-test.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Upload Windows diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr312-ffi-windows-diagnostics
-          retention-days: 2
-          if-no-files-found: ignore
-          path: |
-            ffi-windows-configure.log
-            ffi-windows-build.log
-            ffi-windows-test.log
-            product/core/build/Testing/Temporary/LastTest.log
+            adc-test.log
+            adc-source-locations.log
