@@ -1,9 +1,8 @@
 name: core sanitizers
 
-# Builds the core/ C++ engine under each sanitizer configuration and runs
-# the test suite. Slow(er) than the plain debug build — runs on PRs only
-# for paths that can plausibly break memory/thread safety. Infra added in
-# F1-TC-008.
+# Sanitizer CI is validation-only. Configure, build, and test stay separate so
+# a red job identifies its failing phase, while logs and CTest diagnostics are
+# retained for direct inspection instead of requiring temporary workflows.
 
 on:
   pull_request:
@@ -14,9 +13,13 @@ concurrency:
   group: core-sanitizers-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+
 jobs:
   asan-ubsan:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -25,25 +28,46 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build clang-17
 
-      - name: Configure (AddressSanitizer + UndefinedBehaviorSanitizer)
+      - name: Configure AddressSanitizer and UndefinedBehaviorSanitizer
         run: |
+          set -o pipefail
           cmake -S core -B core/build-asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=clang++-17 \
             -DPRISMA_ENABLE_ASAN=ON \
-            -DPRISMA_ENABLE_UBSAN=ON
+            -DPRISMA_ENABLE_UBSAN=ON \
+            2>&1 | tee asan-ubsan-configure.log
 
       - name: Build
-        run: cmake --build core/build-asan
+        run: |
+          set -o pipefail
+          cmake --build core/build-asan 2>&1 | tee asan-ubsan-build.log
 
       - name: Run tests
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir core/build-asan --output-on-failure
+        run: |
+          set -o pipefail
+          ctest --test-dir core/build-asan --output-on-failure \
+            2>&1 | tee asan-ubsan-test.log
+
+      - name: Preserve ASan and UBSan diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-ubsan-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            asan-ubsan-configure.log
+            asan-ubsan-build.log
+            asan-ubsan-test.log
+            core/build-asan/Testing/Temporary/LastTest.log
 
   tsan:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -52,17 +76,37 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build clang-17
 
-      - name: Configure (ThreadSanitizer)
+      - name: Configure ThreadSanitizer
         run: |
+          set -o pipefail
           cmake -S core -B core/build-tsan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=clang++-17 \
-            -DPRISMA_ENABLE_TSAN=ON
+            -DPRISMA_ENABLE_TSAN=ON \
+            2>&1 | tee tsan-configure.log
 
       - name: Build
-        run: cmake --build core/build-tsan
+        run: |
+          set -o pipefail
+          cmake --build core/build-tsan 2>&1 | tee tsan-build.log
 
       - name: Run tests
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir core/build-tsan --output-on-failure
+        run: |
+          set -o pipefail
+          ctest --test-dir core/build-tsan --output-on-failure \
+            2>&1 | tee tsan-test.log
+
+      - name: Preserve TSan diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            tsan-configure.log
+            tsan-build.log
+            tsan-test.log
+            core/build-tsan/Testing/Temporary/LastTest.log
