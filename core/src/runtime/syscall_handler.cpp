@@ -1275,7 +1275,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             // We must bypass it or set a special flag.
             // Actually, we can just return directly from this switch case!
             if (strace_enabled()) {
-                std::fprintf(stderr, " -> <restored rip=0x%llx>\n", (unsigned long long)state->guest_pc);
+                std::fprintf(stderr, " -> <restored rip=0x%llx>\n", static_cast<unsigned long long>(state->guest_pc));
             }
             return; // EXIT EARLY to avoid overwriting RAX!
         }
