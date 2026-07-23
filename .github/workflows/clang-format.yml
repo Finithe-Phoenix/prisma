@@ -1,14 +1,12 @@
 name: clang-format
 
 # Verifies C/C++ sources touched by a change match .clang-format.
-# CLAUDE.md mandates "Clang-format + clang-tidy obligatorio" — this is
-# the CI enforcement half, scoped to CHANGED files so the gate adopts
-# incrementally: the pre-existing tree is not clang-format-clean (the
-# checked-in style says 2-space while core/ is 4-space throughout),
-# and a whole-tree reformat is a churn decision for Danny.
+# When formatting differs, the job generates an exact repair patch and
+# retains it as an artifact instead of forcing maintainers to reconstruct
+# the edits from a long warning log.
 #
-# ADVISORY (continue-on-error) until that reconciliation lands —
-# tracked in WORK_QUEUE.
+# ADVISORY (continue-on-error) until the existing style reconciliation
+# tracked in WORK_QUEUE is complete.
 
 on:
   push:
@@ -33,20 +31,49 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq clang-format-17
 
-      - name: Run clang-format check on changed files
+      - name: Check changed files and generate repair patch
+        shell: bash
         run: |
           set -euo pipefail
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch -q origin "${{ github.base_ref }}"
             base="origin/${{ github.base_ref }}"
           else
             base="${{ github.event.before }}"
           fi
-          files=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD -- \
+
+          mapfile -t files < <(
+            git diff --name-only --diff-filter=ACMR "$base"...HEAD -- \
               'core/**/*.cpp' 'core/**/*.hpp' 'core/**/*.c' 'core/**/*.h' \
-            | grep -v '/build/' | grep -v '/third_party/' || true)
-          if [ -z "$files" ]; then
+              | grep -v '/build/' | grep -v '/third_party/' || true
+          )
+
+          if [ "${#files[@]}" -eq 0 ]; then
             echo "No C/C++ changes under core/ — nothing to check."
             exit 0
           fi
-          echo "$files" | xargs clang-format-17 -n --Werror 2>&1
+
+          printf '%s\n' "${files[@]}" > clang-format-files.txt
+          printf '%s\0' "${files[@]}" | xargs -0 clang-format-17 -i
+          git diff --binary -- "${files[@]}" > clang-format.patch
+
+          if [ -s clang-format.patch ]; then
+            echo "clang-format changes are required."
+            echo "An exact repair patch will be uploaded as an artifact."
+            git diff --stat -- "${files[@]}"
+            exit 1
+          fi
+
+          echo "All changed C/C++ files are clang-format clean."
+
+      - name: Upload clang-format repair patch
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-format-repair-patch
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            clang-format.patch
+            clang-format-files.txt
