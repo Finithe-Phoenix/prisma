@@ -1,0 +1,62 @@
+name: capture PR 312 object diagnostics
+
+on:
+  push:
+    branches: [claude/w2-flags-isa-batch]
+    paths:
+      - ".github/workflows/capture-pr312-objects.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  capture-objects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: claude/w2-flags-isa-batch
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Capture only failing runtime objects
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p .ci
+          cmake -S core -B core/build-objects -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            > configure.log 2>&1
+
+          : > .ci/pr312-object-diagnostic.txt
+          failed=0
+          for target in \
+            CMakeFiles/prisma_runtime.dir/src/runtime/dispatcher.cpp.o \
+            CMakeFiles/prisma_runtime.dir/src/runtime/syscall_handler.cpp.o; do
+            echo "=== ${target} ===" >> .ci/pr312-object-diagnostic.txt
+            if cmake --build core/build-objects --target "${target}" --parallel 1 \
+                > object.log 2>&1; then
+              echo "SUCCESS" >> .ci/pr312-object-diagnostic.txt
+            else
+              failed=1
+              grep -n -E \
+                'FAILED:|fatal error:|error:|undefined reference|ninja: build stopped' \
+                object.log | head -n 120 >> .ci/pr312-object-diagnostic.txt || true
+              tail -n 80 object.log >> .ci/pr312-object-diagnostic.txt
+            fi
+          done
+          echo "FAILED=${failed}" >> .ci/pr312-object-diagnostic.txt
+
+      - name: Publish result and remove one-shot workflow
+        run: |
+          git config user.name "prisma-ci"
+          git config user.email "prisma-ci@users.noreply.github.com"
+          git add .ci/pr312-object-diagnostic.txt
+          git rm .github/workflows/capture-pr312-objects.yml
+          git commit -m "ci: capture PR 312 object diagnostics"
+          git push origin HEAD:claude/w2-flags-isa-batch
