@@ -2069,7 +2069,6 @@ fn decode_group4(
                 size,
             }),
         ));
-        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
         stmts.push(Stmt::new(
             None,
             Op::StoreReg(StoreReg {
@@ -2078,6 +2077,7 @@ fn decode_group4(
                 size,
             }),
         ));
+        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
         Ok(2)
     } else {
         let (addr, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
@@ -2093,7 +2093,6 @@ fn decode_group4(
                 size,
             }),
         ));
-        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
         stmts.push(Stmt::new(
             None,
             Op::StoreMem(StoreMem {
@@ -2102,6 +2101,7 @@ fn decode_group4(
                 size,
             }),
         ));
+        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
         Ok(1 + used)
     }
 }
@@ -2141,7 +2141,6 @@ fn decode_group5(
                         size,
                     }),
                 ));
-                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
                 stmts.push(Stmt::new(
                     None,
                     Op::StoreReg(StoreReg {
@@ -2150,6 +2149,7 @@ fn decode_group5(
                         size,
                     }),
                 ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
                 Ok(2)
             } else {
                 let (addr_ref, used) =
@@ -2172,7 +2172,6 @@ fn decode_group5(
                         size,
                     }),
                 ));
-                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
                 stmts.push(Stmt::new(
                     None,
                     Op::StoreMem(StoreMem {
@@ -2181,6 +2180,7 @@ fn decode_group5(
                         size,
                     }),
                 ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
                 Ok(1 + used)
             }
         }
@@ -2208,7 +2208,6 @@ fn decode_group5(
                         size,
                     }),
                 ));
-                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
                 stmts.push(Stmt::new(
                     None,
                     Op::StoreReg(StoreReg {
@@ -2217,6 +2216,7 @@ fn decode_group5(
                         size,
                     }),
                 ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
                 Ok(2)
             } else {
                 let (addr_ref, used) =
@@ -2239,7 +2239,6 @@ fn decode_group5(
                         size,
                     }),
                 ));
-                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
                 stmts.push(Stmt::new(
                     None,
                     Op::StoreMem(StoreMem {
@@ -2248,6 +2247,7 @@ fn decode_group5(
                         size,
                     }),
                 ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
                 Ok(1 + used)
             }
         }
@@ -15008,13 +15008,25 @@ mod tests {
         // FE /0: INC byte ptr [rax]
         let inc = decode_one(b"\xFE\x00", 0).unwrap();
         assert!(inc.bytes_consumed >= 2);
-        assert!(matches!(
-            inc.stmts.last().unwrap().op,
-            Op::StoreMem(StoreMem {
-                size: OpSize::I8,
-                ..
+        let inc_destination_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| {
+                matches!(
+                    &stmt.op,
+                    Op::StoreMem(StoreMem {
+                        size: OpSize::I8,
+                        ..
+                    })
+                )
             })
-        ));
+            .expect("INC must publish its memory destination");
+        let inc_rflags_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("INC must publish RFLAGS");
+        assert!(inc_destination_index < inc_rflags_index);
         assert!(inc.stmts.iter().any(|s| matches!(
             s.op,
             Op::BinOp(BinOp {
@@ -15035,13 +15047,25 @@ mod tests {
         // FE /1: DEC byte ptr [rax]
         let dec = decode_one(b"\xFE\x08", 0).unwrap();
         assert!(dec.bytes_consumed >= 2);
-        assert!(matches!(
-            dec.stmts.last().unwrap().op,
-            Op::StoreMem(StoreMem {
-                size: OpSize::I8,
-                ..
+        let dec_destination_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| {
+                matches!(
+                    &stmt.op,
+                    Op::StoreMem(StoreMem {
+                        size: OpSize::I8,
+                        ..
+                    })
+                )
             })
-        ));
+            .expect("DEC must publish its memory destination");
+        let dec_rflags_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("DEC must publish RFLAGS");
+        assert!(dec_destination_index < dec_rflags_index);
         assert!(dec.stmts.iter().any(|s| matches!(
             s.op,
             Op::BinOp(BinOp {
@@ -15065,17 +15089,26 @@ mod tests {
         // 48 FF C0: INC rax (64-bit)
         let inc = decode_one(b"\x48\xFF\xC0", 0).unwrap();
         assert_eq!(inc.bytes_consumed, 3);
-        assert_eq!(
-            inc.stmts.last().unwrap(),
-            &Stmt::new(
-                None,
-                Op::StoreReg(StoreReg {
-                    reg: Gpr::Rax,
-                    value: 2,
-                    size: OpSize::I64,
-                }),
-            )
-        );
+        let inc_destination_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| {
+                matches!(
+                    &stmt.op,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 2,
+                        size: OpSize::I64,
+                    })
+                )
+            })
+            .expect("INC must publish RAX");
+        let inc_rflags_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("INC must publish RFLAGS");
+        assert!(inc_destination_index < inc_rflags_index);
         assert!(inc.stmts.iter().any(|s| matches!(
             s.op,
             Op::BinOp(BinOp {
@@ -15096,14 +15129,26 @@ mod tests {
         // 48 FF C8: DEC rax (64-bit)
         let dec = decode_one(b"\x48\xFF\xC8", 0).unwrap();
         assert_eq!(dec.bytes_consumed, 3);
-        assert!(matches!(
-            dec.stmts.last().unwrap().op,
-            Op::StoreReg(StoreReg {
-                reg: Gpr::Rax,
-                size: OpSize::I64,
-                ..
+        let dec_destination_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| {
+                matches!(
+                    &stmt.op,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                        ..
+                    })
+                )
             })
-        ));
+            .expect("DEC must publish RAX");
+        let dec_rflags_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("DEC must publish RFLAGS");
+        assert!(dec_destination_index < dec_rflags_index);
         assert!(dec.stmts.iter().any(|s| matches!(
             s.op,
             Op::BinOp(BinOp {
@@ -15789,11 +15834,31 @@ mod tests {
     fn decode_group5_memory_operands_rexw() {
         let inc = decode_one_at(b"\x48\xFF\x00", 0, 0x3000).unwrap();
         assert_eq!(inc.bytes_consumed, 3);
-        assert!(matches!(inc.stmts.last().unwrap().op, Op::StoreMem(_)));
+        let inc_destination_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreMem(_)))
+            .expect("INC must publish its memory destination");
+        let inc_rflags_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("INC must publish RFLAGS");
+        assert!(inc_destination_index < inc_rflags_index);
 
         let dec = decode_one_at(b"\x48\xFF\x08", 0, 0x3000).unwrap();
         assert_eq!(dec.bytes_consumed, 3);
-        assert!(matches!(dec.stmts.last().unwrap().op, Op::StoreMem(_)));
+        let dec_destination_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreMem(_)))
+            .expect("DEC must publish its memory destination");
+        let dec_rflags_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("DEC must publish RFLAGS");
+        assert!(dec_destination_index < dec_rflags_index);
 
         let call = decode_one_at(b"\x48\xFF\x10", 0, 0x3000).unwrap();
         assert_eq!(call.bytes_consumed, 3);
@@ -15842,11 +15907,31 @@ mod tests {
     fn decode_group5_memory_operands() {
         let inc = decode_one(b"\xFF\x00", 0).unwrap();
         assert_eq!(inc.bytes_consumed, 2);
-        assert!(matches!(inc.stmts.last().unwrap().op, Op::StoreMem(_)));
+        let inc_destination_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreMem(_)))
+            .expect("INC must publish its memory destination");
+        let inc_rflags_index = inc
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("INC must publish RFLAGS");
+        assert!(inc_destination_index < inc_rflags_index);
 
         let dec = decode_one(b"\xFF\x08", 0).unwrap();
         assert_eq!(dec.bytes_consumed, 2);
-        assert!(matches!(dec.stmts.last().unwrap().op, Op::StoreMem(_)));
+        let dec_destination_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreMem(_)))
+            .expect("DEC must publish its memory destination");
+        let dec_rflags_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
+            .expect("DEC must publish RFLAGS");
+        assert!(dec_destination_index < dec_rflags_index);
 
         let call = decode_one_at(b"\xFF\x10", 0, 0x3000).unwrap();
         assert_eq!(call.bytes_consumed, 2);
