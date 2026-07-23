@@ -1,60 +1,122 @@
 name: core (C++20) — stub
 
-# Stub workflow for the core/ C++ DBT engine. Activates once core/CMakeLists.txt
-# exists (Fase 1, semana 9+). Until then, this only runs a smoke check that the
-# scaffolding is in place.
+# Core CI is intentionally diagnostic-first: configure, build, and test are
+# separate steps, and failure logs are retained as artifacts. This makes it
+# clear whether a red run is a compiler failure, a test failure, or runner
+# infrastructure instead of hiding all three inside one shell step.
 
 on:
   push:
     branches: [main]
+    paths:
+      - "core/**"
+      - ".github/workflows/core-stub.yml"
   pull_request:
+    paths:
+      - "core/**"
+      - ".github/workflows/core-stub.yml"
 
 concurrency:
   group: core-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+
 jobs:
   core-build:
     name: core-build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Verify core/ scaffolding
+      - name: Verify core scaffolding
         run: |
           set -euo pipefail
           test -f core/README.md || { echo "core/README.md missing"; exit 1; }
-          if [ -f core/CMakeLists.txt ]; then
-            echo "core/CMakeLists.txt detected — running real build"
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq cmake ninja-build clang-17
-            cmake -S core -B core/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Debug \
-              -DCMAKE_CXX_COMPILER=clang++-17
-            cmake --build core/build
-            ctest --test-dir core/build --output-on-failure
-          else
-            echo "core/CMakeLists.txt not yet present (Fase 1 not started). Scaffolding check only."
-          fi
+          test -f core/CMakeLists.txt || {
+            echo "core/CMakeLists.txt not yet present (Fase 1 not started)."
+            exit 0
+          }
 
-  # Same suite on a real ARM64 runner (free for public repos). This is
-  # where the e2e corpus actually EXECUTES translated guest code in the
-  # JIT — on x86_64 those assertions are skipped behind the is_arm64
-  # gate. Before this job, JIT execution was only verified on developer
-  # Apple Silicon machines.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure
+        run: |
+          cmake -S core -B core/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            2>&1 | tee core-configure.log
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build core/build 2>&1 | tee core-build.log
+
+      - name: Test
+        run: |
+          set -o pipefail
+          ctest --test-dir core/build --output-on-failure \
+            2>&1 | tee core-test.log
+
+      - name: Preserve diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-x86_64-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            core-configure.log
+            core-build.log
+            core-test.log
+            core/build/Testing/Temporary/LastTest.log
+
+  # Same suite on a real ARM64 runner. This is where the e2e corpus actually
+  # executes translated guest code; x86_64 keeps the fast portable coverage.
   core-build-arm64:
     name: core-build-arm64
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build and run the full suite (JIT executes here)
+      - name: Install toolchain
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure
+        run: |
           cmake -S core -B core/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=clang++-17
-          cmake --build core/build
-          ctest --test-dir core/build --output-on-failure
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            2>&1 | tee core-arm64-configure.log
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build core/build 2>&1 | tee core-arm64-build.log
+
+      - name: Test JIT suite
+        run: |
+          set -o pipefail
+          ctest --test-dir core/build --output-on-failure \
+            2>&1 | tee core-arm64-test.log
+
+      - name: Preserve diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-arm64-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            core-arm64-configure.log
+            core-arm64-build.log
+            core-arm64-test.log
+            core/build/Testing/Temporary/LastTest.log
