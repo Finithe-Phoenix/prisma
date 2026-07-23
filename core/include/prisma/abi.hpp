@@ -7,20 +7,20 @@
 //        entry: x0 = state pointer
 //        exit:  x0 = next guest PC
 //
-// On entry we must save the AAPCS64 callee-saved registers we will
-// clobber: x19..x28 (general callee-saved that we use to pin guest
-// GPRs r8..r15 and to hold the state pointer), x29 (frame pointer)
-// and x30 (link register). That is six register pairs, 96 bytes of
-// stack frame, 16-byte aligned as required.
+// On entry we save the AAPCS64 callee-saved registers we will clobber:
+// x19..x27 plus x30. The existing six-pair frame is 96 bytes and remains
+// 16-byte aligned. x28 and x29 are deliberately never modified by generated
+// code; their two saved lanes are therefore available as bounded translator
+// spill slots while their original live register values remain untouched.
 //
-// `emit_block_prologue(em)` emits those six `stp` pairs (each a
-// pre-indexed `stp r1, r2, [sp, #-16]!`), then moves the state
-// pointer from x0 into the pinned holder (x27), then loads each
-// guest GPR from `state->gpr[i]` into its pinned host register.
+// `emit_block_prologue(em)` emits those six `stp` pairs, then moves the
+// state pointer from x0 into the pinned holder (x27), then loads each guest
+// GPR from `state->gpr[i]` into its pinned host register.
 //
-// `emit_block_epilogue_and_ret(em)` does the reverse: stores the
-// pinned host regs back to the state frame, pops the six register
-// pairs in reverse push order, and emits a final `ret`.
+// `emit_block_epilogue_and_ret(em)` stores the pinned guest registers and
+// restores x19..x27 and x30. The x28/x29 stack lanes are discarded into
+// caller-saved x8/x9 because generated code preserves the live x28/x29
+// registers directly.
 //
 // These helpers exist as a separate API (rather than living inside
 // translator.cpp) so future inline guest-CALL sites — which need the
@@ -33,6 +33,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "prisma/arm64_encoding.hpp"
 #include "prisma/emitter.hpp"
@@ -44,16 +45,22 @@ namespace prisma::backend::abi {
 // that the prologue saves. Currently x27.
 constexpr arm64::Reg kStatePtrReg = arm64::Reg::X27;
 
-// Number of register pairs the prologue saves (and the epilogue
-// restores). Six = 96 bytes of stack frame, 16-byte aligned.
+// Number of register pairs the prologue saves (and the epilogue consumes).
+// Six pairs = 96 bytes, 16-byte aligned.
 constexpr unsigned kCalleeSavedPairCount = 6;
+
+// The saved x28 and x29 lanes are not needed for restoration because
+// generated code never writes those registers. Reuse their frame locations
+// as two 64-bit spill slots for Translator-owned blocks.
+constexpr unsigned kTranslatorSpillSlotCount = 2;
+constexpr std::int32_t kTranslatorSpillSlotBaseOffset = 72;
 
 // Emit the full block prologue: 6 stp pairs + mov x27, x0 + 16 ldr
 // loading the guest GPRs from the state frame.
 void emit_block_prologue(Emitter& em);
 
 // Emit the full block epilogue: 16 str storing the pinned host regs
-// back to the state frame + 6 ldp pairs (reverse order) + ret.
+// back to the state frame + frame restoration + ret.
 void emit_block_epilogue_and_ret(Emitter& em);
 
 // Patchable tail epilogue for direct block chaining.
