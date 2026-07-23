@@ -1,7 +1,7 @@
 name: shell (Rust) — stub
 
 # Rust shell validation. This temporary diagnostic branch adds one isolated,
-# read-only ARM64 job against PR #312; it will be closed without merging.
+# read-only ARM64 preview against PR #312; it will be closed without merging.
 
 on:
   push:
@@ -33,12 +33,12 @@ jobs:
             echo "shell/Cargo.toml not yet present (Fase 3 not started). Scaffolding check only."
           fi
 
-  pr312-adc-arm64-diagnostic:
-    name: pr312-adc-arm64-diagnostic
+  pr312-adc-arm64-preview:
+    name: pr312-adc-arm64-preview
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
-      - name: Checkout diagnostic controls
+      - name: Checkout preview controls
         uses: actions/checkout@v7
         with:
           path: diagnostic
@@ -50,24 +50,24 @@ jobs:
           fetch-depth: 0
           path: product
 
-      - name: Instrument product checkout only
-        run: python3 diagnostic/tools/ci/instrument_pr312_adc.py product
-
-      - name: Capture source locations
+      - name: Apply destination-store ordering fix in runner workspace
         shell: bash
         run: |
           set -euo pipefail
-          {
-            grep -n -E 'fn value_reg|fn lower_binop|LoadCarry|ReadCarryOut|StoreCarry' \
-              product/shell/prisma-backend/src/lowerer.rs
-            grep -n -E 'Adc|Sbb|LoadCarry|ReadCarryOut|StoreCarry' \
-              product/shell/prisma-decoder/src/decode.rs
-          } > adc-source-locations.log || true
+          python3 diagnostic/tools/ci/apply_pr312_adc_store_order.py product
+          cd product
+          git diff --check
+          git diff --binary -- shell/prisma-decoder/src/decode.rs > ../adc-store-order.patch
 
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install stable --profile minimal --component rustfmt
 
-      - name: Run targeted ADC/SBB tests with full output
+      - name: Check formatting of patched decoder
+        shell: bash
+        run: |
+          cargo fmt --manifest-path product/shell/Cargo.toml --all -- --check
+
+      - name: Run native ARM64 ADC/SBB regressions
         shell: bash
         env:
           RUST_BACKTRACE: "1"
@@ -75,15 +75,24 @@ jobs:
           set -o pipefail
           cargo test --manifest-path product/shell/Cargo.toml \
             -p prisma-runtime --test exec_adc -- --nocapture \
-            2>&1 | tee adc-test.log
+            2>&1 | tee adc-runtime-test.log
 
-      - name: Upload ADC/SBB diagnostics
+      - name: Run complete decoder crate tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path product/shell/Cargo.toml \
+            -p prisma-decoder 2>&1 | tee adc-decoder-test.log
+
+      - name: Upload validated ADC/SBB source preview
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr312-adc-arm64-diagnostics
+          name: pr312-adc-store-order-validated-source
           retention-days: 2
           if-no-files-found: error
           path: |
-            adc-test.log
-            adc-source-locations.log
+            product/shell/prisma-decoder/src/decode.rs
+            adc-store-order.patch
+            adc-runtime-test.log
+            adc-decoder-test.log
