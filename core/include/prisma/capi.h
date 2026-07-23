@@ -35,7 +35,7 @@ extern "C" {
 
 /* Bump on any ABI-visible change (new function, struct growth, enum
  * value). Consumers compare against prisma_capi_version() at startup. */
-#define PRISMA_CAPI_VERSION 3u
+#define PRISMA_CAPI_VERSION 4u
 
 PRISMA_CAPI_API uint32_t prisma_capi_version(void);
 
@@ -51,7 +51,7 @@ typedef enum prisma_status {
     PRISMA_STATUS_INTERNAL = 6
 } prisma_status;
 
-/* Mirrors translator::BlockExitKind. */
+/* Mirrors translator::BlockExitKind. Values are ABI-stable. */
 typedef enum prisma_block_exit_kind {
     PRISMA_BLOCK_EXIT_NONE = 0,
     PRISMA_BLOCK_EXIT_RETURN = 1,
@@ -62,7 +62,8 @@ typedef enum prisma_block_exit_kind {
     PRISMA_BLOCK_EXIT_CALL_REG = 6,
     PRISMA_BLOCK_EXIT_RET_ADJUSTED = 7,
     PRISMA_BLOCK_EXIT_REP_STOS = 8,
-    PRISMA_BLOCK_EXIT_REP_MOVS = 9
+    PRISMA_BLOCK_EXIT_REP_MOVS = 9,
+    PRISMA_BLOCK_EXIT_SYSCALL = 10
 } prisma_block_exit_kind;
 
 /* Mirrors runtime::DispatchExit. */
@@ -225,23 +226,17 @@ PRISMA_CAPI_API prisma_status prisma_dispatcher_run(
     size_t max_steps,
     prisma_run_result* out);
 
-/* Guest CPU state access (between runs). */
-PRISMA_CAPI_API prisma_status prisma_dispatcher_gpr_get(
-    const prisma_dispatcher* d,
-    uint32_t gpr_index,
-    uint64_t* out);
-PRISMA_CAPI_API prisma_status prisma_dispatcher_gpr_set(
+PRISMA_CAPI_API prisma_status prisma_dispatcher_set_gpr(
     prisma_dispatcher* d,
-    uint32_t gpr_index,
+    prisma_gpr reg,
     uint64_t value);
-PRISMA_CAPI_API prisma_status prisma_dispatcher_guest_pc(
+PRISMA_CAPI_API prisma_status prisma_dispatcher_get_gpr(
     const prisma_dispatcher* d,
-    uint64_t* out);
+    prisma_gpr reg,
+    uint64_t* out_value);
 
 #ifdef __cplusplus
-} /* extern "C" */
+}  /* extern "C" */
 #endif
 
-#undef PRISMA_CAPI_API
-
-#endif /* PRISMA_CAPI_H */
+#endif  /* PRISMA_CAPI_H */
