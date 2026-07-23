@@ -3,6 +3,7 @@ name: ffi bridge (C++/Rust)
 # Temporary, read-only diagnostics for PR #312. This branch never edits or
 # pushes product source: it checks out the PR head, reproduces the two failing
 # platforms, and retains complete compiler/test logs as artifacts.
+# Diagnostic refresh target: f4eb3098b9850ad4b780c405f7ec17ff36958930.
 
 on:
   pull_request:
