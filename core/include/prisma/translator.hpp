@@ -49,18 +49,21 @@ enum class TranslateError {
     JitAllocFailed,      // could not allocate a JitBuffer.
 };
 
+// Values are ABI-stable and intentionally match prisma_block_exit_kind in
+// capi.h. Do not insert members without assigning an explicit value and
+// updating PRISMA_CAPI_VERSION.
 enum class BlockExitKind {
-    None,
-    Return,
-    JumpRel,
-    JumpReg,
-    CondJumpRel = 3,
-    CallRel = 4,
-    CallReg = 5,
-    RetAdjusted = 6,
-    RepStos = 7,
-    RepMovs = 8,
-    Syscall = 9,
+    None = 0,
+    Return = 1,
+    JumpRel = 2,
+    JumpReg = 3,
+    CondJumpRel = 4,
+    CallRel = 5,
+    CallReg = 6,
+    RetAdjusted = 7,
+    RepStos = 8,
+    RepMovs = 9,
+    Syscall = 10,
 };
 
 struct TranslatedBlock {
