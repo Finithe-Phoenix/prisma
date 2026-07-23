@@ -76,6 +76,36 @@ MEM_NEW = '''        stmts.push(Stmt::new(
         Ok(1 + used)
 '''
 
+IMM_MEM_OLD = '''        if matches!(modrm.reg, 2 | 3) {
+            let result = emit_adc_sbb_value(stmts, modrm.reg == 3, mem_val, imm_ref, size);
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreMem(StoreMem {
+                    addr: addr_ref,
+                    value: result,
+                    size,
+                }),
+            ));
+            return Ok(1 + modrm_bytes + imm_bytes);
+        }
+'''
+
+IMM_MEM_NEW = '''        if matches!(modrm.reg, 2 | 3) {
+            let is_sbb = modrm.reg == 3;
+            let result = emit_adc_sbb_value(stmts, is_sbb, mem_val, imm_ref, size);
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreMem(StoreMem {
+                    addr: addr_ref,
+                    value: result,
+                    size,
+                }),
+            ));
+            push_adc_sbb_rflags_bits(stmts, is_sbb, mem_val, imm_ref, result, size);
+            return Ok(1 + modrm_bytes + imm_bytes);
+        }
+'''
+
 REG64_ASSERT_OLD = '''            assert!(matches!(
                 d.stmts.last().unwrap().op,
                 Op::StoreReg(StoreReg {
@@ -173,7 +203,8 @@ def main() -> None:
     text = path.read_text(encoding="utf-8")
     text = replace_exact(text, VALUE_OLD, VALUE_NEW, "value helper")
     text = replace_exact(text, REG_OLD, REG_NEW, "register destination")
-    text = replace_exact(text, MEM_OLD, MEM_NEW, "memory destination")
+    text = replace_exact(text, MEM_OLD, MEM_NEW, "register-source memory destination")
+    text = replace_exact(text, IMM_MEM_OLD, IMM_MEM_NEW, "immediate memory destination")
     text = replace_exact(text, REG64_ASSERT_OLD, REG64_ASSERT_NEW, "I64 register assertion")
     text = replace_exact(
         text,
