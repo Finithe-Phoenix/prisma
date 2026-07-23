@@ -1,9 +1,8 @@
 name: apply PR 312 WideDiv register-pressure fix
 
-# Updated once after creation so GitHub executes the one-shot workflow.
 on:
-  push:
-    branches: [claude/w2-flags-isa-batch]
+  pull_request:
+    branches: [main]
     paths:
       - ".github/workflows/apply-pr312-widediv-register-fix.yml"
 
@@ -12,6 +11,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.event.pull_request.number == 312 && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,8 +54,7 @@ jobs:
           } else {
             // Unsigned division never mutates the divisor. Reuse the existing
             // SSA register instead of consuming a sixth temporary; quotient
-            // and remainder WideDiv nodes can otherwise overlap at the pool
-            // limit and fail translation before execution.
+            // and remainder nodes can otherwise overlap at the pool limit.
             work.divisor = divisor;
           }
 
@@ -71,7 +70,7 @@ jobs:
           PY
           git diff --check
 
-      - name: Commit the runtime fix and remove temporary files
+      - name: Commit runtime fix and remove temporary workflow
         run: |
           git config user.name "prisma-ci"
           git config user.email "prisma-ci@users.noreply.github.com"
