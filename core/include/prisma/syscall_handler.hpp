@@ -13,9 +13,9 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
-#include <array>
 
 namespace prisma::runtime {
 
@@ -50,8 +50,17 @@ struct GuestUcontext {
 };
 
 // Returns a copy of the guest sigaction for a given signal (1-64),
-// thread-safe. Returns empty struct if sig is out of bounds.
-GuestSigaction get_guest_sigaction(int sig);
+// thread-safe. POSIX builds use the table maintained by the syscall handler.
+// MSVC builds route every guest syscall to -ENOSYS and therefore have no
+// guest-installed signal-action table; the dispatcher receives the default
+// disposition instead of referencing a POSIX-only definition.
+#ifdef _MSC_VER
+[[nodiscard]] inline GuestSigaction get_guest_sigaction(int) noexcept {
+    return {};
+}
+#else
+[[nodiscard]] GuestSigaction get_guest_sigaction(int sig);
+#endif
 
 struct CpuStateFrame;
 
