@@ -9,90 +9,11 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: write
-
 concurrency:
   group: core-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  repair-pr312-widediv:
-    if: github.event_name == 'pull_request' && github.event.pull_request.number == 312 && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: claude/w2-flags-isa-batch
-          fetch-depth: 0
-
-      - name: Apply the confirmed WideDiv register-pressure fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("core/src/backend/lowering.cpp")
-          text = path.read_text(encoding="utf-8")
-          old = '''          WideDivWorkRegs work{};
-          if (!allocate_temporary(work.rem) || !allocate_temporary(work.low) ||
-              !allocate_temporary(work.divisor) || !allocate_temporary(work.mask) ||
-              !allocate_temporary(work.bit) || !allocate_temporary(work.overflow)) {
-            return {false, LowerError::OutOfScratchRegs, "WideDiv temporaries"};
-          }
-
-          emit_divisor_zero_sigfpe_guard(emitter_, divisor, options_.emit_ret_on_terminator);
-          emitter_.mov_reg_reg(work.rem, high);
-          emitter_.mov_reg_reg(work.low, low);
-          emitter_.mov_reg_reg(work.divisor, divisor);
-          if (op.is_signed) {
-'''
-          new = '''          WideDivWorkRegs work{};
-          if (!allocate_temporary(work.rem) || !allocate_temporary(work.low) ||
-              !allocate_temporary(work.mask) || !allocate_temporary(work.bit) ||
-              !allocate_temporary(work.overflow)) {
-            return {false, LowerError::OutOfScratchRegs, "WideDiv temporaries"};
-          }
-          if (op.is_signed) {
-            if (!allocate_temporary(work.divisor)) {
-              return {false, LowerError::OutOfScratchRegs, "WideDiv signed divisor temporary"};
-            }
-          } else {
-            // Unsigned division never mutates the divisor. Reuse its existing
-            // SSA register instead of consuming a sixth temporary; quotient
-            // and remainder nodes can otherwise overlap at the pool limit.
-            work.divisor = divisor;
-          }
-
-          emit_divisor_zero_sigfpe_guard(emitter_, divisor, options_.emit_ret_on_terminator);
-          emitter_.mov_reg_reg(work.rem, high);
-          emitter_.mov_reg_reg(work.low, low);
-          if (op.is_signed) {
-            emitter_.mov_reg_reg(work.divisor, divisor);
-'''
-          if text.count(old) != 1:
-              raise SystemExit("WideDiv allocation block was not found exactly once")
-          path.write_text(text.replace(old, new), encoding="utf-8")
-          PY
-          git diff --check
-
-      - name: Publish a clean source-only repair commit
-        run: |
-          git config user.name "prisma-ci"
-          git config user.email "prisma-ci@users.noreply.github.com"
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/core-stub.yml
-          rm -f .github/workflows/apply-pr312-widediv-register-fix.yml
-          rm -f .ci/pr312-arm64-diagnostic.txt
-          git add -A \
-            core/src/backend/lowering.cpp \
-            .github/workflows/core-stub.yml \
-            .github/workflows/apply-pr312-widediv-register-fix.yml \
-            .ci/pr312-arm64-diagnostic.txt
-          git commit -m "fix(backend): reduce unsigned WideDiv register pressure"
-          git push origin HEAD:claude/w2-flags-isa-batch
-
   core-build:
     name: core-build
     runs-on: ubuntu-latest
@@ -116,6 +37,11 @@ jobs:
             echo "core/CMakeLists.txt not yet present (Fase 1 not started). Scaffolding check only."
           fi
 
+  # Same suite on a real ARM64 runner (free for public repos). This is
+  # where the e2e corpus actually EXECUTES translated guest code in the
+  # JIT — on x86_64 those assertions are skipped behind the is_arm64
+  # gate. Before this job, JIT execution was only verified on developer
+  # Apple Silicon machines.
   core-build-arm64:
     name: core-build-arm64
     runs-on: ubuntu-24.04-arm
