@@ -13,49 +13,146 @@ import argparse
 from pathlib import Path
 
 
-REG_TEMPLATE = '''        emit_alu_flags_preserve_carry(stmts, {kind}, {value}, one, size);
+REPLACEMENTS = [
+    (
+        '''        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
         stmts.push(Stmt::new(
             None,
-            Op::StoreReg(StoreReg {{
-                reg: {reg},
-                value: {result},
+            Op::StoreReg(StoreReg {
+                reg,
+                value: result,
                 size,
-            }}),
+            }),
         ));
-'''
-
-REG_REPLACEMENT = '''        stmts.push(Stmt::new(
+''',
+        '''        stmts.push(Stmt::new(
             None,
-            Op::StoreReg(StoreReg {{
-                reg: {reg},
-                value: {result},
+            Op::StoreReg(StoreReg {
+                reg,
+                value: result,
                 size,
-            }}),
+            }),
         ));
-        emit_alu_flags_preserve_carry(stmts, {kind}, {value}, one, size);
-'''
-
-MEM_TEMPLATE = '''        emit_alu_flags_preserve_carry(stmts, {kind}, {value}, one, size);
+        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
+''',
+        "Group 4 register",
+    ),
+    (
+        '''        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
         stmts.push(Stmt::new(
             None,
-            Op::StoreMem(StoreMem {{
-                addr: {addr},
-                value: {result},
+            Op::StoreMem(StoreMem {
+                addr,
+                value: result,
                 size,
-            }}),
+            }),
         ));
-'''
-
-MEM_REPLACEMENT = '''        stmts.push(Stmt::new(
+''',
+        '''        stmts.push(Stmt::new(
             None,
-            Op::StoreMem(StoreMem {{
-                addr: {addr},
-                value: {result},
+            Op::StoreMem(StoreMem {
+                addr,
+                value: result,
                 size,
-            }}),
+            }),
         ));
-        emit_alu_flags_preserve_carry(stmts, {kind}, {value}, one, size);
-'''
+        emit_alu_flags_preserve_carry(stmts, kind, value, one, size);
+''',
+        "Group 4 memory",
+    ),
+    (
+        '''                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
+                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: dst_reg,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+''',
+        '''                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: dst_reg,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
+''',
+        "Group 5 INC register",
+    ),
+    (
+        '''                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
+                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreMem(StoreMem {
+                        addr: addr_ref,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+''',
+        '''                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreMem(StoreMem {
+                        addr: addr_ref,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
+''',
+        "Group 5 INC memory",
+    ),
+    (
+        '''                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
+                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: dst_reg,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+''',
+        '''                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: dst_reg,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
+''',
+        "Group 5 DEC register",
+    ),
+    (
+        '''                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
+                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreMem(StoreMem {
+                        addr: addr_ref,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+''',
+        '''                stmts.push(Stmt::new(
+                    None,
+                    Op::StoreMem(StoreMem {
+                        addr: addr_ref,
+                        value: result_ref,
+                        size,
+                    }),
+                ));
+                emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
+''',
+        "Group 5 DEC memory",
+    ),
+]
 
 
 def replace_once(text: str, old: str, new: str, name: str) -> str:
@@ -72,83 +169,8 @@ def main() -> None:
 
     path = args.checkout / "shell/prisma-decoder/src/decode.rs"
     text = path.read_text(encoding="utf-8")
-
-    replacements = [
-        (
-            REG_TEMPLATE.format(kind="kind", value="value", reg="reg", result="result"),
-            REG_REPLACEMENT.format(kind="kind", value="value", reg="reg", result="result"),
-            "Group 4 register",
-        ),
-        (
-            MEM_TEMPLATE.format(kind="kind", value="value", addr="addr", result="result"),
-            MEM_REPLACEMENT.format(kind="kind", value="value", addr="addr", result="result"),
-            "Group 4 memory",
-        ),
-        (
-            REG_TEMPLATE.format(
-                kind="BinOpKind::Add",
-                value="value_ref",
-                reg="dst_reg",
-                result="result_ref",
-            ),
-            REG_REPLACEMENT.format(
-                kind="BinOpKind::Add",
-                value="value_ref",
-                reg="dst_reg",
-                result="result_ref",
-            ),
-            "Group 5 INC register",
-        ),
-        (
-            MEM_TEMPLATE.format(
-                kind="BinOpKind::Add",
-                value="value_ref",
-                addr="addr_ref",
-                result="result_ref",
-            ),
-            MEM_REPLACEMENT.format(
-                kind="BinOpKind::Add",
-                value="value_ref",
-                addr="addr_ref",
-                result="result_ref",
-            ),
-            "Group 5 INC memory",
-        ),
-        (
-            REG_TEMPLATE.format(
-                kind="BinOpKind::Sub",
-                value="value_ref",
-                reg="dst_reg",
-                result="result_ref",
-            ),
-            REG_REPLACEMENT.format(
-                kind="BinOpKind::Sub",
-                value="value_ref",
-                reg="dst_reg",
-                result="result_ref",
-            ),
-            "Group 5 DEC register",
-        ),
-        (
-            MEM_TEMPLATE.format(
-                kind="BinOpKind::Sub",
-                value="value_ref",
-                addr="addr_ref",
-                result="result_ref",
-            ),
-            MEM_REPLACEMENT.format(
-                kind="BinOpKind::Sub",
-                value="value_ref",
-                addr="addr_ref",
-                result="result_ref",
-            ),
-            "Group 5 DEC memory",
-        ),
-    ]
-
-    for old, new, name in replacements:
+    for old, new, name in REPLACEMENTS:
         text = replace_once(text, old, new, name)
-
     path.write_text(text, encoding="utf-8")
 
 
