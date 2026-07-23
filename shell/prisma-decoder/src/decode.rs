@@ -2500,8 +2500,6 @@ fn emit_div_idiv_pair(
         return;
     }
 
-    let divisor = emit_extend_to_i64(stmts, rhs_ref, size, is_signed);
-    emit_divisor_zero_trap(stmts, divisor);
     let dividend = if size == OpSize::I8 {
         let ax = alloc_ref(stmts);
         stmts.push(Stmt::new(
@@ -2532,6 +2530,15 @@ fn emit_div_idiv_pair(
             combined
         }
     };
+
+    // Materialize the divisor only after the dividend is complete. The Rust
+    // migration backend currently maps SSA refs through an eight-register ring;
+    // extending the divisor earlier let a later shifted-high dividend ref reuse
+    // and overwrite its physical register before UDIV/SDIV consumed it.
+    // All work above is temporary-only, so divisor-zero and quotient-overflow
+    // traps still occur before RAX/RDX are architecturally modified.
+    let divisor = emit_extend_to_i64(stmts, rhs_ref, size, is_signed);
+    emit_divisor_zero_trap(stmts, divisor);
 
     let quotient = push_binop_ref(
         stmts,
