@@ -1,6 +1,10 @@
 name: PR 312 WideDiv patch preview
 
 on:
+  push:
+    branches: [agent/ci-stabilization]
+    paths:
+      - ".github/workflows/pr312-widediv-patch-preview.yml"
   pull_request:
     paths:
       - ".github/workflows/pr312-widediv-patch-preview.yml"
