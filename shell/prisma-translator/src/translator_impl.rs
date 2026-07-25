@@ -1,3 +1,4 @@
+impl Translator {
     pub fn new() -> Self {
         Self::default()
     }
@@ -340,3 +341,4 @@
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
+}
