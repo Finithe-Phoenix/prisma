@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Prisma translation facade — decode -> optimize -> lower -> cache, all in Rust"
 
-[lib]
-path = "src/facade.rs"
-
 [dependencies]
 prisma-ir = { path = "../prisma-ir" }
 prisma-decoder = { path = "../prisma-decoder" }
