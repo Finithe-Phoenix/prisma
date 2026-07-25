@@ -27,8 +27,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # MSVC's __cplusplus defaults to 199711L even with /std:c++20 unless
 # /Zc:__cplusplus is passed. Libraries like vixl check __cplusplus to
 # require C++17, so enable this globally.
+# /bigobj: the ~110-alternative ir::Op std::variant expands past the
+# default COFF section limit in heavy visitor TUs (translator, passes).
 if(MSVC)
-    add_compile_options(/Zc:__cplusplus)
+    add_compile_options(/Zc:__cplusplus /bigobj)
 endif()
 
 # RFC 0014: the static prisma_* libraries link into the prisma_core_c
@@ -169,6 +171,7 @@ add_library(prisma_ir STATIC
     src/ir/pretty_print.cpp
     src/ir/validate.cpp
     src/ir/serialize.cpp
+    src/ir/serialization.cpp
     src/ir/serialize_crc.cpp
     src/ir/cfg.cpp
     src/ir/dominators.cpp
@@ -249,6 +252,7 @@ add_library(prisma_passes STATIC
     src/passes/tail_call.cpp
     src/passes/peephole.cpp
     src/passes/pass_manager.cpp
+    src/passes/inline_short_helpers.cpp
 )
 
 target_include_directories(prisma_passes
@@ -483,6 +487,7 @@ if(PRISMA_BUILD_TESTS)
         tests/test_licm.cpp
         tests/test_ir_validate.cpp
         tests/test_ir_serialize.cpp
+        tests/test_ir_serialization.cpp
         tests/test_host_features.cpp
         tests/test_cache_stress.cpp
         tests/test_sha256.cpp

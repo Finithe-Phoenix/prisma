@@ -23,6 +23,7 @@ fn is_pure_for_dce(op: &Op) -> bool {
         Op::Constant(_)
             | Op::LoadReg(_)
             | Op::BinOp(_)
+            | Op::WideDiv(_)
             | Op::Compare(_)
             | Op::Select(_)
             | Op::LoadMem(_)
@@ -30,8 +31,14 @@ fn is_pure_for_dce(op: &Op) -> bool {
             | Op::ReadFlag(_)
             | Op::WriteFlagsFp(_)
             | Op::VecConstant(_)
+            | Op::VecBinOp(_)
+            | Op::VecClMul(_)
+            | Op::VecF16Cvt(_)
             | Op::LoadVecReg(_)
             | Op::LoadVecRegHi(_)
+            | Op::PcmpStrIndex(_)
+            | Op::PcmpStrMask(_)
+            | Op::PcmpStrFlags(_)
             | Op::WriteFlagsPtest(_)
             | Op::WriteFlagsPtestYmm(_)
             | Op::VecTbl2(_)
@@ -43,6 +50,7 @@ fn is_pure_for_dce(op: &Op) -> bool {
             | Op::VecGather(_)
             | Op::X87Load(_)
             | Op::LoadCarry(_)
+            | Op::LoadRflags(_)
             | Op::ReadCarryOut(_)
     )
 }
@@ -79,13 +87,40 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
         | Op::LoadVecRegHi(_)
         | Op::X87Load(_)
         | Op::X87Pop(_)
-        | Op::LoadCarry(_) => {}
+        | Op::LoadCarry(_)
+        | Op::LoadRflags(_) => {}
 
+        Op::StoreRflagsFromNzcv(x) => {
+            if let Some(pf) = x.pf {
+                into.insert(pf);
+            }
+            if let Some(af) = x.af {
+                into.insert(af);
+            }
+        }
+
+        Op::StoreRflagsFromBits(x) => {
+            if let Some(pf) = x.pf {
+                into.insert(pf);
+            }
+            if let Some(af) = x.af {
+                into.insert(af);
+            }
+            into.insert(x.zf);
+            into.insert(x.sf);
+            into.insert(x.of);
+        }
         Op::ReadCarryOut(x) => {
             into.insert(x.flags);
         }
         Op::StoreCarry(x) => {
             into.insert(x.value);
+        }
+        Op::StoreRflags(x) => {
+            into.insert(x.value);
+        }
+        Op::TrapIf(x) => {
+            into.insert(x.condition);
         }
         Op::StoreReg(x) => {
             into.insert(x.value);
@@ -93,6 +128,11 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
         Op::BinOp(x) => {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        }
+        Op::WideDiv(x) => {
+            into.insert(x.high);
+            into.insert(x.low);
+            into.insert(x.divisor);
         }
         Op::Compare(x) => {
             into.insert(x.lhs);
@@ -116,6 +156,18 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
             into.insert(x.addr);
             into.insert(x.value);
         }
+        Op::AtomicCmpxchg(x) => {
+            into.insert(x.addr);
+            into.insert(x.expected);
+            into.insert(x.new_value);
+        }
+        Op::AtomicCmpxchgPair(x) => {
+            into.insert(x.addr);
+            into.insert(x.expected_low);
+            into.insert(x.expected_high);
+            into.insert(x.new_low);
+            into.insert(x.new_high);
+        }
         Op::CondJump(x) => {
             into.insert(x.cond);
         }
@@ -124,6 +176,10 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
             into.insert(x.rhs);
         }
         Op::AluFlags(x) => {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+        }
+        Op::AluFlagsPreserveCarry(x) => {
             into.insert(x.lhs);
             into.insert(x.rhs);
         }
@@ -157,6 +213,13 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
             into.insert(x.lhs);
             into.insert(x.rhs);
         }
+        Op::VecClMul(x) => {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+        }
+        Op::VecF16Cvt(x) => {
+            into.insert(x.src);
+        }
         Op::StoreVecReg(x) => {
             into.insert(x.value);
         }
@@ -184,6 +247,36 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
         Op::VecCmp(x) => {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        }
+        Op::PcmpStrIndex(x) => {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+            if let Some(lhs_len) = x.lhs_len {
+                into.insert(lhs_len);
+            }
+            if let Some(rhs_len) = x.rhs_len {
+                into.insert(rhs_len);
+            }
+        }
+        Op::PcmpStrMask(x) => {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+            if let Some(lhs_len) = x.lhs_len {
+                into.insert(lhs_len);
+            }
+            if let Some(rhs_len) = x.rhs_len {
+                into.insert(rhs_len);
+            }
+        }
+        Op::PcmpStrFlags(x) => {
+            into.insert(x.lhs);
+            into.insert(x.rhs);
+            if let Some(lhs_len) = x.lhs_len {
+                into.insert(lhs_len);
+            }
+            if let Some(rhs_len) = x.rhs_len {
+                into.insert(rhs_len);
+            }
         }
         Op::VecShuffle32x4(x) => {
             into.insert(x.src);

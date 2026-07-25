@@ -49,9 +49,12 @@ pub fn dead_store_eliminate(func: Function) -> Function {
                             dead.insert(prev);
                         }
                     }
-                    Op::LoadMem(_) | Op::LoadMemTSO(_) | Op::StoreMemTSO(_) | Op::Fence(_) => {
-                        pending.clear();
-                    }
+                    Op::LoadMem(_)
+                    | Op::LoadMemTSO(_)
+                    | Op::StoreMemTSO(_)
+                    | Op::AtomicCmpxchg(_)
+                    | Op::AtomicCmpxchgPair(_)
+                    | Op::Fence(_) => pending.clear(),
                     _ => {}
                 }
             }

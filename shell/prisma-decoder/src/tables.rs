@@ -43,10 +43,18 @@ pub enum OneByteOpcode {
     AdcRmR,
     /// ADC r/m8, r8 (10 /r).
     AdcRmR8,
+    /// ADC r64, r/m64 (REX.W 13 /r).
+    AdcRRm,
+    /// ADC r8, r/m8 (12 /r).
+    AdcR8Rm,
     /// SBB r/m64, r64 (REX.W 19 /r) — sub-with-borrow (real CF).
     SbbRmR,
     /// SBB r/m8, r8 (18 /r).
     SbbRmR8,
+    /// SBB r64, r/m64 (REX.W 1B /r).
+    SbbRRm,
+    /// SBB r8, r/m8 (1A /r).
+    SbbR8Rm,
     /// ALU/test/cmp accumulator immediate forms.
     AccImm,
     /// ADD/SUB/... r/m, full-width immediate (80/81 /digit).
@@ -179,10 +187,14 @@ pub enum OneByteOpcode {
     Group4,
     /// 0xFF group 5
     Group5,
-    /// PUSHFQ (9C) — placeholder: pushes Constant 0 (no flags bank in IR yet).
+    /// PUSHFQ (9C) — partial flags model: pushes reserved bit 1 plus CF.
     Pushfq,
-    /// POPFQ (9D) — placeholder: pops into a discarded temp (no flags bank yet).
+    /// POPFQ (9D) — partial flags model: restores persistent CF from bit 0.
     Popfq,
+    /// SAHF (9E) — stores AH into SF/ZF/AF/PF/CF.
+    Sahf,
+    /// LAHF (9F) — loads SF/ZF/AF/PF/CF into AH.
+    Lahf,
     /// 0x0F escape.
     TwoBytePrefix,
     Unsupported,
@@ -251,12 +263,16 @@ pub enum TwoByteOpcode {
     Tzcnt,
     /// BSWAP r32/r64 (0F C8+rd)
     Bswap,
-    /// CMPXCHG r/m, r (0F B1). Register-direct, I16/I32/I64.
+    /// CMPXCHG r/m8, r8 (0F B0) and r/m, r (0F B1).
     Cmpxchg,
+    /// CMPXCHG8B/CMPXCHG16B memory group (0F C7 /1).
+    Cmpxchg8b16b,
     /// BT/BTS/BTR/BTC r/m64, imm8 group (0F BA /4../7).
     BtGroup,
     /// Three-byte 0F 38 escape map.
     ThreeByte0F38,
+    /// Three-byte 0F 3A escape map.
+    ThreeByte0F3A,
     Unsupported,
 }
 
@@ -288,8 +304,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0x03u8 => OneByteOpcode::AddRRm,
         0x10u8 => OneByteOpcode::AdcRmR8,
         0x11u8 => OneByteOpcode::AdcRmR,
-        0x12u8 => OneByteOpcode::AddR8Rm,
-        0x13u8 => OneByteOpcode::AddRRm,
+        0x12u8 => OneByteOpcode::AdcR8Rm,
+        0x13u8 => OneByteOpcode::AdcRRm,
         0x08u8 => OneByteOpcode::OrRmR8,
         0x0Au8 => OneByteOpcode::OrR8Rm,
         0x0Bu8 => OneByteOpcode::OrRRm,
@@ -303,8 +319,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0x2Bu8 => OneByteOpcode::SubRRm,
         0x18u8 => OneByteOpcode::SbbRmR8,
         0x19u8 => OneByteOpcode::SbbRmR,
-        0x1Au8 => OneByteOpcode::SubR8Rm,
-        0x1Bu8 => OneByteOpcode::SubRRm,
+        0x1Au8 => OneByteOpcode::SbbR8Rm,
+        0x1Bu8 => OneByteOpcode::SbbRRm,
         0x21u8 => OneByteOpcode::AndRmR,
         0x22u8 => OneByteOpcode::AndR8Rm,
         0x23u8 => OneByteOpcode::AndRRm,
@@ -332,6 +348,8 @@ pub const fn classify_one_byte(opcode: u8) -> OneByteOpcode {
         0x90u8 => OneByteOpcode::Nop,
         0x9Cu8 => OneByteOpcode::Pushfq,
         0x9Du8 => OneByteOpcode::Popfq,
+        0x9Eu8 => OneByteOpcode::Sahf,
+        0x9Fu8 => OneByteOpcode::Lahf,
         0x9Bu8 => OneByteOpcode::Fwait,
         0x91u8..=0x97u8 => OneByteOpcode::XchgAcc,
         0x98u8 => OneByteOpcode::SignExtendAcc,
@@ -406,12 +424,12 @@ pub const fn classify_two_byte(opcode: u8) -> TwoByteOpcode {
         0xC3u8 => TwoByteOpcode::Movnti,
         0xBDu8 => TwoByteOpcode::Lzcnt,
         0xBCu8 => TwoByteOpcode::Tzcnt,
-        // Only 0F B1 (CMPXCHG r/m,r). The C++ reference does not decode the
-        // r/m8,r8 form (0F B0), so leave it Unsupported to keep the differential.
-        0xB1u8 => TwoByteOpcode::Cmpxchg,
+        0xB0u8 | 0xB1u8 => TwoByteOpcode::Cmpxchg,
         0xBAu8 => TwoByteOpcode::BtGroup,
+        0xC7u8 => TwoByteOpcode::Cmpxchg8b16b,
         0xC8u8..=0xCFu8 => TwoByteOpcode::Bswap,
         0x38u8 => TwoByteOpcode::ThreeByte0F38,
+        0x3Au8 => TwoByteOpcode::ThreeByte0F3A,
         _ => TwoByteOpcode::Unsupported,
     }
 }
@@ -495,6 +513,8 @@ mod tests {
         assert_eq!(classify_one_byte(0x9B), OneByteOpcode::Fwait);
         assert_eq!(classify_one_byte(0x9C), OneByteOpcode::Pushfq);
         assert_eq!(classify_one_byte(0x9D), OneByteOpcode::Popfq);
+        assert_eq!(classify_one_byte(0x9E), OneByteOpcode::Sahf);
+        assert_eq!(classify_one_byte(0x9F), OneByteOpcode::Lahf);
         assert_eq!(classify_one_byte(0x86), OneByteOpcode::Xchg);
         assert_eq!(classify_one_byte(0x91), OneByteOpcode::XchgAcc);
         assert_eq!(classify_one_byte(0x97), OneByteOpcode::XchgAcc);
@@ -536,10 +556,12 @@ mod tests {
         assert_eq!(classify_one_byte(0xFF), OneByteOpcode::Group5);
         assert_eq!(classify_one_byte(0x10), OneByteOpcode::AdcRmR8);
         assert_eq!(classify_one_byte(0x11), OneByteOpcode::AdcRmR);
-        assert_eq!(classify_one_byte(0x13), OneByteOpcode::AddRRm);
+        assert_eq!(classify_one_byte(0x12), OneByteOpcode::AdcR8Rm);
+        assert_eq!(classify_one_byte(0x13), OneByteOpcode::AdcRRm);
         assert_eq!(classify_one_byte(0x18), OneByteOpcode::SbbRmR8);
         assert_eq!(classify_one_byte(0x19), OneByteOpcode::SbbRmR);
-        assert_eq!(classify_one_byte(0x1B), OneByteOpcode::SubRRm);
+        assert_eq!(classify_one_byte(0x1A), OneByteOpcode::SbbR8Rm);
+        assert_eq!(classify_one_byte(0x1B), OneByteOpcode::SbbRRm);
     }
 
     #[test]
@@ -582,12 +604,14 @@ mod tests {
         assert_eq!(classify_two_byte(0xAE), TwoByteOpcode::Fence);
         assert_eq!(classify_two_byte(0xC1), TwoByteOpcode::Xadd);
         assert_eq!(classify_two_byte(0xC3), TwoByteOpcode::Movnti);
-        assert_eq!(classify_two_byte(0xB0), TwoByteOpcode::Unsupported);
+        assert_eq!(classify_two_byte(0xB0), TwoByteOpcode::Cmpxchg);
         assert_eq!(classify_two_byte(0xB1), TwoByteOpcode::Cmpxchg);
+        assert_eq!(classify_two_byte(0xC7), TwoByteOpcode::Cmpxchg8b16b);
         assert_eq!(classify_two_byte(0xC8), TwoByteOpcode::Bswap);
         assert_eq!(classify_two_byte(0xCF), TwoByteOpcode::Bswap);
         assert_eq!(classify_two_byte(0xBA), TwoByteOpcode::BtGroup);
         assert_eq!(classify_two_byte(0x38), TwoByteOpcode::ThreeByte0F38);
+        assert_eq!(classify_two_byte(0x3A), TwoByteOpcode::ThreeByte0F3A);
         assert_eq!(classify_two_byte(0xFF), TwoByteOpcode::UndefinedRm);
         assert_eq!(classify_two_byte(0x24), TwoByteOpcode::Unsupported);
     }

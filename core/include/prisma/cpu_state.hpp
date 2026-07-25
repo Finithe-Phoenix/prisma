@@ -13,11 +13,11 @@
 
 #pragma once
 
+#include "prisma/ir.hpp"  // ir::Gpr, ir::kGprCount
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
-
-#include "prisma/ir.hpp"  // ir::Gpr, ir::kGprCount
 
 namespace prisma::runtime {
 
@@ -31,8 +31,8 @@ inline constexpr std::size_t kYmmCount = kXmmCount;
 // are the canonical access pattern for SSE2 integer code; floating-
 // point ops view the same bits as packed F32 / F64.
 struct alignas(16) XmmReg {
-    std::uint64_t lo{0};
-    std::uint64_t hi{0};
+  std::uint64_t lo{0};
+  std::uint64_t hi{0};
 };
 
 // x87 8-deep stack of 80-bit floats. We model each slot as a 16-byte
@@ -42,8 +42,8 @@ struct alignas(16) XmmReg {
 // the runtime uses today so PUSH/POP of the host's V regs has a
 // stable spill location.
 struct alignas(16) X87Slot {
-    std::uint64_t lo{0};   // mantissa low
-    std::uint64_t hi{0};   // mantissa high + sign + exp (10 bytes used)
+  std::uint64_t lo{0};  // mantissa low
+  std::uint64_t hi{0};  // mantissa high + sign + exp (10 bytes used)
 };
 
 inline constexpr std::size_t kX87StackDepth = 8;
@@ -51,101 +51,109 @@ inline constexpr std::size_t kX87StackDepth = 8;
 // Matches x86 register-encoding order: rax, rcx, rdx, rbx, rsp, rbp,
 // rsi, rdi, r8..r15. Index with `static_cast<std::size_t>(ir::Gpr::X)`.
 struct CpuStateFrame {
-    std::array<std::uint64_t, ir::kGprCount> gpr{};
+  std::array<std::uint64_t, ir::kGprCount> gpr{};
 
-    // The guest program counter. Updated by the dispatcher between
-    // block executions.
-    std::uint64_t guest_pc{0};
+  // The guest program counter. Updated by the dispatcher between
+  // block executions.
+  std::uint64_t guest_pc{0};
 
-    // F1-RT-012: SSE register file. 16 × 128-bit XMM registers.
-    std::array<XmmReg, kXmmCount> xmm{};
+  // F1-RT-012: SSE register file. 16 × 128-bit XMM registers.
+  std::array<XmmReg, kXmmCount> xmm{};
 
-    // F2-IR-005: AVX-256 high lane file. The low 128 bits of each
-    // YMM register live in `xmm[]` (so legacy SSE offsets don't
-    // shift); the upper 128 bits live here. Existing 128-bit guest
-    // ops zero this lane to match VEX.128 semantics.
-    std::array<XmmReg, kYmmCount> ymm_hi{};
+  // F2-IR-005: AVX-256 high lane file. The low 128 bits of each
+  // YMM register live in `xmm[]` (so legacy SSE offsets don't
+  // shift); the upper 128 bits live here. Existing 128-bit guest
+  // ops zero this lane to match VEX.128 semantics.
+  std::array<XmmReg, kYmmCount> ymm_hi{};
 
-    // F1-RT-012: x87 / MMX stack. 8 entries, each 16 bytes (10 bytes
-    // for the 80-bit float, 6 bytes reserved for tag/exception/etc.
-    // when we wire FXSAVE semantics).
-    std::array<X87Slot, kX87StackDepth> x87{};
+  // F1-RT-012: x87 / MMX stack. 8 entries, each 16 bytes (10 bytes
+  // for the 80-bit float, 6 bytes reserved for tag/exception/etc.
+  // when we wire FXSAVE semantics).
+  std::array<X87Slot, kX87StackDepth> x87{};
 
-    // x87 status word + control word + TOS pointer. 16 bits each;
-    // packed into a u64 for now (low 16 = status, next 16 = control,
-    // next 8 = top-of-stack, rest reserved).
-    std::uint64_t x87_status_control{0};
+  // x87 status word + control word + TOS pointer. 16 bits each;
+  // packed into a u64 for now (low 16 = status, next 16 = control,
+  // next 8 = top-of-stack, rest reserved).
+  std::uint64_t x87_status_control{0};
 
-    // F2-SY-029: TLS segment bases, populated by arch_prctl(ARCH_SET_FS/GS).
-    // Lowering reads these via offset-for-segment helpers below to implement
-    // the LoadSegBase IR op. Zero default = no TLS = safe for early boot.
-    // Placed before mxcsr so the two uint64_t fields pack tightly without
-    // padding after the uint32_t mxcsr.
-    std::uint64_t fs_base{0};
-    std::uint64_t gs_base{0};
+  // F2-SY-029: TLS segment bases, populated by arch_prctl(ARCH_SET_FS/GS).
+  // Lowering reads these via offset-for-segment helpers below to implement
+  // the LoadSegBase IR op. Zero default = no TLS = safe for early boot.
+  // Placed before mxcsr so the two uint64_t fields pack tightly without
+  // padding after the uint32_t mxcsr.
+  std::uint64_t fs_base{0};
+  std::uint64_t gs_base{0};
 
-    // MXCSR (SSE control / status). Default 0x1F80 (mask all
-    // exceptions, FZ off, RC = nearest).
-    std::uint32_t mxcsr{0x1F80u};
+  // MXCSR (SSE control / status). Default 0x1F80 (mask all
+  // exceptions, FZ off, RC = nearest).
+  std::uint32_t mxcsr{0x1F80u};
 
-    // Halt sentinel — when a translated block returns this value in x0,
-    // the dispatcher exits the run loop cleanly. The IR::Return lowerer
-    // emits code that sets x0 = 0 before `ret`, so pc=0 is the default
-    // halt.
-    static constexpr std::uint64_t kHaltSentinel = 0;
+  // Dedicated carry flag slot. This is intentionally narrower than
+  // full RFLAGS plumbing: ADC/SBB-style ops can persist CF here while
+  // the broader flags model keeps using SSA/NZCV where appropriate.
+  std::uint64_t cf{0};
 
-    [[nodiscard]] std::uint64_t& operator[](ir::Gpr g) noexcept {
-        return gpr[static_cast<std::size_t>(g)];
-    }
-    [[nodiscard]] std::uint64_t operator[](ir::Gpr g) const noexcept {
-        return gpr[static_cast<std::size_t>(g)];
-    }
+  // Partial architectural RFLAGS mirror. Bit 1 is the always-set x86
+  // reserved bit; StoreCarry keeps bit 0 in sync with `cf`.
+  std::uint64_t rflags{2};
 
-    // Byte offset from `&frame` to `frame.gpr[idx]`. Generated code
-    // uses these to emit `ldr x_pinned, [x19, #offset]` in the block
-    // prologue / epilogue. See `translator.cpp`.
-    [[nodiscard]] static constexpr std::int32_t gpr_offset_bytes(ir::Gpr g) noexcept {
-        return static_cast<std::int32_t>(static_cast<std::size_t>(g)) * 8;
-    }
+  // Halt sentinel — when a translated block returns this value in x0,
+  // the dispatcher exits the run loop cleanly. The IR::Return lowerer
+  // emits code that sets x0 = 0 before `ret`, so pc=0 is the default
+  // halt.
+  static constexpr std::uint64_t kHaltSentinel = 0;
 
-    // F1-RT-012 — byte offset to `frame.xmm[idx].lo`. The high lane
-    // is at `+ 8` from this offset. The compiler pads `guest_pc`
-    // (8 bytes at offset 128) up to xmm[]'s 16-byte alignment, so
-    // xmm[] actually starts at offset 144.
-    [[nodiscard]] static constexpr std::int32_t xmm_offset_bytes(std::size_t idx) noexcept {
-        return 144 + static_cast<std::int32_t>(idx) * 16;
-    }
+  [[nodiscard]] std::uint64_t& operator[](ir::Gpr g) noexcept {
+    return gpr[static_cast<std::size_t>(g)];
+  }
+  [[nodiscard]] std::uint64_t operator[](ir::Gpr g) const noexcept {
+    return gpr[static_cast<std::size_t>(g)];
+  }
 
-    // F2-IR-005 — byte offset to `frame.ymm_hi[idx].lo`. ymm_hi[]
-    // immediately follows xmm[] (16 × 16 bytes = 256 bytes), so it
-    // starts at 144 + 256 = 400. Verified by static_assert below.
-    [[nodiscard]] static constexpr std::int32_t ymm_hi_offset_bytes(std::size_t idx) noexcept {
-        return 400 + static_cast<std::int32_t>(idx) * 16;
-    }
+  // Byte offset from `&frame` to `frame.gpr[idx]`. Generated code
+  // uses these to emit `ldr x_pinned, [x19, #offset]` in the block
+  // prologue / epilogue. See `translator.cpp`.
+  [[nodiscard]] static constexpr std::int32_t gpr_offset_bytes(ir::Gpr g) noexcept {
+    return static_cast<std::int32_t>(static_cast<std::size_t>(g)) * 8;
+  }
 
-    // F2-IR-007 — byte offset to `frame.x87[idx].lo`. x87[] follows
-    // ymm_hi[16] tightly (400 + 256 = 656). Each slot is 16 bytes; the
-    // low 8 bytes hold the 64-bit double bits used by our reduced-
-    // precision x87 model (cf. RFC 0013).
-    [[nodiscard]] static constexpr std::int32_t x87_offset_bytes(std::size_t idx) noexcept {
-        return 656 + static_cast<std::int32_t>(idx) * 16;
-    }
+  // F1-RT-012 — byte offset to `frame.xmm[idx].lo`. The high lane
+  // is at `+ 8` from this offset. The compiler pads `guest_pc`
+  // (8 bytes at offset 128) up to xmm[]'s 16-byte alignment, so
+  // xmm[] actually starts at offset 144.
+  [[nodiscard]] static constexpr std::int32_t xmm_offset_bytes(std::size_t idx) noexcept {
+    return 144 + static_cast<std::int32_t>(idx) * 16;
+  }
 
-    // F2-IR-007 — byte offset to the TOS byte in `x87_status_control`.
-    // We model TOS as a 3-bit counter stored in the byte at status_control
-    // + 4 (= byte 4 of the u64, little-endian). Generated x87 code does
-    // ldrb / strb at this offset, no bitfield gymnastics needed.
-    static constexpr std::int32_t kX87StatusControlOffset = 656 + 8 * 16;  // = 784
-    static constexpr std::int32_t kX87TosByteOffset       = 784 + 4;       // = 788
+  // F2-IR-005 — byte offset to `frame.ymm_hi[idx].lo`. ymm_hi[]
+  // immediately follows xmm[] (16 × 16 bytes = 256 bytes), so it
+  // starts at 144 + 256 = 400. Verified by static_assert below.
+  [[nodiscard]] static constexpr std::int32_t ymm_hi_offset_bytes(std::size_t idx) noexcept {
+    return 400 + static_cast<std::int32_t>(idx) * 16;
+  }
 
-    // F2-SY-029: byte offset from `&frame` to `frame.fs_base` / `frame.gs_base`.
-    // Used by the LoadSegBase lowerer. Verified by static_assert below.
-    [[nodiscard]] static constexpr std::int32_t fs_base_offset() noexcept {
-        return 792;
-    }
-    [[nodiscard]] static constexpr std::int32_t gs_base_offset() noexcept {
-        return 800;
-    }
+  // F2-IR-007 — byte offset to `frame.x87[idx].lo`. x87[] follows
+  // ymm_hi[16] tightly (400 + 256 = 656). Each slot is 16 bytes; the
+  // low 8 bytes hold the 64-bit double bits used by our reduced-
+  // precision x87 model (cf. RFC 0013).
+  [[nodiscard]] static constexpr std::int32_t x87_offset_bytes(std::size_t idx) noexcept {
+    return 656 + static_cast<std::int32_t>(idx) * 16;
+  }
+
+  // F2-IR-007 — byte offset to the TOS byte in `x87_status_control`.
+  // We model TOS as a 3-bit counter stored in the byte at status_control
+  // + 4 (= byte 4 of the u64, little-endian). Generated x87 code does
+  // ldrb / strb at this offset, no bitfield gymnastics needed.
+  static constexpr std::int32_t kX87StatusControlOffset = 656 + 8 * 16;  // = 784
+  static constexpr std::int32_t kX87TosByteOffset = 784 + 4;             // = 788
+
+  // F2-SY-029: byte offset from `&frame` to `frame.fs_base` / `frame.gs_base`.
+  // Used by the LoadSegBase lowerer. Verified by static_assert below.
+  [[nodiscard]] static constexpr std::int32_t guest_pc_offset() noexcept { return 128; }
+  [[nodiscard]] static constexpr std::int32_t fs_base_offset() noexcept { return 792; }
+  [[nodiscard]] static constexpr std::int32_t gs_base_offset() noexcept { return 800; }
+  [[nodiscard]] static constexpr std::int32_t cf_offset() noexcept { return 816; }
+  [[nodiscard]] static constexpr std::int32_t rflags_offset() noexcept { return 824; }
 };
 
 // Guarantees the C++ struct layout matches what the Translator emits
@@ -168,12 +176,15 @@ static_assert(alignof(XmmReg) == 16, "XmmReg is naturally aligned");
 static_assert(sizeof(X87Slot) == 16, "X87Slot is 16 bytes (10 used + 6 pad)");
 static_assert(offsetof(CpuStateFrame, x87) == 656,
               "x87[] starts at 656 (ymm_hi[16] ends at 400+256=656)");
-static_assert(offsetof(CpuStateFrame, x87_status_control)
-              == CpuStateFrame::kX87StatusControlOffset,
+static_assert(offsetof(CpuStateFrame, x87_status_control) == CpuStateFrame::kX87StatusControlOffset,
               "kX87StatusControlOffset must match offsetof(x87_status_control)");
 static_assert(offsetof(CpuStateFrame, fs_base) == CpuStateFrame::fs_base_offset(),
               "fs_base_offset must match offsetof(fs_base)");
 static_assert(offsetof(CpuStateFrame, gs_base) == CpuStateFrame::gs_base_offset(),
               "gs_base_offset must match offsetof(gs_base)");
+static_assert(offsetof(CpuStateFrame, cf) == CpuStateFrame::cf_offset(),
+              "cf_offset must match offsetof(cf)");
+static_assert(offsetof(CpuStateFrame, rflags) == CpuStateFrame::rflags_offset(),
+              "rflags_offset must match offsetof(rflags)");
 
 }  // namespace prisma::runtime

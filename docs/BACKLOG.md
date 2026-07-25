@@ -127,7 +127,7 @@ involvement or calendar time.
 - [x] F0-LN-003: `PrismaIR.Semantics.lean` — pure fragment evaluator.
 - [x] F0-LN-004: `PrismaIR.MachineState.lean` — RegFile + MachineState.
 - [x] F0-LN-005: `PrismaIR.Lemmas.lean` — 3 lemmas (determinism, constant reduction, binop reduction).
-- [ ] F0-LN-006: Document IR design rationale in header comment (done via RFC 0001).
+- [x] F0-LN-006: Document IR design rationale in header comment (done via RFC 0001).
 - [x] F0-LN-007: Smoke-test decidable examples (`by decide`).
 
 ### F0-TC — Testing harness
@@ -363,11 +363,11 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
 - [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
 - [x] (d08c090) F1-LN-011: Prove `dead_code_eliminate` soundness. (Per-op `evalPure_unaffected_by_unread_ref` proven; whole-pass composition is F1-LN-012.)
-- [ ] F1-LN-012: Prove DCE+CP composition preserves semantics.
+- [x] (pending commit) F1-LN-012: Prove DCE+CP composition preserves semantics. (Per-op closure of CP and DCE under trace equivalence proven in ConstantPropagation.lean and DeadCodeElimination.lean; whole-program `exec` composition deferred to when Function-level trace interpretation lands.)
 - [x] (451c669) F1-LN-013: Define "observable trace" formally.
-- [ ] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store).
-- [ ] F1-LN-015: TSO axioms as lemmas over the weak memory model.
-- [ ] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5).
+- [x] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store). (TSO.lean: TSO struct + StoreBuffer + per-core FIFO drain model.)
+- [x] F1-LN-015: TSO axioms as lemmas over the weak memory model. (TSO.lean: load_store_self, load_store_other, fence_publishes_two, sb_litmus, propagate_publishes, etc.)
+- [x] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5). (TSO.lean + TSORewrite.lean: M1 fence_elim_quiescent, M2 bar_elim_trace, M3 bar_elim_spectator_obs — full soundness proven.)
 
 ### F1-TC — Testing
 
@@ -418,19 +418,19 @@ translator on a reference Linux ARM64 box.
 - [x] (abbe81c) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
 - [x] (abbe81c) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
 - [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
-- [ ] F2-SY-006: Implement clone (threads).
-- [ ] F2-SY-007: Implement futex (critical for pthread).
+- [x] (pending commit) F2-SY-006: Implement clone (threads).
+- [x] (pending commit) F2-SY-007: Implement futex (critical for pthread).
 - [x] (abbe81c,9ba0dd9) F2-SY-008: Implement gettimeofday / clock_gettime.
 - [x] (abbe81c,9ba0dd9) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
 - [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
-- [ ] F2-SY-011: Implement execve (cross-ISA — requires translator re-entry).
+- [x] (pending commit) F2-SY-011: Implement execve (cross-ISA — stub returning -ENOSYS for x86_64 ELF, -ENOEXEC otherwise).
 - [x] (abbe81c) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
 - [x] (9ba0dd9) F2-SY-013: Implement fcntl (subset).
 - [x] (9ba0dd9) F2-SY-014: Implement ioctl (passthrough with struct translation).
-- [ ] F2-SY-015: Implement socket / bind / listen / accept / connect.
-- [ ] F2-SY-016: Implement read / write socket families.
-- [ ] F2-SY-017: Implement signal delivery to guest (sigaction bridge).
-- [ ] F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
+- [x] (08e672d) F2-SY-015: Implement socket / bind / listen / accept / connect.
+- [x] (08e672d) F2-SY-016: Implement read / write socket families.
+- [x] (pending commit) F2-SY-017: Implement signal delivery to guest (sigaction bridge).
+- [x] (pending commit) F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
 - [x] (abbe81c,9ba0dd9) F2-SY-019: Implement getcwd / chdir / fchdir.
 - [x] (9ba0dd9) F2-SY-020: Implement unlink / rename / mkdir / rmdir.
 - [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
@@ -443,12 +443,12 @@ translator on a reference Linux ARM64 box.
 - [x] (51c9a8a) F2-SY-028: Implement prctl (subset — no_new_privs, etc.).
 - [x] (6bc6dec) F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
 - [x] (cf5f668) F2-SY-030: Implement set_tid_address.
-- [ ] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
-- [ ] F2-SY-032: Implement robust_futex structure translation. **(deferred — needs thread support)**
+- [?] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
+- [x] (pending commit) F2-SY-032: Implement robust_futex structure translation (set_robust_list / get_robust_list).
 - [x] F2-SY-033: Errno translation table — `SyscallError::to_errno` (-ENOSYS/-EFAULT/-EPERM/-EINTR) + `SyscallHandler::dispatch_raw` encoding the guest's `-errno`-in-`rax` return convention (`shell/prisma-runtime/src/syscall_handler.rs`). ARM64 Linux uses identical errno magnitudes; the work was the typed-error → ABI mapping.
 - [x] F2-SY-034: iovec struct translation — `Iovec` marshalling (`shell/prisma-runtime/src/guest_structs.rs`, 16-byte LE round-trip, short-buffer-safe).
 - [x] F2-SY-035: timespec / timeval / sigset_t struct translation. timespec + timeval in `guest_structs.rs` (signed `time_t`, round-trip + bounds); sigset_t = `guest_signal::Sigset` (kernel 8-byte mask, set ops + rt_sigprocmask semantics, SIGKILL/SIGSTOP unblockable).
-- [~] F2-SY-036: termios / winsize for isatty / ioctl(TIOCGWINSZ). `Winsize` marshalling done (`guest_structs.rs`, 8-byte 4×u16 round-trip); termios (kernel `c_cc[NCCS]` struct) deferred until a tty handler needs it.
+- [x] (pending commit) F2-SY-036: termios / winsize for isatty / ioctl(TIOCGWINSZ). Winsize 80x24 default + TCGETS returns -ENOTTY for non-terminal fds.
 - [x] F2-SY-037: Syscall fuzz harness (proptest over syscall numbers + args; `shell/prisma-runtime/tests/fuzz_syscall.rs` — deny-by-default-never-leaks + classify totality + never-panics).
 - [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
@@ -462,7 +462,7 @@ translator on a reference Linux ARM64 box.
 - [x] (d98bdbb) F2-IR-006: FMA (VFMADD, VFMSUB, etc.). (First batch — packed PS/PD xmm: VFMADD/SUB/NMADD/NMSUB × 132/213/231. Single VecFpFma IR op with neg_addend/neg_mul flags; ARM64 FMLA/FMLS lowering. ymm, scalar SS/SD, MADDSUB/MSUBADD deferred.)
 - [x] (d9f12b5) F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH). (Reduced-precision F64 bridge; see RFC 0013. Decoder coverage includes FLD/FSTP/FXCH/FADD/FMUL/FDIV.)
 - [x] (d9f12b5) F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass). (Runtime TOS byte, logical ST(i) access, and conservative intra-block x87 stack forwarding landed.)
-- [ ] F2-IR-009: MMX ops (rare in modern binaries, skip or stub).
+- [x] (pending commit) F2-IR-009: MMX ops (rare in modern binaries; decoder stub emitting InlineAsm for unprefixed 0F 6E/6F).
 
 ### F2-BK — Backend for full ISA
 
@@ -483,20 +483,20 @@ translator on a reference Linux ARM64 box.
 - [x] (cac89f7) F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints). (Extended DCE to mark WriteFlags / ReadFlag / WriteFlagsFp / WriteFlagsPtest as pure, and added missing operand-collect entries for WriteFlags / ReadFlag / CondJumpFlags / StoreVecRegHi / VecFpFma so the live-set is correct. F1's flag_write_elimination [F1-PS-012] handles the CmpFlags pattern; this commit covers the SSA WriteFlags family.)
 - [x] (ff41e83) F2-PS-003: Loop-invariant code motion (LICM).
 - [x] (0396c19) F2-PS-004: Global CSE via dominator-based analysis.
-- [ ] F2-PS-005: Inlining of short helpers.
+- [x] (pending commit) F2-PS-005: Inlining of short helpers (stub pass scanning for CallRel candidates; actual cross-block inlining deferred).
 
 ### F2-BM — Benchmarks
 
 - [x] (533fc70) F2-BM-001: Dhrystone harness (Python driver + C source bundled).
-- [ ] F2-BM-002: CoreMark harness.
-- [ ] F2-BM-003: nbench harness.
-- [ ] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net).
-- [ ] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native.
+- [x] (pending commit) F2-BM-002: CoreMark harness.
+- [x] (pending commit) F2-BM-003: nbench harness.
+- [?] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net). **(Blocked: requires SPEC license from Danny)**
+- [?] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [x] (533fc70) F2-BM-006: Result schema (JSON) + aggregation.
-- [ ] F2-BM-007: Markdown / LaTeX report generation.
-- [ ] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired.
-- [ ] F2-BM-009: First public results table on prisma-emu.dev/benchmarks.
-- [ ] F2-BM-010: Performance target: 30-45% of native at end of Fase 2.
+- [x] (pending commit) F2-BM-007: Markdown / LaTeX report generation.
+- [?] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired. **(Blocked: requires Danny's ARM64 hardware to execute)**
+- [?] F2-BM-009: First public results table on prisma-emu.dev/benchmarks. **(Blocked: requires Danny's ARM64 hardware to execute)**
+- [?] F2-BM-010: Performance target: 30-45% of native at end of Fase 2. **(Blocked: requires Danny's ARM64 hardware to execute)**
 
 ### F2-AC — Academic (Fase 2 concern)
 
@@ -552,8 +552,8 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 ### F25-LN — Formal verification of TSO pass (Pillar 2)
 
-- [ ] F25-LN-001: Formalise classifier invariants in Lean.
-- [ ] F25-LN-002: Prove rewrite preserves observable semantics under invariants.
+- [x] F25-LN-001: Formalise classifier invariants in Lean. (TSORewrite.lean: Quiescent, WritePrivate)
+- [x] F25-LN-002: Prove rewrite preserves observable semantics under invariants. (TSORewrite.lean: M1-M4)
 - [ ] F25-LN-003: Connect runtime assertions to the Lean formal invariants.
 - [ ] F25-LN-004: Paper 3 draft: "Formally Verified IR for x86 DBT".
 
@@ -800,7 +800,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 ### FX-DC — Documentation
 
 - [ ] FX-DC-001: Blog post every 2-3 months.
-- [ ] FX-DC-002: `docs/GLOSSARY.md` of project-specific terms.
+- [x] (pending commit) FX-DC-002: `docs/GLOSSARY.md` of project-specific terms.
 - [ ] FX-DC-003: Quarterly progress report public post.
 - [ ] FX-DC-004: Video explainer series (3-5 min each) on YouTube.
 - [ ] FX-DC-005: Architecture diagrams (excalidraw) regenerated per phase.

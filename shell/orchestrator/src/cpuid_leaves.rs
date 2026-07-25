@@ -29,6 +29,12 @@ pub const fn leaf1(features: FeatureSet) -> Leaf1 {
     if features.contains(Feature::Sse3) {
         ecx |= 1 << 0;
     }
+    if features.contains(Feature::Pclmul) {
+        ecx |= 1 << 1;
+    }
+    if features.contains(Feature::F16c) {
+        ecx |= 1 << 29;
+    }
     if features.contains(Feature::Ssse3) {
         ecx |= 1 << 9;
     }
@@ -93,9 +99,15 @@ mod tests {
 
     #[test]
     fn sse_family_lands_in_leaf1_edx_and_ecx() {
-        let l = leaf1(feature_set(&[Feature::Sse, Feature::Sse2, Feature::Sse42]));
+        let l = leaf1(feature_set(&[
+            Feature::Sse,
+            Feature::Sse2,
+            Feature::Pclmul,
+            Feature::F16c,
+            Feature::Sse42,
+        ]));
         assert_eq!(l.edx, (1 << 25) | (1 << 26)); // SSE | SSE2
-        assert_eq!(l.ecx, 1 << 20); // SSE4.2
+        assert_eq!(l.ecx, (1 << 1) | (1 << 20) | (1 << 29)); // PCLMULQDQ | SSE4.2 | F16C
     }
 
     #[test]

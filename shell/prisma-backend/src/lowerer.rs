@@ -6,7 +6,7 @@ use crate::{
     abi,
     assembler::{Arm64Assembler, Label},
 };
-use prisma_ir::{BinOpKind, Function, Gpr, Op, OpSize, Ref, Stmt};
+use prisma_ir::{BinOpKind, Function, Gpr, Op, OpSize, Ref, RflagsCarryMode, Stmt};
 use thiserror::Error;
 
 /// First temporary register used by the migration lowerer.
@@ -28,6 +28,479 @@ const RSP_ADJUST_TMP_REG: u8 = 21;
 const RSP_ADJUST_IMM_REG: u8 = 22;
 /// Scratch register used for flag-writing ALU side-effect operations.
 const ALU_FLAGS_TMP_REG: u8 = 23;
+/// Scratch aliases used while rewriting NZCV after flag-setting operations.
+const NZCV_TMP_REG: u8 = MOD_QUOTIENT_REG;
+const NZCV_MASK_REG: u8 = RSP_ADJUST_TMP_REG;
+const NZCV_CARRY_REG: u8 = RSP_ADJUST_IMM_REG;
+const WIDE_REM_REG: u8 = FLAG_ALIGN_LHS_REG;
+const WIDE_DIVISOR_REG: u8 = FLAG_ALIGN_RHS_REG;
+const WIDE_LOW_REG: u8 = FLAG_ALIGN_SHIFT_REG;
+const WIDE_BIT_REG: u8 = MOD_QUOTIENT_REG;
+const WIDE_ONE_REG: u8 = RSP_ADJUST_TMP_REG;
+const WIDE_MASK_REG: u8 = RSP_ADJUST_IMM_REG;
+const WIDE_TMP_REG: u8 = ALU_FLAGS_TMP_REG;
+const WIDE_QUOT_SIGN_REG: u8 = MEM_ADDR_SCRATCH;
+const WIDE_REM_SIGN_REG: u8 = CAS_STATUS_REG;
+const WIDE_SHIFT_REG: u8 = 26;
+const PCMP_HELPER_TARGET_REG: u8 = 16;
+
+/// Scalar register pairs used for the current XMM lowering frontier. The Rust
+/// backend does not have NEON/vector-register emission yet, so 128-bit vector
+/// values are carried as two callee-saved host `u64` registers while `PCMPxSTRx`
+/// lowering calls semantic helpers.
+const VEC_REG_PAIRS: [(u8, u8); 3] = [
+    (FLAG_ALIGN_SHIFT_REG, MOD_QUOTIENT_REG),
+    (RSP_ADJUST_TMP_REG, RSP_ADJUST_IMM_REG),
+    (ALU_FLAGS_TMP_REG, WIDE_SHIFT_REG),
+];
+
+const PCMP_LEN_LHS_EXPLICIT: u64 = 1;
+const PCMP_LEN_RHS_EXPLICIT: u64 = 2;
+
+type PcmpStrHelper = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64;
+
+#[derive(Debug, Clone, Copy)]
+struct BackendPcmpStrEval {
+    intres: u16,
+    max_lanes: usize,
+    lane_bytes: usize,
+    lhs_len: usize,
+    rhs_len: usize,
+}
+
+// Intentional narrowing for the extern "C" helper ABI and packed-lane
+// extraction — the truncation is the semantic.
+#[allow(clippy::cast_possible_truncation)]
+const fn low8(x: u64) -> u8 {
+    x as u8
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn low32(x: u64) -> u32 {
+    x as u32
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn low64(x: u128) -> u64 {
+    x as u64
+}
+
+fn pcmp_lane_unsigned(bytes: &[u8; 16], lane: usize, lane_bytes: usize) -> u16 {
+    if lane_bytes == 1 {
+        u16::from(bytes[lane])
+    } else {
+        u16::from_le_bytes([bytes[lane * 2], bytes[lane * 2 + 1]])
+    }
+}
+
+fn pcmp_lane_signed(bytes: &[u8; 16], lane: usize, lane_bytes: usize) -> i16 {
+    if lane_bytes == 1 {
+        i16::from(bytes[lane].cast_signed())
+    } else {
+        i16::from_le_bytes([bytes[lane * 2], bytes[lane * 2 + 1]])
+    }
+}
+
+fn pcmp_effective_len(bytes: &[u8; 16], lane_bytes: usize, explicit: Option<u64>) -> usize {
+    let max_lanes = 16 / lane_bytes;
+    if let Some(raw) = explicit {
+        let lanes = usize::try_from(low32(raw).cast_signed().unsigned_abs())
+            .expect("u32 lane count fits usize");
+        return lanes.min(max_lanes);
+    }
+    (0..max_lanes)
+        .position(|i| pcmp_lane_unsigned(bytes, i, lane_bytes) == 0)
+        .unwrap_or(max_lanes)
+}
+
+// Mirrors the 8-slot extern "C" PCMP helper ABI.
+#[allow(clippy::too_many_arguments)]
+fn eval_backend_pcmp_str(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lhs_len: u64,
+    rhs_len: u64,
+    len_mode: u64,
+    imm8: u8,
+) -> BackendPcmpStrEval {
+    let lhs = (u128::from(lhs_hi) << 64) | u128::from(lhs_lo);
+    let rhs = (u128::from(rhs_hi) << 64) | u128::from(rhs_lo);
+    let lhs_bytes = lhs.to_le_bytes();
+    let rhs_bytes = rhs.to_le_bytes();
+    let lane_bytes = if imm8 & 1 == 0 { 1 } else { 2 };
+    let max_lanes = 16 / lane_bytes;
+    let signed = imm8 & 0x02 != 0;
+    let aggregation = (imm8 >> 2) & 0x03;
+    let polarity = (imm8 >> 4) & 0x03;
+    let lhs_len = pcmp_effective_len(
+        &lhs_bytes,
+        lane_bytes,
+        (len_mode & PCMP_LEN_LHS_EXPLICIT != 0).then_some(lhs_len),
+    );
+    let rhs_len = pcmp_effective_len(
+        &rhs_bytes,
+        lane_bytes,
+        (len_mode & PCMP_LEN_RHS_EXPLICIT != 0).then_some(rhs_len),
+    );
+
+    let mut bits = 0u16;
+    for i in 0..max_lanes {
+        let lhs_valid = i < lhs_len;
+        let mut matched = lhs_valid
+            && match aggregation {
+                0 => (0..rhs_len).any(|j| {
+                    if signed {
+                        pcmp_lane_signed(&lhs_bytes, i, lane_bytes)
+                            == pcmp_lane_signed(&rhs_bytes, j, lane_bytes)
+                    } else {
+                        pcmp_lane_unsigned(&lhs_bytes, i, lane_bytes)
+                            == pcmp_lane_unsigned(&rhs_bytes, j, lane_bytes)
+                    }
+                }),
+                1 => (0..rhs_len).step_by(2).any(|j| {
+                    if j + 1 >= rhs_len {
+                        return false;
+                    }
+                    if signed {
+                        let value = pcmp_lane_signed(&lhs_bytes, i, lane_bytes);
+                        let low = pcmp_lane_signed(&rhs_bytes, j, lane_bytes);
+                        let high = pcmp_lane_signed(&rhs_bytes, j + 1, lane_bytes);
+                        low <= value && value <= high
+                    } else {
+                        let value = pcmp_lane_unsigned(&lhs_bytes, i, lane_bytes);
+                        let low = pcmp_lane_unsigned(&rhs_bytes, j, lane_bytes);
+                        let high = pcmp_lane_unsigned(&rhs_bytes, j + 1, lane_bytes);
+                        low <= value && value <= high
+                    }
+                }),
+                2 => {
+                    i < rhs_len
+                        && if signed {
+                            pcmp_lane_signed(&lhs_bytes, i, lane_bytes)
+                                == pcmp_lane_signed(&rhs_bytes, i, lane_bytes)
+                        } else {
+                            pcmp_lane_unsigned(&lhs_bytes, i, lane_bytes)
+                                == pcmp_lane_unsigned(&rhs_bytes, i, lane_bytes)
+                        }
+                }
+                _ => {
+                    rhs_len > 0
+                        && i + rhs_len <= lhs_len
+                        && (0..rhs_len).all(|j| {
+                            if signed {
+                                pcmp_lane_signed(&lhs_bytes, i + j, lane_bytes)
+                                    == pcmp_lane_signed(&rhs_bytes, j, lane_bytes)
+                            } else {
+                                pcmp_lane_unsigned(&lhs_bytes, i + j, lane_bytes)
+                                    == pcmp_lane_unsigned(&rhs_bytes, j, lane_bytes)
+                            }
+                        })
+                }
+            };
+
+        let valid_for_polarity = if polarity & 0x02 != 0 {
+            lhs_valid
+        } else {
+            true
+        };
+        if polarity & 0x01 != 0 && valid_for_polarity {
+            matched = !matched;
+        }
+        if !lhs_valid && polarity & 0x02 != 0 {
+            matched = false;
+        }
+        if matched {
+            bits |= 1u16 << i;
+        }
+    }
+
+    BackendPcmpStrEval {
+        intres: bits,
+        max_lanes,
+        lane_bytes,
+        lhs_len,
+        rhs_len,
+    }
+}
+
+fn backend_pcmp_str_index(eval: BackendPcmpStrEval, imm8: u8) -> u64 {
+    if imm8 & 0x40 == 0 {
+        (0..eval.max_lanes)
+            .find(|i| eval.intres & (1u16 << i) != 0)
+            .unwrap_or(eval.max_lanes) as u64
+    } else {
+        (0..eval.max_lanes)
+            .rev()
+            .find(|i| eval.intres & (1u16 << i) != 0)
+            .unwrap_or(eval.max_lanes) as u64
+    }
+}
+
+fn backend_pcmp_str_mask(eval: BackendPcmpStrEval, imm8: u8) -> u128 {
+    if imm8 & 0x40 == 0 {
+        return u128::from(eval.intres);
+    }
+
+    let mut out = 0u128;
+    for i in 0..eval.max_lanes {
+        if eval.intres & (1u16 << i) == 0 {
+            continue;
+        }
+        let lane_mask = if eval.lane_bytes == 1 {
+            0xffu128
+        } else {
+            0xffffu128
+        };
+        out |= lane_mask << (i * eval.lane_bytes * 8);
+    }
+    out
+}
+
+fn backend_pcmp_str_flags(eval: BackendPcmpStrEval) -> u64 {
+    let cf = u64::from(eval.intres != 0);
+    let zf = u64::from(eval.rhs_len < eval.max_lanes);
+    let sf = u64::from(eval.lhs_len < eval.max_lanes);
+    let of = u64::from(eval.intres & 1 != 0);
+    cf | (zf << 1) | (sf << 2) | (of << 3)
+}
+
+#[inline(never)]
+extern "C" fn pcmpstr_index_helper(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lhs_len: u64,
+    rhs_len: u64,
+    len_mode: u64,
+    imm8: u64,
+) -> u64 {
+    let eval = eval_backend_pcmp_str(
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
+    );
+    backend_pcmp_str_index(eval, low8(imm8))
+}
+
+#[inline(never)]
+extern "C" fn pcmpstr_mask_lo_helper(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lhs_len: u64,
+    rhs_len: u64,
+    len_mode: u64,
+    imm8: u64,
+) -> u64 {
+    let eval = eval_backend_pcmp_str(
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
+    );
+    low64(backend_pcmp_str_mask(eval, low8(imm8)))
+}
+
+#[inline(never)]
+extern "C" fn pcmpstr_mask_hi_helper(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lhs_len: u64,
+    rhs_len: u64,
+    len_mode: u64,
+    imm8: u64,
+) -> u64 {
+    let eval = eval_backend_pcmp_str(
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
+    );
+    low64(backend_pcmp_str_mask(eval, low8(imm8)) >> 64)
+}
+
+#[inline(never)]
+extern "C" fn pcmpstr_flags_helper(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lhs_len: u64,
+    rhs_len: u64,
+    len_mode: u64,
+    imm8: u64,
+) -> u64 {
+    backend_pcmp_str_flags(eval_backend_pcmp_str(
+        lhs_lo,
+        lhs_hi,
+        rhs_lo,
+        rhs_hi,
+        lhs_len,
+        rhs_len,
+        len_mode,
+        low8(imm8),
+    ))
+}
+
+fn f16_to_f32_bits(h: u16) -> u32 {
+    let sign = u32::from(h & 0x8000) << 16;
+    let exp = (h >> 10) & 0x1f;
+    let frac = u32::from(h & 0x03ff);
+    match exp {
+        0 => {
+            if frac == 0 {
+                sign
+            } else {
+                let mut mant = frac;
+                let mut e = -14i32;
+                while (mant & 0x0400) == 0 {
+                    mant <<= 1;
+                    e -= 1;
+                }
+                mant &= 0x03ff;
+                sign | (u32::try_from(e + 127).expect("normalized f16 exponent") << 23)
+                    | (mant << 13)
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (frac << 13),
+        _ => sign | (u32::from(exp + 112) << 23) | (frac << 13),
+    }
+}
+
+fn f16_overflow(sign: u16, mode: u8) -> u16 {
+    let inf = sign | 0x7c00;
+    let max = sign | 0x7bff;
+    match mode {
+        1 => {
+            if sign != 0 {
+                inf
+            } else {
+                max
+            }
+        }
+        2 => {
+            if sign == 0 {
+                inf
+            } else {
+                max
+            }
+        }
+        3 => max,
+        _ => inf,
+    }
+}
+
+fn f16_should_round(sign: u16, mode: u8, remainder: u64, halfway: u64, lsb: u64) -> bool {
+    match mode {
+        1 => sign != 0 && remainder != 0,
+        2 => sign == 0 && remainder != 0,
+        3 => false,
+        _ => remainder > halfway || (remainder == halfway && lsb != 0),
+    }
+}
+
+fn f32_bits_to_f16(bits: u32, imm8: u8) -> u16 {
+    let mode = if imm8 & 0x04 != 0 { 0 } else { imm8 & 0x03 };
+    let sign = u16::try_from((bits >> 16) & 0x8000).expect("f16 sign");
+    let exp = ((bits >> 23) & 0xff).cast_signed();
+    let frac = bits & 0x007f_ffff;
+
+    if exp == 0xff {
+        if frac == 0 {
+            return sign | 0x7c00;
+        }
+        let payload = u16::try_from((frac >> 13) & 0x01ff).expect("nan payload");
+        return sign | 0x7e00 | payload;
+    }
+
+    let half_exp = exp - 127 + 15;
+    if half_exp >= 0x1f {
+        return f16_overflow(sign, mode);
+    }
+
+    if half_exp <= 0 {
+        if half_exp < -10 {
+            let inc = matches!(mode, 1) && sign != 0 || matches!(mode, 2) && sign == 0;
+            return sign | u16::from(inc);
+        }
+        let mant = u64::from(frac | 0x0080_0000);
+        let shift = u32::try_from(14 - half_exp).expect("subnormal shift");
+        let q = mant >> shift;
+        let rem_mask = (1u64 << shift) - 1;
+        let rem = mant & rem_mask;
+        let halfway = 1u64 << (shift - 1);
+        let rounded = q + u64::from(f16_should_round(sign, mode, rem, halfway, q & 1));
+        return sign | u16::try_from(rounded).expect("subnormal f16");
+    }
+
+    let mut half_exp_u = u16::try_from(half_exp).expect("positive half exponent");
+    let mut mant = u16::try_from(frac >> 13).expect("f16 mantissa");
+    let rem = u64::from(frac & 0x1fff);
+    if f16_should_round(sign, mode, rem, 0x1000, u64::from(mant & 1)) {
+        mant = mant.wrapping_add(1);
+        if mant == 0x0400 {
+            mant = 0;
+            half_exp_u += 1;
+            if half_exp_u >= 0x1f {
+                return f16_overflow(sign, mode);
+            }
+        }
+    }
+    sign | (half_exp_u << 10) | mant
+}
+
+fn backend_f16c_ph_to_ps(src_lo: u64) -> u128 {
+    let mut out = 0u128;
+    for lane in 0..4 {
+        let h = u16::try_from((src_lo >> (lane * 16)) & 0xffff).expect("masked half lane");
+        out |= u128::from(f16_to_f32_bits(h)) << (lane * 32);
+    }
+    out
+}
+
+fn backend_f16c_ps_to_ph(src_lo: u64, src_hi: u64, imm8: u8) -> u64 {
+    let src = (u128::from(src_hi) << 64) | u128::from(src_lo);
+    let mut out = 0u64;
+    for lane in 0..4 {
+        let bits = u32::try_from((src >> (lane * 32)) & 0xffff_ffff).expect("masked f32 lane");
+        out |= u64::from(f32_bits_to_f16(bits, imm8)) << (lane * 16);
+    }
+    out
+}
+
+#[inline(never)]
+extern "C" fn f16c_ph2ps_lo_helper(src_lo: u64) -> u64 {
+    low64(backend_f16c_ph_to_ps(src_lo))
+}
+
+#[inline(never)]
+extern "C" fn f16c_ph2ps_hi_helper(src_lo: u64) -> u64 {
+    low64(backend_f16c_ph_to_ps(src_lo) >> 64)
+}
+
+#[inline(never)]
+extern "C" fn f16c_ps2ph_helper(src_lo: u64, src_hi: u64, imm8: u64) -> u64 {
+    backend_f16c_ps_to_ph(src_lo, src_hi, low8(imm8))
+}
 
 /// Lowering failures surfaced by the Rust backend.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -131,6 +604,8 @@ impl Lowerer {
     /// - `Select` via flag-dependent branch sequencing (`B.cond` + `MOV`)
     /// - `LoadMem`/`StoreMem` for `I8`/`I16`/`I32`/`I64` with address/value
     ///   already in registers
+    /// - `VecConstant`, `LoadVecReg`/`StoreVecReg`, and `LoadVec`/`StoreVec`
+    ///   as scalar low/high 64-bit pairs
     /// - direct `Jump`, `JumpRel`, `CallRel` and `CallReg` between/through
     ///   registers
     /// - `RspAdjust` and `RetAdjusted` stack adjustments over `Rsp` state
@@ -155,6 +630,7 @@ impl Lowerer {
         }
 
         let mut values = HashMap::<Ref, u8>::new();
+        let mut vec_values = HashMap::<Ref, (u8, u8)>::new();
         let mut constants = HashMap::<Ref, u64>::new();
         let mut flags = HashSet::<Ref>::new();
 
@@ -168,6 +644,7 @@ impl Lowerer {
         block_order.extend(func.blocks.iter().filter(|block| block.id != func.entry));
 
         for block in block_order {
+            let mut nzcv_live = false;
             let label = labels
                 .get(&block.id)
                 .copied()
@@ -180,8 +657,10 @@ impl Lowerer {
                     &mut asm,
                     &labels,
                     &mut values,
+                    &mut vec_values,
                     &mut constants,
                     &mut flags,
+                    &mut nzcv_live,
                     ExitAbi {
                         return_via_epilogue: self.return_via_epilogue,
                         branch_via_frame: self.branch_via_frame,
@@ -205,15 +684,18 @@ struct ExitAbi {
 }
 
 // One match arm per IR op; the dispatch is inherently long and splitting it
-// would only scatter the op->lowering mapping across helpers.
-#[allow(clippy::too_many_lines)]
+// would only scatter the op->lowering mapping across helpers. The argument
+// list mirrors the per-block lowering state threaded through every op.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn lower_stmt(
     stmt: &Stmt,
     asm: &mut Arm64Assembler,
     labels: &HashMap<u32, Label>,
     values: &mut HashMap<Ref, u8>,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
     constants: &mut HashMap<Ref, u64>,
     flags: &mut HashSet<Ref>,
+    nzcv_live: &mut bool,
     exit: ExitAbi,
 ) -> Result<(), LowerError> {
     match &stmt.op {
@@ -236,8 +718,73 @@ fn lower_stmt(
                 .ok_or(LowerError::MissingValue(store.value))?;
             emit_store_reg(asm, store.size, value, store.reg);
         }
+        Op::VecConstant(c) => {
+            let result = stmt
+                .result
+                .ok_or(LowerError::MissingResult("VecConstant"))?;
+            let (lo, hi) = alloc_vec_pair(vec_values, result)?;
+            emit_u64_constant(asm, lo, c.lo);
+            emit_u64_constant(asm, hi, c.hi);
+        }
+        Op::LoadVecReg(load) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("LoadVecReg"))?;
+            let (lo, hi) = alloc_vec_pair(vec_values, result)?;
+            emit_load_vec_state(asm, lo, hi, load.xmm_index)?;
+        }
+        Op::StoreVecReg(store) => {
+            let (lo, hi) = vec_pair(vec_values, store.value)?;
+            emit_store_vec_state(asm, lo, hi, store.xmm_index)?;
+        }
+        Op::LoadVec(load) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("LoadVec"))?;
+            let addr = *values
+                .get(&load.addr)
+                .ok_or(LowerError::MissingValue(load.addr))?;
+            let (lo, hi) = alloc_vec_pair(vec_values, result)?;
+            emit_load_vec_mem(asm, lo, hi, addr);
+        }
+        Op::StoreVec(store) => {
+            let addr = *values
+                .get(&store.addr)
+                .ok_or(LowerError::MissingValue(store.addr))?;
+            let (lo, hi) = vec_pair(vec_values, store.value)?;
+            emit_store_vec_mem(asm, lo, hi, addr);
+        }
+        Op::XmmFromGpr(x) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("XmmFromGpr"))?;
+            let src = *values
+                .get(&x.value)
+                .ok_or(LowerError::MissingValue(x.value))?;
+            let (lo, hi) = alloc_vec_pair(vec_values, result)?;
+            match x.size {
+                OpSize::I8 | OpSize::I16 => {
+                    emit_u64_constant(asm, FLAG_ALIGN_LHS_REG, x.size.mask());
+                    asm.and_x(lo, src, FLAG_ALIGN_LHS_REG);
+                }
+                OpSize::I32 => asm.uxtw_x(lo, src),
+                OpSize::I64 => asm.mov_x(lo, src),
+            }
+            emit_u64_constant(asm, hi, 0);
+        }
+        Op::GprFromXmm(x) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("GprFromXmm"))?;
+            let (lo, _) = vec_pair(vec_values, x.value)?;
+            let dst = value_reg(result);
+            match x.size {
+                OpSize::I8 | OpSize::I16 => {
+                    emit_u64_constant(asm, FLAG_ALIGN_LHS_REG, x.size.mask());
+                    asm.and_x(dst, lo, FLAG_ALIGN_LHS_REG);
+                }
+                OpSize::I32 => asm.uxtw_x(dst, lo),
+                OpSize::I64 => asm.mov_x(dst, lo),
+            }
+            values.insert(result, dst);
+        }
         Op::BinOp(bin) => {
-            lower_binop(stmt, asm, values, constants, bin)?;
+            lower_binop(stmt, asm, values, constants, bin, exit.return_via_epilogue)?;
+        }
+        Op::WideDiv(div) => {
+            lower_wide_div(stmt, asm, values, div, exit.return_via_epilogue)?;
         }
         Op::LoadMem(load) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("LoadMem"))?;
@@ -250,12 +797,19 @@ fn lower_stmt(
         }
         Op::Compare(compare) => {
             lower_compare(stmt, asm, values, compare)?;
+            *nzcv_live = true;
         }
         Op::CmpFlags(cmp) => {
             lower_cmp_flags(stmt, asm, values, flags, cmp)?;
+            *nzcv_live = true;
         }
         Op::AluFlags(alu) => {
             lower_alu_flags(asm, values, alu)?;
+            *nzcv_live = true;
+        }
+        Op::AluFlagsPreserveCarry(alu) => {
+            lower_alu_flags_preserve_carry(asm, values, alu)?;
+            *nzcv_live = true;
         }
         Op::StoreMem(store) => {
             let addr = *values
@@ -287,6 +841,14 @@ fn lower_stmt(
             emit_store_mem(asm, store.size, value, addr);
             asm.fence(prisma_ir::FenceKind::Mfence);
         }
+        Op::AtomicCmpxchg(cas) => {
+            lower_atomic_cmpxchg(stmt, asm, values, cas)?;
+            *nzcv_live = false;
+        }
+        Op::AtomicCmpxchgPair(cas) => {
+            lower_atomic_cmpxchg_pair(stmt, asm, values, cas)?;
+            *nzcv_live = false;
+        }
         Op::LoadSegBase(seg) => {
             lower_load_seg_base(stmt, asm, values, seg)?;
         }
@@ -309,6 +871,15 @@ fn lower_stmt(
         Op::Trap(_) => {
             asm.movz_x(0, 0, 0);
             asm.ret();
+        }
+        Op::TrapIf(trap) => {
+            let condition = *values
+                .get(&trap.condition)
+                .ok_or(LowerError::MissingValue(trap.condition))?;
+            let ok = asm.create_label();
+            asm.cbz_x_label(condition, ok);
+            emit_sigfpe_placeholder_return(asm, exit.return_via_epilogue);
+            asm.bind_label(ok);
         }
         Op::Extend(extend) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("Extend"))?;
@@ -345,12 +916,15 @@ fn lower_stmt(
         Op::GuestPc(_) => {}
         Op::WriteFlags(write_flags) => {
             lower_write_flags(asm, values, flags, write_flags, stmt)?;
+            *nzcv_live = true;
         }
         Op::WriteFlagsPopcnt(popcnt) => {
             lower_write_flags_popcnt(asm, values, popcnt)?;
+            *nzcv_live = true;
         }
         Op::WriteFlagsCountZero(count_zero) => {
             lower_write_flags_count_zero(asm, values, count_zero)?;
+            *nzcv_live = true;
         }
         Op::ReadFlag(flag_read) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("ReadFlag"))?;
@@ -388,7 +962,57 @@ fn lower_stmt(
             let value = *values
                 .get(&store.value)
                 .ok_or(LowerError::MissingValue(store.value))?;
-            asm.str_x_unsigned(value, abi::K_STATE_PTR_REG, CF_OFFSET);
+            lower_store_carry(asm, value);
+            *nzcv_live = false;
+        }
+        Op::LoadRflags(_) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("LoadRflags"))?;
+            let dst = value_reg(result);
+            asm.ldr_x_unsigned(dst, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+            values.insert(result, dst);
+        }
+        Op::StoreRflags(store) => {
+            let value = *values
+                .get(&store.value)
+                .ok_or(LowerError::MissingValue(store.value))?;
+            lower_store_rflags(asm, value);
+            *nzcv_live = false;
+        }
+        Op::StoreRflagsFromNzcv(store) => {
+            let pf = if let Some(r) = store.pf {
+                Some(*values.get(&r).ok_or(LowerError::MissingValue(r))?)
+            } else {
+                None
+            };
+            let af = if let Some(r) = store.af {
+                Some(*values.get(&r).ok_or(LowerError::MissingValue(r))?)
+            } else {
+                None
+            };
+            lower_store_rflags_from_nzcv(asm, store.carry, pf, af);
+        }
+        Op::StoreRflagsFromBits(store) => {
+            let pf = if let Some(r) = store.pf {
+                Some(*values.get(&r).ok_or(LowerError::MissingValue(r))?)
+            } else {
+                None
+            };
+            let af = if let Some(r) = store.af {
+                Some(*values.get(&r).ok_or(LowerError::MissingValue(r))?)
+            } else {
+                None
+            };
+            let zf = *values
+                .get(&store.zf)
+                .ok_or(LowerError::MissingValue(store.zf))?;
+            let sf = *values
+                .get(&store.sf)
+                .ok_or(LowerError::MissingValue(store.sf))?;
+            let of = *values
+                .get(&store.of)
+                .ok_or(LowerError::MissingValue(store.of))?;
+            lower_store_rflags_from_bits(asm, pf, af, zf, sf, of);
+            *nzcv_live = false;
         }
         Op::Lzcnt(lzcnt) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("Lzcnt"))?;
@@ -452,6 +1076,7 @@ fn lower_stmt(
             lower_cond_jump_flags(asm, labels, flags, jump)?;
         }
         Op::CondJumpRel(jump) => {
+            ensure_nzcv_live(asm, nzcv_live);
             if exit.branch_via_frame {
                 // Host-wrapped single block: no sibling block to branch to.
                 // Compute the taken guest PC and exit to the run loop, which
@@ -462,6 +1087,7 @@ fn lower_stmt(
             }
         }
         Op::Select(select) => {
+            ensure_nzcv_live(asm, nzcv_live);
             lower_select(asm, values, select, stmt)?;
         }
         Op::JumpReg(jump) => {
@@ -523,6 +1149,21 @@ fn lower_stmt(
                 lower_ret_adjusted(asm, ret.pop_bytes)?;
             }
         }
+        Op::VecClMul(clmul) => {
+            lower_vec_clmul(stmt, asm, vec_values, clmul)?;
+        }
+        Op::VecF16Cvt(cvt) => {
+            lower_vec_f16cvt(stmt, asm, vec_values, cvt)?;
+        }
+        Op::PcmpStrIndex(pcmp) => {
+            lower_pcmpstr_index(stmt, asm, values, vec_values, pcmp)?;
+        }
+        Op::PcmpStrMask(pcmp) => {
+            lower_pcmpstr_mask(stmt, asm, values, vec_values, pcmp)?;
+        }
+        Op::PcmpStrFlags(pcmp) => {
+            lower_pcmpstr_flags(stmt, asm, values, vec_values, pcmp)?;
+        }
         _ => return Err(LowerError::UnsupportedOp("unsupported")),
     }
 
@@ -531,19 +1172,32 @@ fn lower_stmt(
 
 const FS_BASE_OFFSET: u16 = 792;
 const GS_BASE_OFFSET: u16 = 800;
+/// Byte offset of XMM0 in `CpuStateFrame`. The Rust frame keeps this range in
+/// its reserved vector-state span, matching the C++ frame layout.
+const XMM_BASE_OFFSET: u16 = 144;
+const XMM_SLOT_BYTES: u16 = 16;
 /// Byte offset of the persistent x86 carry flag in `CpuStateFrame` (follows
 /// `gs_base`). Matches `prisma_runtime::executor::CpuStateFrame::cf`.
 const CF_OFFSET: u16 = 808;
-/// Byte offset of the block exit-reason word in `CpuStateFrame` (follows `cf`).
+/// Byte offset of the persistent x86 RFLAGS subset in `CpuStateFrame`.
+const RFLAGS_OFFSET: u16 = 816;
+const RFLAGS_CF_BIT: u64 = 1 << 0;
+const RFLAGS_PF_BIT: u64 = 1 << 2;
+const RFLAGS_AF_BIT: u64 = 1 << 4;
+const RFLAGS_ZF_BIT: u64 = 1 << 6;
+const RFLAGS_SF_BIT: u64 = 1 << 7;
+const RFLAGS_OF_BIT: u64 = 1 << 11;
+/// Byte offset of the block exit-reason word in `CpuStateFrame` (follows
+/// `rflags`).
 /// Matches `prisma_runtime::executor::CpuStateFrame::exit_reason`; a `SYSCALL`
 /// block stores `EXIT_SYSCALL` here before returning to the host.
-const EXIT_REASON_OFFSET: u16 = 816;
+const EXIT_REASON_OFFSET: u16 = 824;
 /// Exit-reason value a `SYSCALL` block writes (`EXIT_SYSCALL` in the runtime).
 const EXIT_SYSCALL_MARK: u16 = 1;
 /// Byte offset of the resume-PC word in `CpuStateFrame` (follows `exit_reason`).
 /// Matches `prisma_runtime::executor::CpuStateFrame::next_pc`; a relative-branch
 /// block stores its taken target here before returning to the host run loop.
-const NEXT_PC_OFFSET: u16 = 824;
+const NEXT_PC_OFFSET: u16 = 832;
 /// Exit-reason value a relative-branch block writes (`EXIT_BRANCH` in runtime).
 const EXIT_BRANCH_MARK: u16 = 2;
 /// Byte offset of the guest-memory base in `CpuStateFrame` (follows `next_pc`).
@@ -551,12 +1205,14 @@ const EXIT_BRANCH_MARK: u16 = 2;
 /// memory access is rebased to `host = mem_base + guest_va` so the JIT can reach
 /// a contiguous host arena that is not identity-mapped to the guest VAs (RFC
 /// 0020). A `mem_base` of 0 reproduces the legacy `host == guest` behaviour.
-const MEM_BASE_OFFSET: u16 = 832;
+const MEM_BASE_OFFSET: u16 = 840;
 /// Scratch register holding the rebased host address inside a memory op. Outside
 /// the value-register pool (x9..x16) so it never aliases the `addr`/`value`/`dst`
 /// operands, and inside the prologue's callee-saved set so the body may clobber
-/// it. The block body otherwise touches only x9..x23, x27 (state) and x28.
+/// it. The block body otherwise touches only x9..x26, x27 (state) and x28.
 const MEM_ADDR_SCRATCH: u8 = 24;
+/// Scratch register receiving `STLXR*` status in atomic compare-exchange loops.
+const CAS_STATUS_REG: u8 = 25;
 const KSTATE_CPUID_MAX_LEAF: u64 = 7;
 const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
 const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;
@@ -564,17 +1220,20 @@ const KSTATE_CPUID_VENDOR_ECX: u64 = 0x6C65_746E;
 const KSTATE_CPUID_LEAF1_EAX: u64 = 0x0002_06A7;
 const KSTATE_CPUID_LEAF1_EBX: u64 = 0x0000_0800;
 const KSTATE_CPUID_LEAF1_ECX: u64 = (1u64 << 0)
+    | (1u64 << 1)
     | (1u64 << 9)
     | (1u64 << 12)
     | (1u64 << 13)
     | (1u64 << 19)
+    | (1u64 << 20)
     | (1u64 << 22)
     | (1u64 << 23)
     | (1u64 << 27)
-    | (1u64 << 28);
+    | (1u64 << 28)
+    | (1u64 << 29);
 const KSTATE_CPUID_LEAF1_EDX: u64 =
     (1u64 << 0) | (1u64 << 4) | (1u64 << 8) | (1u64 << 15) | (1u64 << 25) | (1u64 << 26);
-const KSTATE_CPUID_LEAF7_EBX: u64 = 1u64 << 8;
+const KSTATE_CPUID_LEAF7_EBX: u64 = (1u64 << 3) | (1u64 << 8);
 const KSTATE_XCR0_EAX: u64 = 0x7;
 
 fn lower_select(
@@ -700,6 +1359,7 @@ fn lower_binop(
     values: &mut HashMap<Ref, u8>,
     constants: &HashMap<Ref, u64>,
     bin: &prisma_ir::BinOp,
+    return_via_epilogue: bool,
 ) -> Result<(), LowerError> {
     match bin.op {
         BinOpKind::Add | BinOpKind::Sub => lower_add_sub(stmt, asm, values, constants, bin),
@@ -715,8 +1375,10 @@ fn lower_binop(
         | BinOpKind::UMulHi
         | BinOpKind::SMulHi
         | BinOpKind::UDiv
-        | BinOpKind::SDiv => lower_reg_binop(stmt, asm, values, bin),
-        BinOpKind::UMod | BinOpKind::SMod => lower_mod_binop(stmt, asm, values, bin),
+        | BinOpKind::SDiv => lower_reg_binop(stmt, asm, values, bin, return_via_epilogue),
+        BinOpKind::UMod | BinOpKind::SMod => {
+            lower_mod_binop(stmt, asm, values, bin, return_via_epilogue)
+        }
         _ => Err(LowerError::UnsupportedOp("BinOp")),
     }
 }
@@ -884,6 +1546,7 @@ fn lower_reg_binop(
     asm: &mut Arm64Assembler,
     values: &mut HashMap<Ref, u8>,
     bin: &prisma_ir::BinOp,
+    return_via_epilogue: bool,
 ) -> Result<(), LowerError> {
     let result = stmt.result.ok_or(LowerError::MissingResult("BinOp"))?;
     let lhs = *values
@@ -908,8 +1571,14 @@ fn lower_reg_binop(
         BinOpKind::Mul => asm.mul_x(dst, lhs, rhs),
         BinOpKind::UMulHi => asm.umulh_x(dst, lhs, rhs),
         BinOpKind::SMulHi => asm.smulh_x(dst, lhs, rhs),
-        BinOpKind::UDiv => asm.udiv_x(dst, lhs, rhs),
-        BinOpKind::SDiv => asm.sdiv_x(dst, lhs, rhs),
+        BinOpKind::UDiv => {
+            emit_divisor_zero_sigfpe_guard(asm, rhs, return_via_epilogue);
+            asm.udiv_x(dst, lhs, rhs);
+        }
+        BinOpKind::SDiv => {
+            emit_divisor_zero_sigfpe_guard(asm, rhs, return_via_epilogue);
+            asm.sdiv_x(dst, lhs, rhs);
+        }
         _ => unreachable!("called only for register-register binops"),
     }
     values.insert(result, dst);
@@ -921,6 +1590,7 @@ fn lower_mod_binop(
     asm: &mut Arm64Assembler,
     values: &mut HashMap<Ref, u8>,
     bin: &prisma_ir::BinOp,
+    return_via_epilogue: bool,
 ) -> Result<(), LowerError> {
     let result = stmt.result.ok_or(LowerError::MissingResult("BinOp"))?;
     let lhs = *values
@@ -930,6 +1600,7 @@ fn lower_mod_binop(
         .get(&bin.rhs)
         .ok_or(LowerError::MissingValue(bin.rhs))?;
     let dst = value_reg(result);
+    emit_divisor_zero_sigfpe_guard(asm, rhs, return_via_epilogue);
     match bin.op {
         BinOpKind::UMod => asm.udiv_x(MOD_QUOTIENT_REG, lhs, rhs),
         BinOpKind::SMod => asm.sdiv_x(MOD_QUOTIENT_REG, lhs, rhs),
@@ -938,6 +1609,184 @@ fn lower_mod_binop(
     asm.msub_x(dst, MOD_QUOTIENT_REG, rhs, lhs);
     values.insert(result, dst);
     Ok(())
+}
+
+fn emit_divisor_zero_sigfpe_guard(
+    asm: &mut Arm64Assembler,
+    divisor: u8,
+    return_via_epilogue: bool,
+) {
+    let ok = asm.create_label();
+    asm.cbnz_x_label(divisor, ok);
+    emit_sigfpe_placeholder_return(asm, return_via_epilogue);
+    asm.bind_label(ok);
+}
+
+fn emit_sigfpe_placeholder_return(asm: &mut Arm64Assembler, return_via_epilogue: bool) {
+    asm.movz_x(0, 0, 0);
+    if return_via_epilogue {
+        abi::emit_block_epilogue_and_ret(asm);
+    } else {
+        asm.ret();
+    }
+}
+
+fn lower_wide_div(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    div: &prisma_ir::WideDiv,
+    return_via_epilogue: bool,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("WideDiv"))?;
+    let high = *values
+        .get(&div.high)
+        .ok_or(LowerError::MissingValue(div.high))?;
+    let low = *values
+        .get(&div.low)
+        .ok_or(LowerError::MissingValue(div.low))?;
+    let divisor = *values
+        .get(&div.divisor)
+        .ok_or(LowerError::MissingValue(div.divisor))?;
+    let dst = value_reg(result);
+
+    emit_divisor_zero_sigfpe_guard(asm, divisor, return_via_epilogue);
+    asm.mov_x(WIDE_REM_REG, high);
+    asm.mov_x(WIDE_LOW_REG, low);
+    asm.mov_x(WIDE_DIVISOR_REG, divisor);
+
+    if div.signed {
+        lower_wide_div_abs_signed_inputs(asm);
+        emit_unsigned_wide_div_overflow_guard(
+            asm,
+            WIDE_REM_REG,
+            WIDE_DIVISOR_REG,
+            return_via_epilogue,
+        );
+    } else {
+        emit_unsigned_wide_div_overflow_guard(asm, high, divisor, return_via_epilogue);
+        emit_u64_constant(asm, WIDE_QUOT_SIGN_REG, 0);
+        emit_u64_constant(asm, WIDE_REM_SIGN_REG, 0);
+    }
+
+    lower_wide_udiv_core(asm, dst);
+    if div.signed {
+        emit_signed_wide_div_quotient_overflow_guard(asm, dst, return_via_epilogue);
+    }
+
+    if div.result == prisma_ir::WideDivResult::Remainder {
+        asm.mov_x(dst, WIDE_REM_REG);
+    }
+
+    if div.signed {
+        match div.result {
+            prisma_ir::WideDivResult::Quotient => {
+                let done = asm.create_label();
+                asm.cbz_x_label(WIDE_QUOT_SIGN_REG, done);
+                asm.sub_x(dst, 31, dst);
+                asm.bind_label(done);
+            }
+            prisma_ir::WideDivResult::Remainder => {
+                let done = asm.create_label();
+                asm.cbz_x_label(WIDE_REM_SIGN_REG, done);
+                asm.sub_x(dst, 31, dst);
+                asm.bind_label(done);
+            }
+        }
+    }
+
+    values.insert(result, dst);
+    Ok(())
+}
+
+fn emit_unsigned_wide_div_overflow_guard(
+    asm: &mut Arm64Assembler,
+    high: u8,
+    divisor: u8,
+    return_via_epilogue: bool,
+) {
+    let ok = asm.create_label();
+    asm.cmp_x(high, divisor);
+    asm.b_cond_label(prisma_ir::CondCode::Ult, ok);
+    emit_sigfpe_placeholder_return(asm, return_via_epilogue);
+    asm.bind_label(ok);
+}
+
+fn emit_signed_wide_div_quotient_overflow_guard(
+    asm: &mut Arm64Assembler,
+    quotient: u8,
+    return_via_epilogue: bool,
+) {
+    let negative = asm.create_label();
+    let done = asm.create_label();
+
+    emit_u64_constant(asm, WIDE_SHIFT_REG, 63);
+    asm.cbnz_x_label(WIDE_QUOT_SIGN_REG, negative);
+    asm.lsr_x(WIDE_TMP_REG, quotient, WIDE_SHIFT_REG);
+    asm.cbz_x_label(WIDE_TMP_REG, done);
+    emit_sigfpe_placeholder_return(asm, return_via_epilogue);
+
+    asm.bind_label(negative);
+    emit_u64_constant(asm, WIDE_MASK_REG, 1_u64 << 63);
+    asm.cmp_x(quotient, WIDE_MASK_REG);
+    asm.b_cond_label(prisma_ir::CondCode::Ule, done);
+    emit_sigfpe_placeholder_return(asm, return_via_epilogue);
+
+    asm.bind_label(done);
+}
+
+fn lower_wide_div_abs_signed_inputs(asm: &mut Arm64Assembler) {
+    emit_u64_constant(asm, WIDE_SHIFT_REG, 63);
+    asm.lsr_x(WIDE_REM_SIGN_REG, WIDE_REM_REG, WIDE_SHIFT_REG);
+    asm.lsr_x(WIDE_TMP_REG, WIDE_DIVISOR_REG, WIDE_SHIFT_REG);
+    asm.eor_x(WIDE_QUOT_SIGN_REG, WIDE_REM_SIGN_REG, WIDE_TMP_REG);
+
+    let dividend_low_zero = asm.create_label();
+    let dividend_done = asm.create_label();
+    asm.cbz_x_label(WIDE_REM_SIGN_REG, dividend_done);
+    emit_u64_constant(asm, WIDE_MASK_REG, u64::MAX);
+    asm.cbz_x_label(WIDE_LOW_REG, dividend_low_zero);
+    asm.sub_x(WIDE_LOW_REG, 31, WIDE_LOW_REG);
+    asm.eor_x(WIDE_REM_REG, WIDE_REM_REG, WIDE_MASK_REG);
+    asm.b_label(dividend_done);
+    asm.bind_label(dividend_low_zero);
+    asm.sub_x(WIDE_REM_REG, 31, WIDE_REM_REG);
+    asm.bind_label(dividend_done);
+
+    let divisor_positive = asm.create_label();
+    asm.cbz_x_label(WIDE_TMP_REG, divisor_positive);
+    asm.sub_x(WIDE_DIVISOR_REG, 31, WIDE_DIVISOR_REG);
+    asm.bind_label(divisor_positive);
+}
+
+fn lower_wide_udiv_core(asm: &mut Arm64Assembler, quotient_dst: u8) {
+    emit_u64_constant(asm, WIDE_ONE_REG, 1);
+    emit_u64_constant(asm, WIDE_SHIFT_REG, 63);
+    emit_u64_constant(asm, WIDE_MASK_REG, 1_u64 << 63);
+    emit_u64_constant(asm, quotient_dst, 0);
+
+    for _ in 0..64 {
+        let subtract = asm.create_label();
+        let done = asm.create_label();
+
+        asm.lsr_x(WIDE_BIT_REG, WIDE_LOW_REG, WIDE_SHIFT_REG);
+        asm.lsl_x(WIDE_LOW_REG, WIDE_LOW_REG, WIDE_ONE_REG);
+        asm.lsr_x(WIDE_TMP_REG, WIDE_REM_REG, WIDE_SHIFT_REG);
+        asm.lsl_x(WIDE_REM_REG, WIDE_REM_REG, WIDE_ONE_REG);
+        asm.orr_x(WIDE_REM_REG, WIDE_REM_REG, WIDE_BIT_REG);
+
+        asm.cbnz_x_label(WIDE_TMP_REG, subtract);
+        asm.cmp_x(WIDE_REM_REG, WIDE_DIVISOR_REG);
+        asm.b_cond_label(prisma_ir::CondCode::Uge, subtract);
+        asm.b_label(done);
+
+        asm.bind_label(subtract);
+        asm.sub_x(WIDE_REM_REG, WIDE_REM_REG, WIDE_DIVISOR_REG);
+        asm.orr_x(quotient_dst, quotient_dst, WIDE_MASK_REG);
+
+        asm.bind_label(done);
+        asm.lsr_x(WIDE_MASK_REG, WIDE_MASK_REG, WIDE_ONE_REG);
+    }
 }
 
 fn lower_compare(
@@ -1009,6 +1858,208 @@ fn lower_alu_flags(
         }
     }
     Ok(())
+}
+
+fn lower_alu_flags_preserve_carry(
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    alu: &prisma_ir::AluFlagsPreserveCarry,
+) -> Result<(), LowerError> {
+    let lhs = *values
+        .get(&alu.lhs)
+        .ok_or(LowerError::MissingValue(alu.lhs))?;
+    let rhs = *values
+        .get(&alu.rhs)
+        .ok_or(LowerError::MissingValue(alu.rhs))?;
+    let (lhs, rhs) = align_flag_operands(asm, alu.size, lhs, rhs);
+    match alu.op {
+        BinOpKind::Sub => asm.cmp_x(lhs, rhs),
+        BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        _ => {
+            return Err(LowerError::UnsupportedOp(
+                "AluFlagsPreserveCarry only supports Sub/Add today",
+            ));
+        }
+    }
+
+    asm.mrs_nzcv(NZCV_TMP_REG);
+    emit_u64_constant(asm, NZCV_MASK_REG, !(1_u64 << 29));
+    asm.and_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_MASK_REG);
+    asm.ldr_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET);
+    emit_u64_constant(asm, NZCV_MASK_REG, 1);
+    asm.and_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 29);
+    asm.lsl_x(NZCV_CARRY_REG, NZCV_CARRY_REG, FLAG_ALIGN_SHIFT_REG);
+    asm.orr_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_CARRY_REG);
+    asm.msr_nzcv(NZCV_TMP_REG);
+
+    Ok(())
+}
+
+fn ensure_nzcv_live(asm: &mut Arm64Assembler, nzcv_live: &mut bool) {
+    if !*nzcv_live {
+        lower_restore_nzcv_from_rflags(asm);
+        *nzcv_live = true;
+    }
+}
+
+fn lower_restore_nzcv_from_rflags(asm: &mut Arm64Assembler) {
+    asm.ldr_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+    emit_u64_constant(asm, NZCV_CARRY_REG, 0);
+    emit_or_rflags_bit_into_nzcv(asm, 7, 31); // SF -> N
+    emit_or_rflags_bit_into_nzcv(asm, 6, 30); // ZF -> Z
+    emit_or_rflags_bit_into_nzcv(asm, 0, 29); // CF -> C (matches existing CondCode contract)
+    emit_or_rflags_bit_into_nzcv(asm, 11, 28); // OF -> V
+    asm.msr_nzcv(NZCV_CARRY_REG);
+}
+
+fn emit_or_rflags_bit_into_nzcv(asm: &mut Arm64Assembler, rflags_shift: u64, nzcv_shift: u64) {
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, rflags_shift);
+    asm.lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 1);
+    asm.and_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, nzcv_shift);
+    asm.lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+    asm.orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+}
+
+fn lower_store_carry(asm: &mut Arm64Assembler, value: u8) {
+    emit_u64_constant(asm, NZCV_MASK_REG, 1);
+    asm.and_x(NZCV_CARRY_REG, value, NZCV_MASK_REG);
+    asm.str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET);
+
+    asm.ldr_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+    emit_u64_constant(asm, NZCV_MASK_REG, !1_u64);
+    asm.and_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_MASK_REG);
+    asm.orr_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_CARRY_REG);
+    asm.str_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+}
+
+fn lower_store_rflags(asm: &mut Arm64Assembler, value: u8) {
+    emit_u64_constant(asm, NZCV_TMP_REG, 2);
+    asm.orr_x(NZCV_TMP_REG, value, NZCV_TMP_REG);
+    asm.str_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+
+    emit_u64_constant(asm, NZCV_MASK_REG, 1);
+    asm.and_x(NZCV_CARRY_REG, NZCV_TMP_REG, NZCV_MASK_REG);
+    asm.str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET);
+}
+
+fn lower_store_rflags_from_nzcv(
+    asm: &mut Arm64Assembler,
+    carry: RflagsCarryMode,
+    pf: Option<u8>,
+    af: Option<u8>,
+) {
+    asm.mrs_nzcv(NZCV_TMP_REG);
+    asm.ldr_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+
+    let mut clear_bits = RFLAGS_ZF_BIT | RFLAGS_SF_BIT | RFLAGS_OF_BIT;
+    if !matches!(carry, RflagsCarryMode::Preserve) {
+        clear_bits |= RFLAGS_CF_BIT;
+    }
+    if pf.is_some() {
+        clear_bits |= RFLAGS_PF_BIT;
+    }
+    if af.is_some() {
+        clear_bits |= RFLAGS_AF_BIT;
+    }
+    let clear_mask = match carry {
+        RflagsCarryMode::Preserve
+        | RflagsCarryMode::ArmCarry
+        | RflagsCarryMode::InvertArmCarry
+        | RflagsCarryMode::Clear => !clear_bits,
+    };
+    emit_u64_constant(asm, NZCV_MASK_REG, clear_mask);
+    asm.and_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+    emit_u64_constant(asm, NZCV_MASK_REG, 2);
+    asm.orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+
+    emit_or_nzcv_bit_into_rflags(asm, 30, 6); // Z -> ZF
+    emit_or_nzcv_bit_into_rflags(asm, 31, 7); // N -> SF
+    emit_or_nzcv_bit_into_rflags(asm, 28, 11); // V -> OF
+    if let Some(pf) = pf {
+        emit_or_ref_bit_into_rflags(asm, pf, 2);
+    }
+    if let Some(af) = af {
+        emit_or_ref_bit_into_rflags(asm, af, 4);
+    }
+
+    match carry {
+        RflagsCarryMode::ArmCarry => emit_or_nzcv_bit_into_rflags(asm, 29, 0),
+        RflagsCarryMode::InvertArmCarry => {
+            emit_extract_nzcv_bit(asm, 29);
+            emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 1);
+            asm.eor_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+            emit_or_extracted_bit_into_rflags(asm, 0);
+        }
+        RflagsCarryMode::Clear | RflagsCarryMode::Preserve => {}
+    }
+
+    asm.str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+    emit_u64_constant(asm, NZCV_MASK_REG, 1);
+    asm.and_x(NZCV_MASK_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+    asm.str_x_unsigned(NZCV_MASK_REG, abi::K_STATE_PTR_REG, CF_OFFSET);
+}
+
+fn emit_or_nzcv_bit_into_rflags(asm: &mut Arm64Assembler, nzcv_shift: u64, rflags_shift: u64) {
+    emit_extract_nzcv_bit(asm, nzcv_shift);
+    emit_or_extracted_bit_into_rflags(asm, rflags_shift);
+}
+
+fn emit_extract_nzcv_bit(asm: &mut Arm64Assembler, nzcv_shift: u64) {
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, nzcv_shift);
+    asm.lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 1);
+    asm.and_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+}
+
+fn emit_or_extracted_bit_into_rflags(asm: &mut Arm64Assembler, rflags_shift: u64) {
+    if rflags_shift != 0 {
+        emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, rflags_shift);
+        asm.lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+    }
+    asm.orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+}
+
+fn lower_store_rflags_from_bits(
+    asm: &mut Arm64Assembler,
+    pf: Option<u8>,
+    af: Option<u8>,
+    zf: u8,
+    sf: u8,
+    of: u8,
+) {
+    asm.ldr_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+    let mut clear_mask = RFLAGS_ZF_BIT | RFLAGS_SF_BIT | RFLAGS_OF_BIT;
+    if pf.is_some() {
+        clear_mask |= RFLAGS_PF_BIT;
+    }
+    if af.is_some() {
+        clear_mask |= RFLAGS_AF_BIT;
+    }
+    emit_u64_constant(asm, NZCV_MASK_REG, !clear_mask);
+    asm.and_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+    emit_u64_constant(asm, NZCV_MASK_REG, 2);
+    asm.orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+
+    if let Some(pf) = pf {
+        emit_or_ref_bit_into_rflags(asm, pf, 2);
+    }
+    if let Some(af) = af {
+        emit_or_ref_bit_into_rflags(asm, af, 4);
+    }
+    emit_or_ref_bit_into_rflags(asm, zf, 6);
+    emit_or_ref_bit_into_rflags(asm, sf, 7);
+    emit_or_ref_bit_into_rflags(asm, of, 11);
+
+    asm.str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
+}
+
+fn emit_or_ref_bit_into_rflags(asm: &mut Arm64Assembler, value: u8, rflags_shift: u64) {
+    emit_u64_constant(asm, NZCV_MASK_REG, 1);
+    asm.and_x(NZCV_MASK_REG, value, NZCV_MASK_REG);
+    emit_or_extracted_bit_into_rflags(asm, rflags_shift);
 }
 
 /// Emit a flag-setting OR (`is_xor == false`) or XOR over the flag-aligned
@@ -1483,6 +2534,294 @@ fn value_reg(reference: Ref) -> u8 {
     FIRST_VALUE_REG + u8::try_from(slot).expect("slot is bounded by VALUE_REG_COUNT")
 }
 
+fn alloc_vec_pair(
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    reference: Ref,
+) -> Result<(u8, u8), LowerError> {
+    if let Some(pair) = vec_values.get(&reference) {
+        return Ok(*pair);
+    }
+
+    let pair = VEC_REG_PAIRS
+        .get(vec_values.len())
+        .copied()
+        .ok_or(LowerError::UnsupportedOp("too many vector temporaries"))?;
+    vec_values.insert(reference, pair);
+    Ok(pair)
+}
+
+fn vec_pair(vec_values: &HashMap<Ref, (u8, u8)>, reference: Ref) -> Result<(u8, u8), LowerError> {
+    vec_values
+        .get(&reference)
+        .copied()
+        .ok_or(LowerError::MissingValue(reference))
+}
+
+fn lower_vec_clmul(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    op: &prisma_ir::VecClMul,
+) -> Result<(), LowerError> {
+    const CLMUL_WORK_LO: u8 = FLAG_ALIGN_LHS_REG; // X17
+    const CLMUL_WORK_HI: u8 = FLAG_ALIGN_RHS_REG; // X18
+    const CLMUL_RHS: u8 = MEM_ADDR_SCRATCH; // X24
+    const CLMUL_TMP: u8 = CAS_STATUS_REG; // X25
+    const CLMUL_ONE: u8 = 28;
+    const CLMUL_SHIFT63: u8 = 29;
+    const CLMUL_COUNT: u8 = 30;
+
+    let result = stmt.result.ok_or(LowerError::MissingResult("VecClMul"))?;
+    let lhs = vec_pair(vec_values, op.lhs)?;
+    let rhs = vec_pair(vec_values, op.rhs)?;
+    let lhs_reg = if op.lhs_high { lhs.1 } else { lhs.0 };
+    let rhs_reg = if op.rhs_high { rhs.1 } else { rhs.0 };
+    let (out_lo, out_hi) = alloc_vec_pair(vec_values, result)?;
+
+    asm.mov_x(CLMUL_WORK_LO, lhs_reg);
+    emit_u64_constant(asm, CLMUL_WORK_HI, 0);
+    asm.mov_x(CLMUL_RHS, rhs_reg);
+    emit_u64_constant(asm, out_lo, 0);
+    emit_u64_constant(asm, out_hi, 0);
+    emit_u64_constant(asm, CLMUL_ONE, 1);
+    emit_u64_constant(asm, CLMUL_SHIFT63, 63);
+    emit_u64_constant(asm, CLMUL_COUNT, 64);
+
+    let loop_label = asm.create_label();
+    let skip_xor = asm.create_label();
+    asm.bind_label(loop_label);
+    asm.and_x(CLMUL_TMP, CLMUL_RHS, CLMUL_ONE);
+    asm.cbz_x_label(CLMUL_TMP, skip_xor);
+    asm.eor_x(out_lo, out_lo, CLMUL_WORK_LO);
+    asm.eor_x(out_hi, out_hi, CLMUL_WORK_HI);
+    asm.bind_label(skip_xor);
+    asm.lsr_x(CLMUL_TMP, CLMUL_WORK_LO, CLMUL_SHIFT63);
+    asm.lsl_x(CLMUL_WORK_LO, CLMUL_WORK_LO, CLMUL_ONE);
+    asm.lsl_x(CLMUL_WORK_HI, CLMUL_WORK_HI, CLMUL_ONE);
+    asm.orr_x(CLMUL_WORK_HI, CLMUL_WORK_HI, CLMUL_TMP);
+    asm.lsr_x(CLMUL_RHS, CLMUL_RHS, CLMUL_ONE);
+    asm.sub_x_imm(CLMUL_COUNT, CLMUL_COUNT, 1);
+    asm.cbnz_x_label(CLMUL_COUNT, loop_label);
+
+    Ok(())
+}
+
+fn lower_vec_f16cvt(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    op: &prisma_ir::VecF16Cvt,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("VecF16Cvt"))?;
+    let (src_lo, src_hi) = vec_pair(vec_values, op.src)?;
+    let (out_lo, out_hi) = alloc_vec_pair(vec_values, result)?;
+
+    match op.kind {
+        prisma_ir::VecF16CvtKind::PhToPs => {
+            emit_save_for_helper_call(asm);
+            asm.mov_x(0, src_lo);
+            emit_u64_constant(
+                asm,
+                PCMP_HELPER_TARGET_REG,
+                f16c_ph2ps_lo_helper as *const () as usize as u64,
+            );
+            asm.blr_x(PCMP_HELPER_TARGET_REG);
+            emit_restore_after_helper_call(asm);
+            asm.mov_x(out_lo, 0);
+
+            emit_save_for_helper_call(asm);
+            asm.mov_x(0, src_lo);
+            emit_u64_constant(
+                asm,
+                PCMP_HELPER_TARGET_REG,
+                f16c_ph2ps_hi_helper as *const () as usize as u64,
+            );
+            asm.blr_x(PCMP_HELPER_TARGET_REG);
+            emit_restore_after_helper_call(asm);
+            asm.mov_x(out_hi, 0);
+        }
+        prisma_ir::VecF16CvtKind::PsToPh => {
+            emit_save_for_helper_call(asm);
+            asm.mov_x(0, src_lo);
+            asm.mov_x(1, src_hi);
+            emit_u64_constant(asm, 2, u64::from(op.rounding));
+            emit_u64_constant(
+                asm,
+                PCMP_HELPER_TARGET_REG,
+                f16c_ps2ph_helper as *const () as usize as u64,
+            );
+            asm.blr_x(PCMP_HELPER_TARGET_REG);
+            emit_restore_after_helper_call(asm);
+            asm.mov_x(out_lo, 0);
+            emit_u64_constant(asm, out_hi, 0);
+        }
+    }
+
+    Ok(())
+}
+
+fn lower_pcmpstr_index(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    vec_values: &HashMap<Ref, (u8, u8)>,
+    pcmp: &prisma_ir::PcmpStrIndex,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("PcmpStrIndex"))?;
+    let dst = value_reg(result);
+    emit_pcmpstr_helper_call(
+        asm,
+        values,
+        vec_values,
+        pcmp_parts_index(pcmp),
+        pcmpstr_index_helper,
+    )?;
+    asm.mov_x(dst, 0);
+    values.insert(result, dst);
+    Ok(())
+}
+
+fn lower_pcmpstr_mask(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    pcmp: &prisma_ir::PcmpStrMask,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("PcmpStrMask"))?;
+    let (lo, hi) = alloc_vec_pair(vec_values, result)?;
+    let parts = pcmp_parts_mask(pcmp);
+    emit_pcmpstr_helper_call(asm, values, vec_values, parts, pcmpstr_mask_lo_helper)?;
+    asm.mov_x(lo, 0);
+    emit_pcmpstr_helper_call(asm, values, vec_values, parts, pcmpstr_mask_hi_helper)?;
+    asm.mov_x(hi, 0);
+    Ok(())
+}
+
+fn lower_pcmpstr_flags(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    vec_values: &HashMap<Ref, (u8, u8)>,
+    pcmp: &prisma_ir::PcmpStrFlags,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("PcmpStrFlags"))?;
+    let dst = value_reg(result);
+    emit_pcmpstr_helper_call(
+        asm,
+        values,
+        vec_values,
+        pcmp_parts_flags(pcmp),
+        pcmpstr_flags_helper,
+    )?;
+    asm.mov_x(dst, 0);
+    values.insert(result, dst);
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct PcmpStrParts {
+    lhs: Ref,
+    rhs: Ref,
+    lhs_len: Option<Ref>,
+    rhs_len: Option<Ref>,
+    imm8: u8,
+}
+
+fn pcmp_parts_index(pcmp: &prisma_ir::PcmpStrIndex) -> PcmpStrParts {
+    PcmpStrParts {
+        lhs: pcmp.lhs,
+        rhs: pcmp.rhs,
+        lhs_len: pcmp.lhs_len,
+        rhs_len: pcmp.rhs_len,
+        imm8: pcmp.imm8,
+    }
+}
+
+fn pcmp_parts_mask(pcmp: &prisma_ir::PcmpStrMask) -> PcmpStrParts {
+    PcmpStrParts {
+        lhs: pcmp.lhs,
+        rhs: pcmp.rhs,
+        lhs_len: pcmp.lhs_len,
+        rhs_len: pcmp.rhs_len,
+        imm8: pcmp.imm8,
+    }
+}
+
+fn pcmp_parts_flags(pcmp: &prisma_ir::PcmpStrFlags) -> PcmpStrParts {
+    PcmpStrParts {
+        lhs: pcmp.lhs,
+        rhs: pcmp.rhs,
+        lhs_len: pcmp.lhs_len,
+        rhs_len: pcmp.rhs_len,
+        imm8: pcmp.imm8,
+    }
+}
+
+fn emit_pcmpstr_helper_call(
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    vec_values: &HashMap<Ref, (u8, u8)>,
+    parts: PcmpStrParts,
+    helper: PcmpStrHelper,
+) -> Result<(), LowerError> {
+    let (lhs_lo, lhs_hi) = vec_pair(vec_values, parts.lhs)?;
+    let (rhs_lo, rhs_hi) = vec_pair(vec_values, parts.rhs)?;
+    let mut len_mode = 0u64;
+    let lhs_len = if let Some(r) = parts.lhs_len {
+        len_mode |= PCMP_LEN_LHS_EXPLICIT;
+        Some(*values.get(&r).ok_or(LowerError::MissingValue(r))?)
+    } else {
+        None
+    };
+    let rhs_len = if let Some(r) = parts.rhs_len {
+        len_mode |= PCMP_LEN_RHS_EXPLICIT;
+        Some(*values.get(&r).ok_or(LowerError::MissingValue(r))?)
+    } else {
+        None
+    };
+
+    emit_save_for_helper_call(asm);
+    asm.mov_x(0, lhs_lo);
+    asm.mov_x(1, lhs_hi);
+    asm.mov_x(2, rhs_lo);
+    asm.mov_x(3, rhs_hi);
+    if let Some(reg) = lhs_len {
+        asm.mov_x(4, reg);
+    } else {
+        emit_u64_constant(asm, 4, 0);
+    }
+    if let Some(reg) = rhs_len {
+        asm.mov_x(5, reg);
+    } else {
+        emit_u64_constant(asm, 5, 0);
+    }
+    emit_u64_constant(asm, 6, len_mode);
+    emit_u64_constant(asm, 7, u64::from(parts.imm8));
+    emit_u64_constant(asm, PCMP_HELPER_TARGET_REG, helper as usize as u64);
+    asm.blr_x(PCMP_HELPER_TARGET_REG);
+    emit_restore_after_helper_call(asm);
+    Ok(())
+}
+
+fn emit_save_for_helper_call(asm: &mut Arm64Assembler) {
+    for (left, right) in [(9, 10), (11, 12), (13, 14), (15, 16), (17, 18), (29, 30)] {
+        asm.stp_x_pre_sp(left, right, -16);
+    }
+}
+
+fn emit_restore_after_helper_call(asm: &mut Arm64Assembler) {
+    for (left, right) in [(29, 30), (17, 18), (15, 16), (13, 14), (11, 12), (9, 10)] {
+        asm.ldp_x_post_sp(left, right, 16);
+    }
+}
+
 fn emit_u64_constant(asm: &mut Arm64Assembler, dst: u8, value: u64) {
     let low = u16::try_from(value & 0xffff).expect("masked to 16 bits");
     asm.movz_x(dst, low, 0);
@@ -1519,6 +2858,127 @@ fn emit_load_mem(asm: &mut Arm64Assembler, size: OpSize, dst: u8, addr: u8) {
     }
 }
 
+fn emit_load_vec_mem(asm: &mut Arm64Assembler, lo: u8, hi: u8, addr: u8) {
+    emit_rebase_addr(asm, addr);
+    asm.ldr_x_unsigned(lo, MEM_ADDR_SCRATCH, 0);
+    asm.ldr_x_unsigned(hi, MEM_ADDR_SCRATCH, 8);
+}
+
+fn lower_atomic_cmpxchg(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    cas: &prisma_ir::AtomicCmpxchg,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("AtomicCmpxchg"))?;
+    let addr = *values
+        .get(&cas.addr)
+        .ok_or(LowerError::MissingValue(cas.addr))?;
+    let expected = *values
+        .get(&cas.expected)
+        .ok_or(LowerError::MissingValue(cas.expected))?;
+    let new_value = *values
+        .get(&cas.new_value)
+        .ok_or(LowerError::MissingValue(cas.new_value))?;
+    let loaded = value_reg(result);
+
+    emit_rebase_addr(asm, addr);
+    let retry = asm.create_label();
+    let fail = asm.create_label();
+    let done = asm.create_label();
+
+    asm.bind_label(retry);
+    emit_atomic_load_acquire(asm, cas.size, loaded, MEM_ADDR_SCRATCH);
+    let (lhs, rhs) = align_flag_operands(asm, cas.size, loaded, expected);
+    asm.cmp_x(lhs, rhs);
+    asm.b_cond_label(prisma_ir::CondCode::Ne, fail);
+    emit_atomic_store_release(asm, cas.size, CAS_STATUS_REG, new_value, MEM_ADDR_SCRATCH);
+    asm.cbnz_x_label(CAS_STATUS_REG, retry);
+    asm.b_label(done);
+    asm.bind_label(fail);
+    asm.clrex();
+    asm.bind_label(done);
+
+    values.insert(result, loaded);
+    Ok(())
+}
+
+fn lower_atomic_cmpxchg_pair(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    cas: &prisma_ir::AtomicCmpxchgPair,
+) -> Result<(), LowerError> {
+    let old_low_ref = stmt
+        .result
+        .ok_or(LowerError::MissingResult("AtomicCmpxchgPair"))?;
+    let addr = *values
+        .get(&cas.addr)
+        .ok_or(LowerError::MissingValue(cas.addr))?;
+    let expected_low = *values
+        .get(&cas.expected_low)
+        .ok_or(LowerError::MissingValue(cas.expected_low))?;
+    let expected_high = *values
+        .get(&cas.expected_high)
+        .ok_or(LowerError::MissingValue(cas.expected_high))?;
+    let new_low = *values
+        .get(&cas.new_low)
+        .ok_or(LowerError::MissingValue(cas.new_low))?;
+    let new_high = *values
+        .get(&cas.new_high)
+        .ok_or(LowerError::MissingValue(cas.new_high))?;
+    let old_low = value_reg(old_low_ref);
+    let old_high = value_reg(cas.old_high);
+
+    emit_rebase_addr(asm, addr);
+    let retry = asm.create_label();
+    let fail = asm.create_label();
+    let done = asm.create_label();
+
+    asm.bind_label(retry);
+    asm.ldaxp_x(old_low, old_high, MEM_ADDR_SCRATCH);
+    asm.cmp_x(old_low, expected_low);
+    asm.b_cond_label(prisma_ir::CondCode::Ne, fail);
+    asm.cmp_x(old_high, expected_high);
+    asm.b_cond_label(prisma_ir::CondCode::Ne, fail);
+    asm.stlxp_x(CAS_STATUS_REG, new_low, new_high, MEM_ADDR_SCRATCH);
+    asm.cbnz_x_label(CAS_STATUS_REG, retry);
+    asm.b_label(done);
+    asm.bind_label(fail);
+    asm.clrex();
+    asm.bind_label(done);
+
+    values.insert(old_low_ref, old_low);
+    values.insert(cas.old_high, old_high);
+    Ok(())
+}
+
+fn emit_atomic_load_acquire(asm: &mut Arm64Assembler, size: OpSize, dst: u8, base: u8) {
+    match size {
+        OpSize::I8 => asm.ldaxrb(dst, base),
+        OpSize::I16 => asm.ldaxrh(dst, base),
+        OpSize::I32 => asm.ldaxr_w(dst, base),
+        OpSize::I64 => asm.ldaxr_x(dst, base),
+    }
+}
+
+fn emit_atomic_store_release(
+    asm: &mut Arm64Assembler,
+    size: OpSize,
+    status: u8,
+    value: u8,
+    base: u8,
+) {
+    match size {
+        OpSize::I8 => asm.stlxrb(status, value, base),
+        OpSize::I16 => asm.stlxrh(status, value, base),
+        OpSize::I32 => asm.stlxr_w(status, value, base),
+        OpSize::I64 => asm.stlxr_x(status, value, base),
+    }
+}
+
 fn emit_load_reg(asm: &mut Arm64Assembler, size: OpSize, dst: u8, reg: Gpr) {
     let offset = gpr_offset_bytes(reg);
     match size {
@@ -1540,8 +3000,45 @@ fn emit_store_mem(asm: &mut Arm64Assembler, size: OpSize, value: u8, addr: u8) {
     }
 }
 
+fn emit_store_vec_mem(asm: &mut Arm64Assembler, lo: u8, hi: u8, addr: u8) {
+    emit_rebase_addr(asm, addr);
+    asm.str_x_unsigned(lo, MEM_ADDR_SCRATCH, 0);
+    asm.str_x_unsigned(hi, MEM_ADDR_SCRATCH, 8);
+}
+
 /// ARM64 zero register (`WZR`/`XZR`) in the `Rt` position of a load/store.
 const ZERO_REG: u8 = 31;
+
+fn emit_load_vec_state(
+    asm: &mut Arm64Assembler,
+    lo: u8,
+    hi: u8,
+    xmm_index: u8,
+) -> Result<(), LowerError> {
+    let offset = xmm_offset_bytes(xmm_index)?;
+    asm.ldr_x_unsigned(lo, abi::K_STATE_PTR_REG, offset);
+    asm.ldr_x_unsigned(hi, abi::K_STATE_PTR_REG, offset + 8);
+    Ok(())
+}
+
+fn emit_store_vec_state(
+    asm: &mut Arm64Assembler,
+    lo: u8,
+    hi: u8,
+    xmm_index: u8,
+) -> Result<(), LowerError> {
+    let offset = xmm_offset_bytes(xmm_index)?;
+    asm.str_x_unsigned(lo, abi::K_STATE_PTR_REG, offset);
+    asm.str_x_unsigned(hi, abi::K_STATE_PTR_REG, offset + 8);
+    Ok(())
+}
+
+fn xmm_offset_bytes(xmm_index: u8) -> Result<u16, LowerError> {
+    if xmm_index >= 16 {
+        return Err(LowerError::UnsupportedOp("xmm index"));
+    }
+    Ok(XMM_BASE_OFFSET + u16::from(xmm_index) * XMM_SLOT_BYTES)
+}
 
 fn emit_store_reg(asm: &mut Arm64Assembler, size: OpSize, value: u8, reg: Gpr) {
     let offset = gpr_offset_bytes(reg);
@@ -1569,18 +3066,22 @@ mod tests {
     use super::*;
     use crate::abi;
     use crate::assembler::{
-        add_x, add_x_imm, adds_x, ands_x, b, b_cond, blr_x, clz_w, clz_x, cmp_x, crc32cb, crc32ch,
-        crc32cw, crc32cx, cset_x, eor_x, fence, ldr_w_unsigned, ldr_x_unsigned, ldrb_unsigned,
-        ldrh_unsigned, lsl_x, lsr_x, mov_x, movz_x, mrs_cntvct, msr_nzcv, orr_x, rbit_w, rbit_x,
-        str_w_unsigned, str_x_unsigned, strb_unsigned, strh_unsigned, sub_x_imm, sxtb_x, uxth_x,
-        uxtw_x,
+        add_x, add_x_imm, adds_x, and_x, ands_x, b, b_cond, blr_x, clrex, clz_w, clz_x, cmp_x,
+        crc32cb, crc32ch, crc32cw, crc32cx, cset_x, eor_x, fence, ldaxp_x, ldaxr_x, ldp_x_post_sp,
+        ldr_w_unsigned, ldr_x_unsigned, ldrb_unsigned, ldrh_unsigned, lsl_x, lsr_x, mov_x, movk_x,
+        movz_x, mrs_cntvct, mrs_nzcv, msr_nzcv, orr_x, rbit_w, rbit_x, stlxp_x, stlxr_x,
+        stp_x_pre_sp, str_w_unsigned, str_x_unsigned, strb_unsigned, strh_unsigned, sub_x,
+        sub_x_imm, sxtb_x, uxth_x, uxtw_x,
     };
     use prisma_ir::{
-        AluFlags, BasicBlock, BinOp, Bswap, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags,
-        CondJumpRel, Constant, Crc32c, Fence, FenceKind, FlagBit, Gpr, Jump, LoadMem, LoadMemTSO,
-        LoadReg, LoadSegBase, Lzcnt, Popcnt, Rdtsc, ReadFlag, Return, RspAdjust, SegmentReg,
-        Select, Stmt, StoreMem, StoreMemTSO, StoreReg, Truncate, Tzcnt, WriteFlags,
-        WriteFlagsCountZero, WriteFlagsPopcnt,
+        AluFlags, AluFlagsPreserveCarry, AtomicCmpxchg, AtomicCmpxchgPair, BasicBlock, BinOp,
+        Bswap, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags, CondJumpRel, Constant, Crc32c,
+        Fence, FenceKind, FlagBit, Gpr, Jump, LoadMem, LoadMemTSO, LoadReg, LoadRflags,
+        LoadSegBase, LoadVec, LoadVecReg, Lzcnt, PcmpStrFlags, PcmpStrIndex, PcmpStrMask, Popcnt,
+        Rdtsc, ReadFlag, Return, RflagsCarryMode, RspAdjust, SegmentReg, Select, Stmt, StoreCarry,
+        StoreMem, StoreMemTSO, StoreReg, StoreRflags, StoreRflagsFromBits, StoreRflagsFromNzcv,
+        StoreVec, StoreVecReg, Truncate, Tzcnt, VecClMul, VecConstant, VecF16Cvt, VecF16CvtKind,
+        WideDiv, WideDivResult, WriteFlags, WriteFlagsCountZero, WriteFlagsPopcnt,
     };
 
     fn function(stmts: Vec<Stmt>) -> Function {
@@ -1592,6 +3093,26 @@ mod tests {
 
     fn function_with_blocks(blocks: Vec<BasicBlock>, entry: u32) -> Function {
         Function { blocks, entry }
+    }
+
+    fn restore_nzcv_from_rflags_words() -> Vec<u32> {
+        let mut words = vec![
+            ldr_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET),
+            movz_x(NZCV_CARRY_REG, 0, 0),
+        ];
+        for (rflags_shift, nzcv_shift) in [(7, 31), (6, 30), (0, 29), (11, 28)] {
+            words.extend([
+                movz_x(FLAG_ALIGN_SHIFT_REG, rflags_shift, 0),
+                lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 1, 0),
+                and_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, nzcv_shift, 0),
+                lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG),
+                orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG),
+            ]);
+        }
+        words.push(msr_nzcv(NZCV_CARRY_REG));
+        words
     }
 
     #[test]
@@ -2215,7 +3736,13 @@ mod tests {
                 0x9B0A_7D2B,
                 0x9BCA_7D2C,
                 0x9B4A_7D2D,
+                0xB500_006A,
+                0xD280_0000,
+                0xD65F_03C0,
                 0x9ACA_092E,
+                0xB500_006A,
+                0xD280_0000,
+                0xD65F_03C0,
                 0x9ACA_0D2F,
             ]
         );
@@ -2377,12 +3904,153 @@ mod tests {
             vec![
                 0xD280_02A9,
                 0xD280_00AA,
+                0xB500_006A,
+                0xD280_0000,
+                0xD65F_03C0,
                 0x9ACA_0934,
                 0x9B0A_A68B,
+                0xB500_006A,
+                0xD280_0000,
+                0xD65F_03C0,
                 0x9ACA_0D34,
                 0x9B0A_A68C,
             ]
         );
+    }
+
+    #[test]
+    fn lowers_wide_div_unsigned_quotient_core() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 100,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::WideDiv(WideDiv {
+                    high: 0,
+                    low: 1,
+                    divisor: 2,
+                    signed: false,
+                    result: WideDivResult::Quotient,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(
+            code.len() > 64 * 8,
+            "wide division should emit the 64-step core"
+        );
+        assert!(code.contains(&mov_x(WIDE_REM_REG, value_reg(0))));
+        assert!(code.contains(&mov_x(WIDE_LOW_REG, value_reg(1))));
+        assert!(code.contains(&mov_x(WIDE_DIVISOR_REG, value_reg(2))));
+        assert!(code.contains(&lsr_x(WIDE_BIT_REG, WIDE_LOW_REG, WIDE_SHIFT_REG)));
+        assert!(code.contains(&lsl_x(WIDE_LOW_REG, WIDE_LOW_REG, WIDE_ONE_REG)));
+        assert!(code.contains(&cmp_x(WIDE_REM_REG, WIDE_DIVISOR_REG)));
+        assert!(code.contains(&sub_x(WIDE_REM_REG, WIDE_REM_REG, WIDE_DIVISOR_REG)));
+        assert!(code.contains(&orr_x(value_reg(3), value_reg(3), WIDE_MASK_REG)));
+    }
+
+    #[test]
+    fn lowers_wide_div_unsigned_remainder_result() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 100,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::WideDiv(WideDiv {
+                    high: 0,
+                    low: 1,
+                    divisor: 2,
+                    signed: false,
+                    result: WideDivResult::Remainder,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&sub_x(WIDE_REM_REG, WIDE_REM_REG, WIDE_DIVISOR_REG)));
+        assert!(code.contains(&mov_x(value_reg(3), WIDE_REM_REG)));
+    }
+
+    #[test]
+    fn lowers_wide_div_signed_sign_normalization() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: u64::MAX,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 100,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: (-7i64).cast_unsigned(),
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::WideDiv(WideDiv {
+                    high: 0,
+                    low: 1,
+                    divisor: 2,
+                    signed: true,
+                    result: WideDivResult::Quotient,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&lsr_x(WIDE_REM_SIGN_REG, WIDE_REM_REG, WIDE_SHIFT_REG)));
+        assert!(code.contains(&eor_x(WIDE_QUOT_SIGN_REG, WIDE_REM_SIGN_REG, WIDE_TMP_REG)));
+        assert!(code.contains(&sub_x(WIDE_DIVISOR_REG, 31, WIDE_DIVISOR_REG)));
+        assert!(code.contains(&sub_x(value_reg(3), 31, value_reg(3))));
     }
 
     #[test]
@@ -2599,6 +4267,288 @@ mod tests {
     }
 
     #[test]
+    fn lowers_vec_constant_and_xmm_round_trip_as_two_u64_words() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 0x11, hi: 0x22 })),
+            Stmt::new(
+                None,
+                Op::StoreVecReg(StoreVecReg {
+                    xmm_index: 3,
+                    value: 0,
+                }),
+            ),
+            Stmt::new(Some(1), Op::LoadVecReg(LoadVecReg { xmm_index: 3 })),
+            Stmt::new(
+                None,
+                Op::StoreVecReg(StoreVecReg {
+                    xmm_index: 4,
+                    value: 1,
+                }),
+            ),
+        ]);
+
+        let xmm3 = XMM_BASE_OFFSET + 3 * XMM_SLOT_BYTES;
+        let xmm4 = XMM_BASE_OFFSET + 4 * XMM_SLOT_BYTES;
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(FLAG_ALIGN_SHIFT_REG, 0x11, 0),
+                movz_x(MOD_QUOTIENT_REG, 0x22, 0),
+                str_x_unsigned(FLAG_ALIGN_SHIFT_REG, abi::K_STATE_PTR_REG, xmm3),
+                str_x_unsigned(MOD_QUOTIENT_REG, abi::K_STATE_PTR_REG, xmm3 + 8),
+                ldr_x_unsigned(RSP_ADJUST_TMP_REG, abi::K_STATE_PTR_REG, xmm3),
+                ldr_x_unsigned(RSP_ADJUST_IMM_REG, abi::K_STATE_PTR_REG, xmm3 + 8),
+                str_x_unsigned(RSP_ADJUST_TMP_REG, abi::K_STATE_PTR_REG, xmm4),
+                str_x_unsigned(RSP_ADJUST_IMM_REG, abi::K_STATE_PTR_REG, xmm4 + 8),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_vec_memory_load_and_store_as_two_rebased_u64_words() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(Some(1), Op::LoadVec(LoadVec { addr: 0 })),
+            Stmt::new(None, Op::StoreVec(StoreVec { addr: 0, value: 1 })),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x1000, 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                ldr_x_unsigned(FLAG_ALIGN_SHIFT_REG, MEM_ADDR_SCRATCH, 0),
+                ldr_x_unsigned(MOD_QUOTIENT_REG, MEM_ADDR_SCRATCH, 8),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                str_x_unsigned(FLAG_ALIGN_SHIFT_REG, MEM_ADDR_SCRATCH, 0),
+                str_x_unsigned(MOD_QUOTIENT_REG, MEM_ADDR_SCRATCH, 8),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_vec_clmul_with_scalar_carryless_loop() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 0xaa, hi: 0x02 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 0x55, hi: 0x03 })),
+            Stmt::new(
+                Some(2),
+                Op::VecClMul(VecClMul {
+                    lhs: 0,
+                    rhs: 1,
+                    lhs_high: true,
+                    rhs_high: true,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreVecReg(StoreVecReg {
+                    xmm_index: 0,
+                    value: 2,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&and_x(CAS_STATUS_REG, MEM_ADDR_SCRATCH, 28)));
+        assert!(code.contains(&eor_x(
+            ALU_FLAGS_TMP_REG,
+            ALU_FLAGS_TMP_REG,
+            FLAG_ALIGN_LHS_REG
+        )));
+        assert!(code.contains(&eor_x(WIDE_SHIFT_REG, WIDE_SHIFT_REG, FLAG_ALIGN_RHS_REG)));
+        assert!(code.contains(&lsr_x(CAS_STATUS_REG, FLAG_ALIGN_LHS_REG, 29)));
+        assert!(code.contains(&sub_x_imm(30, 30, 1)));
+    }
+
+    #[test]
+    fn backend_f16c_helpers_round_trip_exact_lanes() {
+        let packed_halves = 0x7c00_0000_c000_3c00u64;
+        let expected =
+            (u128::from(0x7f80_0000_0000_0000u64) << 64) | u128::from(0xc000_0000_3f80_0000u64);
+
+        assert_eq!(backend_f16c_ph_to_ps(packed_halves), expected);
+        assert_eq!(
+            backend_f16c_ps_to_ph(low64(expected), low64(expected >> 64), 0),
+            packed_halves
+        );
+    }
+
+    #[test]
+    fn lowers_vec_f16cvt_via_semantic_helpers() {
+        let ph2ps = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::VecConstant(VecConstant {
+                    lo: 0x7c00_0000_c000_3c00,
+                    hi: 0,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::VecF16Cvt(VecF16Cvt {
+                    kind: VecF16CvtKind::PhToPs,
+                    src: 0,
+                    rounding: 0,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreVecReg(StoreVecReg {
+                    xmm_index: 0,
+                    value: 1,
+                }),
+            ),
+        ]);
+        let ph2ps_code = Lowerer::new().lower_function(&ph2ps).unwrap();
+        assert_eq!(
+            ph2ps_code
+                .iter()
+                .filter(|word| **word == blr_x(PCMP_HELPER_TARGET_REG))
+                .count(),
+            2
+        );
+
+        let ps2ph = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::VecConstant(VecConstant {
+                    lo: 0xc000_0000_3f80_0000,
+                    hi: 0x7f80_0000_0000_0000,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::VecF16Cvt(VecF16Cvt {
+                    kind: VecF16CvtKind::PsToPh,
+                    src: 0,
+                    rounding: 0,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreVecReg(StoreVecReg {
+                    xmm_index: 1,
+                    value: 1,
+                }),
+            ),
+        ]);
+        let ps2ph_code = Lowerer::new().lower_function(&ps2ph).unwrap();
+        assert_eq!(
+            ps2ph_code
+                .iter()
+                .filter(|word| **word == blr_x(PCMP_HELPER_TARGET_REG))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn backend_pcmp_string_helpers_cover_index_mask_and_flags() {
+        fn pack(bytes: &[u8]) -> (u64, u64) {
+            let mut padded = [0u8; 16];
+            padded[..bytes.len()].copy_from_slice(bytes);
+            (
+                u64::from_le_bytes(padded[..8].try_into().unwrap()),
+                u64::from_le_bytes(padded[8..].try_into().unwrap()),
+            )
+        }
+
+        let (lhs_lo, lhs_hi) = pack(b"zab");
+        let (rhs_lo, rhs_hi) = pack(b"abc");
+        assert_eq!(
+            pcmpstr_index_helper(lhs_lo, lhs_hi, rhs_lo, rhs_hi, 0, 0, 0, 0),
+            1
+        );
+
+        let (lhs_lo, lhs_hi) = pack(&[1, 2, 3]);
+        let (rhs_lo, rhs_hi) = pack(&[1, 9, 3]);
+        let mode = PCMP_LEN_LHS_EXPLICIT | PCMP_LEN_RHS_EXPLICIT;
+        assert_eq!(
+            pcmpstr_mask_lo_helper(lhs_lo, lhs_hi, rhs_lo, rhs_hi, 3, 3, mode, 0x08),
+            0b101
+        );
+        assert_eq!(
+            pcmpstr_flags_helper(lhs_lo, lhs_hi, rhs_lo, rhs_hi, 3, 3, mode, 0x08),
+            0b1111
+        );
+    }
+
+    #[test]
+    fn lowers_pcmp_string_ops_via_semantic_helpers() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::VecConstant(VecConstant {
+                    lo: 0x0062_6100,
+                    hi: 0,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::VecConstant(VecConstant {
+                    lo: 0x0063_6261,
+                    hi: 0,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::PcmpStrIndex(PcmpStrIndex {
+                    lhs: 0,
+                    rhs: 1,
+                    lhs_len: None,
+                    rhs_len: None,
+                    imm8: 0,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::PcmpStrMask(PcmpStrMask {
+                    lhs: 0,
+                    rhs: 1,
+                    lhs_len: None,
+                    rhs_len: None,
+                    imm8: 0,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::PcmpStrFlags(PcmpStrFlags {
+                    lhs: 0,
+                    rhs: 1,
+                    lhs_len: None,
+                    rhs_len: None,
+                    imm8: 0,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert_eq!(
+            code.iter()
+                .filter(|word| **word == blr_x(PCMP_HELPER_TARGET_REG))
+                .count(),
+            4
+        );
+        assert!(code.contains(&stp_x_pre_sp(9, 10, -16)));
+        assert!(code.contains(&stp_x_pre_sp(29, 30, -16)));
+        assert!(code.contains(&ldp_x_post_sp(29, 30, 16)));
+        assert!(code.contains(&ldp_x_post_sp(9, 10, 16)));
+        assert!(code.contains(&mov_x(value_reg(2), 0)));
+        assert!(code.contains(&mov_x(ALU_FLAGS_TMP_REG, 0)));
+        assert!(code.contains(&mov_x(WIDE_SHIFT_REG, 0)));
+        assert!(code.contains(&mov_x(value_reg(4), 0)));
+    }
+
+    #[test]
     fn lowers_tso_memory_ops_with_full_barriers() {
         let func = function(vec![
             Stmt::new(
@@ -2646,6 +4596,147 @@ mod tests {
                 add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
                 ldr_x_unsigned(value_reg(2), MEM_ADDR_SCRATCH, 0),
                 fence(FenceKind::Mfence),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_atomic_cmpxchg_i64_to_exclusive_loop() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x2a,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 0x63,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::AtomicCmpxchg(AtomicCmpxchg {
+                    addr: 0,
+                    expected: 1,
+                    new_value: 2,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x1000, 0),
+                movz_x(value_reg(1), 0x2a, 0),
+                movz_x(value_reg(2), 0x63, 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                ldaxr_x(value_reg(3), MEM_ADDR_SCRATCH),
+                cmp_x(value_reg(3), value_reg(1)),
+                b_cond(CondCode::Ne, 16),
+                stlxr_x(CAS_STATUS_REG, value_reg(2), MEM_ADDR_SCRATCH),
+                crate::assembler::cbnz_x(CAS_STATUS_REG, -16),
+                b(8),
+                clrex(),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_atomic_cmpxchg_pair_to_exclusive_pair_loop() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x11,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 0x22,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Constant(Constant {
+                    value: 0x33,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::Constant(Constant {
+                    value: 0x44,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(5),
+                Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
+                    addr: 0,
+                    expected_low: 1,
+                    expected_high: 2,
+                    new_low: 3,
+                    new_high: 4,
+                    old_high: 6,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rdx,
+                    value: 6,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x1000, 0),
+                movz_x(value_reg(1), 0x11, 0),
+                movz_x(value_reg(2), 0x22, 0),
+                movz_x(value_reg(3), 0x33, 0),
+                movz_x(value_reg(4), 0x44, 0),
+                ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
+                add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
+                ldaxp_x(value_reg(5), value_reg(6), MEM_ADDR_SCRATCH),
+                cmp_x(value_reg(5), value_reg(1)),
+                b_cond(CondCode::Ne, 24),
+                cmp_x(value_reg(6), value_reg(2)),
+                b_cond(CondCode::Ne, 16),
+                stlxp_x(CAS_STATUS_REG, value_reg(3), value_reg(4), MEM_ADDR_SCRATCH),
+                crate::assembler::cbnz_x(CAS_STATUS_REG, -24),
+                b(8),
+                clrex(),
+                str_x_unsigned(
+                    value_reg(6),
+                    abi::K_STATE_PTR_REG,
+                    gpr_offset_bytes(Gpr::Rdx)
+                ),
             ]
         );
     }
@@ -3071,10 +5162,68 @@ mod tests {
             0,
         );
 
-        assert_eq!(
-            Lowerer::new().lower_function(&func).unwrap(),
-            vec![0x5400_0040, 0x1400_0002, 0xD65F_03C0, 0xD65F_03C0]
+        let mut expected = restore_nzcv_from_rflags_words();
+        expected.extend([0x5400_0040, 0x1400_0002, 0xD65F_03C0, 0xD65F_03C0]);
+        assert_eq!(Lowerer::new().lower_function(&func).unwrap(), expected);
+    }
+
+    #[test]
+    fn lowers_cond_jump_rel_without_restore_after_local_flags() {
+        let func = function_with_blocks(
+            vec![
+                BasicBlock {
+                    id: 0,
+                    stmts: vec![
+                        Stmt::new(
+                            Some(0),
+                            Op::Constant(Constant {
+                                value: 1,
+                                size: OpSize::I64,
+                            }),
+                        ),
+                        Stmt::new(
+                            Some(1),
+                            Op::Constant(Constant {
+                                value: 1,
+                                size: OpSize::I64,
+                            }),
+                        ),
+                        Stmt::new(
+                            Some(2),
+                            Op::CmpFlags(CmpFlags {
+                                lhs: 0,
+                                rhs: 1,
+                                size: OpSize::I64,
+                            }),
+                        ),
+                        Stmt::new(
+                            None,
+                            Op::CondJumpRel(CondJumpRel {
+                                cc: CondCode::Eq,
+                                target_guest_pc: 1,
+                                fallthrough_guest_pc: 2,
+                            }),
+                        ),
+                    ],
+                },
+                BasicBlock {
+                    id: 1,
+                    stmts: vec![Stmt::new(None, Op::Return(Return))],
+                },
+                BasicBlock {
+                    id: 2,
+                    stmts: vec![Stmt::new(None, Op::Return(Return))],
+                },
+            ],
+            0,
         );
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        let restore = restore_nzcv_from_rflags_words();
+        assert!(!code
+            .windows(restore.len())
+            .any(|window| window == restore.as_slice()));
+        assert!(code.contains(&cmp_x(value_reg(0), value_reg(1))));
     }
 
     #[test]
@@ -3454,6 +5603,461 @@ mod tests {
     }
 
     #[test]
+    fn lowers_alu_flags_preserve_carry_side_effect() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlagsPreserveCarry(AluFlagsPreserveCarry {
+                    op: BinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                0xD280_00E9,
+                0xD280_006A,
+                adds_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                mrs_nzcv(NZCV_TMP_REG),
+                movz_x(NZCV_MASK_REG, 0xffff, 0),
+                movk_x(NZCV_MASK_REG, 0xdfff, 16),
+                movk_x(NZCV_MASK_REG, 0xffff, 32),
+                movk_x(NZCV_MASK_REG, 0xffff, 48),
+                and_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_MASK_REG),
+                ldr_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET),
+                movz_x(NZCV_MASK_REG, 1, 0),
+                and_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 29, 0),
+                lsl_x(NZCV_CARRY_REG, NZCV_CARRY_REG, FLAG_ALIGN_SHIFT_REG),
+                orr_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_CARRY_REG),
+                msr_nzcv(NZCV_TMP_REG),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_load_rflags_from_state_frame() {
+        let func = function(vec![Stmt::new(Some(0), Op::LoadRflags(LoadRflags))]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![ldr_x_unsigned(
+                value_reg(0),
+                abi::K_STATE_PTR_REG,
+                RFLAGS_OFFSET
+            )]
+        );
+    }
+
+    #[test]
+    fn lowers_store_rflags_and_syncs_carry_slot() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x10,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(None, Op::StoreRflags(StoreRflags { value: 0 })),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 0x10, 0),
+                movz_x(NZCV_TMP_REG, 2, 0),
+                orr_x(NZCV_TMP_REG, value_reg(0), NZCV_TMP_REG),
+                str_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET),
+                movz_x(NZCV_MASK_REG, 1, 0),
+                and_x(NZCV_CARRY_REG, NZCV_TMP_REG, NZCV_MASK_REG),
+                str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_lahf_style_rflags_to_ah_sequence() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::LoadRflags(LoadRflags)),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0xD7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::And,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Constant(Constant {
+                    value: 8,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Shl,
+                    lhs: 2,
+                    rhs: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(5),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(6),
+                Op::Constant(Constant {
+                    value: !0xFF00_u64,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(7),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::And,
+                    lhs: 5,
+                    rhs: 6,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(8),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Or,
+                    lhs: 7,
+                    rhs: 4,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rax,
+                    value: 8,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+
+        assert_eq!(
+            code.first(),
+            Some(&ldr_x_unsigned(
+                value_reg(0),
+                abi::K_STATE_PTR_REG,
+                RFLAGS_OFFSET
+            ))
+        );
+        assert!(code.contains(&and_x(value_reg(2), value_reg(0), value_reg(1))));
+        assert!(code.contains(&lsl_x(value_reg(4), value_reg(2), value_reg(3))));
+        assert!(code.contains(&ldr_x_unsigned(value_reg(5), abi::K_STATE_PTR_REG, 0)));
+        assert!(code.contains(&and_x(value_reg(7), value_reg(5), value_reg(6))));
+        assert!(code.contains(&orr_x(value_reg(8), value_reg(7), value_reg(4))));
+        assert_eq!(
+            code.last(),
+            Some(&str_x_unsigned(value_reg(8), abi::K_STATE_PTR_REG, 0))
+        );
+    }
+
+    #[test]
+    fn lowers_sahf_style_ah_to_rflags_sequence() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::LoadReg(LoadReg {
+                    reg: Gpr::Rax,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 8,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Shr,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Constant(Constant {
+                    value: 0xD5,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::And,
+                    lhs: 2,
+                    rhs: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(Some(5), Op::LoadRflags(LoadRflags)),
+            Stmt::new(
+                Some(6),
+                Op::Constant(Constant {
+                    value: !0xD5_u64,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(7),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::And,
+                    lhs: 5,
+                    rhs: 6,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(8),
+                Op::BinOp(BinOp {
+                    op: BinOpKind::Or,
+                    lhs: 7,
+                    rhs: 4,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(None, Op::StoreRflags(StoreRflags { value: 8 })),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+
+        assert_eq!(
+            code.first(),
+            Some(&ldr_x_unsigned(value_reg(0), abi::K_STATE_PTR_REG, 0))
+        );
+        assert!(code.contains(&lsr_x(value_reg(2), value_reg(0), value_reg(1))));
+        assert!(code.contains(&and_x(value_reg(4), value_reg(2), value_reg(3))));
+        assert!(code.contains(&ldr_x_unsigned(
+            value_reg(5),
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+        assert!(code.contains(&and_x(value_reg(7), value_reg(5), value_reg(6))));
+        assert!(code.contains(&orr_x(value_reg(8), value_reg(7), value_reg(4))));
+        assert!(code.contains(&str_x_unsigned(
+            NZCV_TMP_REG,
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+        assert_eq!(
+            code.last(),
+            Some(&str_x_unsigned(
+                NZCV_CARRY_REG,
+                abi::K_STATE_PTR_REG,
+                CF_OFFSET
+            ))
+        );
+    }
+
+    #[test]
+    fn lowers_store_carry_and_syncs_rflags_bit_zero() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(None, Op::StoreCarry(StoreCarry { value: 0 })),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func).unwrap(),
+            vec![
+                movz_x(value_reg(0), 3, 0),
+                movz_x(NZCV_MASK_REG, 1, 0),
+                and_x(NZCV_CARRY_REG, value_reg(0), NZCV_MASK_REG),
+                str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET),
+                ldr_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET),
+                movz_x(NZCV_MASK_REG, 0xfffe, 0),
+                movk_x(NZCV_MASK_REG, 0xffff, 16),
+                movk_x(NZCV_MASK_REG, 0xffff, 32),
+                movk_x(NZCV_MASK_REG, 0xffff, 48),
+                and_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_MASK_REG),
+                orr_x(NZCV_TMP_REG, NZCV_TMP_REG, NZCV_CARRY_REG),
+                str_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_cpuid_leaf7_advertises_bmi1_and_bmi2() {
+        let func = function(vec![Stmt::new(None, Op::Cpuid(prisma_ir::Cpuid))]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+
+        assert!(code.contains(&movz_x(
+            FLAG_ALIGN_LHS_REG,
+            u16::try_from(KSTATE_CPUID_LEAF7_EBX).expect("leaf7 EBX fits u16"),
+            0
+        )));
+        assert_ne!(KSTATE_CPUID_LEAF7_EBX & (1 << 3), 0, "BMI1 bit");
+        assert_ne!(KSTATE_CPUID_LEAF7_EBX & (1 << 8), 0, "BMI2 bit");
+    }
+
+    #[test]
+    fn lowers_cpuid_leaf1_advertises_sse42_and_pclmul() {
+        let func = function(vec![Stmt::new(None, Op::Cpuid(prisma_ir::Cpuid))]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        let leaf1_ecx_hi =
+            u16::try_from((KSTATE_CPUID_LEAF1_ECX >> 16) & 0xffff).expect("masked to u16");
+
+        assert_ne!(KSTATE_CPUID_LEAF1_ECX & (1 << 20), 0, "SSE4.2 bit");
+        assert_ne!(KSTATE_CPUID_LEAF1_ECX & (1 << 1), 0, "PCLMULQDQ bit");
+        assert_ne!(KSTATE_CPUID_LEAF1_ECX & (1 << 29), 0, "F16C bit");
+        assert!(code.contains(&movk_x(FLAG_ALIGN_RHS_REG, leaf1_ecx_hi, 16)));
+    }
+
+    #[test]
+    fn lowers_store_rflags_from_nzcv_preserving_carry() {
+        let func = function(vec![Stmt::new(
+            None,
+            Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
+                carry: RflagsCarryMode::Preserve,
+                pf: None,
+                af: None,
+            }),
+        )]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+
+        assert_eq!(code.first(), Some(&mrs_nzcv(NZCV_TMP_REG)));
+        assert!(code.contains(&ldr_x_unsigned(
+            NZCV_CARRY_REG,
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+        assert!(code.contains(&movz_x(NZCV_MASK_REG, 0xf73f, 0)));
+        assert!(code.contains(&str_x_unsigned(
+            NZCV_CARRY_REG,
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+        assert_eq!(
+            code.last(),
+            Some(&str_x_unsigned(
+                NZCV_MASK_REG,
+                abi::K_STATE_PTR_REG,
+                CF_OFFSET
+            ))
+        );
+    }
+
+    #[test]
+    fn lowers_store_rflags_from_explicit_bits_preserving_carry_slot() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Constant(Constant {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::Constant(Constant {
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreRflagsFromBits(StoreRflagsFromBits {
+                    pf: Some(3),
+                    af: Some(4),
+                    zf: 0,
+                    sf: 1,
+                    of: 2,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+
+        assert!(code.contains(&ldr_x_unsigned(
+            NZCV_CARRY_REG,
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+        assert!(code.contains(&str_x_unsigned(
+            NZCV_CARRY_REG,
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+        assert!(!code.contains(&str_x_unsigned(
+            NZCV_MASK_REG,
+            abi::K_STATE_PTR_REG,
+            CF_OFFSET
+        )));
+    }
+
+    #[test]
     fn rejects_unsupported_alu_flags_op() {
         let func = function(vec![
             Stmt::new(
@@ -3485,6 +6089,42 @@ mod tests {
             Lowerer::new().lower_function(&func),
             Err(LowerError::UnsupportedOp(
                 "AluFlags only supports Sub/Add/And/Or/Xor today"
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_alu_flags_preserve_carry_op() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 3,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlagsPreserveCarry(AluFlagsPreserveCarry {
+                    op: BinOpKind::And,
+                    lhs: 0,
+                    rhs: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            Lowerer::new().lower_function(&func),
+            Err(LowerError::UnsupportedOp(
+                "AluFlagsPreserveCarry only supports Sub/Add today"
             ))
         );
     }

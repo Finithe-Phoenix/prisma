@@ -722,41 +722,52 @@ mod tests {
         assert!(translator
             .translate(0xB000, &[0x6A, 0x7F])
             .is_some_and(|bytes| !bytes.is_empty()));
-        assert_eq!(
+        // Flag writers now append persistent-RFLAGS publication after the
+        // arithmetic; pin the stable computation prefix only.
+        let assert_prefix = |translated: Option<Vec<u8>>, prefix: &[u32], name: &str| {
+            let translated = translated.expect(name);
+            let prefix = words_to_le_bytes(prefix);
+            assert!(translated.starts_with(&prefix), "{name} prefix");
+        };
+        assert_prefix(
             translator.translate(0xB000, &[0x48, 0x05, 0x34, 0x12, 0x00, 0x00]),
-            Some(words_to_le_bytes(&[
+            &[
                 ldr_x_unsigned(9, 27, 0),
                 movz_x(10, 0x1234, 0),
                 add_x(11, 9, 10),
                 str_x_unsigned(11, 27, 0),
-            ]))
+            ],
+            "add_rax_imm32",
         );
-        assert_eq!(
+        assert_prefix(
             translator.translate(0xB000, &[0x48, 0x81, 0xC0, 0x34, 0x12, 0x00, 0x00]),
-            Some(words_to_le_bytes(&[
+            &[
                 movz_x(9, 0x1234, 0),
                 ldr_x_unsigned(10, 27, 0),
                 add_x(11, 10, 9),
                 str_x_unsigned(11, 27, 0),
-            ]))
+            ],
+            "add_rax_group1_imm32",
         );
-        assert_eq!(
+        assert_prefix(
             translator.translate(0xB000, &[0x48, 0xC1, 0xE0, 0x03]),
-            Some(words_to_le_bytes(&[
+            &[
                 movz_x(9, 3, 0),
                 ldr_x_unsigned(10, 27, 0),
                 lsl_x(11, 10, 9),
                 str_x_unsigned(11, 27, 0),
-            ]))
+            ],
+            "shl_rax_imm8",
         );
-        assert_eq!(
+        assert_prefix(
             translator.translate(0xB000, &[0x48, 0xD3, 0xE0]),
-            Some(words_to_le_bytes(&[
+            &[
                 ldrb_unsigned(9, 27, 8),
                 ldr_x_unsigned(10, 27, 0),
                 lsl_x(11, 10, 9),
                 str_x_unsigned(11, 27, 0),
-            ]))
+            ],
+            "shl_rax_cl",
         );
         assert_eq!(
             translator.translate(0xB000, &[0x48, 0x63, 0xC1]),
@@ -775,80 +786,146 @@ mod tests {
                 str_x_unsigned(11, 27, 0),
             ]))
         );
-        assert_eq!(
-            translator.translate(0xB000, &[0x48, 0x01, 0xC8]),
-            Some(words_to_le_bytes(&[
-                0xF940_0769,
-                0xF940_036A,
-                0x8B09_014B,
-                0xF900_036B,
-                0xAB09_0157, // adds x23, x10, x9 — implicit ALU flag write
-            ]))
-        );
-        assert_eq!(
-            translator.translate(0xB000, &[0x48, 0x85, 0xC8]),
-            Some(words_to_le_bytes(&[
-                ldr_x_unsigned(9, 27, 8),
-                ldr_x_unsigned(10, 27, 0),
-                ands_x(23, 10, 9),
-            ]))
-        );
+        let contains_word = |translated: &[u8], word: u32| {
+            translated
+                .windows(4)
+                .any(|w| w == word.to_le_bytes().as_slice())
+        };
+        {
+            let translated = translator
+                .translate(0xB000, &[0x48, 0x01, 0xC8])
+                .expect("add_rax_rcx");
+            let prefix = words_to_le_bytes(&[0xF940_0769, 0xF940_036A, 0x8B09_014B, 0xF900_036B]);
+            assert!(translated.starts_with(&prefix), "add_rax_rcx prefix");
+            // adds x23, x10, x9 — implicit ALU flag write still present.
+            assert!(contains_word(&translated, 0xAB09_0157), "add_rax_rcx adds");
+        }
+        {
+            let translated = translator
+                .translate(0xB000, &[0x48, 0x85, 0xC8])
+                .expect("test_rax_rcx");
+            let prefix = words_to_le_bytes(&[ldr_x_unsigned(9, 27, 8), ldr_x_unsigned(10, 27, 0)]);
+            assert!(translated.starts_with(&prefix), "test_rax_rcx prefix");
+            assert!(
+                contains_word(&translated, ands_x(23, 10, 9)),
+                "test_rax_rcx ands"
+            );
+        }
         assert!(translator
             .translate(0xB000, &[0x48, 0x39, 0xC8, 0x74, 0x02])
             .is_some_and(|bytes| !bytes.is_empty()));
-        assert_eq!(
+        // Standalone Jcc now restores NZCV from persistent RFLAGS first;
+        // pin the stable branch tail only.
+        let assert_tail = |translated: Option<Vec<u8>>, tail: &[u32], name: &str| {
+            let translated = translated.expect(name);
+            let tail = words_to_le_bytes(tail);
+            assert!(
+                translated.ends_with(&tail),
+                "{name} tail; translated words: {:08x?}",
+                translated
+                    .chunks_exact(4)
+                    .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+                    .collect::<Vec<_>>()
+            );
+        };
+        assert_tail(
             translator.translate(0xB000, &[0x74, 0x02]),
-            Some(words_to_le_bytes(&[0x5400_0040, 0x1400_0001]))
+            &[0x5400_0040, 0x1400_0001],
+            "je_forward",
         );
-        assert_eq!(
-            translator.translate(0xB000, &[0x74, 0xFE]),
-            Some(words_to_le_bytes(&[0x5400_0000, 0x1400_0001]))
-        );
-        assert_eq!(
+        {
+            // Self-loop: the b.eq back-branch offset spans the NZCV restore
+            // prefix, so pin the structure instead of the exact offset.
+            let translated = translator
+                .translate(0xB000, &[0x74, 0xFE])
+                .expect("je_self");
+            assert!(
+                translated.ends_with(&words_to_le_bytes(&[0x1400_0001])),
+                "je_self fallthrough tail"
+            );
+            let n = translated.len();
+            let beq = u32::from_le_bytes(translated[n - 8..n - 4].try_into().unwrap());
+            assert_eq!(beq & 0xFF00_000F, 0x5400_0000, "je_self b.eq opcode");
+            assert_ne!(beq & 0x0080_0000, 0, "je_self branches backwards");
+        }
+        assert_tail(
             translator.translate(0xB000, &[0x0F, 0x84, 0x02, 0x00, 0x00, 0x00]),
-            Some(words_to_le_bytes(&[0x5400_0040, 0x1400_0001]))
+            &[0x5400_0040, 0x1400_0001],
+            "je_near_forward",
         );
-        assert_eq!(
-            translator.translate(0xB000, &[0x48, 0x39, 0xC8, 0x74, 0x02]),
-            Some(words_to_le_bytes(&[
-                0xF940_0769,
-                0xF940_036A,
-                0xEB09_015F,
-                0x5400_0040,
-                0x1400_0001,
-            ]))
-        );
-        assert_eq!(
-            translator.translate(0xB000, &[0x48, 0x39, 0xC8]),
-            Some(words_to_le_bytes(&[0xF940_0769, 0xF940_036A, 0xEB09_015F]))
-        );
-        assert_eq!(
-            translator.translate(0xB000, &[0x48, 0x0F, 0x44, 0xC1]),
-            Some(words_to_le_bytes(&[
-                ldr_x_unsigned(9, 27, 0),
-                ldr_x_unsigned(10, 27, 8),
-                b_cond(prisma_ir::CondCode::Eq, 12),
-                mov_x(11, 9),
-                b(8),
-                mov_x(11, 10),
-                str_x_unsigned(11, 27, 0),
-            ]))
-        );
-        assert_eq!(
-            translator.translate(0xB000, &[0x0F, 0x94, 0xC0]),
-            Some(words_to_le_bytes(&[
-                movz_x(9, 1, 0),
-                movz_x(10, 0, 0),
-                b_cond(prisma_ir::CondCode::Eq, 12),
-                mov_x(11, 10),
-                b(8),
-                mov_x(11, 9),
-                strb_unsigned(11, 27, 0),
-            ]))
-        );
-        assert_eq!(
+        {
+            // CMP publishes persistent RFLAGS and the following JE restores
+            // NZCV; pin the loads, the subs, and the branch tail.
+            let translated = translator
+                .translate(0xB000, &[0x48, 0x39, 0xC8, 0x74, 0x02])
+                .expect("cmp_then_je");
+            assert!(
+                translated.starts_with(&words_to_le_bytes(&[0xF940_0769, 0xF940_036A])),
+                "cmp_then_je loads"
+            );
+            assert!(contains_word(&translated, 0xEB09_015F), "cmp_then_je subs");
+            assert!(
+                translated.ends_with(&words_to_le_bytes(&[0x5400_0040, 0x1400_0001])),
+                "cmp_then_je branch tail"
+            );
+        }
+        {
+            let translated = translator
+                .translate(0xB000, &[0x48, 0x39, 0xC8])
+                .expect("cmp_rax_rcx");
+            assert!(
+                translated.starts_with(&words_to_le_bytes(&[0xF940_0769, 0xF940_036A])),
+                "cmp_rax_rcx loads"
+            );
+            assert!(contains_word(&translated, 0xEB09_015F), "cmp_rax_rcx subs");
+        }
+        // Block-entry flag readers (CMOVcc/SETcc) restore NZCV from the
+        // persistent RFLAGS between the operand loads and the select body;
+        // pin the loads as prefix and the select body as tail.
+        {
+            let translated = translator
+                .translate(0xB000, &[0x48, 0x0F, 0x44, 0xC1])
+                .expect("cmovz_rax_rcx");
+            assert!(
+                translated.starts_with(&words_to_le_bytes(&[
+                    ldr_x_unsigned(9, 27, 0),
+                    ldr_x_unsigned(10, 27, 8),
+                ])),
+                "cmovz_rax_rcx loads"
+            );
+            assert!(
+                translated.ends_with(&words_to_le_bytes(&[
+                    b_cond(prisma_ir::CondCode::Eq, 12),
+                    mov_x(11, 9),
+                    b(8),
+                    mov_x(11, 10),
+                    str_x_unsigned(11, 27, 0),
+                ])),
+                "cmovz_rax_rcx select tail"
+            );
+        }
+        {
+            let translated = translator
+                .translate(0xB000, &[0x0F, 0x94, 0xC0])
+                .expect("setz_al");
+            assert!(
+                translated.starts_with(&words_to_le_bytes(&[movz_x(9, 1, 0), movz_x(10, 0, 0),])),
+                "setz_al constants"
+            );
+            assert!(
+                translated.ends_with(&words_to_le_bytes(&[
+                    b_cond(prisma_ir::CondCode::Eq, 12),
+                    mov_x(11, 10),
+                    b(8),
+                    mov_x(11, 9),
+                    strb_unsigned(11, 27, 0),
+                ])),
+                "setz_al select tail"
+            );
+        }
+        assert_prefix(
             translator.translate(0xB000, &[0xF3, 0x48, 0x0F, 0xBD, 0xC1]),
-            Some(words_to_le_bytes(&[
+            &[
                 ldr_x_unsigned(9, 27, 8),
                 clz_x(10, 9),
                 str_x_unsigned(10, 27, 0),
@@ -862,11 +939,12 @@ mod tests {
                 lsl_x(18, 18, 19),
                 orr_x(17, 17, 18),
                 msr_nzcv(17),
-            ]))
+            ],
+            "lzcnt_rax_rcx",
         );
-        assert_eq!(
+        assert_prefix(
             translator.translate(0xB000, &[0xF3, 0x48, 0x0F, 0xBC, 0xC1]),
-            Some(words_to_le_bytes(&[
+            &[
                 ldr_x_unsigned(9, 27, 8),
                 rbit_x(10, 9),
                 clz_x(10, 10),
@@ -881,11 +959,12 @@ mod tests {
                 lsl_x(18, 18, 19),
                 orr_x(17, 17, 18),
                 msr_nzcv(17),
-            ]))
+            ],
+            "tzcnt_rax_rcx",
         );
-        assert_eq!(
+        assert_prefix(
             translator.translate(0xB000, &[0xF3, 0x48, 0x0F, 0xB8, 0xC1]),
-            Some(words_to_le_bytes(&[
+            &[
                 ldr_x_unsigned(9, 27, 8),
                 mov_x(10, 9),
                 movz_x(19, 1, 0),
@@ -926,7 +1005,8 @@ mod tests {
                 movz_x(19, 30, 0),
                 lsl_x(17, 17, 19),
                 msr_nzcv(17),
-            ]))
+            ],
+            "popcnt_rax_rcx",
         );
         assert_eq!(
             translator.translate(0xB000, &[0x48, 0x0F, 0xC8]),
@@ -960,7 +1040,7 @@ mod tests {
             Some(words_to_le_bytes(&[
                 ldr_x_unsigned(9, 27, 0),
                 // guest VA rebased to host: ldr mem_base; add x24, addr, mem_base.
-                ldr_x_unsigned(24, 27, 832),
+                ldr_x_unsigned(24, 27, 840),
                 add_x(24, 9, 24),
                 ldr_w_unsigned(10, 24, 0),
                 rev_w(11, 10),
@@ -975,54 +1055,50 @@ mod tests {
                 ldr_x_unsigned(9, 27, 0),
                 ldr_w_unsigned(10, 27, 8),
                 rev_w(11, 10),
-                ldr_x_unsigned(24, 27, 832),
+                ldr_x_unsigned(24, 27, 840),
                 add_x(24, 9, 24),
                 str_w_unsigned(11, 24, 0),
             ]))
         );
-        assert_eq!(
+        // Narrow CMP now also publishes persistent RFLAGS; pin the operand
+        // loads as prefix and the shifted-compare core as a contiguous
+        // subsequence.
+        let contains_seq = |translated: &[u8], words: &[u32]| {
+            let seq = words_to_le_bytes(words);
+            translated.windows(seq.len()).any(|w| w == seq.as_slice())
+        };
+        let assert_narrow_cmp =
+            |translated: Option<Vec<u8>>, loads: &[u32], core: &[u32], name: &str| {
+                let translated = translated.expect(name);
+                assert!(
+                    translated.starts_with(&words_to_le_bytes(loads)),
+                    "{name} loads"
+                );
+                assert!(contains_seq(&translated, core), "{name} shifted compare");
+            };
+        assert_narrow_cmp(
             translator.translate(0xB000, &[0x83, 0xF8, 0x10]),
-            Some(words_to_le_bytes(&[
-                0xD280_0209,
-                0xB940_036A,
-                0xD280_0413,
-                0x9AD3_2151,
-                0x9AD3_2132,
-                0xEB12_023F,
-            ]))
+            &[0xD280_0209, 0xB940_036A],
+            &[0xD280_0413, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            "cmp_eax_imm8",
         );
-        assert_eq!(
+        assert_narrow_cmp(
             translator.translate(0xB000, &[0x66, 0x83, 0xF8, 0x10]),
-            Some(words_to_le_bytes(&[
-                0xD280_0209,
-                0x7940_036A,
-                0xD280_0613,
-                0x9AD3_2151,
-                0x9AD3_2132,
-                0xEB12_023F,
-            ]))
+            &[0xD280_0209, 0x7940_036A],
+            &[0xD280_0613, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            "cmp_ax_imm8",
         );
-        assert_eq!(
+        assert_narrow_cmp(
             translator.translate(0xB000, &[0x83, 0xFB, 0x10]),
-            Some(words_to_le_bytes(&[
-                0xD280_0209,
-                0xB940_1B6A,
-                0xD280_0413,
-                0x9AD3_2151,
-                0x9AD3_2132,
-                0xEB12_023F,
-            ]))
+            &[0xD280_0209, 0xB940_1B6A],
+            &[0xD280_0413, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            "cmp_ebx_imm8",
         );
-        assert_eq!(
+        assert_narrow_cmp(
             translator.translate(0xB000, &[0x66, 0x83, 0xFB, 0x10]),
-            Some(words_to_le_bytes(&[
-                0xD280_0209,
-                0x7940_336A,
-                0xD280_0613,
-                0x9AD3_2151,
-                0x9AD3_2132,
-                0xEB12_023F,
-            ]))
+            &[0xD280_0209, 0x7940_336A],
+            &[0xD280_0613, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            "cmp_bx_imm8",
         );
         assert_eq!(
             translator.translate(0xB000, &[0xEB, 0x00]),

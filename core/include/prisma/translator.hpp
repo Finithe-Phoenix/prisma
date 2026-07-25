@@ -49,17 +49,22 @@ enum class TranslateError {
     JitAllocFailed,      // could not allocate a JitBuffer.
 };
 
-enum class BlockExitKind {
-    None,
-    Return,
-    JumpRel,
-    JumpReg,
-    CondJumpRel,
-    CallRel,
-    CallReg,
-    RetAdjusted,
-    RepStos,
-    RepMovs,
+// Values 0..9 are ABI-stable and intentionally match
+// prisma_block_exit_kind in capi.h (C API version 3). Syscall is an
+// internal additive value for now; older C/Rust consumers represent 10
+// as their documented Unknown value until the next deliberate ABI bump.
+enum class BlockExitKind : std::int32_t {
+    None = 0,
+    Return = 1,
+    JumpRel = 2,
+    JumpReg = 3,
+    CondJumpRel = 4,
+    CallRel = 5,
+    CallReg = 6,
+    RetAdjusted = 7,
+    RepStos = 8,
+    RepMovs = 9,
+    Syscall = 10,
 };
 
 struct TranslatedBlock {

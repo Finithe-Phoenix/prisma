@@ -22,64 +22,106 @@ namespace prisma::ir {
 // ---------------------------------------------------------------------------
 
 enum class Gpr : std::uint8_t {
-    Rax = 0, Rcx, Rdx, Rbx,
-    Rsp,     Rbp, Rsi, Rdi,
-    R8,      R9,  R10, R11,
-    R12,     R13, R14, R15,
+  Rax = 0,
+  Rcx,
+  Rdx,
+  Rbx,
+  Rsp,
+  Rbp,
+  Rsi,
+  Rdi,
+  R8,
+  R9,
+  R10,
+  R11,
+  R12,
+  R13,
+  R14,
+  R15,
 };
 
 constexpr std::size_t kGprCount = 16;
 
 enum class OpSize : std::uint8_t {
-    I8  = 0,
-    I16 = 1,
-    I32 = 2,
-    I64 = 3,
+  I8 = 0,
+  I16 = 1,
+  I32 = 2,
+  I64 = 3,
 };
 
 // Width of an operand size in bits.
 [[nodiscard]] constexpr std::uint32_t bit_width(OpSize s) noexcept {
-    switch (s) {
-        case OpSize::I8:  return 8;
-        case OpSize::I16: return 16;
-        case OpSize::I32: return 32;
-        case OpSize::I64: return 64;
-    }
-    return 0;  // unreachable; compiler should warn if a case is added.
+  switch (s) {
+    case OpSize::I8:
+      return 8;
+    case OpSize::I16:
+      return 16;
+    case OpSize::I32:
+      return 32;
+    case OpSize::I64:
+      return 64;
+  }
+  return 0;  // unreachable; compiler should warn if a case is added.
 }
 
 // Mask a 64-bit value to the given size.
 [[nodiscard]] constexpr std::uint64_t mask_to_size(std::uint64_t v, OpSize s) noexcept {
-    switch (s) {
-        case OpSize::I8:  return v & 0xFFULL;
-        case OpSize::I16: return v & 0xFFFFULL;
-        case OpSize::I32: return v & 0xFFFF'FFFFULL;
-        case OpSize::I64: return v;
-    }
-    return v;
+  switch (s) {
+    case OpSize::I8:
+      return v & 0xFFULL;
+    case OpSize::I16:
+      return v & 0xFFFFULL;
+    case OpSize::I32:
+      return v & 0xFFFF'FFFFULL;
+    case OpSize::I64:
+      return v;
+  }
+  return v;
 }
 
 enum class BinOpKind : std::uint8_t {
-    Add = 0, Sub, Mul,
-    And,     Or,  Xor,
-    Shl,     Shr, Sar,
-    Rol,     Ror,
-    Rcl,     Rcr,
-    UMulHi,  SMulHi,    // F2-BK-007 — high half of unsigned/signed
-                        //              N×N multiply (for x86 MUL/IMUL
-                        //              writeback to rdx).
-    UDiv,    SDiv,      // F2-BK-007 — quotient (rax for x86 DIV/IDIV).
-    UMod,    SMod,      // F2-BK-007 — remainder (rdx for x86 DIV/IDIV).
-    Pdep,    Pext,      // BMI2 bit deposit/extract software-lowered ops.
+  Add = 0,
+  Sub,
+  Mul,
+  And,
+  Or,
+  Xor,
+  Shl,
+  Shr,
+  Sar,
+  Rol,
+  Ror,
+  Rcl,
+  Rcr,
+  UMulHi,
+  SMulHi,  // F2-BK-007 — high half of unsigned/signed
+           //              N×N multiply (for x86 MUL/IMUL
+           //              writeback to rdx).
+  UDiv,
+  SDiv,  // F2-BK-007 — quotient (rax for x86 DIV/IDIV).
+  UMod,
+  SMod,  // F2-BK-007 — remainder (rdx for x86 DIV/IDIV).
+  Pdep,
+  Pext,  // BMI2 bit deposit/extract software-lowered ops.
 };
 
 enum class CondCode : std::uint8_t {
-    Eq = 0, Ne,
-    Ult,    Ule, Ugt, Uge,  // unsigned
-    Slt,    Sle, Sgt, Sge,  // signed
-    Cc,    Nc,              // carry clear / carry set pair
-    Ov,   NoOv,             // overflow set / overflow clear pair
-    Mi,   Pl,               // sign-set / sign-clear pair
+  Eq = 0,
+  Ne,
+  Ult,
+  Ule,
+  Ugt,
+  Uge,  // unsigned
+  Slt,
+  Sle,
+  Sgt,
+  Sge,  // signed
+  Cc,
+  Nc,  // carry clear / carry set pair
+  Ov,
+  NoOv,  // overflow set / overflow clear pair
+  Mi,
+  Pl,  // sign-set / sign-clear pair
 };
 
 // ---------------------------------------------------------------------------
@@ -105,46 +147,162 @@ inline constexpr Ref kInvalidRef = 0xFFFF'FFFFu;
 // the Lean spec. We use std::variant so a `Stmt` owns its Op by value, which
 // keeps data-flow analysis cache-friendly.
 
-struct Constant { std::uint64_t value; OpSize size; };
+struct Constant {
+  std::uint64_t value;
+  OpSize size;
+};
 
-struct LoadReg  { Gpr reg; OpSize size; };
-struct StoreReg { Gpr reg; Ref value; OpSize size; };
+struct LoadReg {
+  Gpr reg;
+  OpSize size;
+};
+struct StoreReg {
+  Gpr reg;
+  Ref value;
+  OpSize size;
+};
 
 // Segment registers. x86-64 ignores the base of CS/DS/ES/SS for normal
 // data accesses, but FS and GS still carry meaningful TLS pointers
 // (Win64 stores TEB at GS:[0x30], Linux glibc stores TLS at FS).
 enum class SegmentReg : std::uint8_t {
-    Es = 0, Cs, Ss, Ds, Fs, Gs,
+  Es = 0,
+  Cs,
+  Ss,
+  Ds,
+  Fs,
+  Gs,
 };
 
 // Yields the 64-bit base address of the named segment as an SSA value.
 // Pure: DCE-eligible. Lowering reads the base from a runtime-supplied
 // table so changing the TEB pointer at run time only requires updating
 // that table, not invalidating cached translations.
-struct LoadSegBase { SegmentReg seg; };
+struct LoadSegBase {
+  SegmentReg seg;
+};
 
-struct BinOp    { BinOpKind op; Ref lhs; Ref rhs; OpSize size; };
+// Persistent carry flag access. This is separate from the existing
+// SSA/NZCV flags model so ADC/SBB/RCL/RCR-style chains can survive
+// across instructions without pretending all RFLAGS are implemented.
+enum class RflagsCarryMode : std::uint8_t {
+  ArmCarry = 0,
+  InvertArmCarry,
+  Clear,
+  Preserve,
+};
 
-struct Compare  { CondCode cc; Ref lhs; Ref rhs; OpSize size; };
+struct LoadCarry {};
+struct StoreCarry {
+  Ref value;
+};
+struct LoadRflags {};
+struct StoreRflags {
+  Ref value;
+};
+struct StoreRflagsFromNzcv {
+  RflagsCarryMode carry;
+  std::optional<Ref> pf;
+  std::optional<Ref> af;
+};
+struct StoreRflagsFromBits {
+  std::optional<Ref> pf;
+  std::optional<Ref> af;
+  Ref zf;
+  Ref sf;
+  Ref of;
+};
+
+struct BinOp {
+  BinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  OpSize size;
+};
+
+enum class WideDivResult : std::uint8_t {
+  Quotient = 0,
+  Remainder,
+};
+
+struct WideDiv {
+  Ref high;
+  Ref low;
+  Ref divisor;
+  bool is_signed;
+  WideDivResult result;
+};
+
+struct Compare {
+  CondCode cc;
+  Ref lhs;
+  Ref rhs;
+  OpSize size;
+};
 
 // Conditional select (ternary): `result = (cond ? true_value : false_value)`.
 // This is useful for CMOVcc / SETcc lowering in the current MVP slice and
 // maps cleanly to ARM64 `csel`.
 struct Select {
-    CondCode cc;
-    Ref true_value;
-    Ref false_value;
-    OpSize size;
+  CondCode cc;
+  Ref true_value;
+  Ref false_value;
+  OpSize size;
 };
 
-struct LoadMem     { Ref addr; OpSize size; };
-struct StoreMem    { Ref addr; Ref value; OpSize size; };
-struct LoadMemTSO  { Ref addr; OpSize size; };
-struct StoreMemTSO { Ref addr; Ref value; OpSize size; };
+struct LoadMem {
+  Ref addr;
+  OpSize size;
+};
+struct StoreMem {
+  Ref addr;
+  Ref value;
+  OpSize size;
+};
+struct LoadMemTSO {
+  Ref addr;
+  OpSize size;
+};
+struct StoreMemTSO {
+  Ref addr;
+  Ref value;
+  OpSize size;
+};
 
-struct Jump     { std::uint32_t target_block; };
-struct CondJump { Ref cond; std::uint32_t if_true; std::uint32_t if_false; };
-struct Return   {};
+// Atomic compare-exchange used by memory CMPXCHG and CMPXCHG8B.
+//
+// The statement result is the old memory value. The memory destination is
+// updated to `new_value` only when the old value equals `expected`.
+struct AtomicCmpxchg {
+  Ref addr;
+  Ref expected;
+  Ref new_value;
+  OpSize size;
+};
+
+// Atomic 128-bit compare-exchange pair used by CMPXCHG16B.
+//
+// The statement result carries the low 64 bits of the old memory value.
+// `old_high` is a second SSA definition carrying the high 64 bits. Operand
+// walkers must treat `old_high` as a definition, not as a read operand.
+struct AtomicCmpxchgPair {
+  Ref addr;
+  Ref expected_low;
+  Ref expected_high;
+  Ref new_low;
+  Ref new_high;
+  Ref old_high;
+};
+
+struct Jump {
+  std::uint32_t target_block;
+};
+struct CondJump {
+  Ref cond;
+  std::uint32_t if_true;
+  std::uint32_t if_false;
+};
+struct Return {};
 
 // ---- Guest-PC-based control flow (MVP, no basic-block index yet) -------
 //
@@ -161,30 +319,30 @@ struct Return   {};
 // (Fase 1+) uses that value to resume translation at the next PC.
 
 struct CmpFlags {
-    Ref   lhs;
-    Ref   rhs;
-    OpSize size;
+  Ref lhs;
+  Ref rhs;
+  OpSize size;
 };
 
 struct AluFlags {
-    BinOpKind op;
-    Ref       lhs;
-    Ref       rhs;
-    OpSize    size;
+  BinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  OpSize size;
 };
 
 struct JumpReg {
-    Ref target;
+  Ref target;
 };
 
 struct JumpRel {
-    std::uint64_t target_guest_pc;
+  std::uint64_t target_guest_pc;
 };
 
 struct CondJumpRel {
-    CondCode      cc;
-    std::uint64_t target_guest_pc;
-    std::uint64_t fallthrough_guest_pc;
+  CondCode cc;
+  std::uint64_t target_guest_pc;
+  std::uint64_t fallthrough_guest_pc;
 };
 
 // ---- Calls and returns -------------------------------------------------
@@ -203,17 +361,17 @@ struct CondJumpRel {
 // without losing any guest information.
 
 struct CallRel {
-    std::uint64_t target_guest_pc;
-    std::uint64_t return_guest_pc;
+  std::uint64_t target_guest_pc;
+  std::uint64_t return_guest_pc;
 };
 
 struct CallReg {
-    Ref           target;
-    std::uint64_t return_guest_pc;
+  Ref target;
+  std::uint64_t return_guest_pc;
 };
 
 struct RetAdjusted {
-    std::uint64_t pop_bytes;  // extra bytes popped after the return address.
+  std::uint64_t pop_bytes;  // extra bytes popped after the return address.
 };
 
 // ---- Architectural placeholders ---------------------------------------
@@ -224,15 +382,17 @@ struct RetAdjusted {
 // lowerer can swap to real semantics later without changing decoder
 // output. See `core/src/backend/lowering.cpp` for the current shapes.
 
-struct Cpuid   {};
-struct Syscall {};
+struct Cpuid {};
+struct Syscall {
+  std::uint64_t next_pc{0};
+};
 
 // XGETBV (NP 0F 01 D0) — reads the extended control register selected
 // by ECX into EDX:EAX. The lowering bakes XCR0 at translation time
 // (LowerOptions::xgetbv_xcr0); ECX != 0 returns zeros as a placeholder
 // (hardware raises #GP). Together with CPUID.1:ECX.OSXSAVE this is
 // the canonical guest gate for AVX/FMA usage.
-struct Xgetbv  {};
+struct Xgetbv {};
 
 // RDTSC time source — produces the current 64-bit counter value as an
 // SSA result; the decoder splits it into the architectural EDX:EAX
@@ -241,7 +401,7 @@ struct Xgetbv  {};
 // calibration loops measure ratios, so any monotonic source works.
 // NOT pure: two reads must stay two reads (CSE/DCE must never merge
 // or drop it; neither pass lists it as pure).
-struct Rdtsc   {};
+struct Rdtsc {};
 
 // ---- Width adjustment -------------------------------------------------
 //
@@ -261,15 +421,15 @@ struct Rdtsc   {};
 // participate in const folding (F1-PS-010, planned).
 
 struct Extend {
-    Ref    value;
-    OpSize from_size;
-    OpSize to_size;
-    bool   is_signed;
+  Ref value;
+  OpSize from_size;
+  OpSize to_size;
+  bool is_signed;
 };
 
 struct Truncate {
-    Ref    value;
-    OpSize to_size;
+  Ref value;
+  OpSize to_size;
 };
 
 // ---- Memory fences ----------------------------------------------------
@@ -280,13 +440,13 @@ struct Truncate {
 // model.
 
 enum class FenceKind : std::uint8_t {
-    Mfence = 0,  // full barrier   → DMB ISH
-    Lfence,      // load barrier   → DMB ISHLD
-    Sfence,      // store barrier  → DMB ISHST
+  Mfence = 0,  // full barrier   → DMB ISH
+  Lfence,      // load barrier   → DMB ISHLD
+  Sfence,      // store barrier  → DMB ISHST
 };
 
 struct Fence {
-    FenceKind kind;
+  FenceKind kind;
 };
 
 // ---- Diagnostics / cache keying --------------------------------------
@@ -302,7 +462,7 @@ struct Fence {
 // these in place but never duplicate them.
 
 struct GuestPc {
-    std::uint64_t pc;
+  std::uint64_t pc;
 };
 
 // ---- Flags (F1-IR-003 / F1-IR-004 / F1-IR-005 / F1-IR-007) -----------
@@ -329,28 +489,25 @@ struct GuestPc {
 // gives a SizeMismatch (pseudo-typed Flags ≠ regular I8/I16/...)
 // for any non-flag op that tries to consume a Flags ref.
 
-enum class FlagBit : std::uint8_t {
-    Carry = 0, Zero, Sign, Overflow, Parity, Aux
-};
+enum class FlagBit : std::uint8_t { Carry = 0, Zero, Sign, Overflow, Parity, Aux };
 
 struct WriteFlags {
-    BinOpKind op;
-    Ref       lhs;
-    Ref       rhs;
-    OpSize    size;
+  BinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  OpSize size;
 };
 
-
 struct ReadFlag {
-    Ref     flags;
-    FlagBit which;
+  Ref flags;
+  FlagBit which;
 };
 
 struct CondJumpFlags {
-    Ref           flags;
-    CondCode      cc;
-    std::uint32_t if_true;
-    std::uint32_t if_false;
+  Ref flags;
+  CondCode cc;
+  std::uint32_t if_true;
+  std::uint32_t if_false;
 };
 
 // ---- 128-bit SIMD (F2-IR-001 / F2-IR-002 / F2-IR-003) ----------------
@@ -371,36 +528,60 @@ struct CondJumpFlags {
 enum class VecLane : std::uint8_t { B16 = 0, H8, S4, D2 };
 
 enum class VecBinOpKind : std::uint8_t {
-    Add = 0, Sub,
-    And, Or, Xor,
-    Mul,            // F2-IR-013 — lane-wise integer multiply (PMULLW etc.)
-    SqAdd,          // F2-IR-023 — signed saturating add (PADDSB/W).
-    UqAdd,          //              unsigned saturating add (PADDUSB/W).
-    SqSub,          //              signed saturating sub  (PSUBSB/W).
-    UqSub,          //              unsigned saturating sub (PSUBUSB/W).
-    UMin,           // F2-IR-024 — lane-wise min/max (PMINUB/PMAXUB H8 versions).
-    UMax,
-    SMin,
-    SMax,
-    SMulHi,         // F2-IR-025 — high half of signed   16x16 multiply (PMULHW).
-    UMulHi,         //              high half of unsigned 16x16 multiply (PMULHUW).
-    UMul32To64,     // F2-IR-030 — PMULUDQ: bottom-of-each-S4-pair u32×u32 → 2 D2 lanes.
-    SadBw,          // F2-IR-031 — PSADBW: sum of |byte diffs| per 8-byte half → 2 D2 lanes.
-    PairAddInt,     // F2-IR-037 — pairwise add (PHADDW / PHADDD, SSSE3).
-    PairSubInt,     //              pairwise sub (PHSUBW / PHSUBD).
+  Add = 0,
+  Sub,
+  And,
+  Or,
+  Xor,
+  Mul,    // F2-IR-013 — lane-wise integer multiply (PMULLW etc.)
+  SqAdd,  // F2-IR-023 — signed saturating add (PADDSB/W).
+  UqAdd,  //              unsigned saturating add (PADDUSB/W).
+  SqSub,  //              signed saturating sub  (PSUBSB/W).
+  UqSub,  //              unsigned saturating sub (PSUBUSB/W).
+  UMin,   // F2-IR-024 — lane-wise min/max (PMINUB/PMAXUB H8 versions).
+  UMax,
+  SMin,
+  SMax,
+  SMulHi,      // F2-IR-025 — high half of signed   16x16 multiply (PMULHW).
+  UMulHi,      //              high half of unsigned 16x16 multiply (PMULHUW).
+  UMul32To64,  // F2-IR-030 — PMULUDQ: bottom-of-each-S4-pair u32×u32 → 2 D2 lanes.
+  SadBw,       // F2-IR-031 — PSADBW: sum of |byte diffs| per 8-byte half → 2 D2 lanes.
+  PairAddInt,  // F2-IR-037 — pairwise add (PHADDW / PHADDD, SSSE3).
+  PairSubInt,  //              pairwise sub (PHSUBW / PHSUBD).
 };
 
 struct VecConstant {
-    // 128-bit immediate, as two little-endian u64 lanes.
-    std::uint64_t lo;
-    std::uint64_t hi;
+  // 128-bit immediate, as two little-endian u64 lanes.
+  std::uint64_t lo;
+  std::uint64_t hi;
 };
 
 struct VecBinOp {
-    VecBinOpKind op;
-    Ref          lhs;
-    Ref          rhs;
-    VecLane      lane;   // ignored for And/Or/Xor — they're bitwise.
+  VecBinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  VecLane lane;  // ignored for And/Or/Xor — they're bitwise.
+};
+
+// W2-08 — PCLMULQDQ / VPCLMULQDQ carry-less 64x64->128 multiply.
+// `lhs_high` selects qword 1 of lhs when set, otherwise qword 0.
+// `rhs_high` selects qword 1 of rhs when set, otherwise qword 0.
+struct VecClMul {
+  Ref lhs;
+  Ref rhs;
+  bool lhs_high;
+  bool rhs_high;
+};
+
+// W2-09 - F16C packed half/single conversions. PhToPs converts four
+// half-precision lanes from src[63:0] to four f32 lanes. PsToPh converts four
+// f32 lanes to half-precision bits in result[63:0]; result[127:64] is zero.
+enum class VecF16CvtKind : std::uint8_t { PhToPs = 0, PsToPh };
+
+struct VecF16Cvt {
+  VecF16CvtKind kind;
+  Ref src;
+  std::uint8_t rounding;  // VCVTPS2PH imm8; ignored by PhToPs.
 };
 
 // SSE2 register file: 16 × 128-bit XMM registers, mapped onto the
@@ -410,23 +591,64 @@ struct VecBinOp {
 // / vst1.16b reads/writes against the state pointer + offset table.
 inline constexpr std::size_t kXmmCount = 16;
 
-struct LoadVecReg  { std::uint8_t xmm_index; };  // 0..15
-struct StoreVecReg { std::uint8_t xmm_index; Ref value; };  // 0..15
+struct LoadVecReg {
+  std::uint8_t xmm_index;
+};  // 0..15
+struct StoreVecReg {
+  std::uint8_t xmm_index;
+  Ref value;
+};  // 0..15
 
 // F2-IR-005 — AVX-256 high-lane access. The low 128 bits of YMMn
 // live in xmm[n]; LoadVecRegHi/StoreVecRegHi address the upper
 // 128 bits in CpuStateFrame::ymm_hi[]. Decoder emits these *in
 // addition to* the low-lane LoadVecReg/StoreVecReg pair when
 // VEX.L=1 — i.e. each AVX-256 op materialises as two IR triplets.
-struct LoadVecRegHi  { std::uint8_t ymm_index; };  // 0..15
-struct StoreVecRegHi { std::uint8_t ymm_index; Ref value; };  // 0..15
+struct LoadVecRegHi {
+  std::uint8_t ymm_index;
+};  // 0..15
+struct StoreVecRegHi {
+  std::uint8_t ymm_index;
+  Ref value;
+};  // 0..15
 
 // F2-IR-007 — 128-bit memory load/store for SSE memory operands.
 // `addr` is a 64-bit guest virtual address (already computed via the
 // usual ModR/M EA Ref chain). Produces / consumes a 128-bit value in
 // the same Ref namespace as LoadVecReg.
-struct LoadVec  { Ref addr; };
-struct StoreVec { Ref addr; Ref value; };
+struct LoadVec {
+  Ref addr;
+};
+struct StoreVec {
+  Ref addr;
+  Ref value;
+};
+
+// W2-06 — SSE4.2 PCMPxSTRx string comparison primitives.
+// `lhs` and `rhs` are 128-bit XMM-shaped refs. Explicit-length PCMPESTR*
+// forms pass EAX/EDX refs through lhs_len/rhs_len; implicit PCMPISTR* forms
+// leave both empty and derive lengths from the first NUL lane.
+struct PcmpStrIndex {
+  Ref lhs;
+  Ref rhs;
+  std::optional<Ref> lhs_len;
+  std::optional<Ref> rhs_len;
+  std::uint8_t imm8;
+};
+struct PcmpStrMask {
+  Ref lhs;
+  Ref rhs;
+  std::optional<Ref> lhs_len;
+  std::optional<Ref> rhs_len;
+  std::uint8_t imm8;
+};
+struct PcmpStrFlags {
+  Ref lhs;
+  Ref rhs;
+  std::optional<Ref> lhs_len;
+  std::optional<Ref> rhs_len;
+  std::uint8_t imm8;
+};
 
 // F2-IR-008 — GPR ↔ XMM transfers (MOVD/MOVQ family).
 //   XmmFromGpr{value, size}: produces a 128-bit value with the low
@@ -435,8 +657,14 @@ struct StoreVec { Ref addr; Ref value; };
 //   GprFromXmm{value, size}: extracts the low `size` bits of an
 //     128-bit Ref into a GPR-shaped Ref. For I32 the upper 32 bits
 //     are zero-extended.
-struct XmmFromGpr { Ref value; OpSize size; };
-struct GprFromXmm { Ref value; OpSize size; };
+struct XmmFromGpr {
+  Ref value;
+  OpSize size;
+};
+struct GprFromXmm {
+  Ref value;
+  OpSize size;
+};
 
 // F2-IR-009 — packed integer comparisons, lane-wise.
 //   Eq  → all-1s where lanes equal, else 0.
@@ -445,27 +673,27 @@ struct GprFromXmm { Ref value; OpSize size; };
 // supported (matches the SSE2 ISA: no PCMPEQQ/PCMPGTQ until SSE4.1).
 enum class VecCmpKind : std::uint8_t { Eq = 0, Gt };
 struct VecCmp {
-    VecCmpKind kind;
-    Ref        lhs;
-    Ref        rhs;
-    VecLane    lane;  // B16, H8, or S4
+  VecCmpKind kind;
+  Ref lhs;
+  Ref rhs;
+  VecLane lane;  // B16, H8, or S4
 };
 
 // F2-IR-010 — PSHUFD xmm1, xmm2, imm8. Permutes the 4 32-bit lanes of
 // `src` according to `control`: result lane i = src lane ((control >>
 // (2*i)) & 3). Pure 4-way 32-bit shuffle.
 struct VecShuffle32x4 {
-    Ref          src;
-    std::uint8_t control;
+  Ref src;
+  std::uint8_t control;
 };
 
 // F2-IR-028 — PSHUFLW / PSHUFHW (4-way 16-bit lane shuffle of one half).
 //   !is_high: result.h[0..3] = src.h[ctrl_lane(i)], h[4..7] passthrough.
 //   is_high : result.h[4..7] = src.h[4+ctrl_lane(i)], h[0..3] passthrough.
 struct VecShuffleH4 {
-    bool         is_high;
-    Ref          src;
-    std::uint8_t control;
+  bool is_high;
+  Ref src;
+  std::uint8_t control;
 };
 
 // F2-IR-020 — SHUFPS / SHUFPD (two-source FP shuffle).
@@ -475,10 +703,10 @@ struct VecShuffleH4 {
 //           result lane 1 from rhs (control[1] picks lane 0/1).
 // `is_pd` selects the D2 (SHUFPD) form; otherwise S4 (SHUFPS).
 struct VecShuffle2Src {
-    bool         is_pd;
-    Ref          lhs;
-    Ref          rhs;
-    std::uint8_t control;
+  bool is_pd;
+  Ref lhs;
+  Ref rhs;
+  std::uint8_t control;
 };
 
 // F2-IR-022 — single-lane insert/extract.
@@ -489,28 +717,28 @@ struct VecShuffle2Src {
 //   VecExtractLaneU{src_xmm, lane_idx, lane} — extracts the lane
 //     into a GPR (zero-extended). Models PEXTRW.
 struct VecInsertLane {
-    Ref          lhs_xmm;
-    Ref          value;
-    std::uint8_t lane_idx;
-    VecLane      lane;
+  Ref lhs_xmm;
+  Ref value;
+  std::uint8_t lane_idx;
+  VecLane lane;
 };
 struct VecExtractLaneU {
-    Ref          src_xmm;
-    std::uint8_t lane_idx;
-    VecLane      lane;
+  Ref src_xmm;
+  std::uint8_t lane_idx;
+  VecLane lane;
 };
 
 // F2-IR-027 — PMOVMSKB. Extract MSB of each of the 16 bytes of an
 // xmm into bits [0..15] of a GPR (zero-extended to 32-bit width).
 struct VecMaskMsb {
-    Ref src_xmm;
+  Ref src_xmm;
 };
 
 // F2-IR-029 — MOVMSKPS (4 S4 sign bits → bits 0..3 of GPR) and
 // MOVMSKPD (2 D2 sign bits → bits 0..1 of GPR). is_pd selects D2.
 struct VecMaskFp {
-    Ref  src_xmm;
-    bool is_pd;
+  Ref src_xmm;
+  bool is_pd;
 };
 
 // F2-IR-036 — SSSE3.
@@ -518,16 +746,22 @@ struct VecMaskFp {
 //           `mask`. If mask.b[i] has its MSB set, result.b[i] = 0;
 //           otherwise result.b[i] = src.b[mask.b[i] & 0x0F].
 //   VecAbs: lane-wise signed absolute value (PABSB / PABSW / PABSD).
-struct VecPshufb { Ref src; Ref mask; };
-struct VecAbs    { Ref src; VecLane lane; };
+struct VecPshufb {
+  Ref src;
+  Ref mask;
+};
+struct VecAbs {
+  Ref src;
+  VecLane lane;
+};
 
 // F2-IR-038 — PALIGNR (SSSE3). Concat (lhs || rhs) as 32 bytes, shift
 // right by `count` bytes, return the low 16 bytes as a 128-bit result.
 // `count` >= 32 yields zero. Maps to NEON `ext` for count <= 16.
 struct VecAlignr {
-    Ref          lhs;
-    Ref          rhs;
-    std::uint8_t count;
+  Ref lhs;
+  Ref rhs;
+  std::uint8_t count;
 };
 
 // F2-IR-041 — PMOVZX/PMOVSX widening converts (SSE4.1).
@@ -536,10 +770,10 @@ struct VecAlignr {
 // is the result lane (H8/S4/D2). Number of result lanes determined by
 // the ratio (always: 16 / wide_bytes).
 struct VecExtend {
-    Ref     src;
-    VecLane narrow_lane;
-    VecLane wide_lane;
-    bool    is_signed;
+  Ref src;
+  VecLane narrow_lane;
+  VecLane wide_lane;
+  bool is_signed;
 };
 
 // F2-IR-011 — UNPCKL*/UNPCKH* (interleave low/high). Lane-wise pair
@@ -547,10 +781,10 @@ struct VecExtend {
 // each, high form takes the top n/2. Lanes B16, H8, S4 or D2 select
 // PUNPCK*BW / *WD / *DQ / *QDQ. Maps to NEON zip1 / zip2.
 struct VecUnpack {
-    bool    is_high;
-    Ref     lhs;
-    Ref     rhs;
-    VecLane lane;
+  bool is_high;
+  Ref lhs;
+  Ref rhs;
+  VecLane lane;
 };
 
 // F2-IR-012 — per-lane shift by immediate. Models PSLLW/D/Q (Shl),
@@ -558,43 +792,46 @@ struct VecUnpack {
 // `count` is the SSE shift amount in bits; counts >= lane width
 // saturate to lane width (PSRA semantics differ — see lowerer).
 enum class VecShiftKind : std::uint8_t {
-    ShiftL = 0,         // PSLLW/D/Q
-    LogicalShr,         // PSRLW/D/Q
-    ArithShr,           // PSRAW/D
+  ShiftL = 0,  // PSLLW/D/Q
+  LogicalShr,  // PSRLW/D/Q
+  ArithShr,    // PSRAW/D
 };
 struct VecShiftImm {
-    VecShiftKind kind;
-    Ref          src;
-    std::uint8_t count;
-    VecLane      lane;
+  VecShiftKind kind;
+  Ref src;
+  std::uint8_t count;
+  VecLane lane;
 };
 
 // F2-IR-014 — whole-register byte shift (PSLLDQ / PSRLDQ).
 // Shifts the entire 128-bit value left or right by `count` bytes.
 // `count` >= 16 yields zero.
 struct VecShiftBytes {
-    bool         is_left;
-    Ref          src;
-    std::uint8_t count;
+  bool is_left;
+  Ref src;
+  std::uint8_t count;
 };
-
 
 // F2-IR-005 — packed-FP binop. Single (S4 = 4×f32) and double
 // (D2 = 2×f64) precision packed arithmetic, covering the SSE/SSE2
 // hot path: ADDPS/SUBPS/MULPS/DIVPS and ADDPD/SUBPD/MULPD/DIVPD.
 enum class VecFpBinOpKind : std::uint8_t {
-    Add = 0, Sub, Mul, Div,
-    Min, Max,
-    Sqrt,            // F2-IR-019 — unary; uses rhs only (lhs supplies upper bits in scalar form).
-    HAdd,            // F2-IR-032 — pairwise add (SSE3 HADDPS/HADDPD).
+  Add = 0,
+  Sub,
+  Mul,
+  Div,
+  Min,
+  Max,
+  Sqrt,  // F2-IR-019 — unary; uses rhs only (lhs supplies upper bits in scalar form).
+  HAdd,  // F2-IR-032 — pairwise add (SSE3 HADDPS/HADDPD).
 };
 enum class VecFpSize : std::uint8_t { S4 = 0, D2 };
 
 struct VecFpBinOp {
-    VecFpBinOpKind op;
-    Ref            lhs;
-    Ref            rhs;
-    VecFpSize      size;
+  VecFpBinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  VecFpSize size;
 };
 
 // F2-IR-006 — fused multiply-add (FMA3). Single fused rounding step,
@@ -610,12 +847,12 @@ struct VecFpBinOp {
 // pipeline must NOT lower a separate Mul + Add into FMLA — fused vs
 // decomposed differ in ULP.
 struct VecFpFma {
-    Ref          a;
-    Ref          b;
-    Ref          c;
-    bool         neg_addend;
-    bool         neg_mul;
-    VecFpSize    size;
+  Ref a;
+  Ref b;
+  Ref c;
+  bool neg_addend;
+  bool neg_mul;
+  VecFpSize size;
 };
 
 // (VecFpScalarFma — moved below FpSize declaration.)
@@ -657,10 +894,10 @@ inline constexpr std::uint64_t kRepMaxBytesPerCall = 16ull << 20;  // 16 MiB
 // semantics: the guest IP only advances past REP when RCX reaches
 // zero.
 struct RepStos {
-    OpSize        size;
-    bool          reverse;
-    std::uint64_t pc_of_rep;       // PC of the REP STOSB instruction
-    std::uint64_t pc_after_rep;    // PC of the instruction after REP
+  OpSize size;
+  bool reverse;
+  std::uint64_t pc_of_rep;     // PC of the REP STOSB instruction
+  std::uint64_t pc_after_rep;  // PC of the instruction after REP
 };
 
 // F2-BK-009 — REP MOVSB / MOVSW / MOVSD / MOVSQ. Same shape as
@@ -668,12 +905,11 @@ struct RepStos {
 // pinned operands. Same block-terminating + clamp semantics as
 // `RepStos` (see above).
 struct RepMovs {
-    OpSize        size;
-    bool          reverse;
-    std::uint64_t pc_of_rep;       // PC of the REP MOVSB instruction
-    std::uint64_t pc_after_rep;    // PC of the instruction after REP
+  OpSize size;
+  bool reverse;
+  std::uint64_t pc_of_rep;     // PC of the REP MOVSB instruction
+  std::uint64_t pc_after_rep;  // PC of the instruction after REP
 };
-
 
 // ---- Stack pointer adjustment (F1-RT-013) -----------------------------
 //
@@ -687,7 +923,7 @@ struct RepMovs {
 // (or signal handler) sees the correct guest stack pointer.
 
 struct RspAdjust {
-    std::int64_t delta_bytes;
+  std::int64_t delta_bytes;
 };
 
 // ---- Floating-point (F1-IR-026, lowered by F1-BK-013) ----------------
@@ -702,43 +938,52 @@ struct RspAdjust {
 // SUBSS / SUBSD / DIVSS / DIVSD). Sqrt and the comparison family
 // land later (F1-BK-029, planned).
 
-enum class FpSize     : std::uint8_t { F32 = 0, F64 };
-enum class FpBinOpKind: std::uint8_t { Add = 0, Sub, Mul, Div };
+enum class FpSize : std::uint8_t { F32 = 0, F64 };
+enum class FpBinOpKind : std::uint8_t { Add = 0, Sub, Mul, Div };
 
 // F2-IR-044 — POPCNT (F3 0F B8 /r). Lane-agnostic; size selects 32 or 64-bit
 // width. Result Ref is the population count value.
-struct Popcnt { Ref value; OpSize size; };
+struct Popcnt {
+  Ref value;
+  OpSize size;
+};
 
 // F2-IR-045 — LZCNT (F3 0F BD /r) leading-zero count, TZCNT (F3 0F BC /r)
 // trailing-zero count. Both BMI1.
-struct Lzcnt  { Ref value; OpSize size; };
-struct Tzcnt  { Ref value; OpSize size; };
+struct Lzcnt {
+  Ref value;
+  OpSize size;
+};
+struct Tzcnt {
+  Ref value;
+  OpSize size;
+};
 
 // F2-IR-045 follow-up — LZCNT/TZCNT flag write. x86 sets:
 //   CF = (src == 0)
 //   ZF = (result == 0)
 // The lowerer writes NZCV directly so both flags stay exact.
 struct WriteFlagsCountZero {
-    Ref    src;
-    Ref    result;
-    OpSize size;
+  Ref src;
+  Ref result;
+  OpSize size;
 };
 
 // F2-IR-046 — variable blend by implicit XMM0 mask (PBLENDVB / BLENDVPS / BLENDVPD).
 // For each lane i: result[i] = mask[i].MSB ? src[i] : dst[i].
 // Lane B16 / S4 / D2 sets the granularity.
 struct VecBlend {
-    Ref     dst;
-    Ref     src;
-    Ref     mask;
-    VecLane lane;
+  Ref dst;
+  Ref src;
+  Ref mask;
+  VecLane lane;
 };
 
 // F2-IR-026 — FP compare → flags (UCOMISS / UCOMISD).
 struct WriteFlagsFp {
-    Ref    lhs;        // 128-bit xmm; only the low FP lane participates.
-    Ref    rhs;
-    FpSize size;
+  Ref lhs;  // 128-bit xmm; only the low FP lane participates.
+  Ref rhs;
+  FpSize size;
 };
 
 // F2-IR-047 — PTEST (SSE4.1) bitwise flag write.
@@ -747,8 +992,8 @@ struct WriteFlagsFp {
 //   SF = OF = AF = PF = 0.
 // Lowering writes ARM NZCV directly via msr.
 struct WriteFlagsPtest {
-    Ref lhs;
-    Ref rhs;
+  Ref lhs;
+  Ref rhs;
 };
 
 // F2-IR-049 — VPTEST ymm (VEX.256.66.0F38 17 /r). Same flag semantics as
@@ -757,10 +1002,10 @@ struct WriteFlagsPtest {
 // (~hi_lhs & hi_rhs)) == 0. Lowered as 5 NEON ops + the existing scalar
 // NZCV-build sequence — see `Emitter::vptest_ymm`.
 struct WriteFlagsPtestYmm {
-    Ref lo_lhs;
-    Ref lo_rhs;
-    Ref hi_lhs;
-    Ref hi_rhs;
+  Ref lo_lhs;
+  Ref lo_rhs;
+  Ref hi_lhs;
+  Ref hi_rhs;
 };
 
 // F2-IR-051 — Lane-crossing byte permute from a 256-bit source pair.
@@ -773,9 +1018,9 @@ struct WriteFlagsPtestYmm {
 // extensions where the idx is computed at runtime. Two `VecTbl2`
 // stmts (one per output half) build the full 256-bit result.
 struct VecTbl2 {
-    Ref src_lo;
-    Ref src_hi;
-    Ref idx;
+  Ref src_lo;
+  Ref src_hi;
+  Ref idx;
 };
 
 // F2-IR-055 — AES round primitives (AES-NI). Each maps to a short
@@ -789,15 +1034,17 @@ struct VecTbl2 {
 // be a valid Ref (operand_refs walker visits it; pass src twice if
 // no separate key value is available).
 enum class VecAesKind : std::uint8_t {
-    Enc = 0, EncLast,
-    Dec,     DecLast,
-    Imc,
+  Enc = 0,
+  EncLast,
+  Dec,
+  DecLast,
+  Imc,
 };
 
 struct VecAes {
-    Ref        src;
-    Ref        key;
-    VecAesKind kind;
+  Ref src;
+  Ref key;
+  VecAesKind kind;
 };
 
 // F2-IR-058 — AESKEYGENASSIST. Builds the AES key-schedule helper
@@ -809,8 +1056,8 @@ struct VecAes {
 // `rcon` is XORed into byte 0 of dword1 and dword3, matching Intel's
 // little-endian architectural result.
 struct VecAesKeygenAssist {
-    Ref          src;
-    std::uint8_t rcon;
+  Ref src;
+  std::uint8_t rcon;
 };
 
 // F2-IR-060 — SHA-NI (NP 0F 38 C8..CD + NP 0F 3A CC ib). One op per
@@ -825,29 +1072,29 @@ struct VecAesKeygenAssist {
 // (lane 3) while the SHA-256 kinds are ascending (W0 in lane 0),
 // matching the Intel SDM exactly.
 enum class VecShaKind : std::uint8_t {
-    Sha1Rnds4 = 0,
-    Sha1Nexte,
-    Sha1Msg1,
-    Sha1Msg2,
-    Sha256Rnds2,
-    Sha256Msg1,
-    Sha256Msg2,
+  Sha1Rnds4 = 0,
+  Sha1Nexte,
+  Sha1Msg1,
+  Sha1Msg2,
+  Sha256Rnds2,
+  Sha256Msg1,
+  Sha256Msg2,
 };
 
 struct VecSha {
-    VecShaKind   kind;
-    Ref          a;
-    Ref          b;
-    Ref          wk;
-    std::uint8_t imm;
+  VecShaKind kind;
+  Ref a;
+  Ref b;
+  Ref wk;
+  std::uint8_t imm;
 };
 
 // F2-IR-056 — GPR byte-swap (the lowering target for x86 MOVBE).
 // Reverses the byte order of `value` interpreted at `size`. Maps to
 // ARM64 REV / REV (32-bit) / REV16 depending on size.
 struct Bswap {
-    Ref    value;
-    OpSize size;
+  Ref value;
+  OpSize size;
 };
 
 // F2-IR-057 — CRC32C (Castagnoli polynomial 0x11EDC6F41). Both x86's
@@ -857,9 +1104,9 @@ struct Bswap {
 // qword input (rhs, sized via `data_size`). Result is the updated
 // 32-bit checksum.
 struct Crc32c {
-    Ref    crc;
-    Ref    data;
-    OpSize data_size;
+  Ref crc;
+  Ref data;
+  OpSize data_size;
 };
 
 // F2-IR-059 — VPGATHER/VGATHER family gather, one 128-bit half.
@@ -878,16 +1125,16 @@ struct Crc32c {
 // express the split-width cases (VPGATHERDQ ymm's hi half reads index
 // lanes 2..3, VPGATHERQD ymm's hi half writes dest/mask lanes 2..3).
 struct VecGather {
-    Ref          base;             // 64-bit base address (disp folded in)
-    Ref          index;            // 128-bit vector of signed indices
-    Ref          mask;             // 128-bit mask vector
-    Ref          prev;             // previous dst; non-gathered lanes keep it
-    std::uint8_t scale_shift;      // 0..3, scale = 1 << scale_shift
-    std::uint8_t elem_is64   = 0;  // 0: dword elements, 1: qword
-    std::uint8_t index_is64  = 0;  // 0: dword indices,  1: qword
-    std::uint8_t lane_count  = 4;  // gathered elements per op: 2 or 4
-    std::uint8_t dest_lane_base  = 0;  // first dest+mask lane
-    std::uint8_t index_lane_base = 0;  // first index lane
+  Ref base;                          // 64-bit base address (disp folded in)
+  Ref index;                         // 128-bit vector of signed indices
+  Ref mask;                          // 128-bit mask vector
+  Ref prev;                          // previous dst; non-gathered lanes keep it
+  std::uint8_t scale_shift;          // 0..3, scale = 1 << scale_shift
+  std::uint8_t elem_is64 = 0;        // 0: dword elements, 1: qword
+  std::uint8_t index_is64 = 0;       // 0: dword indices,  1: qword
+  std::uint8_t lane_count = 4;       // gathered elements per op: 2 or 4
+  std::uint8_t dest_lane_base = 0;   // first dest+mask lane
+  std::uint8_t index_lane_base = 0;  // first index lane
 };
 
 // F2-IR-034 — CMPPS / CMPPD / CMPSS / CMPSD predicate compares.
@@ -897,43 +1144,57 @@ struct VecGather {
 //   only fill the low lane (upper bits = lhs).
 //   `is_packed` toggles those two shapes.
 enum class VecFpCmpPred : std::uint8_t {
-    Eq = 0, Lt, Le, Unord,
-    Neq, Nlt, Nle, Ord,
+  Eq = 0,
+  Lt,
+  Le,
+  Unord,
+  Neq,
+  Nlt,
+  Nle,
+  Ord,
 };
 struct VecFpCompare {
-    Ref          lhs;
-    Ref          rhs;
-    FpSize       size;       // F32 / F64
-    VecFpCmpPred pred;
-    bool         is_packed;  // false → scalar (upper preserved from lhs).
+  Ref lhs;
+  Ref rhs;
+  FpSize size;  // F32 / F64
+  VecFpCmpPred pred;
+  bool is_packed;  // false → scalar (upper preserved from lhs).
 };
 
 // F2-IR-042 — ROUNDPS/PD/SS/SD (SSE4.1 FP round to integer).
 //   mode: 0=nearest, 1=down, 2=up, 3=truncate, 4..7=mxcsr (treated as nearest).
 //   is_packed: true → ROUNDP*, false → ROUNDS* (scalar, upper preserved).
 struct VecFpRound {
-    Ref          lhs;     // upper-bits source for scalar form (ignored if packed).
-    Ref          src;
-    FpSize       size;
-    std::uint8_t mode;
-    bool         is_packed;
+  Ref lhs;  // upper-bits source for scalar form (ignored if packed).
+  Ref src;
+  FpSize size;
+  std::uint8_t mode;
+  bool is_packed;
 };
 
 // F2-IR-016 — scalar int ↔ FP conversions (CVTSI2SS/SD + CVTTSS/SD2SI).
 //   IntToFpScalar: signed int (I32 or I64) → low-lane FP (F32 or F64).
 //                  Upper xmm bits are zeroed.
 //   FpToIntScalar: low-lane FP → signed int (truncating).
-struct IntToFpScalar { Ref value; OpSize int_size; FpSize fp_size; };
-struct FpToIntScalar { Ref value; FpSize fp_size; OpSize int_size; };
+struct IntToFpScalar {
+  Ref value;
+  OpSize int_size;
+  FpSize fp_size;
+};
+struct FpToIntScalar {
+  Ref value;
+  FpSize fp_size;
+  OpSize int_size;
+};
 
 // F2-IR-017 — CVTSS2SD / CVTSD2SS scalar precision conversion. Result
 // low-lane FP = fcvt(src.low), upper xmm bits taken from `lhs`. Same
 // upper-preserve pattern as VecFpScalarBinOp.
 struct FpCvtScalar {
-    Ref    lhs;        // 128-bit source for upper bits (the dest's old xmm).
-    Ref    src;        // 128-bit source for the low FP value to convert.
-    FpSize src_size;
-    FpSize dst_size;
+  Ref lhs;  // 128-bit source for upper bits (the dest's old xmm).
+  Ref src;  // 128-bit source for the low FP value to convert.
+  FpSize src_size;
+  FpSize dst_size;
 };
 
 // F2-IR-006 — scalar-form SSE FP. Result is a 128-bit value where the
@@ -941,10 +1202,10 @@ struct FpCvtScalar {
 // `lhs`. Models ADDSS/SUBSS/MULSS/DIVSS (FpSize::F32) and the SD
 // variants (FpSize::F64). Re-uses VecFpBinOpKind for the op.
 struct VecFpScalarBinOp {
-    VecFpBinOpKind op;
-    Ref            lhs;
-    Ref            rhs;
-    FpSize         size;
+  VecFpBinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  FpSize size;
 };
 
 // F2-IR-006 — scalar-form FMA (VFMADDxxxSS / VFMADDxxxSD and the
@@ -957,17 +1218,25 @@ struct VecFpScalarBinOp {
 // loaded xmm Ref so the lowerer doesn't need to know which form
 // produced the IR.
 struct VecFpScalarFma {
-    Ref     a;
-    Ref     b;
-    Ref     c;
-    Ref     scalar_upper;
-    bool    neg_addend;
-    bool    neg_mul;
-    FpSize  size;
+  Ref a;
+  Ref b;
+  Ref c;
+  Ref scalar_upper;
+  bool neg_addend;
+  bool neg_mul;
+  FpSize size;
 };
 
-struct FpConstant { std::uint64_t bits; FpSize size; };
-struct FpBinOp    { FpBinOpKind op; Ref lhs; Ref rhs; FpSize size; };
+struct FpConstant {
+  std::uint64_t bits;
+  FpSize size;
+};
+struct FpBinOp {
+  FpBinOpKind op;
+  Ref lhs;
+  Ref rhs;
+  FpSize size;
+};
 
 // F2-IR-007 — reduced-precision x87 stack primitives. The runtime model
 // treats every slot as a 64-bit double, sacrificing the extra 16 bits of
@@ -976,14 +1245,21 @@ struct FpBinOp    { FpBinOpKind op; Ref lhs; Ref rhs; FpSize size; };
 //
 // `st_index` is a logical x87 stack index: 0 = ST(0), 1 = ST(1), etc.
 // The lowerer maps it to the physical frame slot `(TOS + st_index) mod 8`.
-struct X87Load  { std::uint8_t st_index; };
-struct X87Store { std::uint8_t st_index; Ref value; };
+struct X87Load {
+  std::uint8_t st_index;
+};
+struct X87Store {
+  std::uint8_t st_index;
+  Ref value;
+};
 
 // Push a 64-bit value (FP bits) onto the x87 stack.
 //
 //   TOS = (TOS - 1) mod 8
 //   ST(0) <- value (low 64 bits of slot)
-struct X87Push { Ref value; };
+struct X87Push {
+  Ref value;
+};
 
 // Pop the top of the x87 stack. Result Ref is the I64-typed FP bits read
 // from ST(0); TOS post-increments modulo 8.
@@ -1002,96 +1278,57 @@ struct X87Pop {};
 // (no later refs may rely on guest state staying coherent through it).
 
 struct InlineAsm {
-    std::vector<std::uint8_t> bytes;
+  std::vector<std::uint8_t> bytes;
 };
 
 enum class TrapKind : std::uint8_t {
-    Sigtrap = 0,  // INT3 — debugger trap.
-    Sigill,       // UD2 — illegal opcode.
-    Sigfpe,       // DE  — divide error / floating-point.
+  Sigtrap = 0,  // INT3 — debugger trap.
+  Sigill,       // UD2 — illegal opcode.
+  Sigfpe,       // DE  — divide error / floating-point.
 };
 
 struct Trap {
-    TrapKind kind;
+  TrapKind kind;
+};
+
+struct TrapIf {
+  Ref condition;
+  TrapKind kind;
 };
 
 using Op = std::variant<
-    Constant,
-    LoadReg, StoreReg,
-    LoadSegBase,
-    BinOp,
-    Compare,
-    Select,
-    LoadMem, StoreMem,
-    LoadMemTSO, StoreMemTSO,
-    Jump, CondJump, Return,
-    JumpReg,
-    CmpFlags, AluFlags, JumpRel, CondJumpRel,
-    CallRel, CallReg, RetAdjusted,
-    Cpuid, Syscall, Trap,
-    Extend, Truncate, Fence,
-    GuestPc, InlineAsm,
-    FpConstant, FpBinOp,
-    WriteFlags, ReadFlag, CondJumpFlags,
-    RspAdjust,
-    VecConstant, VecBinOp,
-    LoadVecReg, StoreVecReg,
-    LoadVec, StoreVec,
-    VecFpBinOp, VecFpScalarBinOp,
-    XmmFromGpr, GprFromXmm,
-    VecCmp, VecShuffle32x4,
-    VecUnpack, VecShiftImm,
-    VecShiftBytes,
-    IntToFpScalar, FpToIntScalar,
-    FpCvtScalar,
-    VecShuffle2Src,
-    VecInsertLane, VecExtractLaneU,
-    VecMaskMsb,
-    WriteFlagsFp,
-    VecShuffleH4,
-    VecMaskFp,
-    VecFpCompare,
-    VecPshufb, VecAbs,
-    VecAlignr,
-    VecExtend,
-    VecFpRound,
-    Popcnt,
-    Lzcnt, Tzcnt,
-    WriteFlagsCountZero,
-    VecBlend,
-    WriteFlagsPtest,
-    WriteFlagsPtestYmm,
-    VecTbl2,
-    VecAes,
-    VecAesKeygenAssist,
-    VecSha,
-    Bswap,
-    Crc32c,
-    VecGather,
-    LoadVecRegHi, StoreVecRegHi,
-    VecFpFma, VecFpScalarFma,
-    RepStos, RepMovs,
-    X87Load, X87Store, X87Push, X87Pop,
-    Xgetbv, Rdtsc
->;
+    Constant, LoadReg, StoreReg, LoadSegBase, LoadCarry, StoreCarry, LoadRflags, StoreRflags,
+    StoreRflagsFromNzcv, StoreRflagsFromBits, BinOp, WideDiv, Compare, Select, LoadMem, StoreMem,
+    LoadMemTSO, StoreMemTSO, AtomicCmpxchg, AtomicCmpxchgPair, Jump, CondJump, Return, JumpReg,
+    CmpFlags, AluFlags, JumpRel, CondJumpRel, CallRel, CallReg, RetAdjusted, Cpuid, Syscall, Trap,
+    TrapIf, Extend, Truncate, Fence, GuestPc, InlineAsm, FpConstant, FpBinOp, WriteFlags, ReadFlag,
+    CondJumpFlags, RspAdjust, VecConstant, VecBinOp, VecClMul, VecF16Cvt, LoadVecReg, StoreVecReg,
+    LoadVec, StoreVec, PcmpStrIndex, PcmpStrMask, PcmpStrFlags, VecFpBinOp, VecFpScalarBinOp,
+    XmmFromGpr, GprFromXmm, VecCmp, VecShuffle32x4, VecUnpack, VecShiftImm, VecShiftBytes,
+    IntToFpScalar, FpToIntScalar, FpCvtScalar, VecShuffle2Src, VecInsertLane, VecExtractLaneU,
+    VecMaskMsb, WriteFlagsFp, VecShuffleH4, VecMaskFp, VecFpCompare, VecPshufb, VecAbs, VecAlignr,
+    VecExtend, VecFpRound, Popcnt, Lzcnt, Tzcnt, WriteFlagsCountZero, VecBlend, WriteFlagsPtest,
+    WriteFlagsPtestYmm, VecTbl2, VecAes, VecAesKeygenAssist, VecSha, Bswap, Crc32c, VecGather,
+    LoadVecRegHi, StoreVecRegHi, VecFpFma, VecFpScalarFma, RepStos, RepMovs, X87Load, X87Store,
+    X87Push, X87Pop, Xgetbv, Rdtsc>;
 
 // ---------------------------------------------------------------------------
 // Stmt, BasicBlock, Function.
 // ---------------------------------------------------------------------------
 
 struct Stmt {
-    std::optional<Ref> result;  // none for stores, jumps, ret.
-    Op op;
+  std::optional<Ref> result;  // none for stores, jumps, ret.
+  Op op;
 };
 
 struct BasicBlock {
-    std::uint32_t id{0};
-    std::vector<Stmt> stmts;
+  std::uint32_t id{0};
+  std::vector<Stmt> stmts;
 };
 
 struct Function {
-    std::vector<BasicBlock> blocks;
-    std::uint32_t entry{0};
+  std::vector<BasicBlock> blocks;
+  std::uint32_t entry{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -1125,13 +1362,22 @@ bool operator==(const Constant& a, const Constant& b) noexcept;
 bool operator==(const LoadReg& a, const LoadReg& b) noexcept;
 bool operator==(const StoreReg& a, const StoreReg& b) noexcept;
 bool operator==(const LoadSegBase& a, const LoadSegBase& b) noexcept;
+bool operator==(const LoadCarry&, const LoadCarry&) noexcept;
+bool operator==(const StoreCarry& a, const StoreCarry& b) noexcept;
+bool operator==(const LoadRflags&, const LoadRflags&) noexcept;
+bool operator==(const StoreRflags& a, const StoreRflags& b) noexcept;
+bool operator==(const StoreRflagsFromNzcv& a, const StoreRflagsFromNzcv& b) noexcept;
+bool operator==(const StoreRflagsFromBits& a, const StoreRflagsFromBits& b) noexcept;
 bool operator==(const BinOp& a, const BinOp& b) noexcept;
+bool operator==(const WideDiv& a, const WideDiv& b) noexcept;
 bool operator==(const Compare& a, const Compare& b) noexcept;
 bool operator==(const Select& a, const Select& b) noexcept;
 bool operator==(const LoadMem& a, const LoadMem& b) noexcept;
 bool operator==(const StoreMem& a, const StoreMem& b) noexcept;
 bool operator==(const LoadMemTSO& a, const LoadMemTSO& b) noexcept;
 bool operator==(const StoreMemTSO& a, const StoreMemTSO& b) noexcept;
+bool operator==(const AtomicCmpxchg& a, const AtomicCmpxchg& b) noexcept;
+bool operator==(const AtomicCmpxchgPair& a, const AtomicCmpxchgPair& b) noexcept;
 bool operator==(const Jump& a, const Jump& b) noexcept;
 bool operator==(const CondJump& a, const CondJump& b) noexcept;
 bool operator==(const JumpReg& a, const JumpReg& b) noexcept;
@@ -1150,53 +1396,59 @@ bool operator==(const Xgetbv&, const Xgetbv&) noexcept;
 bool operator==(const Rdtsc&, const Rdtsc&) noexcept;
 bool operator==(const Syscall&, const Syscall&) noexcept;
 bool operator==(const Trap& a, const Trap& b) noexcept;
+bool operator==(const TrapIf& a, const TrapIf& b) noexcept;
 bool operator==(const Extend& a, const Extend& b) noexcept;
 bool operator==(const Truncate& a, const Truncate& b) noexcept;
 bool operator==(const Fence& a, const Fence& b) noexcept;
 bool operator==(const GuestPc& a, const GuestPc& b) noexcept;
 bool operator==(const InlineAsm& a, const InlineAsm& b) noexcept;
 bool operator==(const FpConstant& a, const FpConstant& b) noexcept;
-bool operator==(const FpBinOp&    a, const FpBinOp&    b) noexcept;
+bool operator==(const FpBinOp& a, const FpBinOp& b) noexcept;
 bool operator==(const WriteFlags& a, const WriteFlags& b) noexcept;
-bool operator==(const ReadFlag&   a, const ReadFlag&   b) noexcept;
+bool operator==(const ReadFlag& a, const ReadFlag& b) noexcept;
 bool operator==(const CondJumpFlags& a, const CondJumpFlags& b) noexcept;
-bool operator==(const RspAdjust&     a, const RspAdjust&     b) noexcept;
-bool operator==(const VecConstant&   a, const VecConstant&   b) noexcept;
-bool operator==(const VecBinOp&      a, const VecBinOp&      b) noexcept;
-bool operator==(const LoadVecReg&    a, const LoadVecReg&    b) noexcept;
-bool operator==(const StoreVecReg&   a, const StoreVecReg&   b) noexcept;
-bool operator==(const VecFpBinOp&    a, const VecFpBinOp&    b) noexcept;
+bool operator==(const RspAdjust& a, const RspAdjust& b) noexcept;
+bool operator==(const VecConstant& a, const VecConstant& b) noexcept;
+bool operator==(const VecBinOp& a, const VecBinOp& b) noexcept;
+bool operator==(const VecClMul& a, const VecClMul& b) noexcept;
+bool operator==(const VecF16Cvt& a, const VecF16Cvt& b) noexcept;
+bool operator==(const LoadVecReg& a, const LoadVecReg& b) noexcept;
+bool operator==(const StoreVecReg& a, const StoreVecReg& b) noexcept;
+bool operator==(const VecFpBinOp& a, const VecFpBinOp& b) noexcept;
 bool operator==(const VecFpScalarBinOp& a, const VecFpScalarBinOp& b) noexcept;
-bool operator==(const LoadVec&       a, const LoadVec&       b) noexcept;
-bool operator==(const StoreVec&      a, const StoreVec&      b) noexcept;
-bool operator==(const XmmFromGpr&    a, const XmmFromGpr&    b) noexcept;
-bool operator==(const GprFromXmm&    a, const GprFromXmm&    b) noexcept;
-bool operator==(const VecCmp&        a, const VecCmp&        b) noexcept;
+bool operator==(const LoadVec& a, const LoadVec& b) noexcept;
+bool operator==(const StoreVec& a, const StoreVec& b) noexcept;
+bool operator==(const PcmpStrIndex& a, const PcmpStrIndex& b) noexcept;
+bool operator==(const PcmpStrMask& a, const PcmpStrMask& b) noexcept;
+bool operator==(const PcmpStrFlags& a, const PcmpStrFlags& b) noexcept;
+bool operator==(const XmmFromGpr& a, const XmmFromGpr& b) noexcept;
+bool operator==(const GprFromXmm& a, const GprFromXmm& b) noexcept;
+bool operator==(const VecCmp& a, const VecCmp& b) noexcept;
 bool operator==(const VecShuffle32x4& a, const VecShuffle32x4& b) noexcept;
-bool operator==(const VecUnpack&     a, const VecUnpack&     b) noexcept;
-bool operator==(const VecShiftImm&   a, const VecShiftImm&   b) noexcept;
+bool operator==(const VecUnpack& a, const VecUnpack& b) noexcept;
+bool operator==(const VecShiftImm& a, const VecShiftImm& b) noexcept;
 bool operator==(const VecShiftBytes& a, const VecShiftBytes& b) noexcept;
 bool operator==(const IntToFpScalar& a, const IntToFpScalar& b) noexcept;
 bool operator==(const FpToIntScalar& a, const FpToIntScalar& b) noexcept;
-bool operator==(const FpCvtScalar&   a, const FpCvtScalar&   b) noexcept;
+bool operator==(const FpCvtScalar& a, const FpCvtScalar& b) noexcept;
 bool operator==(const VecShuffle2Src& a, const VecShuffle2Src& b) noexcept;
 bool operator==(const VecInsertLane& a, const VecInsertLane& b) noexcept;
 bool operator==(const VecExtractLaneU& a, const VecExtractLaneU& b) noexcept;
-bool operator==(const VecMaskMsb&    a, const VecMaskMsb&    b) noexcept;
-bool operator==(const WriteFlagsFp&  a, const WriteFlagsFp&  b) noexcept;
-bool operator==(const VecShuffleH4&  a, const VecShuffleH4&  b) noexcept;
-bool operator==(const VecMaskFp&     a, const VecMaskFp&     b) noexcept;
-bool operator==(const VecFpCompare&  a, const VecFpCompare&  b) noexcept;
-bool operator==(const VecPshufb&     a, const VecPshufb&     b) noexcept;
-bool operator==(const VecAbs&        a, const VecAbs&        b) noexcept;
-bool operator==(const VecAlignr&     a, const VecAlignr&     b) noexcept;
-bool operator==(const VecExtend&     a, const VecExtend&     b) noexcept;
-bool operator==(const VecFpRound&    a, const VecFpRound&    b) noexcept;
-bool operator==(const Popcnt&        a, const Popcnt&        b) noexcept;
-bool operator==(const Lzcnt&         a, const Lzcnt&         b) noexcept;
-bool operator==(const Tzcnt&         a, const Tzcnt&         b) noexcept;
+bool operator==(const VecMaskMsb& a, const VecMaskMsb& b) noexcept;
+bool operator==(const WriteFlagsFp& a, const WriteFlagsFp& b) noexcept;
+bool operator==(const VecShuffleH4& a, const VecShuffleH4& b) noexcept;
+bool operator==(const VecMaskFp& a, const VecMaskFp& b) noexcept;
+bool operator==(const VecFpCompare& a, const VecFpCompare& b) noexcept;
+bool operator==(const VecPshufb& a, const VecPshufb& b) noexcept;
+bool operator==(const VecAbs& a, const VecAbs& b) noexcept;
+bool operator==(const VecAlignr& a, const VecAlignr& b) noexcept;
+bool operator==(const VecExtend& a, const VecExtend& b) noexcept;
+bool operator==(const VecFpRound& a, const VecFpRound& b) noexcept;
+bool operator==(const Popcnt& a, const Popcnt& b) noexcept;
+bool operator==(const Lzcnt& a, const Lzcnt& b) noexcept;
+bool operator==(const Tzcnt& a, const Tzcnt& b) noexcept;
 bool operator==(const WriteFlagsCountZero& a, const WriteFlagsCountZero& b) noexcept;
-bool operator==(const VecBlend&      a, const VecBlend&      b) noexcept;
+bool operator==(const VecBlend& a, const VecBlend& b) noexcept;
 bool operator==(const WriteFlagsPtest& a, const WriteFlagsPtest& b) noexcept;
 bool operator==(const WriteFlagsPtestYmm& a, const WriteFlagsPtestYmm& b) noexcept;
 bool operator==(const VecTbl2& a, const VecTbl2& b) noexcept;
@@ -1206,16 +1458,16 @@ bool operator==(const Bswap& a, const Bswap& b) noexcept;
 bool operator==(const Crc32c& a, const Crc32c& b) noexcept;
 bool operator==(const VecSha& a, const VecSha& b) noexcept;
 bool operator==(const VecGather& a, const VecGather& b) noexcept;
-bool operator==(const LoadVecRegHi&  a, const LoadVecRegHi&  b) noexcept;
+bool operator==(const LoadVecRegHi& a, const LoadVecRegHi& b) noexcept;
 bool operator==(const StoreVecRegHi& a, const StoreVecRegHi& b) noexcept;
-bool operator==(const VecFpFma&      a, const VecFpFma&      b) noexcept;
+bool operator==(const VecFpFma& a, const VecFpFma& b) noexcept;
 bool operator==(const VecFpScalarFma& a, const VecFpScalarFma& b) noexcept;
-bool operator==(const RepStos&       a, const RepStos&       b) noexcept;
-bool operator==(const RepMovs&       a, const RepMovs&       b) noexcept;
-bool operator==(const X87Load&       a, const X87Load&       b) noexcept;
-bool operator==(const X87Store&      a, const X87Store&      b) noexcept;
-bool operator==(const X87Push&       a, const X87Push&       b) noexcept;
-bool operator==(const X87Pop&,         const X87Pop&)          noexcept;
+bool operator==(const RepStos& a, const RepStos& b) noexcept;
+bool operator==(const RepMovs& a, const RepMovs& b) noexcept;
+bool operator==(const X87Load& a, const X87Load& b) noexcept;
+bool operator==(const X87Store& a, const X87Store& b) noexcept;
+bool operator==(const X87Push& a, const X87Push& b) noexcept;
+bool operator==(const X87Pop&, const X87Pop&) noexcept;
 
 bool operator==(const Stmt& a, const Stmt& b) noexcept;
 
