@@ -97,10 +97,6 @@ struct CpuStateFrame {
   // reserved bit; StoreCarry keeps bit 0 in sync with `cf`.
   std::uint64_t rflags{2};
 
-  // F2-SY-018: Signal mask and pending signals.
-  std::uint64_t blocked_signals{0};
-  std::uint64_t pending_signals{0};
-
   // Halt sentinel — when a translated block returns this value in x0,
   // the dispatcher exits the run loop cleanly. The IR::Return lowerer
   // emits code that sets x0 = 0 before `ret`, so pc=0 is the default
@@ -158,8 +154,6 @@ struct CpuStateFrame {
   [[nodiscard]] static constexpr std::int32_t gs_base_offset() noexcept { return 800; }
   [[nodiscard]] static constexpr std::int32_t cf_offset() noexcept { return 816; }
   [[nodiscard]] static constexpr std::int32_t rflags_offset() noexcept { return 824; }
-  [[nodiscard]] static constexpr std::int32_t blocked_signals_offset() noexcept { return 832; }
-  [[nodiscard]] static constexpr std::int32_t pending_signals_offset() noexcept { return 840; }
 };
 
 // Guarantees the C++ struct layout matches what the Translator emits
@@ -192,9 +186,5 @@ static_assert(offsetof(CpuStateFrame, cf) == CpuStateFrame::cf_offset(),
               "cf_offset must match offsetof(cf)");
 static_assert(offsetof(CpuStateFrame, rflags) == CpuStateFrame::rflags_offset(),
               "rflags_offset must match offsetof(rflags)");
-static_assert(offsetof(CpuStateFrame, blocked_signals) == CpuStateFrame::blocked_signals_offset(),
-              "blocked_signals_offset must match offsetof(blocked_signals)");
-static_assert(offsetof(CpuStateFrame, pending_signals) == CpuStateFrame::pending_signals_offset(),
-              "pending_signals_offset must match offsetof(pending_signals)");
 
 }  // namespace prisma::runtime

@@ -1,20 +1,9 @@
 name: ffi bridge (C++/Rust)
 
-# RFC 0014 — cross-language gate. Builds the prisma_core_c shared
-# library, then lints and tests the Rust bridge crates against it.
-#
-# Two jobs:
-#   ffi-link        ubuntu-latest (x86_64) — boundary mechanics +
-#                   translation-only coverage on the cheap runner.
-#   ffi-link-arm64  ubuntu-24.04-arm — same suite, but the aarch64
-#                   gate opens: the hybrid PE e2e executes guest code
-#                   in the ARM64 JIT for real.
-#
-#   ffi-link-windows windows-latest - MSVC build, Windows CTest smoke,
-#                   and Rust workspace + FFI bridge validation.
-#
-# Runs on every PR (no path filters) so both contexts are eligible to
-# be required checks without going Pending.
+# RFC 0014 cross-language gate. Each platform exposes configure, C++ build,
+# Rust validation, and tests as distinct phases. Failure logs are retained so
+# ABI drift and platform compiler failures can be diagnosed without editing a
+# product branch or creating trigger commits.
 
 on:
   push:
@@ -25,109 +14,159 @@ concurrency:
   group: ffi-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+
 jobs:
   ffi-link:
     name: ffi-link
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
       - name: Install C++ toolchain
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build clang-17
+          sudo apt-get install -y -qq cmake ninja-build clang-17
 
-      - name: Build prisma_core_c
+      - name: Configure C API library
         run: |
-          set -euo pipefail
+          set -o pipefail
           cmake -S core -B core/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=clang++-17 \
-            -DPRISMA_BUILD_TESTS=OFF
-          cmake --build core/build --target prisma_core_c
+            -DPRISMA_BUILD_TESTS=OFF \
+            2>&1 | tee ffi-linux-configure.log
+
+      - name: Build C API library
+        run: |
+          set -o pipefail
+          cmake --build core/build --target prisma_core_c \
+            2>&1 | tee ffi-linux-build.log
 
       - name: Install Rust toolchain
         run: |
-          set -euo pipefail
           rustup toolchain install stable --profile minimal
           rustup component add clippy
           rustup component add rustfmt
 
-      - name: fmt + clippy (whole workspace, all targets)
+      - name: Format and clippy
         env:
           PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/core/build
         run: |
-          set -euo pipefail
-          cargo fmt --manifest-path shell/Cargo.toml --all -- --check
-          cargo clippy --manifest-path shell/Cargo.toml \
-            --workspace --all-targets -- -D warnings
+          set -o pipefail
+          {
+            cargo fmt --manifest-path shell/Cargo.toml --all -- --check
+            cargo clippy --manifest-path shell/Cargo.toml \
+              --workspace --all-targets -- -D warnings
+          } 2>&1 | tee ffi-linux-lint.log
 
       - name: Cross-language tests
         env:
           PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/core/build
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build
         run: |
-          set -euo pipefail
-          cargo test --manifest-path shell/Cargo.toml --workspace
+          set -o pipefail
+          cargo test --manifest-path shell/Cargo.toml --workspace \
+            2>&1 | tee ffi-linux-test.log
+
+      - name: Preserve Linux FFI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffi-linux-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ffi-linux-configure.log
+            ffi-linux-build.log
+            ffi-linux-lint.log
+            ffi-linux-test.log
 
   ffi-link-arm64:
     name: ffi-link-arm64
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
       - name: Install C++ toolchain
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build clang-17
+          sudo apt-get install -y -qq cmake ninja-build clang-17
 
-      - name: Build prisma_core_c
+      - name: Configure C API library
         run: |
-          set -euo pipefail
+          set -o pipefail
           cmake -S core -B core/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER=clang++-17 \
-            -DPRISMA_BUILD_TESTS=OFF
-          cmake --build core/build --target prisma_core_c
+            -DPRISMA_BUILD_TESTS=OFF \
+            2>&1 | tee ffi-arm64-configure.log
+
+      - name: Build C API library
+        run: |
+          set -o pipefail
+          cmake --build core/build --target prisma_core_c \
+            2>&1 | tee ffi-arm64-build.log
 
       - name: Install Rust toolchain
         run: |
-          set -euo pipefail
           rustup toolchain install stable --profile minimal
           rustup component add clippy
 
-      - name: Cross-language tests (JIT executes on real ARM64)
+      - name: Cross-language JIT tests
         env:
           PRISMA_CORE_LIB_DIR: ${{ github.workspace }}/core/build
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build
         run: |
-          set -euo pipefail
-          cargo test --manifest-path shell/Cargo.toml --workspace
+          set -o pipefail
+          cargo test --manifest-path shell/Cargo.toml --workspace \
+            2>&1 | tee ffi-arm64-test.log
+
+      - name: Preserve ARM64 FFI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffi-arm64-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ffi-arm64-configure.log
+            ffi-arm64-build.log
+            ffi-arm64-test.log
 
   ffi-link-windows:
     name: ffi-link-windows
-    # Pin to windows-2022: the `windows-latest` image moved off Visual Studio
-    # 2022, so the `-G "Visual Studio 17 2022"` generator below stopped finding
-    # any VS instance ("could not find any instance of Visual Studio"). 2022 is
-    # the env this job passed on through 2026-06-14.
     runs-on: windows-2022
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build prisma_core_tests
+      - name: Configure MSVC build
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cmake -S core -B core/build -G "Visual Studio 17 2022" -A x64
-          cmake --build core/build --config Debug --target prisma_core_tests
+          cmake -S core -B core/build -G "Visual Studio 17 2022" -A x64 2>&1 |
+            Tee-Object -FilePath ffi-windows-configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build core tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build core/build --config Debug --target prisma_core_tests 2>&1 |
+            Tee-Object -FilePath ffi-windows-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: CTest smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ctest --test-dir core/build -C Debug --output-on-failure
+          ctest --test-dir core/build -C Debug --output-on-failure 2>&1 |
+            Tee-Object -FilePath ffi-windows-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Rust toolchain
         shell: pwsh
@@ -136,8 +175,24 @@ jobs:
           rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal
           rustup component add rustfmt clippy --toolchain 1.95.0-x86_64-pc-windows-msvc
 
-      - name: Rust workspace + FFI bridge
+      - name: Rust workspace and FFI bridge
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          powershell -ExecutionPolicy Bypass -File scripts\validate-rust-workspace.ps1
+          powershell -ExecutionPolicy Bypass -File scripts\validate-rust-workspace.ps1 2>&1 |
+            Tee-Object -FilePath ffi-windows-rust.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve Windows FFI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffi-windows-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ffi-windows-configure.log
+            ffi-windows-build.log
+            ffi-windows-test.log
+            ffi-windows-rust.log
+            core/build/Testing/Temporary/LastTest.log

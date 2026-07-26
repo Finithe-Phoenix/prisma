@@ -7,10 +7,7 @@
 #include <utility>
 #include <variant>
 
-#include <cstring>
-
 #include "prisma/signal_handler.hpp"
-#include "prisma/syscall_handler.hpp"
 
 namespace prisma::runtime {
 
@@ -46,8 +43,6 @@ bool direct_thread_candidate(const translator::TranslatedBlock& block,
 
 }  // namespace
 
-thread_local Dispatcher* tls_current_dispatcher = nullptr;
-
 Dispatcher::Dispatcher(translator::Translator& t, GuestMemoryReader r)
     : translator_(t), reader_(std::move(r)) {
     halt_pcs_.insert(CpuStateFrame::kHaltSentinel);
@@ -75,14 +70,6 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
 
     std::uint64_t pc = entry_pc;
     state_.guest_pc = pc;
-
-    struct ScopedDispatcherTls {
-        Dispatcher* prev;
-        ScopedDispatcherTls(Dispatcher* cur) : prev(tls_current_dispatcher) {
-            tls_current_dispatcher = cur;
-        }
-        ~ScopedDispatcherTls() { tls_current_dispatcher = prev; }
-    } scoped_tls(this);
 
     std::size_t step = 0;
     auto account_executed =
@@ -139,79 +126,11 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
         };
 
     while (step < max_steps) {
-        std::jmp_buf jb;
-        int fault = setjmp(jb);
-        if (fault != 0) {
-            FaultKind kind = static_cast<FaultKind>(fault);
-            int sig = 0;
-            if (kind == FaultKind::Segv) sig = 11;
-            else if (kind == FaultKind::Ill) sig = 4;
-            else if (kind == FaultKind::Bus) sig = 7;
-
-            auto sa = get_guest_sigaction(sig);
-            if (sa.sa_handler != 0 && sa.sa_handler != 1) { // not SIG_DFL or SIG_IGN
-                // Build x86_64 signal frame
-                std::uint64_t rsp = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)];
-                rsp -= 128; // Red Zone
-
-                rsp -= sizeof(GuestUcontext) + 8;
-                rsp &= ~15ULL; // Align to 16 bytes
-
-                // Write pretcode
-                std::uint64_t pretcode = sa.sa_restorer;
-                std::memcpy(reinterpret_cast<void*>(rsp), &pretcode, sizeof(pretcode));
-
-                GuestUcontext uc{};
-                uc.uc_mcontext.r8 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R8)];
-                uc.uc_mcontext.r9 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R9)];
-                uc.uc_mcontext.r10 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R10)];
-                uc.uc_mcontext.r11 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R11)];
-                uc.uc_mcontext.r12 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R12)];
-                uc.uc_mcontext.r13 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R13)];
-                uc.uc_mcontext.r14 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R14)];
-                uc.uc_mcontext.r15 = state_.gpr[static_cast<std::size_t>(ir::Gpr::R15)];
-                uc.uc_mcontext.rdi = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdi)];
-                uc.uc_mcontext.rsi = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsi)];
-                uc.uc_mcontext.rbp = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rbp)];
-                uc.uc_mcontext.rbx = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rbx)];
-                uc.uc_mcontext.rdx = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdx)];
-                uc.uc_mcontext.rax = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rax)];
-                uc.uc_mcontext.rcx = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rcx)];
-                uc.uc_mcontext.rsp = state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)];
-                uc.uc_mcontext.rip = state_.guest_pc;
-                uc.uc_mcontext.eflags = state_.rflags;
-                uc.uc_sigmask = state_.blocked_signals;
-
-                // Add signal to block mask
-                state_.blocked_signals |= sa.sa_mask | (1ULL << (sig - 1));
-
-                std::memcpy(reinterpret_cast<void*>(rsp + 8), &uc, sizeof(uc));
-
-                // Set up args for guest handler
-                state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] = rsp;
-                state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdi)] = sig;
-                state_.gpr[static_cast<std::size_t>(ir::Gpr::Rsi)] = 0; // info
-                state_.gpr[static_cast<std::size_t>(ir::Gpr::Rdx)] = rsp + 8; // ucontext
-                state_.guest_pc = sa.sa_handler;
-                pc = state_.guest_pc;
-            } else {
-                stats.unique_pcs_seen = seen_pcs.size();
-                return {DispatchExit::TranslationFailed, pc, stats, "unhandled guest fault"};
-            }
-        }
-
-        runtime::ScopedProtected guard(jb);
-
         // Drain SMC fault bookkeeping queued by the SIGSEGV handler
         // (the handler itself is async-signal-safe and only
         // tombstones; the invalidation callbacks run here, in normal
         // context). Near-free when nothing is pending.
         (void)drain_smc_invalidations();
-
-        if (exit_flag_ && exit_flag_->load(std::memory_order_relaxed)) {
-            stats.unique_pcs_seen = seen_pcs.size();
-            return {DispatchExit::Halted, pc, stats, "Host requested thread exit"};
-        }
 
         // Halt-before-execute so the caller can configure halt PCs that
         // include the entry.
@@ -336,7 +255,7 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
                 try_patch_direct_exit(threading_pc, pc);
             }
             block = *cached;
-        } // inner execution loop
+        }
     }
 
     stats.unique_pcs_seen = seen_pcs.size();

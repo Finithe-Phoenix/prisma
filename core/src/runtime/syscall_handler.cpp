@@ -14,18 +14,10 @@
 
 #include "prisma/syscall_handler.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
-#include <array>
-#include <thread>
-#include <atomic>
-#include <condition_variable>
-#include <unordered_map>
-#include <vector>
-
-#include "prisma/dispatcher.hpp"
 #include <cstdio>
 #include <cstdlib>
 
@@ -36,8 +28,6 @@
 
 #include <cstring>
 #include <dirent.h>
-#include <pthread.h>
-
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -46,7 +36,6 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -61,40 +50,24 @@ namespace prisma::runtime {
 
 namespace {
 
-// -- Threading Support --------------------------------------------------------
+std::atomic<std::uint64_t> next_guest_tid{1};
 
-constexpr std::uint64_t CLONE_VM = 0x00000100;
-constexpr std::uint64_t CLONE_FS = 0x00000200;
-constexpr std::uint64_t CLONE_FILES = 0x00000400;
-constexpr std::uint64_t CLONE_SIGHAND = 0x00000800;
-constexpr std::uint64_t CLONE_PARENT_SETTID = 0x00100000;
-constexpr std::uint64_t CLONE_CHILD_CLEARTID = 0x00200000;
-constexpr std::uint64_t CLONE_THREAD = 0x00010000;
-constexpr std::uint64_t CLONE_SETTLS = 0x00080000;
-constexpr std::uint64_t CLONE_CHILD_SETTID = 0x01000000;
+thread_local GuestThreadStartupState guest_thread_startup_state{
+    next_guest_tid.fetch_add(1, std::memory_order_relaxed),
+    0,
+    0,
+    0,
+};
 
-constexpr int FUTEX_WAIT = 0;
-constexpr int FUTEX_WAKE = 1;
-constexpr int FUTEX_PRIVATE_FLAG = 128;
+}  // namespace
 
-thread_local std::uint64_t tls_clear_child_tid = 0;
-thread_local std::atomic<bool> tls_thread_exit_flag{false};
-thread_local std::uint64_t tls_robust_list_head = 0;
-thread_local std::size_t tls_robust_list_len = 0;
-
-void handle_thread_exit() {
-    if (tls_clear_child_tid != 0) {
-        auto* addr = reinterpret_cast<std::atomic_ref<std::uint32_t>::value_type*>(tls_clear_child_tid);
-        std::atomic_ref<std::uint32_t> atom(*addr);
-        atom.store(0, std::memory_order_seq_cst);
-        atom.notify_all();
-    }
+static GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
+    return guest_thread_startup_state;
 }
 
-// Global process-wide exit flag for exit_group
-std::atomic<bool> g_process_exit{false};
-
-} // namespace
+GuestThreadStartupState current_guest_thread_startup_state() noexcept {
+    return mutable_guest_thread_startup_state();
+}
 
 // x86_64 Linux syscall numbers used in this file.
 enum X64Sysno : std::uint64_t {
@@ -136,61 +109,27 @@ enum X64Sysno : std::uint64_t {
     kX64Getppid      = 110,
     kX64Getgid       = 104,
     kX64Getegid      = 108,
-    kX64SetRobustList = 273,
-    kX64GetRobustList = 274,
     kX64Exit         = 60,
-    kX64Execve       = 59,
     kX64ExitGroup    = 231,
     kX64Wait4        = 61,
     kX64Uname        = 63,
     kX64Getdents     = 78,
     kX64Getdents64   = 217,
     kX64SetTidAddress = 218,
+    kX64SetRobustList = 273,
+    kX64Rseq          = 334,
     kX64ClockGettime = 228,
     kX64Gettimeofday = 96,
     kX64Time         = 201,
-    kX64RtSigreturn  = 15,
-    kX64RtSigsuspend = 130,
     kX64ArchPrctl    = 158,
     kX64Prctl        = 157,
     kX64Prlimit64    = 302,
     kX64EpollCreate1 = 291,
     kX64EpollCtl     = 233,
     kX64EpollWait    = 232,
-    kX64Socket       = 41,
-    kX64Connect      = 42,
-    kX64Accept       = 43,
-    kX64Sendto       = 44,
-    kX64Recvfrom     = 45,
-    kX64Sendmsg      = 46,
-    kX64Recvmsg      = 47,
-    kX64Shutdown     = 48,
-    kX64Bind         = 49,
-    kX64Listen       = 50,
-    kX64Getsockname  = 51,
-    kX64Getpeername  = 52,
-    kX64Socketpair   = 53,
-    kX64Setsockopt   = 54,
-    kX64Getsockopt   = 55,
-    kX64Clone        = 56,
-    kX64Futex        = 202,
-    kX64Accept4      = 288,
 };
 
 }  // namespace prisma::runtime
-
-namespace {
-    std::mutex g_sigaction_mutex;
-    std::array<prisma::runtime::GuestSigaction, 65> g_guest_sigactions{};
-}
-
-namespace prisma::runtime {
-    GuestSigaction get_guest_sigaction(int sig) {
-        if (sig < 1 || sig >= 65) return {};
-        std::lock_guard<std::mutex> lk(g_sigaction_mutex);
-        return g_guest_sigactions[sig];
-    }
-}
 
 // F2-SY-038: strace-like syscall logger. Check PRISMA_STRACE env var once.
 static bool strace_enabled() noexcept {
@@ -242,47 +181,24 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Getppid:     return "getppid";
         case kX64Getgid:      return "getgid";
         case kX64Getegid:     return "getegid";
-        case kX64SetRobustList: return "set_robust_list";
-        case kX64GetRobustList: return "get_robust_list";
         case kX64Exit:        return "exit";
-        case kX64Execve:      return "execve";
         case kX64ExitGroup:   return "exit_group";
         case kX64Wait4:       return "wait4";
         case kX64Uname:       return "uname";
-        case kX64Futex:       return "futex";
         case kX64Getdents:    return "getdents";
         case kX64Getdents64:  return "getdents64";
         case kX64SetTidAddress: return "set_tid_address";
+        case kX64SetRobustList: return "set_robust_list";
+        case kX64Rseq:          return "rseq";
         case kX64ClockGettime: return "clock_gettime";
         case kX64Gettimeofday: return "gettimeofday";
         case kX64Time:        return "time";
         case kX64ArchPrctl:   return "arch_prctl";
         case kX64Prctl:       return "prctl";
         case kX64Prlimit64:   return "prlimit64";
-        case kX64RtSigaction: return "rt_sigaction";
-        case kX64RtSigprocmask: return "rt_sigprocmask";
-        case kX64RtSigreturn: return "rt_sigreturn";
-        case kX64RtSigsuspend: return "rt_sigsuspend";
         case kX64EpollCreate1: return "epoll_create1";
         case kX64EpollCtl:    return "epoll_ctl";
         case kX64EpollWait:   return "epoll_wait";
-        case kX64Socket:      return "socket";
-        case kX64Connect:     return "connect";
-        case kX64Accept:      return "accept";
-        case kX64Sendto:      return "sendto";
-        case kX64Recvfrom:    return "recvfrom";
-        case kX64Sendmsg:     return "sendmsg";
-        case kX64Recvmsg:     return "recvmsg";
-        case kX64Shutdown:    return "shutdown";
-        case kX64Bind:        return "bind";
-        case kX64Listen:      return "listen";
-        case kX64Getsockname: return "getsockname";
-        case kX64Getpeername: return "getpeername";
-        case kX64Socketpair:  return "socketpair";
-        case kX64Setsockopt:  return "setsockopt";
-        case kX64Getsockopt:  return "getsockopt";
-        case kX64Clone:       return "clone";
-        case kX64Accept4:     return "accept4";
         default:              return "???";
     }
 }
@@ -300,6 +216,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     const std::uint64_t a6 = state->gpr[static_cast<std::size_t>(Gpr::R9)];
 
     std::int64_t result = 0;
+    auto& thread_state = mutable_guest_thread_startup_state();
 
     if (strace_enabled()) {
         std::fprintf(stderr, "[prisma-strace] %s(%llu, %llu, %llu, %llu, %llu, %llu) = ",
@@ -392,43 +309,11 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 
         // -- F2-SY-010: exit ---------------------------------------------------
         case kX64Exit: {
-            handle_thread_exit();
-            tls_thread_exit_flag.store(true, std::memory_order_relaxed);
-            // Instead of ::exit, we just tell this thread to stop.
-            if (!tls_current_dispatcher) ::exit(static_cast<int>(a1));
-            // Let the dispatcher naturally return out of its loop.
-            // We set the halt sentinel so that it stops immediately.
-            state->guest_pc = CpuStateFrame::kHaltSentinel;
-            return;
-        }
-        case kX64ExitGroup: {
-            g_process_exit.store(true, std::memory_order_relaxed);
             ::exit(static_cast<int>(a1));
             break;
         }
-
-        // -- F2-SY-011: execve ------------------------------------------------
-        case kX64Execve: {
-            const char* path = reinterpret_cast<const char*>(static_cast<std::uintptr_t>(a1));
-            int fd = ::open(path, O_RDONLY | O_CLOEXEC);
-            if (fd >= 0) {
-                unsigned char header[20];
-                ssize_t bytes_read = ::read(fd, header, sizeof(header));
-                ::close(fd);
-                if (bytes_read >= 20 && header[0] == 0x7F && header[1] == 'E' && header[2] == 'L' && header[3] == 'F') {
-                    std::uint16_t e_machine = static_cast<std::uint16_t>(header[18]) | (static_cast<std::uint16_t>(header[19]) << 8);
-                    if (e_machine == 62) {
-                        std::fprintf(stderr, "execve: cross-ISA re-entry not yet implemented\n");
-                        result = -ENOSYS;
-                    } else {
-                        result = -ENOEXEC;
-                    }
-                } else {
-                    result = -ENOEXEC;
-                }
-            } else {
-                result = -errno;
-            }
+        case kX64ExitGroup: {
+            ::exit(static_cast<int>(a1));
             break;
         }
 
@@ -456,14 +341,9 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
         case kX64Geteuid:
             result = static_cast<std::int64_t>(::geteuid());
             break;
-        case kX64Gettid: {
-            // Use pthread_self() as a lightweight tid proxy. On Linux
-            // this matches the kernel tid for the main thread; on macOS
-            // it returns a pthread_t that is unique per-thread.
-            result = static_cast<std::int64_t>(
-                reinterpret_cast<std::uintptr_t>(::pthread_self()));
+        case kX64Gettid:
+            result = static_cast<std::int64_t>(thread_state.tid);
             break;
-        }
 
         // -- F2-SY-008: time ---------------------------------------------------
         case kX64Gettimeofday: {
@@ -653,169 +533,13 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             if (result < 0) result = -errno;
             break;
         }
-        // -- F2-SY-006: clone --------------------------------------------------
-        case kX64Clone: {
-            const std::uint64_t flags = a1;
-            const std::uint64_t child_stack = a2;
-            const std::uint64_t parent_tidptr = a3;
-            const std::uint64_t child_tidptr = a4;
-            const std::uint64_t tls = a5;
-
-            // In Prisma, we only support threads sharing memory (CLONE_VM).
-            // A fork() emulation without CLONE_VM would require process forking.
-            if ((flags & CLONE_VM) == 0) {
-                result = -ENOSYS;
-                break;
-            }
-
-            Dispatcher* parent_dispatcher = tls_current_dispatcher;
-            if (!parent_dispatcher) {
-                result = -ENOSYS;
-                break;
-            }
-
-            // Capture the parent state before making modifications for the child.
-            CpuStateFrame child_state = *state;
-            
-            // The child returns 0.
-            child_state.gpr[static_cast<std::size_t>(ir::Gpr::Rax)] = 0;
-            
-            // Set the child stack if provided.
-            if (child_stack != 0) {
-                child_state.gpr[static_cast<std::size_t>(ir::Gpr::Rsp)] = child_stack;
-            }
-
-            // Set TLS if requested.
-            if ((flags & CLONE_SETTLS) != 0) {
-                child_state.fs_base = tls;
-            }
-
-            // We must simulate the host TID. We use the child's host gettid().
-            // But we don't have the child TID until it starts.
-            // We use a promise/future to retrieve the child's TID before returning to the parent guest.
-            // (Alternatively, we can use a condvar to wait for the child to publish its TID).
-            
-            struct ChildStartup {
-                std::mutex mu;
-                std::condition_variable cv;
-                pid_t tid = 0;
-            };
-            auto startup = std::make_shared<ChildStartup>();
-
-            std::thread child_thread([parent_dispatcher, child_state, flags, child_tidptr, startup]() {
-                // Initialize thread-local dispatcher for the child
-                Dispatcher child_dispatcher(parent_dispatcher->translator(),
-                                            parent_dispatcher->reader());
-                child_dispatcher.set_state(child_state);
-                child_dispatcher.set_exit_flag(&tls_thread_exit_flag);
-
-                // Publish the TID to the parent
-                pid_t host_tid = ::gettid();
-                {
-                    std::lock_guard<std::mutex> lock(startup->mu);
-                    startup->tid = host_tid;
-                }
-                startup->cv.notify_one();
-
-                // Handle child tid pointers
-                if ((flags & CLONE_CHILD_SETTID) != 0 && child_tidptr != 0) {
-                    *reinterpret_cast<std::uint32_t*>(child_tidptr) = host_tid;
-                }
-                if ((flags & CLONE_CHILD_CLEARTID) != 0) {
-                    tls_clear_child_tid = child_tidptr;
-                } else {
-                    tls_clear_child_tid = 0;
-                }
-
-                // Run the child
-                while (!g_process_exit.load(std::memory_order_relaxed)) {
-                    // child_state.guest_pc is pointing to the next instruction after syscall
-                    auto res = child_dispatcher.run(child_dispatcher.state().guest_pc, 10000);
-                    if (res.exit == DispatchExit::Halted || 
-                        res.exit == DispatchExit::FetchFailed || 
-                        res.exit == DispatchExit::TranslationFailed) {
-                        break;
-                    }
-                }
-
-                handle_thread_exit();
-            });
-
-            child_thread.detach();
-
-            // Wait for child to initialize and give us its TID
-            std::unique_lock<std::mutex> lock(startup->mu);
-            startup->cv.wait(lock, [&]() { return startup->tid != 0; });
-            
-            pid_t child_tid = startup->tid;
-
-            if ((flags & CLONE_PARENT_SETTID) != 0 && parent_tidptr != 0) {
-                *reinterpret_cast<std::uint32_t*>(parent_tidptr) = child_tid;
-            }
-
-            result = child_tid;
-            break;
-        }
-
-        // -- F2-SY-007: futex --------------------------------------------------
-        case kX64Futex: {
-            const std::uint64_t uaddr = a1;
-            const int futex_op = static_cast<int>(a2);
-            const std::uint32_t val = static_cast<std::uint32_t>(a3);
-            // const std::uint64_t timeout = a4; // Optional timeout struct ptr
-
-            const int cmd = futex_op & ~FUTEX_PRIVATE_FLAG;
-            auto* addr = reinterpret_cast<std::atomic_ref<std::uint32_t>::value_type*>(uaddr);
-            std::atomic_ref<std::uint32_t> atom(*addr);
-
-            if (cmd == FUTEX_WAIT) {
-                // Wait blockingly.
-                // In C++20, atomic_wait returns void, but if the value doesn't match 'val' it returns immediately.
-                if (atom.load(std::memory_order_seq_cst) != val) {
-                    result = -EAGAIN;
-                } else {
-                    // Note: proper timeout handling requires waiting with timeout,
-                    // but C++20 atomic_wait doesn't support timeout!
-                    // For Prisma Fase 2 MVP, we'll do an infinite wait.
-                    // If timeout was passed, we'd theoretically need a custom condvar fallback or host syscall.
-                    atom.wait(val, std::memory_order_seq_cst);
-                    result = 0;
-                }
-            } else if (cmd == FUTEX_WAKE) {
-                // Wake up to 'val' threads.
-                // In C++20, we can only notify_one() or notify_all().
-                if (val == 1) {
-                    atom.notify_one();
-                } else {
-                    atom.notify_all();
-                }
-                result = val; // return number of awakened (heuristic)
-            } else {
-                result = -ENOSYS;
-            }
-            break;
-        }
-
-        // -- F2-SY-032: robust_futex -------------------------------------------
-        case kX64SetRobustList: {
-            tls_robust_list_head = a1;
-            tls_robust_list_len = static_cast<std::size_t>(a2);
-            result = 0;
-            break;
-        }
-        case kX64GetRobustList: {
-            const int pid = static_cast<int>(a1);
-            if (pid != 0) {
-                result = -EPERM;
-            } else {
-                if (a2 != 0) {
-                    *reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(a2)) = tls_robust_list_head;
-                }
-                if (a3 != 0) {
-                    *reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(a3)) = static_cast<std::uint64_t>(tls_robust_list_len);
-                }
-                result = 0;
-            }
+        case kX64Writev: {
+            result = static_cast<std::int64_t>(::writev(
+                static_cast<int>(a1),
+                reinterpret_cast<const struct ::iovec*>(
+                    static_cast<std::uintptr_t>(a2)),
+                static_cast<int>(a3)));
+            if (result < 0) result = -errno;
             break;
         }
 
@@ -848,39 +572,11 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
-        // -- F2-SY-014 / F2-SY-036: ioctl (passthrough) ------------------------
+        // -- F2-SY-014: ioctl (passthrough) -----------------------------------
         case kX64Ioctl: {
-            const int fd = static_cast<int>(a1);
-            const unsigned long cmd = static_cast<unsigned long>(a2);
-            
-            if (cmd == 0x5401) { // TCGETS
-                if (!::isatty(fd)) {
-                    result = -ENOTTY;
-                } else {
-                    result = ::ioctl(fd, cmd, a3);
-                    if (result < 0) result = -errno;
-                }
-            } else if (cmd == 0x5413) { // TIOCGWINSZ
-                struct GuestWinsize {
-                    unsigned short ws_row;
-                    unsigned short ws_col;
-                    unsigned short ws_xpixel;
-                    unsigned short ws_ypixel;
-                };
-                if (a3 != 0) {
-                    auto* ws = reinterpret_cast<GuestWinsize*>(static_cast<std::uintptr_t>(a3));
-                    ws->ws_row = 24;
-                    ws->ws_col = 80;
-                    ws->ws_xpixel = 0;
-                    ws->ws_ypixel = 0;
-                    result = 0;
-                } else {
-                    result = -EFAULT;
-                }
-            } else {
-                result = ::ioctl(fd, cmd, a3);
-                if (result < 0) result = -errno;
-            }
+            result = ::ioctl(static_cast<int>(a1),
+                             static_cast<unsigned long>(a2), a3);
+            if (result < 0) result = -errno;
             break;
         }
 
@@ -974,10 +670,34 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
-        // -- F2-SY-030: set_tid_address ----------------------------------------
+        // -- RFC 0022: thread-startup syscall state ---------------------------
         case kX64SetTidAddress:
-            tls_clear_child_tid = a1;
-            result = static_cast<std::int64_t>(::gettid());
+            // Record the guest address now; clone/thread-exit will later clear
+            // this word and wake joiners. Do not dereference guest memory here.
+            thread_state.clear_child_tid = a1;
+            result = static_cast<std::int64_t>(thread_state.tid);
+            break;
+
+        case kX64SetRobustList: {
+            // x86_64 robust_list_head is three 64-bit words. Linux accepts the
+            // registration only when len exactly matches sizeof(*head).
+            constexpr std::uint64_t kRobustListHeadSize =
+                static_cast<std::uint64_t>(3 * sizeof(std::uint64_t));
+            if (a2 != kRobustListHeadSize) {
+                result = -EINVAL;
+                break;
+            }
+
+            thread_state.robust_list_head = a1;
+            thread_state.robust_list_len = a2;
+            result = 0;
+            break;
+        }
+
+        case kX64Rseq:
+            // Deliberate startup-compatible stub. Registration and abort-IP
+            // semantics belong to the multi-thread runtime, not this slice.
+            result = -ENOSYS;
             break;
 
         // -- F2-SY-024: epoll --------------------------------------------------
@@ -1011,278 +731,6 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
-        // -- F2-SY-015/016: socket families -----------------------------------
-        case kX64Socket: {
-            result = ::socket(static_cast<int>(a1), static_cast<int>(a2),
-                              static_cast<int>(a3));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Connect: {
-            result = ::connect(
-                static_cast<int>(a1),
-                reinterpret_cast<const struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                static_cast<::socklen_t>(a3));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Accept: {
-            result = ::accept(
-                static_cast<int>(a1),
-                reinterpret_cast<struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                reinterpret_cast<::socklen_t*>(
-                    static_cast<std::uintptr_t>(a3)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Sendto: {
-            result = static_cast<std::int64_t>(::sendto(
-                static_cast<int>(a1),
-                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a2)),
-                static_cast<std::size_t>(a3),
-                static_cast<int>(a4),
-                reinterpret_cast<const struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a5)),
-                static_cast<::socklen_t>(a6)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Recvfrom: {
-            result = static_cast<std::int64_t>(::recvfrom(
-                static_cast<int>(a1),
-                reinterpret_cast<void*>(static_cast<std::uintptr_t>(a2)),
-                static_cast<std::size_t>(a3),
-                static_cast<int>(a4),
-                reinterpret_cast<struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a5)),
-                reinterpret_cast<::socklen_t*>(
-                    static_cast<std::uintptr_t>(a6))));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Sendmsg: {
-            result = static_cast<std::int64_t>(::sendmsg(
-                static_cast<int>(a1),
-                reinterpret_cast<const struct ::msghdr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                static_cast<int>(a3)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Recvmsg: {
-            result = static_cast<std::int64_t>(::recvmsg(
-                static_cast<int>(a1),
-                reinterpret_cast<struct ::msghdr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                static_cast<int>(a3)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Shutdown: {
-            result = ::shutdown(static_cast<int>(a1), static_cast<int>(a2));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Bind: {
-            result = ::bind(
-                static_cast<int>(a1),
-                reinterpret_cast<const struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                static_cast<::socklen_t>(a3));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Listen: {
-            result = ::listen(static_cast<int>(a1), static_cast<int>(a2));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Getsockname: {
-            result = ::getsockname(
-                static_cast<int>(a1),
-                reinterpret_cast<struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                reinterpret_cast<::socklen_t*>(
-                    static_cast<std::uintptr_t>(a3)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Getpeername: {
-            result = ::getpeername(
-                static_cast<int>(a1),
-                reinterpret_cast<struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                reinterpret_cast<::socklen_t*>(
-                    static_cast<std::uintptr_t>(a3)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Socketpair: {
-            result = ::socketpair(static_cast<int>(a1), static_cast<int>(a2),
-                                  static_cast<int>(a3),
-                                  reinterpret_cast<int*>(
-                                      static_cast<std::uintptr_t>(a4)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Setsockopt: {
-            result = ::setsockopt(
-                static_cast<int>(a1), static_cast<int>(a2),
-                static_cast<int>(a3),
-                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a4)),
-                static_cast<::socklen_t>(a5));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Getsockopt: {
-            result = ::getsockopt(
-                static_cast<int>(a1), static_cast<int>(a2),
-                static_cast<int>(a3),
-                reinterpret_cast<void*>(static_cast<std::uintptr_t>(a4)),
-                reinterpret_cast<::socklen_t*>(
-                    static_cast<std::uintptr_t>(a5)));
-            if (result < 0) result = -errno;
-            break;
-        }
-        case kX64Accept4: {
-#if defined(__APPLE__)
-            result = -ENOSYS; // macOS doesn't have accept4
-#else
-            result = ::accept4(
-                static_cast<int>(a1),
-                reinterpret_cast<struct ::sockaddr*>(
-                    static_cast<std::uintptr_t>(a2)),
-                reinterpret_cast<::socklen_t*>(
-                    static_cast<std::uintptr_t>(a3)),
-                static_cast<int>(a4));
-            if (result < 0) result = -errno;
-#endif
-            break;
-        }
-
-        // -- F2-SY-017/018: Señales al guest -----------------------------------
-        case kX64RtSigaction: {
-            // rt_sigaction(sig, act, oact, sigsetsize)
-            int sig = static_cast<int>(a1);
-            const auto* act = reinterpret_cast<const prisma::runtime::GuestSigaction*>(
-                static_cast<std::uintptr_t>(a2));
-            auto* oact = reinterpret_cast<prisma::runtime::GuestSigaction*>(
-                static_cast<std::uintptr_t>(a3));
-            std::size_t sigsetsize = static_cast<std::size_t>(a4);
-
-            if (sigsetsize != 8) {
-                result = -EINVAL;
-                break;
-            }
-            if (sig < 1 || sig >= 65 || sig == SIGKILL || sig == SIGSTOP) {
-                result = -EINVAL;
-                break;
-            }
-
-            std::lock_guard<std::mutex> lk(g_sigaction_mutex);
-            if (oact != nullptr) {
-                *oact = g_guest_sigactions[sig];
-            }
-            if (act != nullptr) {
-                g_guest_sigactions[sig] = *act;
-                // If it's not a synchronous signal we already handle, maybe
-                // we should install a host handler so the host kernel delivers it to us.
-                // For this implementation, we just rely on whatever host signals 
-                // we've set up, or the fact that this is mainly for Segv/Ill etc.
-            }
-            result = 0;
-            break;
-        }
-        case kX64RtSigprocmask: {
-            // rt_sigprocmask(how, set, oset, sigsetsize)
-            int how = static_cast<int>(a1);
-            const auto* set = reinterpret_cast<const std::uint64_t*>(
-                static_cast<std::uintptr_t>(a2));
-            auto* oset = reinterpret_cast<std::uint64_t*>(
-                static_cast<std::uintptr_t>(a3));
-            std::size_t sigsetsize = static_cast<std::size_t>(a4);
-
-            if (sigsetsize != 8) {
-                result = -EINVAL;
-                break;
-            }
-
-            if (oset != nullptr) {
-                *oset = state->blocked_signals;
-            }
-            if (set != nullptr) {
-                std::uint64_t unblockable = (1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1));
-                std::uint64_t new_mask = *set & ~unblockable;
-                
-                if (how == SIG_BLOCK) {
-                    state->blocked_signals |= new_mask;
-                } else if (how == SIG_UNBLOCK) {
-                    state->blocked_signals &= ~new_mask;
-                } else if (how == SIG_SETMASK) {
-                    state->blocked_signals = new_mask;
-                } else {
-                    result = -EINVAL;
-                    break;
-                }
-            }
-            result = 0;
-            break;
-        }
-        case kX64RtSigreturn: {
-            // The guest handler did `ret`, which popped the restorer address.
-            // Now RSP points directly to the `ucontext_t` (or siginfo + ucontext_t).
-            // Actually, Linux ABI says `ucontext_t` is at RSP.
-            std::uint64_t rsp = state->gpr[static_cast<std::size_t>(Gpr::Rsp)];
-            
-            // For safety, we should really use a GuestMemoryReader, but syscall_handler
-            // assumes direct memory access.
-            const auto* uc = reinterpret_cast<const GuestUcontext*>(static_cast<std::uintptr_t>(rsp));
-            
-            // Restore GPRs
-            state->gpr[static_cast<std::size_t>(Gpr::R8)] = uc->uc_mcontext.r8;
-            state->gpr[static_cast<std::size_t>(Gpr::R9)] = uc->uc_mcontext.r9;
-            state->gpr[static_cast<std::size_t>(Gpr::R10)] = uc->uc_mcontext.r10;
-            state->gpr[static_cast<std::size_t>(Gpr::R11)] = uc->uc_mcontext.r11;
-            state->gpr[static_cast<std::size_t>(Gpr::R12)] = uc->uc_mcontext.r12;
-            state->gpr[static_cast<std::size_t>(Gpr::R13)] = uc->uc_mcontext.r13;
-            state->gpr[static_cast<std::size_t>(Gpr::R14)] = uc->uc_mcontext.r14;
-            state->gpr[static_cast<std::size_t>(Gpr::R15)] = uc->uc_mcontext.r15;
-            state->gpr[static_cast<std::size_t>(Gpr::Rdi)] = uc->uc_mcontext.rdi;
-            state->gpr[static_cast<std::size_t>(Gpr::Rsi)] = uc->uc_mcontext.rsi;
-            state->gpr[static_cast<std::size_t>(Gpr::Rbp)] = uc->uc_mcontext.rbp;
-            state->gpr[static_cast<std::size_t>(Gpr::Rbx)] = uc->uc_mcontext.rbx;
-            state->gpr[static_cast<std::size_t>(Gpr::Rdx)] = uc->uc_mcontext.rdx;
-            state->gpr[static_cast<std::size_t>(Gpr::Rax)] = uc->uc_mcontext.rax;
-            state->gpr[static_cast<std::size_t>(Gpr::Rcx)] = uc->uc_mcontext.rcx;
-            state->gpr[static_cast<std::size_t>(Gpr::Rsp)] = uc->uc_mcontext.rsp;
-            
-            state->guest_pc = uc->uc_mcontext.rip;
-            state->rflags = uc->uc_mcontext.eflags;
-            
-            // Restore signal mask
-            state->blocked_signals = uc->uc_sigmask;
-            
-            // We do NOT set `result` to anything that gets written to RAX,
-            // because `rt_sigreturn` restores RAX from the context!
-            // To prevent the common syscall epilogue from overwriting RAX and CF,
-            // we could either add a flag or just let it return normally and 
-            // modify the syscall epilogue in this file.
-            // Wait, the syscall epilogue in this file writes `result` to RAX!
-            // We must bypass it or set a special flag.
-            // Actually, we can just return directly from this switch case!
-            if (strace_enabled()) {
-                std::fprintf(stderr, " -> <restored rip=0x%llx>\n", (unsigned long long)state->guest_pc);
-            }
-            return; // EXIT EARLY to avoid overwriting RAX!
-        }
-        case kX64RtSigsuspend: {
-            // rt_sigsuspend(mask, sigsetsize)
-            result = -ENOSYS; // To be implemented with dispatcher coordination
-            break;
-        }
-
         default:
             result = -ENOSYS;
             break;
@@ -1296,6 +744,14 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 }
 
 #else   // _MSC_VER — stub returning -ENOSYS for all syscalls
+
+namespace prisma::runtime {
+
+GuestThreadStartupState current_guest_thread_startup_state() noexcept {
+    return {};
+}
+
+}  // namespace prisma::runtime
 
 extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     // All syscalls return -ENOSYS on MSVC builds.

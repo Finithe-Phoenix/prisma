@@ -1551,16 +1551,26 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
           }
           WideDivWorkRegs work{};
           if (!allocate_temporary(work.rem) || !allocate_temporary(work.low) ||
-              !allocate_temporary(work.divisor) || !allocate_temporary(work.mask) ||
-              !allocate_temporary(work.bit) || !allocate_temporary(work.overflow)) {
+              !allocate_temporary(work.mask) || !allocate_temporary(work.bit) ||
+              !allocate_temporary(work.overflow)) {
             return {false, LowerError::OutOfScratchRegs, "WideDiv temporaries"};
+          }
+          if (op.is_signed) {
+            if (!allocate_temporary(work.divisor)) {
+              return {false, LowerError::OutOfScratchRegs,
+                      "WideDiv signed divisor temporary"};
+            }
+          } else {
+            // Unsigned division never mutates the divisor. Reuse its live
+            // SSA register instead of consuming a sixth temporary.
+            work.divisor = divisor;
           }
 
           emit_divisor_zero_sigfpe_guard(emitter_, divisor, options_.emit_ret_on_terminator);
           emitter_.mov_reg_reg(work.rem, high);
           emitter_.mov_reg_reg(work.low, low);
-          emitter_.mov_reg_reg(work.divisor, divisor);
           if (op.is_signed) {
+            emitter_.mov_reg_reg(work.divisor, divisor);
             emit_abs_signed_wide_div_inputs(emitter_, work);
             emit_unsigned_wide_div_overflow_guard(emitter_, work.rem, work.divisor,
                                                   options_.emit_ret_on_terminator);
