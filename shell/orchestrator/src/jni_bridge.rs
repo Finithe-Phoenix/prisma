@@ -236,3 +236,16 @@ pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_runExecutable(
     0
 }
 
+#[no_mangle]
+pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_setSurface(
+    mut env: JNIEnv,
+    _class: JClass,
+    surface: jni::objects::JObject,
+) {
+    let raw_env = env.get_raw() as *mut _;
+    let raw_surface = surface.as_raw() as *mut _;
+    let native_window = unsafe { ndk_sys::ANativeWindow_fromSurface(raw_env, raw_surface) };
+    
+    let mut modules = crate::module_table::ModuleTable::new();
+    crate::dxvk_bridge::init_dxvk(&mut modules, native_window as *mut std::ffi::c_void);
+}
