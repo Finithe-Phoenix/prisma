@@ -418,8 +418,8 @@ translator on a reference Linux ARM64 box.
 - [x] (abbe81c) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
 - [x] (abbe81c) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
 - [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
-- [x] (pending commit) F2-SY-006: Implement clone (threads).
-- [x] (pending commit) F2-SY-007: Implement futex (critical for pthread).
+- [x] (9ae522b) F2-SY-006: Implement clone (threads).
+- [x] (d0a459c) F2-SY-007: Implement futex (critical for pthread).
 - [x] (abbe81c,9ba0dd9) F2-SY-008: Implement gettimeofday / clock_gettime.
 - [x] (abbe81c,9ba0dd9) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
 - [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
