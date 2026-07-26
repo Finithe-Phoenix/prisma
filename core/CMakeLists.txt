@@ -241,7 +241,9 @@ add_library(prisma_passes STATIC
     src/passes/algebraic.cpp
     src/passes/cse.cpp
     src/passes/global_cse.cpp
+    src/passes/auto_vec.cpp
     src/passes/licm.cpp
+    src/passes/superblock.cpp
     src/passes/copy_prop.cpp
     src/passes/x87_stack.cpp
     src/passes/strength_reduce.cpp
@@ -494,7 +496,6 @@ if(PRISMA_BUILD_TESTS)
         tests/test_benchmarks.cpp
         tests/test_capi.cpp
         tests/test_syscall_handler.cpp
-        tests/test_wine_wow64cpu.cpp
     )
     target_link_libraries(prisma_core_tests
         PRIVATE
@@ -559,13 +560,6 @@ if(PRISMA_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# wow64cpu — Wine bridge
-# ---------------------------------------------------------------------------
-add_library(wow64cpu SHARED src/wow64cpu/wow64cpu.cpp)
-target_include_directories(wow64cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(wow64cpu PRIVATE prisma_translator prisma_core_c)
-
-# ---------------------------------------------------------------------------
 # Wine Integration (F3-WN-002)
 # ---------------------------------------------------------------------------
 if(NOT WIN32)
@@ -578,5 +572,3 @@ if(NOT WIN32)
     BUILD_IN_SOURCE 0
   )
 endif()
-
-target_link_libraries(prisma_core_tests PRIVATE wow64cpu)

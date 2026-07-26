@@ -24,6 +24,8 @@ anyhow    = { workspace = true }
 # (Layering note: this points "up" at prisma-runtime only to reuse GuestArena's
 # OS-page primitive; a future low-level `os-mem` crate could host it instead.)
 prisma-runtime = { path = "../prisma-runtime" }
+prisma-translator = { path = "../prisma-translator" }
+jni = "0.21"
 
 [dev-dependencies]
 tempfile   = "3.10"

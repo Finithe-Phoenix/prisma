@@ -265,6 +265,13 @@ dead_store_eliminate(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 inline_short_helpers(const std::vector<ir::Stmt>& stmts);
 
+// F25-PS-003: Auto-vectorization pass.
+// This is a primitive Superword Level Parallelism (SLP) pass.
+// It searches for contiguous, independent scalar operations (e.g., Add I32)
+// and merges them into SIMD operations (e.g., VecBinOp Add S4) when profitable.
+[[nodiscard]] std::vector<ir::Stmt>
+auto_vectorize(const std::vector<ir::Stmt>& stmts);
+
 // ---------------------------------------------------------------------------
 // PassManager — ordered pipeline of named passes, with run statistics.
 // ---------------------------------------------------------------------------
@@ -469,6 +476,12 @@ private:
 // LoadReg, LoadSegBase, BinOp, Compare, Extend, Truncate. Iterates to
 // fixed point per loop so chains of dependent invariants all hoist.
 [[nodiscard]] ir::Function loop_invariant_motion(const ir::Function& fn);
+
+// F25-PS-001: Superblock Formation.
+// Merges adjacent BasicBlocks when the predecessor has exactly one successor
+// and the successor has exactly one predecessor, eliminating the unconditional
+// Jump. This enlarges the optimization window for CSE and LICM.
+[[nodiscard]] ir::Function superblock_formation(const ir::Function& fn);
 
 // Default function-level pipeline. Currently just `global_cse`.
 // **Not yet wired into the translator** — see the caveat above.

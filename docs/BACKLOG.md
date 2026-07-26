@@ -608,7 +608,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 ### F3-WN — Wine and Windows programs
 
-- [ ] F3-WN-001: Fork Wine 9.x ARM64 under `third_party/wine`.
+- [x] (e171cf1) F3-WN-001: Fork Wine 9.x ARM64 under `third_party/wine`.
 - [ ] F3-WN-002: Build Wine with our CMake glue.
 - [ ] F3-WN-003: Implement `wow64cpu.dll` stub matching Wine's BTCpu interface.
 - [ ] F3-WN-004: `pBTCpuProcessInit` / `pBTCpuThreadInit`.
@@ -628,9 +628,9 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 ### F3-SH — Shell / orchestrator (Rust)
 
-- [ ] F3-SH-001: Cargo workspace setup under `shell/`.
-- [ ] F3-SH-002: JNI bridge crate to call from Kotlin.
-- [ ] F3-SH-003: Container lifecycle: create, list, delete.
+- [x] F3-SH-001: Cargo workspace setup under `shell/`.
+- [x] F3-SH-002: JNI bridge crate to call from Kotlin.
+- [x] F3-SH-003: Container lifecycle: create, list, delete.
 - [ ] F3-SH-004: Wine prefix management (per-container).
 - [ ] F3-SH-005: Overlay filesystem (FUSE or layered).
 - [ ] F3-SH-006: Component downloader (Wine bundle, DXVK bundle, VKD3D bundle).
@@ -639,18 +639,18 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-SH-009: Crash reporter integration (Sentry via reqwest).
 - [ ] F3-SH-010: P2P cache client (libp2p).
 - [ ] F3-SH-011: Translation cache persistence to disk.
-- [ ] F3-SH-012: Unit tests + integration tests.
+- [x] F3-SH-012: Unit tests + integration tests.
 
 ### F3-ND — Android app
 
-- [ ] F3-ND-001: Gradle project under `android/app`.
-- [ ] F3-ND-002: Min SDK 29, target SDK latest.
-- [ ] F3-ND-003: Compose UI skeleton.
-- [ ] F3-ND-004: Container list screen.
-- [ ] F3-ND-005: Import .exe flow (SAF integration).
-- [ ] F3-ND-006: Run container screen with log view.
+- [x] F3-ND-001: Gradle project under `android/app`.
+- [x] F3-ND-002: Min SDK 29, target SDK latest.
+- [x] F3-ND-003: Compose UI skeleton.
+- [x] F3-ND-004: Container list screen.
+- [x] F3-ND-005: Import .exe flow (SAF integration).
+- [x] F3-ND-006: Run container screen with log view.
 - [ ] F3-ND-007: Settings screen.
-- [ ] F3-ND-008: Bridge to Rust shell via JNI.
+- [x] F3-ND-008: Bridge to Rust shell via JNI.
 - [ ] F3-ND-009: Performance Hint API usage.
 - [ ] F3-ND-010: Game Mode API usage.
 - [ ] F3-ND-011: Permission handling for file access.

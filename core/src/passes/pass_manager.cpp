@@ -90,14 +90,12 @@ FunctionPassManager::run(const ir::Function& input) const {
 }
 
 FunctionPassManager default_function_pipeline() {
-    // Order rationale:
-    //   1. global_cse runs first so duplicate computations across
-    //      blocks collapse to copies before LICM scans for invariants
-    //      — a hoist-then-cse pass would either miss the copy idiom
-    //      or hoist redundant work.
-    //   2. loop_invariant_motion follows. Future additions (GVN,
-    //      partial-redundancy elimination) go here in order.
+    //   1. superblock_formation merges straight-line blocks to maximise
+    //      the window for precise intra-block optimizations.
+    //   2. global_cse runs so duplicate computations collapse.
+    //   3. loop_invariant_motion follows.
     FunctionPassManager pm;
+    pm.add("superblock_formation", superblock_formation);
     pm.add("global_cse",           global_cse);
     pm.add("loop_invariant_motion", loop_invariant_motion);
     return pm;
@@ -141,6 +139,7 @@ PassManager default_pipeline() {
     pm.add("branch_fold",                    branch_fold);
     pm.add("flag_write_elimination",         flag_write_elimination);
     pm.add("inline_short_helpers",           inline_short_helpers);
+    pm.add("auto_vectorize",                 auto_vectorize);
     pm.add("dead_code_eliminate",            dead_code_eliminate);
     return pm;
 }

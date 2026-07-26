@@ -205,7 +205,7 @@ TEST_CASE("PassManager: stats include non-zero per-pass timing") {
 
 TEST_CASE("PassManager: default_pipeline has 14 passes (x87 + peephole + flag-write-elim)") {
     auto pm = passes::default_pipeline();
-    REQUIRE(pm.size() == 14u);
+    REQUIRE(pm.size() == 15u);
 }
 
 // ---------------------------------------------------------------------

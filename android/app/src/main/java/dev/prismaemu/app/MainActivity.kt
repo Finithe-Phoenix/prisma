@@ -1,106 +1,332 @@
 package dev.prismaemu.app
 
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.remember
 
-/**
- * F3 launcher entry point. Pure scaffolding today: lists "containers"
- * (the abstraction over a Wine prefix + a translated cache slice).
- * The real container manager — create / launch / delete / per-game
- * config — lands alongside the Wine PE loader (F2) and the dispatcher
- * loop (F1+).
- */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                PrismaApp()
-            }
-        }
-    }
-}
-
-@Composable
-fun PrismaApp() {
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Prisma") })
-        }
-    ) { padding ->
-        ContainerList(modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .padding(16.dp))
-    }
-}
-
-/** Placeholder data class for the F3 container abstraction. */
-data class Container(
-    val name: String,
-    val winePrefix: String,
-    val installedGames: Int,
-)
-
-@Composable
-fun ContainerList(modifier: Modifier = Modifier) {
-    val containers = remember_dummy_containers()
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Containers", style = MaterialTheme.typography.titleLarge)
-        Spacer(modifier = Modifier.height(8.dp))
-        if (containers.isEmpty()) {
-            Text("No containers yet. Tap + to create one.")
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(containers) { container ->
-                    ContainerRow(container)
+            PrismaTheme {
+                val store = remember { ContainerStore() }
+                PrismaAppShell(store) { uriString ->
+                    // Launch EXE via JNI on background thread
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        val result = OrchestratorJni.runExecutable(uriString)
+                        withContext(Dispatchers.Main) {
+                            if (result == 0) {
+                                Toast.makeText(this@MainActivity, "Executed successfully in Rust!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(this@MainActivity, "Execution failed in Rust (Code: $result)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContainerRow(container: Container) {
-    Column {
-        Text(container.name, style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Prefix: ${container.winePrefix} · ${container.installedGames} games",
-            style = MaterialTheme.typography.bodySmall,
-        )
+fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
+    val state by store.state.collectAsState()
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { 
+                    Text(
+                        "PRISMA", 
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Black,
+                        color = NeonCyan
+                    ) 
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = OLEDBlack.copy(alpha = 0.8f) // Slight glassmorphism
+                )
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showCreateDialog = true },
+                containerColor = NeonMagenta,
+                contentColor = OLEDBlack,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "New Container")
+            }
+        },
+        containerColor = OLEDBlack
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+        ) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "WINE PREFIXES",
+                style = MaterialTheme.typography.titleMedium,
+                color = GrayText,
+                letterSpacing = 2.dp.value.sp
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (state.containers.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No prefixes found. Tap + to deploy one.", color = GrayText)
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(bottom = 80.dp)
+                ) {
+                    items(state.containers) { container ->
+                        ContainerCard(container) {
+                            store.selectContainer(container.id)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showCreateDialog) {
+            CreateContainerDialog(
+                onDismiss = { showCreateDialog = false },
+                onCreate = { name ->
+                    store.createContainer(name)
+                    showCreateDialog = false
+                }
+            )
+        }
+
+        state.selectedContainerId?.let { id ->
+            val selected = state.containers.find { it.id == id }
+            if (selected != null) {
+                ContainerActionSheet(
+                    container = selected,
+                    onDismiss = { store.selectContainer(null) },
+                    onInstall = { uri -> 
+                        store.installExe(selected.id, uri.toString())
+                        store.selectContainer(null)
+                        
+                        // Copy the .exe from the Content Provider to the Container Prefix
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            try {
+                                val contentResolver = applicationContext.contentResolver
+                                val inputStream = contentResolver.openInputStream(uri)
+                                if (inputStream != null) {
+                                    val prefixDir = java.io.File(applicationContext.filesDir, "wine-${selected.id}/drive_c")
+                                    prefixDir.mkdirs()
+                                    
+                                    val exeFile = java.io.File(prefixDir, "program.exe")
+                                    val outputStream = java.io.FileOutputStream(exeFile)
+                                    inputStream.copyTo(outputStream)
+                                    inputStream.close()
+                                    outputStream.close()
+                                    
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(this@MainActivity, "EXE Installed. Launching JIT...", Toast.LENGTH_SHORT).show()
+                                    }
+                                    
+                                    onRunExe(exeFile.absolutePath)
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(this@MainActivity, "Failed to install EXE: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 
-/** Stand-in for a future ContainerStore-backed feed. */
-private fun remember_dummy_containers(): List<Container> = listOf(
-    Container("Default",   "/data/data/dev.prismaemu.app/wine-default", 0),
-)
-
-@Preview(showBackground = true)
 @Composable
-fun PreviewPrismaApp() {
-    MaterialTheme { PrismaApp() }
+fun ContainerCard(container: Container, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .animateContentSize(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = DarkSurface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            DarkSurface,
+                            DarkSurfaceVariant
+                        )
+                    )
+                )
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(NeonCyan.copy(alpha = 0.1f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Build, contentDescription = null, tint = NeonCyan)
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text(
+                    container.name,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = WhiteText
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Prefix: ${container.winePrefix.takeLast(20)}...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = GrayText
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "${container.installedGames} Installed Apps",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NeonMagenta
+                )
+            }
+        }
+    }
 }
 
-// Tiny shim because Compose's `remember` would require a state holder
-// that doesn't exist yet — keep the demo synchronous until the real
-// ContainerStore lands.
-@Suppress("FunctionName", "NOTHING_TO_INLINE")
-private inline fun <T> remember_value(value: T): T = value
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ContainerActionSheet(
+    container: Container,
+    onDismiss: () -> Unit,
+    onInstall: (Uri) -> Unit
+) {
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onInstall(uri)
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = DarkSurfaceVariant
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(container.name.uppercase(), style = MaterialTheme.typography.headlineLarge, color = NeonCyan)
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Button(
+                onClick = { launcher.launch(arrayOf("application/x-msdownload", "application/octet-stream")) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = OLEDBlack),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("RUN .EXE", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            OutlinedButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = WhiteText),
+                border = androidx.compose.foundation.BorderStroke(1.dp, GrayText),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("CANCEL", style = MaterialTheme.typography.titleMedium)
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+fun CreateContainerDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkSurface,
+        title = { Text("New Container", color = WhiteText) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Name", color = GrayText) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = NeonCyan,
+                    unfocusedBorderColor = GrayText,
+                    focusedTextColor = WhiteText,
+                    unfocusedTextColor = WhiteText
+                )
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { if(text.isNotBlank()) onCreate(text) }) {
+                Text("CREATE", color = NeonCyan, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = GrayText)
+            }
+        }
+    )
+}

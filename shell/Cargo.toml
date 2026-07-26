@@ -16,6 +16,8 @@ members = [
     "prisma-backend",
     "prisma-translator",
     "prisma-session",
+    "prisma-loader",
+    "prisma-wow64cpu",
 ]
 # The bridge crates (core-sys, core) link against the C++ core's
 # prisma_core_c shared library (RFC 0014) and need PRISMA_CORE_LIB_DIR
@@ -23,6 +25,8 @@ members = [
 # orchestrator; the ffi-link CI job covers the bridge.
 default-members = [
     "orchestrator",
+    "prisma-loader",
+    "prisma-wow64cpu",
 ]
 
 [workspace.package]

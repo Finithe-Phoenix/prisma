@@ -179,9 +179,8 @@ ir::Function loop_invariant_motion(const ir::Function& fn) {
         // Don't hoist the terminator (last stmt of any block).
         if (block.stmts.empty())
           continue;
-        const std::size_t terminator_pos = block.stmts.size() - 1;
         std::size_t i = 0;
-        while (i < terminator_pos) {
+        while (i < block.stmts.size() - 1) {
           const auto& stmt = block.stmts[i];
           if (!stmt.result || !stmt_is_pure(stmt.op)) {
             ++i;

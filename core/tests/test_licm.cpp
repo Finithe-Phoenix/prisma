@@ -192,11 +192,12 @@ TEST_CASE("LICM: FunctionPassManager runs global_cse → licm in order") {
     }});
     fn.blocks.push_back(BasicBlock{2u, {{std::nullopt, Return{}}}});
     const auto pm = passes::default_function_pipeline();
-    REQUIRE(pm.size() == 2);
+    REQUIRE(pm.size() == 3);
     const auto [out, stats] = pm.run(fn);
-    REQUIRE(stats.passes.size() == 2);
-    REQUIRE(stats.passes[0].name == "global_cse");
-    REQUIRE(stats.passes[1].name == "loop_invariant_motion");
+    REQUIRE(stats.passes.size() == 3);
+    REQUIRE(stats.passes[0].name == "superblock_formation");
+    REQUIRE(stats.passes[1].name == "global_cse");
+    REQUIRE(stats.passes[2].name == "loop_invariant_motion");
     // %2 should have hoisted to bb0 (preheader).
     const auto [where_bb, _pos] = locate_def(out, 2u);
     REQUIRE(where_bb == 0);
