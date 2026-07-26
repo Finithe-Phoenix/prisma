@@ -22,6 +22,7 @@
 #include <cstdlib>
 
 #include "prisma/cpu_state.hpp"
+#include "prisma/futex_wait_table.hpp"
 #include "prisma/ir.hpp"
 
 #ifndef _MSC_VER
@@ -98,6 +99,7 @@ enum X64Sysno : std::uint64_t {
     kX64Fchdir       = 81,
     kX64Rename       = 82,
     kX64Mkdir        = 83,
+    kX64Futex        = 202,
     kX64Rmdir        = 84,
     kX64Unlink       = 87,
     kX64Readlink     = 89,
@@ -130,6 +132,8 @@ enum X64Sysno : std::uint64_t {
 };
 
 }  // namespace prisma::runtime
+
+FutexWaitTable g_futex_table;
 
 // F2-SY-038: strace-like syscall logger. Check PRISMA_STRACE env var once.
 static bool strace_enabled() noexcept {
@@ -199,6 +203,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64EpollCreate1: return "epoll_create1";
         case kX64EpollCtl:    return "epoll_ctl";
         case kX64EpollWait:   return "epoll_wait";
+        case kX64Futex:       return "futex";
         default:              return "???";
     }
 }
@@ -728,6 +733,54 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
                 static_cast<int>(a3),
                 static_cast<int>(a4)));
             if (result < 0) result = -errno;
+            break;
+        }
+
+        case kX64Futex: {
+            // sys_futex(uaddr, futex_op, val, timeout, uaddr2, val3)
+            // a1: uaddr, a2: op, a3: val, a4: timeout, a5: uaddr2, a6: val3
+            
+            // Mask out FUTEX_PRIVATE_FLAG (128) and FUTEX_CLOCK_REALTIME (256) for basic operations.
+            const int op = static_cast<int>(a2) & 0x7F;
+            const std::uint64_t uaddr = a1;
+            const std::uint32_t val = static_cast<std::uint32_t>(a3);
+            
+            if (op == 0) { // FUTEX_WAIT
+                std::optional<FutexWaitTable::Duration> timeout_opt;
+                if (a4 != 0) {
+                    struct linux_timespec {
+                        std::int64_t tv_sec;
+                        std::int64_t tv_nsec;
+                    };
+                    auto* ts = reinterpret_cast<const linux_timespec*>(
+                        static_cast<std::uintptr_t>(a4));
+                    timeout_opt = std::chrono::seconds(ts->tv_sec) +
+                                  std::chrono::nanoseconds(ts->tv_nsec);
+                }
+                
+                auto read_word = [](std::uint64_t guest_addr) -> std::optional<std::uint32_t> {
+                    // Relaxed atomic read from the guest's memory.
+                    // (Assuming direct mapping of guest virtual -> host virtual for now).
+                    auto* ptr = reinterpret_cast<std::atomic<std::uint32_t>*>(
+                        static_cast<std::uintptr_t>(guest_addr));
+                    return ptr->load(std::memory_order_relaxed);
+                };
+                
+                const FutexWaitStatus status = g_futex_table.wait(uaddr, val, read_word, timeout_opt);
+                
+                switch (status) {
+                    case FutexWaitStatus::Woken: result = 0; break;
+                    case FutexWaitStatus::ValueMismatch: result = -EAGAIN; break;
+                    case FutexWaitStatus::TimedOut: result = -ETIMEDOUT; break;
+                    case FutexWaitStatus::InvalidAddress: result = -EFAULT; break;
+                    case FutexWaitStatus::Shutdown: result = -EINTR; break;
+                }
+            } else if (op == 1) { // FUTEX_WAKE
+                const std::size_t woken = g_futex_table.wake(uaddr, val);
+                result = static_cast<std::int64_t>(woken);
+            } else {
+                result = -ENOSYS;
+            }
             break;
         }
 
