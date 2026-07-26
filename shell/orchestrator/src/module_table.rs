@@ -48,6 +48,47 @@ impl LoadedModule {
         let export = self.exports.iter().find(|e| e.ordinal == ordinal)?;
         self.base.checked_add(u64::from(export.rva))
     }
+
+    /// Create a synthetic module mapping by placing trampoline instructions
+    /// in the provided `guest_memory` slice. Each exported symbol gets an
+    /// 8-byte trampoline (`mov eax, 0x8000_0000 | ordinal; syscall; ret`).
+    pub fn create_synthetic(
+        name: &str,
+        export_names: &[&str],
+        base: u64,
+        guest_memory: &mut [u8],
+    ) -> Self {
+        let mut exports = Vec::new();
+        let mut offset = 0;
+        let mut ordinal = 1;
+
+        for &sym in export_names {
+            let hypercall_num = 0x8000_0000 | (ordinal as u32);
+            // B8 XX XX XX XX (mov eax, imm32)
+            guest_memory[offset] = 0xB8;
+            guest_memory[offset + 1..offset + 5].copy_from_slice(&hypercall_num.to_le_bytes());
+            // 0F 05 (syscall)
+            guest_memory[offset + 5] = 0x0F;
+            guest_memory[offset + 6] = 0x05;
+            // C3 (ret)
+            guest_memory[offset + 7] = 0xC3;
+
+            exports.push(ExportedSymbol {
+                name: sym.to_owned(),
+                rva: offset as u32,
+                ordinal,
+            });
+
+            offset += 8;
+            ordinal += 1;
+        }
+
+        Self {
+            name: name.to_owned(),
+            base,
+            exports,
+        }
+    }
 }
 
 /// Normalise a module name for case-insensitive matching (Windows semantics).

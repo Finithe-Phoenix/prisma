@@ -174,6 +174,10 @@ impl SyscallHandler {
     /// Returns [`SyscallError::Unsupported`] when the number is not modelled
     /// and the policy denies unknown syscalls.
     pub fn dispatch(&self, number: u32, _args: &[u64; 6]) -> Result<u64, SyscallError> {
+        if number >= 0x8000_0000 {
+            // Route to Win32 hypercalls
+            return self.dispatch_win32(number, _args);
+        }
         if number == 39 || number == 186 {
             return Ok(u64::from(std::process::id()));
         }
@@ -198,6 +202,13 @@ impl SyscallHandler {
             #[allow(clippy::cast_sign_loss)]
             Err(err) => i64::from(err.to_errno()) as u64,
         }
+    }
+
+    /// Dispatch Win32 hypercalls
+    pub fn dispatch_win32(&self, _number: u32, _args: &[u64; 6]) -> Result<u64, SyscallError> {
+        // We will route this to the appropriate handler in the future.
+        // For now, just return Ok(0)
+        Ok(0)
     }
 }
 

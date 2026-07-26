@@ -51,6 +51,7 @@ pub mod load_pe;
 pub mod module_table;
 pub mod pe_loader;
 pub mod registry;
+pub mod win32;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
