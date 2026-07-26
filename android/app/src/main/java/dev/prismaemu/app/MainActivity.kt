@@ -1,4 +1,4 @@
-package dev.prismaemu.app
+﻿package dev.prismaemu.app
 
 import android.net.Uri
 import android.os.Bundle
@@ -62,8 +62,28 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
     val state by store.state.collectAsState()
     var showCreateDialog by remember { mutableStateOf(false) }
 
-    Scaffold(
-        topBar = {
+    Box(modifier = Modifier.fillMaxSize()) {
+        androidx.compose.ui.viewinterop.AndroidView(
+            factory = { ctx ->
+                android.view.SurfaceView(ctx).apply {
+                    holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: android.view.SurfaceHolder) {
+                            Win32Renderer.surfaceHolder = holder
+                        }
+                        override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) {}
+                        override fun surfaceDestroyed(holder: android.view.SurfaceHolder) {
+                            if (Win32Renderer.surfaceHolder == holder) {
+                                Win32Renderer.surfaceHolder = null
+                            }
+                        }
+                    })
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        Scaffold(
+            topBar = {
             TopAppBar(
                 title = { 
                     Text(
@@ -88,7 +108,7 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
                 Icon(Icons.Default.Add, contentDescription = "New Container")
             }
         },
-        containerColor = OLEDBlack
+        containerColor = Color.Transparent
     ) { padding ->
         Column(
             modifier = Modifier
@@ -176,6 +196,7 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
             }
         }
     }
+}
 }
 
 @Composable
@@ -295,6 +316,7 @@ fun ContainerActionSheet(
         }
     }
 }
+}
 
 @Composable
 fun CreateContainerDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
@@ -330,3 +352,6 @@ fun CreateContainerDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
         }
     )
 }
+
+
+
