@@ -8,6 +8,7 @@
 #include <variant>
 
 #include "prisma/signal_handler.hpp"
+#include "prisma/syscall_handler.hpp"
 
 namespace prisma::runtime {
 
@@ -131,6 +132,16 @@ DispatchResult Dispatcher::run(std::uint64_t entry_pc,
         // tombstones; the invalidation callbacks run here, in normal
         // context). Near-free when nothing is pending.
         (void)drain_smc_invalidations();
+
+        // Check if the guest requested a host-handled syscall exit (e.g. clone).
+        auto& thread_state = mutable_guest_thread_startup_state();
+        if (const auto req = thread_state.host_exit_request; req != 0) {
+            thread_state.host_exit_request = 0;
+            if (req == 1) {
+                stats.unique_pcs_seen = seen_pcs.size();
+                return {DispatchExit::SyscallClone, pc, stats, {}};
+            }
+        }
 
         // Halt-before-execute so the caller can configure halt PCs that
         // include the entry.

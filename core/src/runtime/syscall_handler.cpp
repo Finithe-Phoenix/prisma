@@ -22,6 +22,7 @@
 #include <cstdlib>
 
 #include "prisma/cpu_state.hpp"
+#include "prisma/futex_wait_table.hpp"
 #include "prisma/ir.hpp"
 
 #ifndef _MSC_VER
@@ -61,12 +62,8 @@ thread_local GuestThreadStartupState guest_thread_startup_state{
 
 }  // namespace
 
-static GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
+GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
     return guest_thread_startup_state;
-}
-
-GuestThreadStartupState current_guest_thread_startup_state() noexcept {
-    return mutable_guest_thread_startup_state();
 }
 
 // x86_64 Linux syscall numbers used in this file.
@@ -89,6 +86,7 @@ enum X64Sysno : std::uint64_t {
     kX64Ioctl       = 16,
     kX64Readv       = 19,
     kX64Writev      = 20,
+    kX64Clone       = 56,
     kX64Dup         = 32,
     kX64Dup2        = 33,
     kX64Nanosleep   = 35,
@@ -98,6 +96,7 @@ enum X64Sysno : std::uint64_t {
     kX64Fchdir       = 81,
     kX64Rename       = 82,
     kX64Mkdir        = 83,
+    kX64Futex        = 202,
     kX64Rmdir        = 84,
     kX64Unlink       = 87,
     kX64Readlink     = 89,
@@ -131,6 +130,8 @@ enum X64Sysno : std::uint64_t {
 
 }  // namespace prisma::runtime
 
+FutexWaitTable g_futex_table;
+
 // F2-SY-038: strace-like syscall logger. Check PRISMA_STRACE env var once.
 static bool strace_enabled() noexcept {
     static const bool enabled = []() noexcept {
@@ -160,6 +161,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64RtSigprocmask: return "rt_sigprocmask";
         case kX64Select:      return "select";
         case kX64Ioctl:       return "ioctl";
+        case kX64Clone:       return "clone";
         case kX64Readv:       return "readv";
         case kX64Writev:      return "writev";
         case kX64Dup:         return "dup";
@@ -199,6 +201,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64EpollCreate1: return "epoll_create1";
         case kX64EpollCtl:    return "epoll_ctl";
         case kX64EpollWait:   return "epoll_wait";
+        case kX64Futex:       return "futex";
         default:              return "???";
     }
 }
@@ -731,6 +734,73 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
+        case kX64Clone: {
+            // sys_clone(clone_flags, newsp, parent_tidptr, child_tidptr, tls)
+            // a1: flags, a2: newsp, a3: parent_tid, a4: child_tid, a5: tls
+
+            // Tell the dispatcher to exit with PRISMA_DISPATCH_SYSCALL_CLONE.
+            // The dispatcher's parent (host) is responsible for reading the GPRs 
+            // from the state frame and spawning a new thread.
+            thread_state.host_exit_request = 1; 
+            state->guest_pc = CpuStateFrame::kHaltSentinel;
+
+            // We do NOT set result here. The host will set RAX=0 in the child's
+            // frame and RAX=child_tid in the parent's frame before resuming them.
+            // We return early so we don't overwrite RAX at the end of the handler.
+            if (strace_enabled()) {
+                std::fprintf(stderr, "clone (deferred to host)\n");
+            }
+            return;
+        }
+
+        case kX64Futex: {
+            // sys_futex(uaddr, futex_op, val, timeout, uaddr2, val3)
+            // a1: uaddr, a2: op, a3: val, a4: timeout, a5: uaddr2, a6: val3
+            
+            // Mask out FUTEX_PRIVATE_FLAG (128) and FUTEX_CLOCK_REALTIME (256) for basic operations.
+            const int op = static_cast<int>(a2) & 0x7F;
+            const std::uint64_t uaddr = a1;
+            const std::uint32_t val = static_cast<std::uint32_t>(a3);
+            
+            if (op == 0) { // FUTEX_WAIT
+                std::optional<FutexWaitTable::Duration> timeout_opt;
+                if (a4 != 0) {
+                    struct linux_timespec {
+                        std::int64_t tv_sec;
+                        std::int64_t tv_nsec;
+                    };
+                    auto* ts = reinterpret_cast<const linux_timespec*>(
+                        static_cast<std::uintptr_t>(a4));
+                    timeout_opt = std::chrono::seconds(ts->tv_sec) +
+                                  std::chrono::nanoseconds(ts->tv_nsec);
+                }
+                
+                auto read_word = [](std::uint64_t guest_addr) -> std::optional<std::uint32_t> {
+                    // Relaxed atomic read from the guest's memory.
+                    // (Assuming direct mapping of guest virtual -> host virtual for now).
+                    auto* ptr = reinterpret_cast<std::atomic<std::uint32_t>*>(
+                        static_cast<std::uintptr_t>(guest_addr));
+                    return ptr->load(std::memory_order_relaxed);
+                };
+                
+                const FutexWaitStatus status = g_futex_table.wait(uaddr, val, read_word, timeout_opt);
+                
+                switch (status) {
+                    case FutexWaitStatus::Woken: result = 0; break;
+                    case FutexWaitStatus::ValueMismatch: result = -EAGAIN; break;
+                    case FutexWaitStatus::TimedOut: result = -ETIMEDOUT; break;
+                    case FutexWaitStatus::InvalidAddress: result = -EFAULT; break;
+                    case FutexWaitStatus::Shutdown: result = -EINTR; break;
+                }
+            } else if (op == 1) { // FUTEX_WAKE
+                const std::size_t woken = g_futex_table.wake(uaddr, val);
+                result = static_cast<std::int64_t>(woken);
+            } else {
+                result = -ENOSYS;
+            }
+            break;
+        }
+
         default:
             result = -ENOSYS;
             break;
@@ -747,8 +817,9 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 
 namespace prisma::runtime {
 
-GuestThreadStartupState current_guest_thread_startup_state() noexcept {
-    return {};
+GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
+    static GuestThreadStartupState stub_state{};
+    return stub_state;
 }
 
 }  // namespace prisma::runtime
