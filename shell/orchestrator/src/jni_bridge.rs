@@ -56,6 +56,28 @@ pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_runExecutable(
     );
     modules.insert(ntdll).unwrap();
 
+    // Create synthetic user32
+    let user32_base = 0x7FFC_0000;
+    let mut user32_mem = vec![0u8; 4096];
+    let user32 = crate::module_table::LoadedModule::create_synthetic(
+        "user32.dll",
+        &["RegisterClassExW", "CreateWindowExW", "ShowWindow", "UpdateWindow", "GetMessageW", "TranslateMessage", "DispatchMessageW", "DefWindowProcW"],
+        user32_base,
+        &mut user32_mem,
+    );
+    modules.insert(user32).unwrap();
+
+    // Create synthetic gdi32
+    let gdi32_base = 0x7FFB_0000;
+    let mut gdi32_mem = vec![0u8; 4096];
+    let gdi32 = crate::module_table::LoadedModule::create_synthetic(
+        "gdi32.dll",
+        &["BeginPaint", "EndPaint", "GetDC", "ReleaseDC", "TextOutW", "FillRect", "CreateSolidBrush"],
+        gdi32_base,
+        &mut gdi32_mem,
+    );
+    modules.insert(gdi32).unwrap();
+
     let (img, mapped) = match load_pe_with_image(&file_bytes, &modules) {
         Ok(res) => res,
         Err(e) => {
@@ -92,6 +114,12 @@ pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_runExecutable(
 
     space.map(ntdll_base, 4096, Protection::ReadExecute).unwrap();
     space.write(ntdll_base, &ntdll_mem).unwrap();
+
+    space.map(user32_base, 4096, Protection::ReadExecute).unwrap();
+    space.write(user32_base, &user32_mem).unwrap();
+
+    space.map(gdi32_base, 4096, Protection::ReadExecute).unwrap();
+    space.write(gdi32_base, &gdi32_mem).unwrap();
 
     // 3. Setup PEB and TEB
     let peb_addr = window_base + arena_size as u64 - (4 * 1024 * 1024);
@@ -177,7 +205,15 @@ pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_runExecutable(
             let syscall_number = state.gprs[0] as u32;
             if syscall_number >= 0x8000_0000 {
                 println!("Prisma Orchestrator (JNI): Guest executed WIN32 hypercall: {:#x}", syscall_number);
-                // Here we would call dispatch_win32
+                                // Here we would call dispatch_win32
+                if let Ok(stub_str) = env.new_string("StubText") {
+                    let _ = env.call_static_method(
+                        "dev/prismaemu/app/Win32Renderer",
+                        "drawText",
+                        "(Ljava/lang/String;II)V",
+                        &[jni::objects::JValue::Object((&stub_str).into()), jni::objects::JValue::Int(0), jni::objects::JValue::Int(0)]
+                    );
+                }
             } else {
                 println!("Prisma Orchestrator (JNI): Guest executed POSIX syscall: {}", syscall_number);
             }
@@ -199,3 +235,4 @@ pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_runExecutable(
     println!("Prisma Orchestrator (JNI): Execution loop terminated successfully.");
     0
 }
+
