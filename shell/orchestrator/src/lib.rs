@@ -1,4 +1,4 @@
-//! Prisma container orchestrator.
+﻿//! Prisma container orchestrator.
 //!
 //! Status: scaffolding. The real container lifecycle / overlay FS /
 //! downloader / P2P cache work lands across Fase 1+ (semanas 93+).
@@ -8,13 +8,13 @@
 //!
 //! Module layout:
 //!
-//! - [`container`]   â€” `Container { name, prefix_path, ... }` value
+//! - [`container`]   Ã¢â‚¬â€ `Container { name, prefix_path, ... }` value
 //!   type and its [`ContainerError`].
-//! - [`registry`]    â€” directory-backed catalogue of containers under
+//! - [`registry`]    Ã¢â‚¬â€ directory-backed catalogue of containers under
 //!   a root (list / create / remove).
-//! - [`config`]      â€” TOML-backed per-container configuration.
-//! - [`integrity`]   â€” sha256 verification of downloaded artefacts.
-//! - [`cache_proto`] â€” shared types for the future P2P translation
+//! - [`config`]      Ã¢â‚¬â€ TOML-backed per-container configuration.
+//! - [`integrity`]   Ã¢â‚¬â€ sha256 verification of downloaded artefacts.
+//! - [`cache_proto`] Ã¢â‚¬â€ shared types for the future P2P translation
 //!   cache wire format (Pilar 4).
 //!
 //! Each module today exports types + Default implementations so the
@@ -24,7 +24,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(unused_must_use)]
 // Skeleton crate (Fase 3 prep). The pedantic-level doc lints below are
-// aspirational â€” they belong on the Fase 3 hardening pass, not on
+// aspirational Ã¢â‚¬â€ they belong on the Fase 3 hardening pass, not on
 // scaffolding that exists only to fix the public surface. Re-enable
 // once the orchestrator carries real lifecycle / network code.
 #![allow(clippy::missing_errors_doc)]
@@ -53,6 +53,7 @@ pub mod pe_loader;
 pub mod registry;
 pub mod vfs;
 pub mod win32;
+pub mod tso_classifier;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,4 +67,5 @@ mod tests {
         assert!(!VERSION.is_empty());
     }
 }
+
 
