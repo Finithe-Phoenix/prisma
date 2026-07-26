@@ -1,4 +1,4 @@
-﻿//! Prisma container orchestrator.
+//! Prisma container orchestrator.
 //!
 //! Status: scaffolding. The real container lifecycle / overlay FS /
 //! downloader / P2P cache work lands across Fase 1+ (semanas 93+).
@@ -52,6 +52,7 @@ pub mod module_table;
 pub mod pe_loader;
 pub mod registry;
 pub mod vfs;
+pub mod win32;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
