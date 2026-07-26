@@ -70,7 +70,8 @@ typedef enum prisma_dispatch_exit {
     PRISMA_DISPATCH_HALTED = 0,
     PRISMA_DISPATCH_STEP_LIMIT = 1,
     PRISMA_DISPATCH_FETCH_FAILED = 2,
-    PRISMA_DISPATCH_TRANSLATION_FAILED = 3
+    PRISMA_DISPATCH_TRANSLATION_FAILED = 3,
+    PRISMA_DISPATCH_SYSCALL_CLONE = 4
 } prisma_dispatch_exit;
 
 /* x86 register-encoding order, matching ir::Gpr. */

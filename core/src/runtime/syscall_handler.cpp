@@ -62,12 +62,8 @@ thread_local GuestThreadStartupState guest_thread_startup_state{
 
 }  // namespace
 
-static GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
+GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
     return guest_thread_startup_state;
-}
-
-GuestThreadStartupState current_guest_thread_startup_state() noexcept {
-    return mutable_guest_thread_startup_state();
 }
 
 // x86_64 Linux syscall numbers used in this file.
@@ -90,6 +86,7 @@ enum X64Sysno : std::uint64_t {
     kX64Ioctl       = 16,
     kX64Readv       = 19,
     kX64Writev      = 20,
+    kX64Clone       = 56,
     kX64Dup         = 32,
     kX64Dup2        = 33,
     kX64Nanosleep   = 35,
@@ -164,6 +161,7 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64RtSigprocmask: return "rt_sigprocmask";
         case kX64Select:      return "select";
         case kX64Ioctl:       return "ioctl";
+        case kX64Clone:       return "clone";
         case kX64Readv:       return "readv";
         case kX64Writev:      return "writev";
         case kX64Dup:         return "dup";
@@ -736,6 +734,25 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
+        case kX64Clone: {
+            // sys_clone(clone_flags, newsp, parent_tidptr, child_tidptr, tls)
+            // a1: flags, a2: newsp, a3: parent_tid, a4: child_tid, a5: tls
+
+            // Tell the dispatcher to exit with PRISMA_DISPATCH_SYSCALL_CLONE.
+            // The dispatcher's parent (host) is responsible for reading the GPRs 
+            // from the state frame and spawning a new thread.
+            thread_state.host_exit_request = 1; 
+            state->guest_pc = CpuStateFrame::kHaltSentinel;
+
+            // We do NOT set result here. The host will set RAX=0 in the child's
+            // frame and RAX=child_tid in the parent's frame before resuming them.
+            // We return early so we don't overwrite RAX at the end of the handler.
+            if (strace_enabled()) {
+                std::fprintf(stderr, "clone (deferred to host)\n");
+            }
+            return;
+        }
+
         case kX64Futex: {
             // sys_futex(uaddr, futex_op, val, timeout, uaddr2, val3)
             // a1: uaddr, a2: op, a3: val, a4: timeout, a5: uaddr2, a6: val3
@@ -800,8 +817,9 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 
 namespace prisma::runtime {
 
-GuestThreadStartupState current_guest_thread_startup_state() noexcept {
-    return {};
+GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
+    static GuestThreadStartupState stub_state{};
+    return stub_state;
 }
 
 }  // namespace prisma::runtime

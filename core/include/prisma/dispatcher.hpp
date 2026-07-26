@@ -53,6 +53,7 @@ enum class DispatchExit {
     StepLimit,           // ran out of max_steps.
     FetchFailed,         // GuestMemoryReader returned empty span.
     TranslationFailed,   // Translator returned an error.
+    SyscallClone,        // Guest invoked SYS_clone (host thread creation requested).
 };
 
 struct DispatchStats {
