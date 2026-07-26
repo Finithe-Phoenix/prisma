@@ -632,7 +632,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [x] F3-SH-002: JNI bridge crate to call from Kotlin.
 - [x] F3-SH-003: Container lifecycle: create, list, delete.
 - [ ] F3-SH-004: Wine prefix management (per-container).
-- [ ] F3-SH-005: Overlay filesystem (FUSE or layered).
+- [x] F3-SH-005: Overlay filesystem (FUSE or layered).
 - [ ] F3-SH-006: Component downloader (Wine bundle, DXVK bundle, VKD3D bundle).
 - [ ] F3-SH-007: SHA-256 verification of downloads.
 - [ ] F3-SH-008: Config TOML parsing + validation.
