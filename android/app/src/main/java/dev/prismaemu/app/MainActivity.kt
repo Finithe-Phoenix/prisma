@@ -1,4 +1,4 @@
-﻿package dev.prismaemu.app
+package dev.prismaemu.app
 
 import android.net.Uri
 import android.os.Bundle
@@ -117,6 +117,8 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(8.dp))
+            Button(onClick = { onRunExe("C:\\cube3d.exe") }, modifier = Modifier.fillMaxWidth()) { Text("Launch 3D Game") }
+            Spacer(modifier = Modifier.height(16.dp))
             Text(
                 "WINE PREFIXES",
                 style = MaterialTheme.typography.titleMedium,
