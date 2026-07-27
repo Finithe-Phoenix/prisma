@@ -73,7 +73,7 @@ jobs:
 
       - name: Preserve Linux FFI diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ffi-linux-diagnostics
           if-no-files-found: ignore
@@ -127,7 +127,7 @@ jobs:
 
       - name: Preserve ARM64 FFI diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ffi-arm64-diagnostics
           if-no-files-found: ignore
@@ -185,7 +185,7 @@ jobs:
 
       - name: Preserve Windows FFI diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ffi-windows-diagnostics
           if-no-files-found: ignore
