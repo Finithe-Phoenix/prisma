@@ -61,6 +61,8 @@ class MainActivity : ComponentActivity() {
 fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
     val state by store.state.collectAsState()
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showSteamImporter by remember { mutableStateOf(false) }
+    var showGamepadMapper by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         androidx.compose.ui.viewinterop.AndroidView(
@@ -118,6 +120,19 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
         ) {
             Spacer(modifier = Modifier.height(8.dp))
             Button(onClick = { onRunExe("C:\\cube3d.exe") }, modifier = Modifier.fillMaxWidth()) { Text("Launch 3D Game") }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { showSteamImporter = true },
+                    modifier = Modifier.weight(1f).padding(end = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonMagenta, contentColor = OLEDBlack)
+                ) { Text("Steam Import") }
+                Button(
+                    onClick = { showGamepadMapper = true },
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = OLEDBlack)
+                ) { Text("Gamepad Mapper") }
+            }
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 "WINE PREFIXES",
@@ -153,6 +168,10 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
                     showCreateDialog = false
                 }
             )
+        }
+
+        if (showSteamImporter) {
+            SteamLibraryImporter(onDismiss = { showSteamImporter = false })
         }
 
         state.selectedContainerId?.let { id ->
@@ -197,6 +216,10 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
                 )
             }
         }
+    }
+
+    if (showGamepadMapper) {
+        GamepadMapperOverlay(onDismiss = { showGamepadMapper = false })
     }
 }
 }
@@ -357,3 +380,65 @@ fun CreateContainerDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
 
 
 
+
+@Composable
+fun SteamLibraryImporter(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkSurface,
+        title = { Text("Steam Library Importer", color = WhiteText) },
+        text = {
+            Column {
+                Text("Scanning for Steam app manifests...", color = GrayText)
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                    color = NeonCyan
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = NeonCyan, fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+fun GamepadMapperOverlay(onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f))
+            .clickable { onDismiss() },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(24.dp)
+                .background(DarkSurface, RoundedCornerShape(16.dp))
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "Gamepad Mapper",
+                style = MaterialTheme.typography.headlineMedium,
+                color = NeonCyan,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "Tap on screen areas to map to xinput gamepad actions.",
+                color = WhiteText,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = NeonMagenta, contentColor = OLEDBlack)
+            ) {
+                Text("Close Mapper", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
