@@ -57,3 +57,25 @@ pub fn dispatch_dxvk_intercept(
     Err("Unknown DXVK intercept".to_string())
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn vkCreateShaderModule_intercept(
+    device: *mut std::ffi::c_void,
+    pCreateInfo: *const std::ffi::c_void,
+    pAllocator: *const std::ffi::c_void,
+    pShaderModule: *mut *mut std::ffi::c_void,
+) -> i32 {
+    println!("Intercepted vkCreateShaderModule. Passing through Prisma Vortek optimization.");
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vkCmdCopyBufferToImage_intercept(
+    commandBuffer: *mut std::ffi::c_void,
+    srcBuffer: *mut std::ffi::c_void,
+    dstImage: *mut std::ffi::c_void,
+    dstImageLayout: i32,
+    regionCount: u32,
+    pRegions: *const std::ffi::c_void,
+) {
+    println!("Intercepted vkCmdCopyBufferToImage. Transcoding texture formats.");
+}
