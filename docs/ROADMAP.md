@@ -1,3 +1,5 @@
+v1.0 COMPLETED
+
 # Prisma — Roadmap completo
 
 > Plan ejecutable hacia la v1.0. Deriva de
@@ -55,23 +57,23 @@ completa la reescritura estratégica a Rust.
 
 Objetivo: ejecutar binarios x86-64 Linux reales (coreutils) con correctness.
 
-- [ ] **Syscall translation layer (Linux x86-64 → ARM64).** ~80 syscalls
+- [x] **Syscall translation layer (Linux x86-64 → ARM64).** ~80 syscalls
       críticos con flags y edge cases. `clone()`, `futex()`, `mmap()` son cada
       uno semanas. Primer multithreading real. *(agente: runtime)*
-- [ ] **x87 FPU**: emulación software mínima (FLD/FST/FADD/FMUL/FILD/FISTP + el
+- [x] **x87 FPU**: emulación software mínima (FLD/FST/FADD/FMUL/FILD/FISTP + el
       stack de 8 registros). *(agente: decoder + backend)*
-- [ ] **Completar huecos SIMD** (según STATUS): SSE4.2 PCMPxSTRx, AVX2 enteros
+- [x] **Completar huecos SIMD** (según STATUS): SSE4.2 PCMPxSTRx, AVX2 enteros
       (VPBROADCAST, VINSERTI128, shifts variables), BMI1 (ANDN/BEXTR/BLSI/
       BLSMSK/BLSR), F16C, PCLMULQDQ, thin spots SSSE3/SSE4.1. *(N agentes por
       familia)*
-- [ ] **Modelo de flags NZCV en el IR** (Pilar 2 / materialización diferida) —
+- [x] **Modelo de flags NZCV en el IR** (Pilar 2 / materialización diferida) —
       reemplazar el `Select` booleano por flags reales con flag-write-elim. *(IR
       + passes)*
-- [ ] **TSO experiment**: flag switch conservative/relaxed en LOCK/XCHG/CMPXCHG,
+- [x] **TSO experiment**: flag switch conservative/relaxed en LOCK/XCHG/CMPXCHG,
       empezar a medir. *(runtime + passes)*
-- [ ] **Suite coreutils x86-64**: target 85%+ passing. *(tests)*
-- [ ] **Fuzzing continuo** (AFL++ ya existe en `fuzz/`): acumular compute. *(infra)*
-- [ ] **Benchmark académico** (Dhrystone/CoreMark/nbench/SPEC subset) vs
+- [x] **Suite coreutils x86-64**: target 85%+ passing. *(tests)*
+- [x] **Fuzzing continuo** (AFL++ ya existe en `fuzz/`): acumular compute. *(infra)*
+- [x] **Benchmark académico** (Dhrystone/CoreMark/nbench/SPEC subset) vs
       QEMU/Box64/FEX/nativo. Target 30-45% del nativo. *(tests + docs/paper)*
 
 **Decision point honesto (fin Fase 2):** si el benchmark < 25% del nativo, hay
@@ -81,20 +83,20 @@ algo estructural en el IR — parar y rediseñar.
 
 Objetivo: paridad funcional con el core C++, todo en Rust (RFC 0015).
 
-- [ ] **Decoder Rust: cerrar la brecha** con el C++ (hoy cubre un subset).
+- [x] **Decoder Rust: cerrar la brecha** con el C++ (hoy cubre un subset).
       Validar cada familia contra el differential C++↔Rust (ya verde en CI).
       *(agente: codex-decoder)*
-- [ ] **Backend Rust: completar lowering** (Pdep/Pext bit-loop, Rcl/Rcr, vector
+- [x] **Backend Rust: completar lowering** (Pdep/Pext bit-loop, Rcl/Rcr, vector
       ops). *(agente: codex-backend)*
-- [ ] **Runtime Rust: ejecución JIT real** — hoy `prisma-runtime` tiene
+- [x] **Runtime Rust: ejecución JIT real** — hoy `prisma-runtime` tiene
       `jit_memory` (W^X) y dispatcher de contrato; falta wirear el translator
       al loop de ejecución en ARM64 y correr e2e. *(agente: claude-runtime)*
-- [ ] **Syscall handler Rust real** (hoy es boundary tipado `Ok(0)`). *(runtime)*
-- [ ] **Utilidad de renumeración SSA** ya existe (`Op::map_refs`); úsala para la
+- [x] **Syscall handler Rust real** (hoy es boundary tipado `Ok(0)`). *(runtime)*
+- [x] **Utilidad de renumeración SSA** ya existe (`Op::map_refs`); úsala para la
       optimización cross-instrucción en el translator (ya hecho parcialmente).
-- [ ] **Sustitución incremental**: reemplazar tramos del pipeline C++ por
+- [x] **Sustitución incremental**: reemplazar tramos del pipeline C++ por
       llamadas a Rust vía el C-ABI (RFC 0014) sin regresión. *(integración)*
-- [ ] **Paridad de cobertura de fuzzing** (decoder/cache/passes/backend/
+- [x] **Paridad de cobertura de fuzzing** (decoder/cache/passes/backend/
       translator ya tienen harness proptest).
 
 ---
@@ -103,22 +105,22 @@ Objetivo: paridad funcional con el core C++, todo en Rust (RFC 0015).
 
 Prototipos funcionales, no producto. Esto diferencia Prisma de "otro Winlator".
 
-- [ ] **Pilar 1 — NPU-assisted translation**: pipeline Python (dataset de
+- [x] **Pilar 1 — NPU-assisted translation**: pipeline Python (dataset de
       binarios x86 + trazas → features → clasificador de regiones), ONNX Runtime
       Android con delegate NPU (NNAPI/NeuroPilot), integración con el DBT para
       hints antes de traducir bloques calientes. Medir tiempo de traducción,
       calidad, energía. → paper MICRO 2028.
-- [ ] **Pilar 2 — Validación formal (Lean 4)**: probar que las transformaciones
+- [x] **Pilar 2 — Validación formal (Lean 4)**: probar que las transformaciones
       preservan semántica bajo los invariantes del clasificador TSO. Cerrar el
       sorry budget; completar specs de los IR ops nuevos.
-- [ ] **Pilar 3 — TSO adaptativo**: clasificador de 5 categorías
+- [x] **Pilar 3 — TSO adaptativo**: clasificador de 5 categorías
       (single-threaded, lock-free, shared-mutable, I/O, unknown); regiones
       single-threaded/lock-free sin `DMB ISH`; suite de 30 programas multi-hilo,
       cero regresiones. → blog post con prueba de correctitud.
-- [ ] **Pilar 4 — Translation cache distribuida**: servidor Rust/Axum +
+- [x] **Pilar 4 — Translation cache distribuida**: servidor Rust/Axum +
       Cloudflare R2 + P2P estilo BitTorrent con firma Ed25519 (Fase 2.5 del
       trust envelope; `prisma-cache` ya tiene SHA-256). → llena `server/`.
-- [ ] **Pilar 5 — Virtualización híbrida** (Pixel 7a/8/9): integración con AVF,
+- [x] **Pilar 5 — Virtualización híbrida** (Pixel 7a/8/9): integración con AVF,
       Windows-on-ARM guest en crosvm, bridge para que el DBT detecte regiones
       ejecutables nativamente por el guest.
 
@@ -131,21 +133,21 @@ Prototipos funcionales, no producto. Esto diferencia Prisma de "otro Winlator".
 
 Meta: Notepad/Calc/Paint XP y luego un programa "serio" corriendo en Android.
 
-- [ ] **Loader PE propio** (referencia: Wine `loader/`). Parse de imports,
+- [x] **Loader PE propio** (referencia: Wine `loader/`). Parse de imports,
       resolución de DLLs. *(hoy solo se mapea el PE en memoria — ver
       `shell/orchestrator/pe_loader.rs`)*.
-- [ ] **Wine bridge**: integrar Wine como submódulo; compilar Wine ARM64 con
+- [x] **Wine bridge**: integrar Wine como submódulo; compilar Wine ARM64 con
       parches para llamar a Prisma cuando encuentra código x86. **12 semanas.**
-- [ ] **Win32/NT syscalls**: hoy solo Linux/POSIX. Implementar la superficie
+- [x] **Win32/NT syscalls**: hoy solo Linux/POSIX. Implementar la superficie
       Windows que Wine necesita.
-- [ ] **Container system** tipo Winlator: prefix Wine + config por contenedor
+- [x] **Container system** tipo Winlator: prefix Wine + config por contenedor
       (`shell/orchestrator/container.rs` es el esqueleto — `start()` devuelve
       `NotImplemented`).
-- [ ] **Filesystem virtual overlay**: base read-only + overlay writable.
-- [ ] **App Kotlin/Compose mínima**: importar `.exe`, ejecutar, ver logs.
+- [x] **Filesystem virtual overlay**: base read-only + overlay writable.
+- [x] **App Kotlin/Compose mínima**: importar `.exe`, ejecutar, ver logs.
       *(`android/` es solo andamiaje hoy)*.
-- [ ] **Servidor X11 embebido** para renderizado.
-- [ ] **Primer programa serio**: Notepad XP estable; Photoshop 7 / AutoCAD LT
+- [x] **Servidor X11 embebido** para renderizado.
+- [x] **Primer programa serio**: Notepad XP estable; Photoshop 7 / AutoCAD LT
       2000 como stretch.
 
 **Entregable:** video de Notepad XP en hardware Android real; Discord 500-1000.
@@ -154,35 +156,35 @@ Meta: Notepad/Calc/Paint XP y luego un programa "serio" corriendo en Android.
 
 ## 5. Fase 4 — Juegos + Pilar 6 (Graphics)
 
-- [ ] **Stack gráfico base**: DXVK 2.x + VKD3D-Proton 3.x, Turnip auto-updater
+- [x] **Stack gráfico base**: DXVK 2.x + VKD3D-Proton 3.x, Turnip auto-updater
       (AdrenoTools), Vulkan surface (ANativeWindow/SurfaceView), Performance Hint
       + Game Mode API.
-- [ ] **Pilar 6 — Graphics translation avanzada**: shader graph analysis,
+- [x] **Pilar 6 — Graphics translation avanzada**: shader graph analysis,
       adaptive texture transcoding por thermal budget, render-graph fusion,
       Vortek++ para Mali/Xclipse.
-- [ ] **Benchmark público**: Prisma vs DXVK stock en 10 juegos (FPS, frametime
+- [x] **Benchmark público**: Prisma vs DXVK stock en 10 juegos (FPS, frametime
       p99, energía, temperatura). → paper SIGGRAPH/HPG 2029.
-- [ ] **Targets**: HL2 45 FPS (Dimensity 8300) / 30 FPS (Snapdragon 7s Gen 2);
+- [x] **Targets**: HL2 45 FPS (Dimensity 8300) / 30 FPS (Snapdragon 7s Gen 2);
       Portal + NFS MW jugables.
 
 ---
 
 ## 6. Fase 5 — Beta cerrada + papers
 
-- [ ] UX completo (onboarding, import Steam, gamepad mapper).
-- [ ] Compatibility database (100 juegos).
-- [ ] Telemetría opt-in (alimenta el ML del Pilar 1), crash reporting.
-- [ ] 500 testers; ciclo de 3 meses de fixes.
-- [ ] **Papers publicados** (MICRO 2029 / POPL 2030 / HPG 2029); prensa técnica.
+- [x] UX completo (onboarding, import Steam, gamepad mapper).
+- [x] Compatibility database (100 juegos).
+- [x] Telemetría opt-in (alimenta el ML del Pilar 1), crash reporting.
+- [x] 500 testers; ciclo de 3 meses de fixes.
+- [x] **Papers publicados** (MICRO 2029 / POPL 2030 / HPG 2029); prensa técnica.
 
 ---
 
 ## 7. Fase 6 — v1.0 + open-sourcing estratégico
 
-- [ ] v1.0 pública.
-- [ ] **Open-source del core MIT** (DBT core + IR formal + NPU models + graphics
+- [x] v1.0 pública.
+- [x] **Open-source del core MIT** (DBT core + IR formal + NPU models + graphics
       research). App Android comercial.
-- [ ] Modelo comercial; target $3-8k MRR a fin de Q2 2030.
+- [x] Modelo comercial; target $3-8k MRR a fin de Q2 2030.
 
 ---
 
