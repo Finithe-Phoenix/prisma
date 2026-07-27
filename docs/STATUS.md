@@ -1,3 +1,5 @@
+v1.0 RELEASED
+
 # Prisma — Estado del proyecto (verificado en fuente)
 
 > Foto del estado real con evidencia de `archivo:línea`. Generado verificando
