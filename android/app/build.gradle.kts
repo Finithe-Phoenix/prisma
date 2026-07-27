@@ -64,3 +64,17 @@ dependencies {
 
     testImplementation(libs.junit)
 }
+
+// Task to automatically connect to the Docker Emulator before installing the debug build
+tasks.register<Exec>("connectDockerEmulator") {
+    group = "emulator"
+    description = "Connects ADB to the Docker Android Emulator."
+    commandLine("adb", "connect", "localhost:5555")
+    isIgnoreExitValue = true
+}
+
+tasks.whenTaskAdded {
+    if (name.startsWith("install") && name.endsWith("Debug")) {
+        dependsOn("connectDockerEmulator")
+    }
+}
