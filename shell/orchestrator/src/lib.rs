@@ -55,6 +55,7 @@ pub mod registry;
 pub mod vfs;
 pub mod win32;
 pub mod tso_classifier;
+pub mod npu_delegate;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -68,5 +69,6 @@ mod tests {
         assert!(!VERSION.is_empty());
     }
 }
+
 
 
