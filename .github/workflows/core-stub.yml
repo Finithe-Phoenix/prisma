@@ -65,7 +65,7 @@ jobs:
 
       - name: Preserve diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-x86_64-diagnostics
           if-no-files-found: ignore
@@ -110,7 +110,7 @@ jobs:
 
       - name: Preserve diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-arm64-diagnostics
           if-no-files-found: ignore
