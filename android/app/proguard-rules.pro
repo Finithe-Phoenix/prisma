@@ -1,0 +1,2 @@
+-keep class dev.prismaemu.app.OrchestratorJni { *; }
+-keep class dev.prismaemu.app.avf.AvfBridge { *; }

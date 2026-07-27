@@ -1,0 +1,1 @@
+keytool -genkey -v -keystore prisma-release.keystore -alias prisma-alias -keyalg RSA -keysize 2048 -validity 10000 -storepass "password123" -keypass "password123" -dname "CN=Prisma, OU=Prisma, O=Prisma, L=City, ST=State, C=US"
