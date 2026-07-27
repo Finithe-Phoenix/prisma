@@ -13,6 +13,7 @@
          (Pillar 4) and crash reporting. Off by default; the
          settings screen toggles it. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" />
 
     <!-- Performance Hint API — boost CPU frequencies during
          translation hot paths. -->
@@ -39,3 +40,5 @@
         </activity>
     </application>
 </manifest>
+
+
