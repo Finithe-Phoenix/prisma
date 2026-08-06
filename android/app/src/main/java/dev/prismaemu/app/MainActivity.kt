@@ -63,6 +63,7 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var showSteamImporter by remember { mutableStateOf(false) }
     var showGamepadMapper by remember { mutableStateOf(false) }
+    var showTerminal by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         androidx.compose.ui.viewinterop.AndroidView(
@@ -129,9 +130,14 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
                 ) { Text("Steam Import") }
                 Button(
                     onClick = { showGamepadMapper = true },
-                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                    modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = OLEDBlack)
                 ) { Text("Gamepad Mapper") }
+                Button(
+                    onClick = { showTerminal = true },
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray, contentColor = Color.White)
+                ) { Text("Terminal") }
             }
             Spacer(modifier = Modifier.height(16.dp))
             Text(
@@ -220,6 +226,10 @@ fun PrismaAppShell(store: ContainerStore, onRunExe: (String) -> Unit) {
 
     if (showGamepadMapper) {
         GamepadMapperOverlay(onDismiss = { showGamepadMapper = false })
+    }
+
+    if (showTerminal) {
+        TerminalView(onDismiss = { showTerminal = false })
     }
 }
 }
@@ -442,3 +452,4 @@ fun GamepadMapperOverlay(onDismiss: () -> Unit) {
         }
     }
 }
+
