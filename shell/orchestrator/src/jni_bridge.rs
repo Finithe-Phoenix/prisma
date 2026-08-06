@@ -1,7 +1,13 @@
 #![cfg(target_os = "android")]
 
 use jni::JNIEnv;
-use jni::objects::{JClass, JString};
+use jni::objects::{JClass, JString, JObject, JValue};
+use std::sync::Mutex;
+use std::collections::VecDeque;
+use std::thread;
+use std::time::Duration;
+
+static TERMINAL_STDIN: Mutex<Option<VecDeque<String>>> = Mutex::new(None);
 use jni::sys::jint;
 use crate::load_pe::load_pe_with_image;
 use crate::module_table::ModuleTable;
@@ -249,3 +255,74 @@ pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_setSurface(
     let mut modules = crate::module_table::ModuleTable::new();
     crate::dxvk_bridge::init_dxvk(&mut modules, native_window as *mut std::ffi::c_void);
 }
+
+#[no_mangle]
+pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_spawnTerminalProcess(
+    mut env: jni::JNIEnv,
+    _class: JClass,
+    callback_obj: JObject,
+) {
+    {
+        let mut queue = TERMINAL_STDIN.lock().unwrap();
+        if queue.is_none() {
+            *queue = Some(VecDeque::new());
+        }
+    }
+
+    let jvm = env.get_java_vm().expect("Failed to get JavaVM");
+    let callback_global = env.new_global_ref(callback_obj).expect("Failed to create global ref");
+
+    thread::spawn(move || {
+        let mut env = jvm.attach_current_thread().expect("Failed to attach current thread");
+        
+        let initial_msg = env.new_string("Prisma Terminal v1.0\n$ ").unwrap();
+        let _ = env.call_method(
+            &callback_global,
+            "onTerminalOutput",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object((&initial_msg).into())]
+        );
+
+        loop {
+            thread::sleep(Duration::from_millis(100));
+
+            let input_opt = {
+                let mut queue = TERMINAL_STDIN.lock().unwrap();
+                if let Some(q) = queue.as_mut() {
+                    q.pop_front()
+                } else {
+                    None
+                }
+            };
+
+            if let Some(input) = input_opt {
+                let echo = format!("{}\n$ ", input);
+                let echo_msg = env.new_string(echo).unwrap();
+                let _ = env.call_method(
+                    &callback_global,
+                    "onTerminalOutput",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object((&echo_msg).into())]
+                );
+            }
+        }
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_prismaemu_app_OrchestratorJni_sendTerminalInput(
+    mut env: jni::JNIEnv,
+    _class: JClass,
+    input: JString,
+) {
+    let input_str: String = match env.get_string(&input) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+
+    let mut queue_lock = TERMINAL_STDIN.lock().unwrap();
+    if let Some(q) = queue_lock.as_mut() {
+        q.push_back(input_str);
+    }
+}
+
