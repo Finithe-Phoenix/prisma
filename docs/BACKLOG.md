@@ -625,6 +625,20 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-WN-015: Integration test: run Paint.exe.
 - [ ] F3-WN-016: First bigger target: Photoshop 7 (or AutoCAD LT 2000).
 - [ ] F3-WN-017: Document our Wine patch series for future upstream.
+- [ ] F3-WN-018: Pin an x86-64 Windows Oh My Posh compatibility fixture with
+      version, SHA-256 and MIT attribution; never silently download `latest` in
+      a test.
+- [ ] F3-WN-019: Run `oh-my-posh.exe version` on Android ARM64 through Prisma;
+      assert exit code 0 and captured stdout/stderr.
+- [ ] F3-WN-020: Render a deterministic local prompt with
+      `oh-my-posh.exe print primary --config sample.omp.json --shell uni` and
+      verify UTF-8 plus ANSI output against a checked-in expectation.
+- [ ] F3-WN-021: Compatibility report for the current ChatGPT Windows package:
+      package format, architecture, WinUI/WebView, networking, TLS, auth and
+      graphics dependencies; record blockers before implementation.
+- [ ] F3-WN-022: Stretch integration test: user-acquired ChatGPT for Windows
+      reaches its first usable window on Android without Prisma redistributing
+      the proprietary package or credentials.
 
 ### F3-SH — Shell / orchestrator (Rust)
 
@@ -640,6 +654,11 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-SH-010: P2P cache client (libp2p).
 - [ ] F3-SH-011: Translation cache persistence to disk.
 - [x] F3-SH-012: Unit tests + integration tests.
+- [ ] F3-SH-013: Windows console session API with owned stdin/stdout/stderr
+      pipes, environment and working directory; `Drop` plus explicit stop must
+      terminate/reap the child and close every handle deterministically.
+- [ ] F3-SH-014: Console integration tests for UTF-8, ANSI, resize, cancellation,
+      exit status and restart isolation with no leaked process or handle.
 
 ### F3-ND — Android app
 
@@ -655,7 +674,11 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-ND-010: Game Mode API usage.
 - [ ] F3-ND-011: Permission handling for file access.
 - [ ] F3-ND-012: APK signing pipeline.
-- [ ] F3-ND-013: Instrumentation test: launch and import a sample .exe.
+- [~|codex] F3-ND-013: Instrumentation test: launch and import a sample .exe.
+- [ ] F3-ND-014: Connect the Compose Terminal screen to a real guest console
+      session with keyboard input, streaming output, resize and stop/restart.
+- [ ] F3-ND-015: Instrumentation test: launch the pinned Oh My Posh fixture,
+      display its rendered prompt, stop it and verify a clean second launch.
 
 ### F3-XS — X server / display
 
