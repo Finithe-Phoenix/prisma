@@ -633,7 +633,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-WN-020: Render a deterministic local prompt with
       `oh-my-posh.exe print primary --config sample.omp.json --shell uni` and
       verify UTF-8 plus ANSI output against a checked-in expectation.
-- [~|codex-chatgpt] F3-WN-021: Compatibility report for the current ChatGPT Windows package:
+- [x] (50effe2) F3-WN-021: Compatibility report for the current ChatGPT Windows package:
       package format, architecture, WinUI/WebView, networking, TLS, auth and
       graphics dependencies; record blockers before implementation.
 - [ ] F3-WN-022: Stretch integration test: user-acquired ChatGPT for Windows
@@ -657,7 +657,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [x] (43042ab) F3-SH-013: Windows console session API with owned stdin/stdout/stderr
       pipes, environment and working directory; `Drop` plus explicit stop must
       terminate/reap the child and close every handle deterministically.
-- [~|codex-console] F3-SH-014: Console integration tests for UTF-8, ANSI, resize, cancellation,
+- [x] (18afe5f) F3-SH-014: Console integration tests for UTF-8, ANSI, resize, cancellation,
       exit status and restart isolation with no leaked process or handle.
 
 ### F3-ND — Android app
