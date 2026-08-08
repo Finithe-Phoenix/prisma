@@ -413,6 +413,18 @@ const fn is_arm64ec_code(_address: u64) -> bool {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
+fn initialize_windows_segment_bases(frame: &mut CpuStateFrame) {
+    let teb: u64;
+    // SAFETY: Windows ARM64 reserves x18 for the current TEB. Wine exposes the
+    // same TEB to AMD64 code through GS, matching Windows' x64 ABI.
+    unsafe { core::arch::asm!("mov {}, x18", out(reg) teb) };
+    frame.gs_base = teb;
+}
+
+#[cfg(not(all(windows, target_arch = "arm64ec")))]
+const fn initialize_windows_segment_bases(_frame: &mut CpuStateFrame) {}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
 unsafe fn invoke_win64_syscall(address: *const std::ffi::c_void, arguments: &[u64]) -> i32 {
     macro_rules! call {
         ($($index:tt),*) => {{
@@ -537,6 +549,7 @@ impl ThreadRuntime {
         // before returning across the provider boundary.
         let mut translator = Translator::new();
         let mut frame = context.load_frame();
+        initialize_windows_segment_bases(&mut frame);
         let mut rip = context.pc_rip;
         let mut instructions = 0usize;
 
