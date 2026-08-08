@@ -724,6 +724,7 @@ unsafe extern "system" fn exit_to_x64_transition(
     target: u64,
     continuation: u64,
     stack: u64,
+    simd: *const XmmRegister,
 ) -> ! {
     // SAFETY: the naked thunk preserves the incoming register and stack values
     // and tail-branches here on the owning Wine thread.
@@ -731,6 +732,12 @@ unsafe extern "system" fn exit_to_x64_transition(
     // SAFETY: RtlCaptureContext fills Wine's exact hybrid context layout and
     // unwinds the helper frame to recover the native nonvolatile registers.
     unsafe { dispatch::capture_native_context(context) };
+    for index in 0..8 {
+        // SAFETY: the naked thunk passes a 16-byte-aligned eight-register save
+        // area that remains live until this non-returning helper transfers it.
+        let value = unsafe { simd.add(index).read() };
+        let _ = context.set_xmm(index, value);
+    }
     let Some(return_slot) = stack.checked_sub(8) else {
         record_failed_dispatch();
         // SAFETY: an invalid native stack cannot be resumed.
@@ -767,12 +774,19 @@ unsafe extern "system" fn dispatch_jump_transition(
     r9: u64,
     target: u64,
     stack: u64,
+    simd: *const XmmRegister,
 ) -> ! {
     // SAFETY: the naked thunk passes the live native register aliases exactly.
     let context = unsafe { transition_context_or_terminate() };
     // SAFETY: see `exit_to_x64_transition`; no synthetic return is needed for
     // this tail jump.
     unsafe { dispatch::capture_native_context(context) };
+    for index in 0..8 {
+        // SAFETY: see `exit_to_x64_transition`; the save area is owned by this
+        // abandoned native transition frame until context transfer completes.
+        let value = unsafe { simd.add(index).read() };
+        let _ = context.set_xmm(index, value);
+    }
     unsafe { start_x64_transition(context, target, stack, [rcx, rdx, r8, r9]) }
 }
 
@@ -781,7 +795,13 @@ unsafe extern "system" fn dispatch_jump_transition(
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn ExitToX64() -> ! {
     core::arch::naked_asm!(
-        "mov x6, sp",
+        "sub sp, sp, #0x80",
+        "stp q0, q1, [sp, #0x00]",
+        "stp q2, q3, [sp, #0x20]",
+        "stp q4, q5, [sp, #0x40]",
+        "stp q6, q7, [sp, #0x60]",
+        "mov x7, sp",
+        "add x6, sp, #0x80",
         "mov x5, x30",
         "mov x4, x9",
         "b \"#{transition}\"",
@@ -800,7 +820,13 @@ pub extern "system" fn ExitToX64() {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DispatchJump() -> ! {
     core::arch::naked_asm!(
-        "mov x5, sp",
+        "sub sp, sp, #0x80",
+        "stp q0, q1, [sp, #0x00]",
+        "stp q2, q3, [sp, #0x20]",
+        "stp q4, q5, [sp, #0x40]",
+        "stp q6, q7, [sp, #0x60]",
+        "mov x6, sp",
+        "add x5, sp, #0x80",
         "mov x4, x9",
         "b \"#{transition}\"",
         transition = sym dispatch_jump_transition,
