@@ -612,7 +612,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [~|codex] F3-WN-002: Build Wine with our CMake glue.
 - [x] (9bd0c6e) F3-WN-003: Implement `wow64cpu.dll` stub matching Wine's BTCpu interface.
 - [x] (f40f158) F3-WN-004: `pBTCpuProcessInit` / `pBTCpuThreadInit`.
-- [ ] F3-WN-005: `pBTCpuSimulate` — main dispatch loop.
+- [~|codex-xtajit-sim] F3-WN-005: `pBTCpuSimulate` — main dispatch loop.
 - [ ] F3-WN-006: `pBTCpuGetContext` / `pBTCpuSetContext`.
 - [ ] F3-WN-007: `pBTCpuNotifyMapViewOfSection`.
 - [ ] F3-WN-008: `pBTCpuFlushInstructionCache2`.
