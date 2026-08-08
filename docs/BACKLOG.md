@@ -657,7 +657,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [x] (43042ab) F3-SH-013: Windows console session API with owned stdin/stdout/stderr
       pipes, environment and working directory; `Drop` plus explicit stop must
       terminate/reap the child and close every handle deterministically.
-- [ ] F3-SH-014: Console integration tests for UTF-8, ANSI, resize, cancellation,
+- [~|codex-console] F3-SH-014: Console integration tests for UTF-8, ANSI, resize, cancellation,
       exit status and restart isolation with no leaked process or handle.
 
 ### F3-ND — Android app
