@@ -18,7 +18,7 @@ mod dispatch;
 use dispatch::{live_runtime_count, ThreadRuntime};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
-    GuestMemory, PrismaExecutor,
+    GuestMemory, PrismaExecutor, XmmRegister,
 };
 
 pub type NtStatus = i32;

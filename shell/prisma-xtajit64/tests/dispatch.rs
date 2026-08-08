@@ -6,7 +6,7 @@ use prisma_runtime::executor::{CpuStateFrame, ExecError, EXIT_BRANCH, EXIT_NORMA
 use prisma_xtajit64::{
     dispatch_context, provider_snapshot, Arm64EcContext, BlockExecutor, DispatchError,
     DispatchLimits, DispatchStop, GuestMemory, ProcessInit, ProcessTerm, ThreadInit, ThreadTerm,
-    STATUS_SUCCESS,
+    XmmRegister, STATUS_SUCCESS,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -123,6 +123,53 @@ fn branch_exit_updates_rip_and_obeys_bound() {
     let report = dispatch_context(&mut context, &memory, &executor, limits(1)).unwrap();
     assert_eq!(report.stop, DispatchStop::BlockLimit);
     assert_eq!(context.pc_rip, 0x2001);
+    reset();
+}
+
+struct XmmExecutor;
+
+impl BlockExecutor for XmmExecutor {
+    fn execute(&self, _code: &[u8], frame: &mut CpuStateFrame) -> Result<(), ExecError> {
+        assert_eq!(frame.xmm(3), Some([0x3c; 16]));
+        assert!(frame.set_xmm(5, [0xa5; 16]));
+        frame.exit_reason = EXIT_NORMAL;
+        Ok(())
+    }
+}
+
+#[test]
+fn dispatch_synchronizes_xmm_state_with_the_wine_context() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    start();
+    let memory = FixtureMemory {
+        base: 0x2800,
+        bytes: vec![0x90],
+    };
+    let mut context = Arm64EcContext {
+        pc_rip: 0x2800,
+        ..Arm64EcContext::default()
+    };
+    assert!(context.set_xmm(
+        3,
+        XmmRegister {
+            low: 0x3c3c_3c3c_3c3c_3c3c,
+            high: 0x3c3c_3c3c_3c3c_3c3c,
+        }
+    ));
+
+    let report = dispatch_context(&mut context, &memory, &XmmExecutor, limits(1)).unwrap();
+    assert_eq!(report.stop, DispatchStop::BlockLimit);
+    assert_eq!(
+        context.xmm(5),
+        Some(XmmRegister {
+            low: 0xa5a5_a5a5_a5a5_a5a5,
+            high: 0xa5a5_a5a5_a5a5_a5a5,
+        })
+    );
+    assert!(!context.set_xmm(16, XmmRegister::default()));
+    assert_eq!(context.xmm(16), None);
     reset();
 }
 

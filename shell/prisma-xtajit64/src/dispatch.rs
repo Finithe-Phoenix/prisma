@@ -2,15 +2,60 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use prisma_runtime::executor::{
-    gpr, CpuStateFrame, ExecError, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL,
+    gpr, CpuStateFrame, ExecError, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL, XMM_REGISTER_COUNT,
 };
 use prisma_translator::{TranslateError, Translator};
 
-/// Wine 11.14's ARM64EC context prefix, through the AMD64 instruction pointer.
+/// One 128-bit register in Wine's AMD64-compatible context layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct XmmRegister {
+    pub low: u64,
+    pub high: u64,
+}
+
+/// Wine-owned tail of `ARM64EC_NT_CONTEXT`, starting at offset `0x100`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Arm64EcContextTail {
+    x87_and_arm_aliases: [[u8; 0x20]; 5],
+    xmm: [XmmRegister; XMM_REGISTER_COUNT],
+    xsave_reserved: [[u8; 0x20]; 3],
+    vector_register: [XmmRegister; 26],
+    vector_control: u64,
+    debug_control: u64,
+    last_branch_to_rip: u64,
+    last_branch_from_rip: u64,
+    last_exception_to_rip: u64,
+    last_exception_from_rip: u64,
+}
+
+impl XmmRegister {
+    fn from_bytes(bytes: [u8; 16]) -> Self {
+        let mut low = [0_u8; 8];
+        let mut high = [0_u8; 8];
+        low.copy_from_slice(&bytes[..8]);
+        high.copy_from_slice(&bytes[8..]);
+        Self {
+            low: u64::from_le_bytes(low),
+            high: u64::from_le_bytes(high),
+        }
+    }
+
+    fn to_bytes(self) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&self.low.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.high.to_le_bytes());
+        bytes
+    }
+}
+
+/// Wine 11.14's complete `ARM64EC_NT_CONTEXT` byte layout.
 ///
 /// The unusual ARM register names are the documented ARM64EC aliases for the
-/// corresponding AMD64 registers. The remainder of `ARM64EC_NT_CONTEXT` is not
-/// accessed by the initial integer dispatch bridge.
+/// corresponding AMD64 registers. Prisma synchronizes all integer, control and
+/// XMM state used by translated code and preserves the remaining Wine-owned
+/// context bytes in place.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Arm64EcContext {
@@ -52,10 +97,28 @@ pub struct Arm64EcContext {
     pub x21_r14: u64,
     pub x22_r15: u64,
     pub pc_rip: u64,
+    pub tail: Arm64EcContextTail,
 }
 
 impl Arm64EcContext {
-    fn load_frame(&self) -> CpuStateFrame {
+    /// Returns one AMD64-visible XMM register from Wine's live context.
+    #[must_use]
+    pub fn xmm(&self, index: usize) -> Option<XmmRegister> {
+        self.tail.xmm.get(index).copied()
+    }
+
+    /// Updates one AMD64-visible XMM register in Wine's live context.
+    pub fn set_xmm(&mut self, index: usize, value: XmmRegister) -> bool {
+        let Some(destination) = self.tail.xmm.get_mut(index) else {
+            return false;
+        };
+        *destination = value;
+        true
+    }
+
+    /// Copies Wine's AMD64-visible register state into the stable Prisma frame.
+    #[must_use]
+    pub fn load_frame(&self) -> CpuStateFrame {
         let mut frame = CpuStateFrame::default();
         frame.gpr[gpr::RAX] = self.x8_rax;
         frame.gpr[gpr::RCX] = self.x0_rcx;
@@ -75,10 +138,14 @@ impl Arm64EcContext {
         frame.gpr[gpr::R15] = self.x22_r15;
         frame.rflags = u64::from(self.e_flags);
         frame.cf = frame.rflags & 1;
+        for (index, value) in self.tail.xmm.iter().copied().enumerate() {
+            let _ = frame.set_xmm(index, value.to_bytes());
+        }
         frame
     }
 
-    fn store_frame(&mut self, frame: &CpuStateFrame, rip: u64) {
+    /// Commits Prisma's translated register state back to Wine's live context.
+    pub fn store_frame(&mut self, frame: &CpuStateFrame, rip: u64) {
         self.x8_rax = frame.gpr[gpr::RAX];
         self.x0_rcx = frame.gpr[gpr::RCX];
         self.x1_rdx = frame.gpr[gpr::RDX];
@@ -101,6 +168,11 @@ impl Arm64EcContext {
             self.e_flags = frame.rflags as u32;
         }
         self.pc_rip = rip;
+        for (index, destination) in self.tail.xmm.iter_mut().enumerate() {
+            if let Some(value) = frame.xmm(index) {
+                *destination = XmmRegister::from_bytes(value);
+            }
+        }
     }
 }
 
@@ -414,22 +486,38 @@ impl GuestMemory for ProcessMemory {
     }
 }
 
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+#[repr(C)]
+struct ChpeV2CpuAreaInfo {
+    in_simulation: u8,
+    in_syscall_callback: u8,
+    padding: [u8; 6],
+    emulator_stack_base: u64,
+    emulator_stack_limit: u64,
+    context_amd64: *mut Arm64EcContext,
+    suspend_doorbell: *mut u32,
+    loading_module_modflag: u64,
+    emulator_data: [*mut std::ffi::c_void; 4],
+    emulator_data_inline: u64,
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+unsafe fn context_from_cpu_area<'a>(
+    area: *mut ChpeV2CpuAreaInfo,
+) -> Result<&'a mut Arm64EcContext, DispatchError> {
+    // SAFETY: the caller guarantees that a non-null pointer refers to Wine's
+    // current-thread CHPE area for the duration of the returned borrow.
+    let area = unsafe { area.as_mut() }.ok_or(DispatchError::ContextUnavailable)?;
+    if area.in_simulation == 0 {
+        return Err(DispatchError::ContextUnavailable);
+    }
+    // SAFETY: Wine owns and thread-serializes ContextAmd64 while simulation is
+    // active. A null context is rejected without dereferencing it.
+    unsafe { area.context_amd64.as_mut() }.ok_or(DispatchError::ContextUnavailable)
+}
+
 #[cfg(all(windows, target_arch = "arm64ec"))]
 pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, DispatchError> {
-    #[repr(C)]
-    struct ChpeV2CpuAreaInfo {
-        in_simulation: u8,
-        in_syscall_callback: u8,
-        padding: [u8; 6],
-        emulator_stack_base: u64,
-        emulator_stack_limit: u64,
-        context_amd64: *mut Arm64EcContext,
-        suspend_doorbell: *mut u32,
-        loading_module_modflag: u64,
-        emulator_data: [*mut std::ffi::c_void; 4],
-        emulator_data_inline: u64,
-    }
-
     const CHPE_V2_CPU_AREA_OFFSET: usize = 0x1788;
     let teb: usize;
     // SAFETY: Windows ARM64 reserves x18 for the current TEB.
@@ -444,13 +532,9 @@ pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, Disp
             .ok_or(DispatchError::ContextUnavailable)? as *const *mut ChpeV2CpuAreaInfo)
             .read()
     };
-    if area.is_null() {
-        return Err(DispatchError::ContextUnavailable);
-    }
-    // SAFETY: the non-null CPU area belongs to the current Wine thread.
-    let context = unsafe { (*area).context_amd64 };
-    // SAFETY: Wine owns this context and serializes its use on this thread.
-    unsafe { context.as_mut() }.ok_or(DispatchError::ContextUnavailable)
+    // SAFETY: the pointer was obtained from the current TEB, and Wine keeps the
+    // area and context live for the non-returning simulation transition.
+    unsafe { context_from_cpu_area(area) }
 }
 
 #[cfg(test)]
@@ -465,7 +549,16 @@ mod tests {
         assert_eq!(offset_of!(Arm64EcContext, x8_rax), 0x78);
         assert_eq!(offset_of!(Arm64EcContext, sp_rsp), 0x98);
         assert_eq!(offset_of!(Arm64EcContext, pc_rip), 0xf8);
-        assert_eq!(size_of::<Arm64EcContext>(), 0x100);
+        assert_eq!(offset_of!(Arm64EcContext, tail), 0x100);
+        assert_eq!(offset_of!(Arm64EcContextTail, xmm), 0xa0);
+        assert_eq!(offset_of!(Arm64EcContextTail, vector_register), 0x200);
+        assert_eq!(
+            offset_of!(Arm64EcContextTail, last_exception_from_rip),
+            0x3c8
+        );
+        assert_eq!(size_of::<Arm64EcContext>(), 0x4d0);
+        assert_eq!(offset_of!(ChpeV2CpuAreaInfo, context_amd64), 0x18);
+        assert_eq!(size_of::<ChpeV2CpuAreaInfo>(), 0x58);
     }
 
     #[test]
@@ -478,13 +571,47 @@ mod tests {
             pc_rip: 0x1234,
             ..Arm64EcContext::default()
         };
+        context.tail.xmm = [XmmRegister {
+            low: 0x1122_3344_5566_7788,
+            high: 0x99aa_bbcc_ddee_ff00,
+        }; XMM_REGISTER_COUNT];
         let mut frame = context.load_frame();
         frame.gpr[gpr::RAX] = 99;
+        assert!(frame.set_xmm(7, [0x5a; 16]));
         context.store_frame(&frame, 0x5678);
         assert_eq!(context.x8_rax, 99);
         assert_eq!(context.x0_rcx, 2);
         assert_eq!(context.x22_r15, 15);
         assert_eq!(context.e_flags, 0x203);
+        assert_eq!(context.pc_rip, 0x5678);
+        assert_eq!(context.tail.xmm[0].low, 0x1122_3344_5566_7788);
+        assert_eq!(context.tail.xmm[7], XmmRegister::from_bytes([0x5a; 16]));
+    }
+
+    #[test]
+    fn cpu_area_requires_active_simulation_and_returns_exact_context() {
+        let mut context = Arm64EcContext {
+            pc_rip: 0x1234,
+            ..Arm64EcContext::default()
+        };
+        let mut area = ChpeV2CpuAreaInfo {
+            in_simulation: 0,
+            in_syscall_callback: 0,
+            padding: [0; 6],
+            emulator_stack_base: 0,
+            emulator_stack_limit: 0,
+            context_amd64: &raw mut context,
+            suspend_doorbell: std::ptr::null_mut(),
+            loading_module_modflag: 0,
+            emulator_data: [std::ptr::null_mut(); 4],
+            emulator_data_inline: 0,
+        };
+        // SAFETY: `area` and `context` are live and uniquely owned here.
+        assert!(unsafe { context_from_cpu_area(&raw mut area) }.is_err());
+        area.in_simulation = 1;
+        // SAFETY: active area and its unique context remain live for the borrow.
+        let bound = unsafe { context_from_cpu_area(&raw mut area) }.unwrap();
+        bound.pc_rip = 0x5678;
         assert_eq!(context.pc_rip, 0x5678);
     }
 }

@@ -18,6 +18,11 @@ use prisma_backend::Arm64Assembler;
 
 /// Size of the guest GPR file in bytes (16 × u64).
 const GPR_BYTES: usize = 16 * 8;
+/// Byte offset of XMM0 inside the frame, shared with the Rust lowerer.
+const XMM_BASE_OFFSET: usize = 144;
+const XMM_REGISTER_BYTES: usize = 16;
+/// Number of architectural XMM registers in an AMD64 context.
+pub const XMM_REGISTER_COUNT: usize = 16;
 /// Byte offset of `fs_base` inside the frame (matches the lowerer's
 /// `FS_BASE_OFFSET`); `gs_base` follows 8 bytes later.
 const FS_BASE_OFFSET: usize = 792;
@@ -97,6 +102,48 @@ impl Default for CpuStateFrame {
             mem_base: 0,
             _tail: [0; 32],
         }
+    }
+}
+
+impl CpuStateFrame {
+    /// Returns one architectural XMM register without exposing the reserved
+    /// frame storage that also preserves the C++ ABI layout.
+    #[must_use]
+    pub fn xmm(&self, index: usize) -> Option<[u8; XMM_REGISTER_BYTES]> {
+        if index >= XMM_REGISTER_COUNT {
+            return None;
+        }
+        let start = XMM_BASE_OFFSET
+            .checked_sub(GPR_BYTES)?
+            .checked_add(index.checked_mul(XMM_REGISTER_BYTES)?)?;
+        let end = start.checked_add(XMM_REGISTER_BYTES)?;
+        let source = self._reserved.get(start..end)?;
+        let mut value = [0_u8; XMM_REGISTER_BYTES];
+        value.copy_from_slice(source);
+        Some(value)
+    }
+
+    /// Updates one architectural XMM register while retaining the stable
+    /// `CpuStateFrame` byte layout used by generated ARM64 code.
+    pub fn set_xmm(&mut self, index: usize, value: [u8; XMM_REGISTER_BYTES]) -> bool {
+        if index >= XMM_REGISTER_COUNT {
+            return false;
+        }
+        let Some(start) = XMM_BASE_OFFSET.checked_sub(GPR_BYTES).and_then(|offset| {
+            index
+                .checked_mul(XMM_REGISTER_BYTES)
+                .and_then(|index_offset| offset.checked_add(index_offset))
+        }) else {
+            return false;
+        };
+        let Some(end) = start.checked_add(XMM_REGISTER_BYTES) else {
+            return false;
+        };
+        let Some(destination) = self._reserved.get_mut(start..end) else {
+            return false;
+        };
+        destination.copy_from_slice(&value);
+        true
     }
 }
 
@@ -260,6 +307,30 @@ mod tests {
                 840
             );
         }
+    }
+
+    #[test]
+    fn xmm_accessors_match_the_lowerer_slots_and_reject_invalid_indices() {
+        let mut frame = CpuStateFrame::default();
+        for index in 0..XMM_REGISTER_COUNT {
+            let value = [u8::try_from(index).unwrap(); XMM_REGISTER_BYTES];
+            assert!(frame.set_xmm(index, value));
+            assert_eq!(frame.xmm(index), Some(value));
+        }
+        assert!(!frame.set_xmm(XMM_REGISTER_COUNT, [0xaa; XMM_REGISTER_BYTES]));
+        assert_eq!(frame.xmm(XMM_REGISTER_COUNT), None);
+
+        let first_reserved_byte = XMM_BASE_OFFSET - GPR_BYTES;
+        assert_eq!(
+            &frame._reserved[first_reserved_byte..first_reserved_byte + XMM_REGISTER_BYTES],
+            &[0; XMM_REGISTER_BYTES]
+        );
+        let last_reserved_byte =
+            first_reserved_byte + (XMM_REGISTER_COUNT - 1) * XMM_REGISTER_BYTES;
+        assert_eq!(
+            &frame._reserved[last_reserved_byte..last_reserved_byte + XMM_REGISTER_BYTES],
+            &[15; XMM_REGISTER_BYTES]
+        );
     }
 
     #[test]
