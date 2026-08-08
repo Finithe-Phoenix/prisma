@@ -1,4 +1,4 @@
-use prisma_orchestrator::module_table::{ModuleTable, LoadedModule};
+use prisma_orchestrator::module_table::{LoadedModule, ModuleTable};
 use prisma_orchestrator::vfs::VirtualFileSystem;
 use std::fs;
 use tempfile::tempdir;
@@ -20,12 +20,12 @@ fn e2e_pipeline_initialization() {
     table.insert(module).unwrap();
 
     assert_eq!(table.len(), 1);
-    
+
     // Simulate loading a dummy PE block by checking VFS
     let test_file_path = base_dir.path().join("dummy.exe");
     fs::write(&test_file_path, b"MZ dummy PE").unwrap();
-    
-    let resolved = vfs.resolve_path("C:\dummy.exe").unwrap();
+
+    let resolved = vfs.resolve_path(r"C:\dummy.exe").unwrap();
     assert!(resolved.exists());
     assert_eq!(fs::read_to_string(resolved).unwrap(), "MZ dummy PE");
 }
