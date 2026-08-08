@@ -6,6 +6,19 @@ use prisma_runtime::executor::{
 };
 use prisma_translator::{TranslateError, Translator};
 
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WineSyscallEntry {
+    name: &'static [u8],
+    argument_bytes: u16,
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+include!(concat!(env!("OUT_DIR"), "/wine_syscalls.rs"));
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+const MAX_WIN64_SYSCALL_ARGUMENTS: usize = 16;
+
 /// One 128-bit register in Wine's AMD64-compatible context layout.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -215,6 +228,9 @@ pub enum DispatchError {
     Translation { rip: u64, source: TranslateError },
     Execution { rip: u64, source: ExecError },
     UnsupportedSyscall { rip: u64 },
+    UnknownSyscall { rip: u64, id: u64 },
+    SyscallArguments { rip: u64, id: u64, detail: String },
+    SyscallResolution { rip: u64, id: u64, name: String },
     UnknownExitReason { rip: u64, reason: u64 },
     ContextUnavailable,
 }
@@ -236,6 +252,20 @@ impl fmt::Display for DispatchError {
                 formatter,
                 "Win64 syscall dispatch is not connected for block at {rip:#x}"
             ),
+            Self::UnknownSyscall { rip, id } => {
+                write!(
+                    formatter,
+                    "unknown Wine 11.14 Win64 syscall {id:#x} at {rip:#x}"
+                )
+            }
+            Self::SyscallArguments { rip, id, detail } => write!(
+                formatter,
+                "cannot marshal Wine Win64 syscall {id:#x} at {rip:#x}: {detail}"
+            ),
+            Self::SyscallResolution { rip, id, name } => write!(
+                formatter,
+                "cannot resolve Wine Win64 syscall {id:#x} ({name}) at {rip:#x}"
+            ),
             Self::UnknownExitReason { rip, reason } => {
                 write!(formatter, "block at {rip:#x} returned exit reason {reason}")
             }
@@ -255,6 +285,148 @@ pub trait GuestMemory {
     ///
     /// Returns a diagnostic when the mapped guest range cannot be read.
     fn read_code(&self, rip: u64, max_len: usize) -> Result<Vec<u8>, String>;
+
+    /// Read an exact already-mapped guest data range.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic when the mapped range cannot be read completely.
+    fn read_data(&self, address: u64, length: usize) -> Result<Vec<u8>, String> {
+        let _ = (address, length);
+        Err("guest data reads are unavailable for this memory source".to_owned())
+    }
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+fn wine_syscall_entry(id: u64) -> Option<&'static WineSyscallEntry> {
+    usize::try_from(id)
+        .ok()
+        .and_then(|index| WINE_SYSCALLS.get(index))
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+fn marshal_win64_syscall_arguments<M: GuestMemory>(
+    memory: &M,
+    frame: &CpuStateFrame,
+    argument_bytes: u16,
+) -> Result<Vec<u64>, String> {
+    let argument_count = usize::from(argument_bytes / 8);
+    if argument_bytes % 8 != 0 || argument_count > MAX_WIN64_SYSCALL_ARGUMENTS {
+        return Err(format!("unsupported argument byte count {argument_bytes}"));
+    }
+
+    let mut arguments = Vec::with_capacity(argument_count);
+    let register_arguments = [
+        frame.gpr[gpr::R10],
+        frame.gpr[gpr::RDX],
+        frame.gpr[gpr::R8],
+        frame.gpr[gpr::R9],
+    ];
+    arguments.extend_from_slice(&register_arguments[..argument_count.min(4)]);
+
+    let stack_argument_count = argument_count.saturating_sub(4);
+    if stack_argument_count != 0 {
+        let stack_start = frame.gpr[gpr::RSP]
+            .checked_add(0x28)
+            .ok_or_else(|| "RSP overflow while locating Win64 stack arguments".to_owned())?;
+        let byte_count = stack_argument_count
+            .checked_mul(8)
+            .ok_or_else(|| "Win64 stack argument size overflow".to_owned())?;
+        let bytes = memory.read_data(stack_start, byte_count)?;
+        if bytes.len() != byte_count {
+            return Err(format!(
+                "short Win64 stack read: expected {byte_count} bytes, got {}",
+                bytes.len()
+            ));
+        }
+        for chunk in bytes.chunks_exact(8) {
+            let mut value = [0_u8; 8];
+            value.copy_from_slice(chunk);
+            arguments.push(u64::from_le_bytes(value));
+        }
+    }
+    Ok(arguments)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn dispatch_win64_syscall<M: GuestMemory>(
+    memory: &M,
+    frame: &CpuStateFrame,
+    rip: u64,
+) -> Result<i32, DispatchError> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleA(name: *const u8) -> *mut std::ffi::c_void;
+        fn GetProcAddress(
+            module: *mut std::ffi::c_void,
+            name: *const u8,
+        ) -> *const std::ffi::c_void;
+    }
+
+    let id = frame.gpr[gpr::RAX];
+    let entry = wine_syscall_entry(id).ok_or(DispatchError::UnknownSyscall { rip, id })?;
+    let arguments = marshal_win64_syscall_arguments(memory, frame, entry.argument_bytes)
+        .map_err(|detail| DispatchError::SyscallArguments { rip, id, detail })?;
+    // SAFETY: both byte strings are statically generated NUL-terminated ASCII.
+    let module = unsafe { GetModuleHandleA(c"ntdll.dll".as_ptr().cast()) };
+    let address = if module.is_null() {
+        std::ptr::null()
+    } else {
+        // SAFETY: `entry.name` is a generated NUL-terminated ASCII export name.
+        unsafe { GetProcAddress(module, entry.name.as_ptr()) }
+    };
+    if address.is_null() {
+        let name = String::from_utf8_lossy(&entry.name[..entry.name.len() - 1]).into_owned();
+        return Err(DispatchError::SyscallResolution { rip, id, name });
+    }
+    // SAFETY: the export address and exact ABI argument list were validated
+    // against the generated Wine table above.
+    Ok(unsafe { invoke_win64_syscall(address, &arguments) })
+}
+
+#[cfg(not(all(windows, target_arch = "arm64ec")))]
+const fn dispatch_win64_syscall<M: GuestMemory>(
+    _memory: &M,
+    _frame: &CpuStateFrame,
+    rip: u64,
+) -> Result<i32, DispatchError> {
+    Err(DispatchError::UnsupportedSyscall { rip })
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+unsafe fn invoke_win64_syscall(address: *const std::ffi::c_void, arguments: &[u64]) -> i32 {
+    macro_rules! call {
+        ($($index:tt),*) => {{
+            // SAFETY: `address` is an ntdll Nt* export selected from Wine's
+            // exact 11.14 syscall table. Each match arm casts it to the exact
+            // argument count recorded by that same table.
+            let function: unsafe extern "system" fn($(call!(@ty $index)),*) -> i32 =
+                unsafe { core::mem::transmute(address) };
+            unsafe { function($(arguments[$index]),*) }
+        }};
+        (@ty $index:tt) => { u64 };
+    }
+
+    match arguments.len() {
+        0 => call!(),
+        1 => call!(0),
+        2 => call!(0, 1),
+        3 => call!(0, 1, 2),
+        4 => call!(0, 1, 2, 3),
+        5 => call!(0, 1, 2, 3, 4),
+        6 => call!(0, 1, 2, 3, 4, 5),
+        7 => call!(0, 1, 2, 3, 4, 5, 6),
+        8 => call!(0, 1, 2, 3, 4, 5, 6, 7),
+        9 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8),
+        10 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+        11 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+        12 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+        13 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+        14 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13),
+        15 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
+        16 => call!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+        _ => unreachable!("argument count was validated before invocation"),
+    }
 }
 
 /// Execution boundary, injectable so loop semantics remain testable off ARM64.
@@ -402,8 +574,10 @@ impl ThreadRuntime {
                     });
                 }
                 EXIT_SYSCALL => {
+                    let status = dispatch_win64_syscall(memory, &frame, rip)?;
+                    frame.gpr[gpr::RAX] = u64::from(u32::from_ne_bytes(status.to_ne_bytes()));
+                    rip = rip.wrapping_add(block.guest_bytes as u64);
                     context.store_frame(&frame, rip);
-                    return Err(DispatchError::UnsupportedSyscall { rip });
                 }
                 reason => {
                     context.store_frame(&frame, rip);
@@ -451,37 +625,53 @@ pub fn live_runtime_count() -> usize {
 pub struct ProcessMemory;
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
+fn read_current_process_memory(address: u64, length: usize) -> Result<Vec<u8>, String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn ReadProcessMemory(
+            process: *mut std::ffi::c_void,
+            base: *const std::ffi::c_void,
+            buffer: *mut std::ffi::c_void,
+            size: usize,
+            read: *mut usize,
+        ) -> i32;
+    }
+
+    let mut bytes = vec![0_u8; length];
+    let mut read = 0usize;
+    // SAFETY: the destination is a valid allocation of `max_len` bytes;
+    // ReadProcessMemory validates the source range in the current process.
+    let ok = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            address as *const std::ffi::c_void,
+            bytes.as_mut_ptr().cast(),
+            length,
+            &raw mut read,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
 impl GuestMemory for ProcessMemory {
     fn read_code(&self, rip: u64, max_len: usize) -> Result<Vec<u8>, String> {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentProcess() -> *mut std::ffi::c_void;
-            fn ReadProcessMemory(
-                process: *mut std::ffi::c_void,
-                base: *const std::ffi::c_void,
-                buffer: *mut std::ffi::c_void,
-                size: usize,
-                read: *mut usize,
-            ) -> i32;
-        }
+        read_current_process_memory(rip, max_len)
+    }
 
-        let mut bytes = vec![0_u8; max_len];
-        let mut read = 0usize;
-        // SAFETY: the destination is a valid allocation of `max_len` bytes;
-        // ReadProcessMemory validates the source range in the current process.
-        let ok = unsafe {
-            ReadProcessMemory(
-                GetCurrentProcess(),
-                rip as *const std::ffi::c_void,
-                bytes.as_mut_ptr().cast(),
-                max_len,
-                &raw mut read,
-            )
-        };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
+    fn read_data(&self, address: u64, length: usize) -> Result<Vec<u8>, String> {
+        let bytes = read_current_process_memory(address, length)?;
+        if bytes.len() != length {
+            return Err(format!(
+                "short process-memory read: expected {length} bytes, got {}",
+                bytes.len()
+            ));
         }
-        bytes.truncate(read);
         Ok(bytes)
     }
 }
@@ -541,6 +731,72 @@ pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, Disp
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    struct StackMemory {
+        address: u64,
+        bytes: Vec<u8>,
+    }
+
+    impl GuestMemory for StackMemory {
+        fn read_code(&self, _rip: u64, _max_len: usize) -> Result<Vec<u8>, String> {
+            Err("code read is not part of this fixture".to_owned())
+        }
+
+        fn read_data(&self, address: u64, length: usize) -> Result<Vec<u8>, String> {
+            if address != self.address || length != self.bytes.len() {
+                return Err("unexpected stack range".to_owned());
+            }
+            Ok(self.bytes.clone())
+        }
+    }
+
+    #[test]
+    fn generated_wine_11_14_syscall_table_is_dense_and_exact() {
+        assert_eq!(WINE_SYSCALLS.len(), 264);
+        assert_eq!(
+            wine_syscall_entry(0x0f),
+            Some(&WineSyscallEntry {
+                name: b"NtClose\0",
+                argument_bytes: 8,
+            })
+        );
+        assert_eq!(
+            wine_syscall_entry(0x55),
+            Some(&WineSyscallEntry {
+                name: b"NtCreateFile\0",
+                argument_bytes: 88,
+            })
+        );
+        assert!(wine_syscall_entry(264).is_none());
+        assert!(wine_syscall_entry(u64::MAX).is_none());
+        assert_eq!(
+            WINE_SYSCALLS.iter().map(|entry| entry.argument_bytes).max(),
+            Some(128)
+        );
+    }
+
+    #[test]
+    fn win64_syscall_arguments_use_r10_registers_then_rsp_shadow_space() {
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R10] = 10;
+        frame.gpr[gpr::RDX] = 20;
+        frame.gpr[gpr::R8] = 30;
+        frame.gpr[gpr::R9] = 40;
+        frame.gpr[gpr::RSP] = 0x2000;
+        let stack_values = [50_u64, 60, 70];
+        let bytes = stack_values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let memory = StackMemory {
+            address: 0x2028,
+            bytes,
+        };
+
+        let arguments = marshal_win64_syscall_arguments(&memory, &frame, 7 * 8).unwrap();
+        assert_eq!(arguments, [10, 20, 30, 40, 50, 60, 70]);
+        assert!(marshal_win64_syscall_arguments(&memory, &frame, 17 * 8).is_err());
+    }
 
     #[test]
     fn context_prefix_matches_wine_11_14_offsets() {
