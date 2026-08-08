@@ -1,0 +1,157 @@
+# syntax=docker/dockerfile:1.7
+
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS source
+
+ADD wine-source.tar.gz /src/wine
+COPY wine-text-files.txt /tmp/wine-text-files.txt
+RUN cd /src/wine \
+    && while IFS= read -r path; do \
+         if [ -f "$path" ]; then sed -i 's/\r$//' "$path"; fi; \
+       done < /tmp/wine-text-files.txt
+
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS build
+
+ARG WINE_VERSION=11.14
+ARG WINE_JOBS=4
+ARG LLVM_MINGW_VERSION=20260505
+ARG LLVM_MINGW_SHA256=986d7beef2f6d7e2f3939a1d04ac8746d614e7014557961e7e0d381d7bc5fdcd
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    bison \
+    binutils-aarch64-linux-gnu \
+    build-essential \
+    ca-certificates \
+    curl \
+    flex \
+    gcc-aarch64-linux-gnu \
+    libc6-dev-arm64-cross \
+    make \
+    python3 \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN archive="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+    && curl --fail --location --retry 3 \
+       --output "/tmp/${archive}" \
+       "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${archive}" \
+    && echo "${LLVM_MINGW_SHA256}  /tmp/${archive}" | sha256sum --check --strict \
+    && tar --extract --xz --file "/tmp/${archive}" --directory /usr/local \
+    && mv "/usr/local/${archive%.tar.xz}" /usr/local/llvm-mingw \
+    && rm "/tmp/${archive}"
+
+ENV PATH="/usr/local/llvm-mingw/bin:${PATH}"
+
+COPY --from=source /src/wine /src/wine
+
+RUN test "$(cat /src/wine/VERSION)" = "Wine version ${WINE_VERSION}"
+
+WORKDIR /build/wine-tools
+RUN /src/wine/configure \
+    --enable-archs=none \
+    --disable-tests \
+    --without-alsa \
+    --without-capi \
+    --without-cups \
+    --without-dbus \
+    --without-ffmpeg \
+    --without-fontconfig \
+    --without-freetype \
+    --without-gettext \
+    --without-gphoto \
+    --without-gnutls \
+    --without-gssapi \
+    --without-gstreamer \
+    --without-krb5 \
+    --without-netapi \
+    --without-opencl \
+    --without-opengl \
+    --without-oss \
+    --without-pcap \
+    --without-pcsclite \
+    --without-pulse \
+    --without-sane \
+    --without-sdl \
+    --without-udev \
+    --without-usb \
+    --without-v4l2 \
+    --without-vulkan \
+    --without-wayland \
+    --without-x
+RUN make -j"${WINE_JOBS}" __tooldeps__ >/tmp/wine-tools.log 2>&1 \
+    || { tail -n 240 /tmp/wine-tools.log; exit 1; }
+
+WORKDIR /build/wine-arm64
+RUN /src/wine/configure \
+    --host=aarch64-linux-gnu \
+    --prefix=/opt/prisma-wine \
+    --enable-archs=aarch64,arm64ec,x86_64 \
+    --disable-tests \
+    --with-wine-tools=/build/wine-tools \
+    --with-mingw=clang \
+    CC=aarch64-linux-gnu-gcc \
+    --without-alsa \
+    --without-capi \
+    --without-cups \
+    --without-dbus \
+    --without-ffmpeg \
+    --without-fontconfig \
+    --without-freetype \
+    --without-gettext \
+    --without-gphoto \
+    --without-gnutls \
+    --without-gssapi \
+    --without-gstreamer \
+    --without-krb5 \
+    --without-netapi \
+    --without-opencl \
+    --without-opengl \
+    --without-oss \
+    --without-pcap \
+    --without-pcsclite \
+    --without-pulse \
+    --without-sane \
+    --without-sdl \
+    --without-udev \
+    --without-usb \
+    --without-v4l2 \
+    --without-vulkan \
+    --without-wayland \
+    --without-x
+RUN make -j"${WINE_JOBS}" >/tmp/wine-build.log 2>&1 \
+    || { tail -n 240 /tmp/wine-build.log; exit 1; }
+RUN make install DESTDIR=/staging >/tmp/wine-install.log 2>&1 \
+    || { tail -n 240 /tmp/wine-install.log; exit 1; }
+RUN wine=/staging/opt/prisma-wine/bin/wine \
+    && xtajit=/staging/opt/prisma-wine/lib/wine/aarch64-windows/xtajit64.dll \
+    && test -x "${wine}" \
+    && test -f "${xtajit}" \
+    && llvm-readelf --file-header "${wine}" | grep -q 'Machine:.*AArch64' \
+    && llvm-readobj --file-headers "${xtajit}" | grep -Eq 'Machine: IMAGE_FILE_MACHINE_(ARM64EC|ARM64X)' \
+    && llvm-readobj --coff-exports "${xtajit}" \
+       | sed -n 's/^[[:space:]]*Name: //p' | sort -u > /tmp/actual-exports \
+    && printf '%s\n' \
+       BTCpu64FlushInstructionCache \
+       BTCpu64IsProcessorFeaturePresent \
+       BTCpu64NotifyMemoryDirty \
+       BTCpu64NotifyReadFile \
+       BeginSimulation \
+       DispatchJump \
+       ExitToX64 \
+       FlushInstructionCacheHeavy \
+       NotifyMapViewOfSection \
+       NotifyMemoryAlloc \
+       NotifyMemoryFree \
+       NotifyMemoryProtect \
+       NotifyUnmapViewOfSection \
+       ProcessInit \
+       ProcessTerm \
+       ResetToConsistentState \
+       RetToEntryThunk \
+       ThreadInit \
+       ThreadTerm \
+       UpdateProcessorInformation \
+       | sort -u > /tmp/expected-exports \
+    && diff -u /tmp/expected-exports /tmp/actual-exports
+
+FROM scratch AS artifact
+COPY --from=build /staging/ /

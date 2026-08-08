@@ -108,6 +108,8 @@ secrets/
 # Third-party sources (managed as submodules later)
 third_party/*/
 !third_party/README.md
+!third_party/wine-prisma/
+!third_party/wine-prisma/CMakeLists.txt
 
 # Profiling / telemetry artifacts
 *.prof
