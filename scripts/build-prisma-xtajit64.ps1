@@ -82,6 +82,11 @@ if (-not $msvcRoot) {
 $arm64Linker = Join-Path $msvcRoot.FullName "bin\Hostx64\arm64\link.exe"
 $arm64EcLibraries = Join-Path $msvcRoot.FullName "lib\arm64ec"
 $arm64Libraries = Join-Path $msvcRoot.FullName "lib\arm64"
+$linkerSignature = Get-AuthenticodeSignature -LiteralPath $arm64Linker
+if ($linkerSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+    $linkerSignature.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation,') {
+  throw "The ARM64 linker is not validly signed by Microsoft: $arm64Linker"
+}
 $sdkLibRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Lib"
 $sdkVersion = Get-ChildItem -LiteralPath $sdkLibRoot -Directory |
   Where-Object {
