@@ -500,6 +500,10 @@ dependencies = [
 [[package]]
 name = "prisma-xtajit64"
 version = "0.0.1"
+dependencies = [
+ "prisma-runtime",
+ "prisma-translator",
+]
 
 [[package]]
 name = "prisma-wow64cpu"
