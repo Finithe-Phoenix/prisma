@@ -613,7 +613,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [x] (9bd0c6e) F3-WN-003: Implement `wow64cpu.dll` stub matching Wine's BTCpu interface.
 - [x] (f40f158) F3-WN-004: `pBTCpuProcessInit` / `pBTCpuThreadInit`.
 - [~|codex-xtajit-sim] F3-WN-005: `pBTCpuSimulate` — main dispatch loop.
-- [~|codex] F3-WN-006: Synchronize Wine 11.14's ARM64EC `CONTEXT_AMD64`
+- [x] (98fa05a) F3-WN-006: Synchronize Wine 11.14's ARM64EC `CONTEXT_AMD64`
       through the CHPE/TEB CPU area; the current `xtajit64` ABI has no stale
       `pBTCpuGetContext` / `pBTCpuSetContext` exports.
 - [ ] F3-WN-007: `pBTCpuNotifyMapViewOfSection`.
