@@ -7,6 +7,7 @@
 //! performs deterministic cleanup.
 
 use std::ffi::OsStr;
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -132,6 +133,25 @@ pub struct ConsoleSession {
     status: Option<ExitStatus>,
 }
 
+/// Failure returned when a console capability is unavailable for this transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsoleResizeError {
+    /// Ordinary redirected pipes do not expose a pseudo-terminal to resize.
+    Unsupported,
+}
+
+impl fmt::Display for ConsoleResizeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported => formatter.write_str(
+                "console resize is unsupported for redirected pipes; a PTY backend is required",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConsoleResizeError {}
+
 impl ConsoleSession {
     /// Creates a builder for a console process.
     pub fn builder(program: impl AsRef<OsStr>) -> ConsoleSessionBuilder {
@@ -204,6 +224,14 @@ impl ConsoleSession {
     /// Terminates a running child, waits for it, and closes every owned resource.
     pub fn stop(&mut self) -> io::Result<ExitStatus> {
         self.finish(true)
+    }
+
+    /// Requests a terminal viewport resize.
+    ///
+    /// This pipe-backed session deliberately reports [`ConsoleResizeError::Unsupported`]
+    /// because changing dimensions requires a real ConPTY/PTY transport.
+    pub const fn resize(&mut self, _columns: u16, _rows: u16) -> Result<(), ConsoleResizeError> {
+        Err(ConsoleResizeError::Unsupported)
     }
 
     /// Returns the final status after `wait`, `stop`, or a completed `try_wait`.
