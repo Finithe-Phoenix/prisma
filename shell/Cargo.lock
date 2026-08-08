@@ -498,6 +498,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "prisma-xtajit64"
+version = "0.0.1"
+
+[[package]]
 name = "prisma-wow64cpu"
 version = "0.0.1"
 

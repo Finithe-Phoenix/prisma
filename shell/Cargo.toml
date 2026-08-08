@@ -16,6 +16,7 @@ members = [
     "prisma-backend",
     "prisma-translator",
     "prisma-session",
+    "prisma-xtajit64",
     "prisma-vortek",
 ]
 # The bridge crates (core-sys, core) link against the C++ core's
