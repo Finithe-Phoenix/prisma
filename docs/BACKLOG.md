@@ -618,7 +618,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-WN-008: `pBTCpuFlushInstructionCache2`.
 - [ ] F3-WN-009: Loader PE parser (fallback if Wine's isn't reused).
 - [ ] F3-WN-010: Relocations handling for guest DLLs.
-- [ ] F3-WN-011: Import table translation.
+- [~|codex] F3-WN-011: Import table translation.
 - [ ] F3-WN-012: TLS callback handling.
 - [ ] F3-WN-013: Integration test: run Notepad.exe (Windows XP).
 - [ ] F3-WN-014: Integration test: run Calc.exe.
