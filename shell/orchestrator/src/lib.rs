@@ -36,6 +36,7 @@ pub mod backed_address_space;
 pub mod cache_proto;
 pub mod config;
 pub mod dxvk_bridge;
+pub mod console_session;
 pub mod jni_bridge;
 pub mod container;
 pub mod cpu_features;
