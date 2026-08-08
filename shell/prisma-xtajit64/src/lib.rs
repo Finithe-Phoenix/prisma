@@ -131,6 +131,7 @@ pub struct ThreadContextSnapshot {
     pub generation: u64,
     pub phase: ThreadPhase,
     pub last_report: Option<DispatchReport>,
+    pub native_return_depth: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -141,6 +142,13 @@ struct ThreadContext {
     phase: ThreadPhase,
     runtime: Arc<ThreadRuntime>,
     last_report: Option<DispatchReport>,
+    native_returns: Vec<NativeReturnFrame>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeReturnFrame {
+    continuation: u64,
+    stack: u64,
 }
 
 struct ProviderState {
@@ -240,6 +248,7 @@ pub fn current_thread_context() -> Result<ThreadContextSnapshot, LifecycleError>
             generation: context.generation,
             phase: context.phase,
             last_report: context.last_report,
+            native_return_depth: context.native_returns.len(),
         })
         .ok_or(LifecycleError::ThreadNotInitialized)
 }
@@ -292,6 +301,7 @@ pub fn initialize_thread() -> Result<InitOutcome, LifecycleError> {
                 phase: ThreadPhase::Ready,
                 runtime: Arc::new(ThreadRuntime::new()),
                 last_report: None,
+                native_returns: Vec::new(),
             });
             state.last_status = STATUS_SUCCESS;
             Ok(InitOutcome::Initialized { generation })
@@ -350,13 +360,80 @@ pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
             } else {
                 thread.phase = ThreadPhase::Failed;
             }
-            state.last_status = STATUS_NOT_SUPPORTED;
+            state.last_status = if result.is_ok() {
+                STATUS_SUCCESS
+            } else {
+                STATUS_NOT_SUPPORTED
+            };
         }
         state.phase = ProviderPhase::SimulationRequested;
         state.simulation_requests = state.simulation_requests.saturating_add(1);
     }
     drop(state);
     result
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+fn push_native_return(frame: NativeReturnFrame) -> Result<(), LifecycleError> {
+    let mut state = lock_provider();
+    if !state.is_running() {
+        return Err(phase_error(state.phase));
+    }
+    let thread = state
+        .threads
+        .get_mut(&current_thread_key())
+        .ok_or(LifecycleError::ThreadNotInitialized)?;
+    thread.native_returns.push(frame);
+    drop(state);
+    Ok(())
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+fn pop_native_return() -> Result<NativeReturnFrame, LifecycleError> {
+    let mut state = lock_provider();
+    if !state.is_running() {
+        return Err(phase_error(state.phase));
+    }
+    let frame = state
+        .threads
+        .get_mut(&current_thread_key())
+        .ok_or(LifecycleError::ThreadNotInitialized)?
+        .native_returns
+        .pop()
+        .ok_or(LifecycleError::DispatchFailed)?;
+    drop(state);
+    Ok(frame)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn run_simulation(context: &mut Arm64EcContext) -> ! {
+    loop {
+        match dispatch_context(
+            context,
+            &dispatch::ProcessMemory,
+            &PrismaExecutor,
+            DispatchLimits::default(),
+        ) {
+            Ok(DispatchReport {
+                stop: DispatchStop::BlockLimit,
+                ..
+            }) => {}
+            Ok(DispatchReport {
+                stop: DispatchStop::NativeTransitionRequired,
+                ..
+            }) => {
+                // SAFETY: `context` is Wine's current-thread CHPE context,
+                // synchronized immediately before this non-returning boundary.
+                unsafe { dispatch::resume_wine_context(context) }
+            }
+            Ok(_) | Err(_) => {
+                record_failed_dispatch();
+                // SAFETY: a cancelled or failed context cannot safely cross
+                // back through KiUserEmulationDispatcher.
+                unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+            }
+        }
+    }
 }
 
 fn record_failed_dispatch() {
@@ -480,34 +557,7 @@ pub extern "system" fn BeginSimulation() {
                 unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
         };
-        loop {
-            match dispatch_context(
-                context,
-                &dispatch::ProcessMemory,
-                &PrismaExecutor,
-                DispatchLimits::default(),
-            ) {
-                Ok(DispatchReport {
-                    stop: DispatchStop::BlockLimit,
-                    ..
-                }) => {}
-                Ok(DispatchReport {
-                    stop: DispatchStop::NativeTransitionRequired,
-                    ..
-                }) => {
-                    // SAFETY: `context` is Wine's current-thread CHPE context,
-                    // synchronized by the dispatch loop immediately before the
-                    // non-returning NtContinue boundary.
-                    unsafe { dispatch::resume_wine_context(context) }
-                }
-                Ok(_) | Err(_) => {
-                    record_failed_dispatch();
-                    // SAFETY: a cancelled or failed emulation context cannot
-                    // safely cross back through KiUserEmulationDispatcher.
-                    unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
-                }
-            }
-        }
+        run_simulation(context)
     }
     #[cfg(not(all(windows, target_arch = "arm64ec")))]
     record_failed_dispatch();
@@ -628,19 +678,160 @@ pub extern "system" fn ThreadTerm(thread: Handle, _exit_code: i32) {
 #[unsafe(no_mangle)]
 pub extern "system" fn UpdateProcessorInformation(_information: *mut SystemCpuInformation) {}
 
-// Wine treats these symbols as transition thunks. Rust functions cannot
-// implement the required non-returning ARM64EC register/stack transfer, so
-// they record an explicit boundary failure rather than claim a transition.
+#[cfg(all(windows, target_arch = "arm64ec"))]
+unsafe fn transition_context_or_terminate() -> &'static mut Arm64EcContext {
+    // SAFETY: the transition thunk is running on the thread that owns Wine's
+    // CHPE area and its ContextAmd64 allocation.
+    match unsafe { dispatch::current_wine_transition_context() } {
+        Ok(context) => context,
+        Err(_) => {
+            record_failed_dispatch();
+            // SAFETY: no context exists to resume safely.
+            unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+        }
+    }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+unsafe fn start_x64_transition(
+    context: &mut Arm64EcContext,
+    target: u64,
+    stack: u64,
+    arguments: [u64; 4],
+) -> ! {
+    context.x0_rcx = arguments[0];
+    context.x1_rdx = arguments[1];
+    context.x2_r8 = arguments[2];
+    context.x3_r9 = arguments[3];
+    context.sp_rsp = stack;
+    context.pc_rip = target;
+    // SAFETY: this thread owns the CHPE area and is transferring its context
+    // from native execution to Prisma's x64 simulation loop.
+    if unsafe { dispatch::set_simulation_active(true) }.is_err() {
+        record_failed_dispatch();
+        // SAFETY: the CHPE ownership transfer could not be completed.
+        unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+    }
+    run_simulation(context)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+unsafe extern "system" fn exit_to_x64_transition(
+    rcx: u64,
+    rdx: u64,
+    r8: u64,
+    r9: u64,
+    target: u64,
+    continuation: u64,
+    stack: u64,
+) -> ! {
+    // SAFETY: the naked thunk preserves the incoming register and stack values
+    // and tail-branches here on the owning Wine thread.
+    let context = unsafe { transition_context_or_terminate() };
+    // SAFETY: RtlCaptureContext fills Wine's exact hybrid context layout and
+    // unwinds the helper frame to recover the native nonvolatile registers.
+    unsafe { dispatch::capture_native_context(context) };
+    let Some(return_slot) = stack.checked_sub(8) else {
+        record_failed_dispatch();
+        // SAFETY: an invalid native stack cannot be resumed.
+        unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+    };
+    let return_thunk = match u64::try_from(RetToEntryThunk as *const () as usize) {
+        Ok(address) => address,
+        Err(_) => {
+            record_failed_dispatch();
+            // SAFETY: the transition target is not representable in x64 state.
+            unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+        }
+    };
+    if push_native_return(NativeReturnFrame {
+        continuation,
+        stack,
+    })
+    .is_err()
+        || dispatch::write_current_process_u64(return_slot, return_thunk).is_err()
+    {
+        record_failed_dispatch();
+        // SAFETY: the synthetic cross-ISA return frame was not installed.
+        unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+    }
+    // SAFETY: context ownership and the synthetic x64 return address are live.
+    unsafe { start_x64_transition(context, target, return_slot, [rcx, rdx, r8, r9]) }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+unsafe extern "system" fn dispatch_jump_transition(
+    rcx: u64,
+    rdx: u64,
+    r8: u64,
+    r9: u64,
+    target: u64,
+    stack: u64,
+) -> ! {
+    // SAFETY: the naked thunk passes the live native register aliases exactly.
+    let context = unsafe { transition_context_or_terminate() };
+    // SAFETY: see `exit_to_x64_transition`; no synthetic return is needed for
+    // this tail jump.
+    unsafe { dispatch::capture_native_context(context) };
+    unsafe { start_x64_transition(context, target, stack, [rcx, rdx, r8, r9]) }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn ExitToX64() -> ! {
+    core::arch::naked_asm!(
+        "mov x6, sp",
+        "mov x5, x30",
+        "mov x4, x9",
+        "b \"#{transition}\"",
+        transition = sym exit_to_x64_transition,
+    )
+}
+
+#[cfg(not(all(windows, target_arch = "arm64ec")))]
 #[unsafe(no_mangle)]
 pub extern "system" fn ExitToX64() {
     record_failed_dispatch();
 }
 
+#[cfg(all(windows, target_arch = "arm64ec"))]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn DispatchJump() -> ! {
+    core::arch::naked_asm!(
+        "mov x5, sp",
+        "mov x4, x9",
+        "b \"#{transition}\"",
+        transition = sym dispatch_jump_transition,
+    )
+}
+
+#[cfg(not(all(windows, target_arch = "arm64ec")))]
 #[unsafe(no_mangle)]
 pub extern "system" fn DispatchJump() {
     record_failed_dispatch();
 }
 
+#[cfg(all(windows, target_arch = "arm64ec"))]
+#[unsafe(no_mangle)]
+pub extern "system" fn RetToEntryThunk() {
+    // SAFETY: Wine entered this native EC thunk from the synchronized x64
+    // context after consuming the synthetic return address.
+    let context = unsafe { transition_context_or_terminate() };
+    let Ok(frame) = pop_native_return() else {
+        record_failed_dispatch();
+        // SAFETY: there is no matching native continuation to restore.
+        unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+    };
+    context.pc_rip = frame.continuation;
+    context.sp_rsp = frame.stack;
+    // SAFETY: the x64 result/nonvolatile state is still in `context`; Wine's
+    // NtContinue conversion restores the corresponding ARM64EC aliases.
+    unsafe { dispatch::resume_wine_context(context) }
+}
+
+#[cfg(not(all(windows, target_arch = "arm64ec")))]
 #[unsafe(no_mangle)]
 pub extern "system" fn RetToEntryThunk() {
     record_failed_dispatch();
@@ -760,6 +951,34 @@ mod tests {
         assert_eq!(state.threads.capacity(), 0);
         assert_eq!(state.mappings.capacity(), 0);
         drop(state);
+        ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn native_return_frames_are_lifo_and_released_with_the_thread() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset();
+        assert_eq!(ProcessInit(), STATUS_SUCCESS);
+        assert_eq!(ThreadInit(), STATUS_SUCCESS);
+        let first = NativeReturnFrame {
+            continuation: 0x1000,
+            stack: 0x2000,
+        };
+        let second = NativeReturnFrame {
+            continuation: 0x3000,
+            stack: 0x4000,
+        };
+        push_native_return(first).unwrap();
+        push_native_return(second).unwrap();
+        assert_eq!(current_thread_context().unwrap().native_return_depth, 2);
+        assert_eq!(pop_native_return().unwrap(), second);
+        assert_eq!(pop_native_return().unwrap(), first);
+        assert!(pop_native_return().is_err());
+
+        push_native_return(first).unwrap();
+        ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+        assert_eq!(provider_snapshot().active_threads, 0);
+        assert_eq!(provider_snapshot().live_runtimes, 0);
         ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
     }
 

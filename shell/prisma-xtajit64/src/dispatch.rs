@@ -687,6 +687,41 @@ fn read_current_process_memory(address: u64, length: usize) -> Result<Vec<u8>, S
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
+pub fn write_current_process_u64(address: u64, value: u64) -> Result<(), String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn WriteProcessMemory(
+            process: *mut std::ffi::c_void,
+            base: *mut std::ffi::c_void,
+            buffer: *const std::ffi::c_void,
+            size: usize,
+            written: *mut usize,
+        ) -> i32;
+    }
+
+    let mut written = 0usize;
+    // SAFETY: `value` supplies eight readable bytes and WriteProcessMemory
+    // validates that the target belongs to a writable current-process page.
+    let ok = unsafe {
+        WriteProcessMemory(
+            GetCurrentProcess(),
+            address as *mut std::ffi::c_void,
+            (&raw const value).cast(),
+            std::mem::size_of::<u64>(),
+            &raw mut written,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if written != std::mem::size_of::<u64>() {
+        return Err(format!("short process-memory write: {written} of 8 bytes"));
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
 impl GuestMemory for ProcessMemory {
     fn read_code(&self, rip: u64, max_len: usize) -> Result<Vec<u8>, String> {
         read_current_process_memory(rip, max_len)
@@ -735,7 +770,7 @@ unsafe fn context_from_cpu_area<'a>(
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, DispatchError> {
+unsafe fn current_wine_cpu_area() -> Result<&'static mut ChpeV2CpuAreaInfo, DispatchError> {
     const CHPE_V2_CPU_AREA_OFFSET: usize = 0x1788;
     let teb: usize;
     // SAFETY: Windows ARM64 reserves x18 for the current TEB.
@@ -750,32 +785,57 @@ pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, Disp
             .ok_or(DispatchError::ContextUnavailable)? as *const *mut ChpeV2CpuAreaInfo)
             .read()
     };
+    // SAFETY: the pointer was loaded from the calling thread's TEB.
+    unsafe { area.as_mut() }.ok_or(DispatchError::ContextUnavailable)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, DispatchError> {
+    // SAFETY: the caller is Wine's current simulation thread.
+    let area = unsafe { current_wine_cpu_area()? };
     // SAFETY: the pointer was obtained from the current TEB, and Wine keeps the
     // area and context live for the non-returning simulation transition.
     unsafe { context_from_cpu_area(area) }
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub unsafe fn resume_wine_context(context: &mut Arm64EcContext) -> ! {
-    const CHPE_V2_CPU_AREA_OFFSET: usize = 0x1788;
+pub unsafe fn current_wine_transition_context() -> Result<&'static mut Arm64EcContext, DispatchError>
+{
+    // SAFETY: transition callbacks run on the thread that owns this CHPE area.
+    let area = unsafe { current_wine_cpu_area()? };
+    // SAFETY: Wine owns and serializes ContextAmd64 across the transition.
+    unsafe { area.context_amd64.as_mut() }.ok_or(DispatchError::ContextUnavailable)
+}
 
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub unsafe fn capture_native_context(context: &mut Arm64EcContext) {
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlCaptureContext(context: *mut Arm64EcContext);
+    }
+
+    // SAFETY: the destination is Wine's writable 0x4d0-byte hybrid context.
+    unsafe { RtlCaptureContext(context) };
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub unsafe fn set_simulation_active(active: bool) -> Result<(), DispatchError> {
+    // SAFETY: transition callbacks run on the thread that owns this CHPE area.
+    let area = unsafe { current_wine_cpu_area()? };
+    area.in_simulation = u8::from(active);
+    Ok(())
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub unsafe fn resume_wine_context(context: &mut Arm64EcContext) -> ! {
     #[link(name = "ntdll")]
     unsafe extern "system" {
         fn NtContinue(context: *mut Arm64EcContext, alertable: i32) -> i32;
     }
 
-    let teb: usize;
-    // SAFETY: Windows ARM64 reserves x18 for the current TEB.
-    unsafe { core::arch::asm!("mov {}, x18", out(reg) teb) };
-    if let Some(slot) = teb.checked_add(CHPE_V2_CPU_AREA_OFFSET) {
-        // SAFETY: the CHPE area slot belongs to this thread. Clearing the flag
-        // hands ownership of the synchronized context back to Wine before the
-        // non-returning continuation.
-        let area = unsafe { (slot as *const *mut ChpeV2CpuAreaInfo).read() };
-        if let Some(area) = unsafe { area.as_mut() } {
-            area.in_simulation = 0;
-        }
-    }
+    // SAFETY: the CHPE area belongs to this thread. Clearing the flag hands
+    // context ownership back to Wine before the non-returning continuation.
+    let _ = unsafe { set_simulation_active(false) };
 
     // SAFETY: `context` is Wine's live AMD64-compatible context. NtContinue
     // either resumes x64 through KiUserEmulationDispatcher or restores an EC
