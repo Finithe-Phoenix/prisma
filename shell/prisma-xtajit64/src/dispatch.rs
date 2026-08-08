@@ -394,6 +394,25 @@ const fn dispatch_win64_syscall<M: GuestMemory>(
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
+fn is_arm64ec_code(address: u64) -> bool {
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlIsEcCode(address: usize) -> u8;
+    }
+
+    usize::try_from(address)
+        .ok()
+        // SAFETY: Wine's ntdll validates the address through its EC bitmap and
+        // does not dereference the target page.
+        .is_some_and(|address| unsafe { RtlIsEcCode(address) != 0 })
+}
+
+#[cfg(not(all(windows, target_arch = "arm64ec")))]
+const fn is_arm64ec_code(_address: u64) -> bool {
+    false
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
 unsafe fn invoke_win64_syscall(address: *const std::ffi::c_void, arguments: &[u64]) -> i32 {
     macro_rules! call {
         ($($index:tt),*) => {{
@@ -533,6 +552,15 @@ impl ThreadRuntime {
             }
             if self.invalidate_cache.swap(false, Ordering::AcqRel) {
                 translator.clear_cache();
+            }
+            if is_arm64ec_code(rip) {
+                context.store_frame(&frame, rip);
+                return Ok(DispatchReport {
+                    stop: DispatchStop::NativeTransitionRequired,
+                    blocks: block_index,
+                    instructions,
+                    rip,
+                });
             }
 
             let bytes = memory
@@ -725,6 +753,58 @@ pub unsafe fn current_wine_context() -> Result<&'static mut Arm64EcContext, Disp
     // SAFETY: the pointer was obtained from the current TEB, and Wine keeps the
     // area and context live for the non-returning simulation transition.
     unsafe { context_from_cpu_area(area) }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub unsafe fn resume_wine_context(context: &mut Arm64EcContext) -> ! {
+    const CHPE_V2_CPU_AREA_OFFSET: usize = 0x1788;
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtContinue(context: *mut Arm64EcContext, alertable: i32) -> i32;
+    }
+
+    let teb: usize;
+    // SAFETY: Windows ARM64 reserves x18 for the current TEB.
+    unsafe { core::arch::asm!("mov {}, x18", out(reg) teb) };
+    if let Some(slot) = teb.checked_add(CHPE_V2_CPU_AREA_OFFSET) {
+        // SAFETY: the CHPE area slot belongs to this thread. Clearing the flag
+        // hands ownership of the synchronized context back to Wine before the
+        // non-returning continuation.
+        let area = unsafe { (slot as *const *mut ChpeV2CpuAreaInfo).read() };
+        if let Some(area) = unsafe { area.as_mut() } {
+            area.in_simulation = 0;
+        }
+    }
+
+    // SAFETY: `context` is Wine's live AMD64-compatible context. NtContinue
+    // either resumes x64 through KiUserEmulationDispatcher or restores an EC
+    // target natively; success does not return.
+    let status = unsafe { NtContinue(context, 0) };
+    // SAFETY: reaching this path means continuation failed. Terminating the
+    // exact current Wine process prevents execution of KiUserEmulationDispatcher's
+    // deliberate `brk #1` with a partially transferred context.
+    // SAFETY: continuation failed and the current process cannot safely resume.
+    unsafe { terminate_current_process(status) }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub unsafe fn terminate_current_process(status: i32) -> ! {
+    const CURRENT_PROCESS_PSEUDO_HANDLE: isize = -1;
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtTerminateProcess(process: *mut std::ffi::c_void, status: i32) -> i32;
+    }
+
+    // SAFETY: the pseudo-handle identifies only the calling Wine process.
+    let _ = unsafe {
+        NtTerminateProcess(
+            CURRENT_PROCESS_PSEUDO_HANDLE as *mut std::ffi::c_void,
+            status,
+        )
+    };
+    std::process::abort()
 }
 
 #[cfg(test)]

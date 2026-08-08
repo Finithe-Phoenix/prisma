@@ -472,16 +472,41 @@ pub extern "system" fn BeginSimulation() {
         // SAFETY: Wine invokes this callback after installing the current
         // thread's CHPE v2 CPU area and owns the context for the call duration.
         let context = unsafe { dispatch::current_wine_context() };
-        match context {
-            Ok(context) => {
-                let _ = dispatch_context(
-                    context,
-                    &dispatch::ProcessMemory,
-                    &PrismaExecutor,
-                    DispatchLimits::default(),
-                );
+        let context = match context {
+            Ok(context) => context,
+            Err(_) => {
+                record_failed_dispatch();
+                // SAFETY: returning would execute Wine's deliberate `brk #1`.
+                unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
-            Err(_) => record_failed_dispatch(),
+        };
+        loop {
+            match dispatch_context(
+                context,
+                &dispatch::ProcessMemory,
+                &PrismaExecutor,
+                DispatchLimits::default(),
+            ) {
+                Ok(DispatchReport {
+                    stop: DispatchStop::BlockLimit,
+                    ..
+                }) => {}
+                Ok(DispatchReport {
+                    stop: DispatchStop::NativeTransitionRequired,
+                    ..
+                }) => {
+                    // SAFETY: `context` is Wine's current-thread CHPE context,
+                    // synchronized by the dispatch loop immediately before the
+                    // non-returning NtContinue boundary.
+                    unsafe { dispatch::resume_wine_context(context) }
+                }
+                Ok(_) | Err(_) => {
+                    record_failed_dispatch();
+                    // SAFETY: a cancelled or failed emulation context cannot
+                    // safely cross back through KiUserEmulationDispatcher.
+                    unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
+                }
+            }
         }
     }
     #[cfg(not(all(windows, target_arch = "arm64ec")))]
