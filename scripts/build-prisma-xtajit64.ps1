@@ -110,6 +110,7 @@ if (-not $dumpbin) {
 ${previousLinker} = $env:CARGO_TARGET_ARM64EC_PC_WINDOWS_MSVC_LINKER
 ${previousPath} = $env:PATH
 ${previousLib} = $env:LIB
+${previousInclude} = $env:INCLUDE
 try {
   $env:CARGO_TARGET_ARM64EC_PC_WINDOWS_MSVC_LINKER = $arm64Linker
   $env:PATH = (Split-Path -Parent $arm64Linker) + [IO.Path]::PathSeparator + $env:PATH
@@ -119,6 +120,15 @@ try {
     (Join-Path $sdkVersion.FullName "um\arm64")
     (Join-Path $sdkVersion.FullName "ucrt\arm64")
   ) -join [IO.Path]::PathSeparator
+  $sdkIncludeRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Include\$($sdkVersion.Name)"
+  $env:INCLUDE = @(
+    (Join-Path $msvcRoot.FullName "include")
+    (Join-Path $sdkIncludeRoot "ucrt")
+    (Join-Path $sdkIncludeRoot "shared")
+    (Join-Path $sdkIncludeRoot "um")
+    (Join-Path $sdkIncludeRoot "winrt")
+    (Join-Path $sdkIncludeRoot "cppwinrt")
+  ) -join [IO.Path]::PathSeparator
   & cargo build --manifest-path $manifestPath -p prisma-xtajit64 --target $target --release --target-dir $targetDirectory
   if ($LASTEXITCODE -ne 0) {
     throw "The ARM64EC xtajit64 provider build failed."
@@ -127,6 +137,7 @@ try {
   $env:CARGO_TARGET_ARM64EC_PC_WINDOWS_MSVC_LINKER = ${previousLinker}
   $env:PATH = ${previousPath}
   $env:LIB = ${previousLib}
+  $env:INCLUDE = ${previousInclude}
 }
 
 $builtDll = Join-Path $targetDirectory "$target\release\prisma_xtajit64.dll"
@@ -134,18 +145,30 @@ if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
   throw "Cargo did not produce the expected ARM64EC DLL: $builtDll"
 }
 
+$peBytes = [IO.File]::ReadAllBytes($builtDll)
+if ($peBytes.Length -lt 64 -or $peBytes[0] -ne 0x4d -or $peBytes[1] -ne 0x5a) {
+  throw "The generated provider is not a PE file."
+}
+$peOffset = [BitConverter]::ToInt32($peBytes, 0x3c)
+if ($peOffset -lt 0 -or $peOffset + 6 -gt $peBytes.Length -or
+    $peBytes[$peOffset] -ne 0x50 -or $peBytes[$peOffset + 1] -ne 0x45 -or
+    $peBytes[$peOffset + 2] -ne 0 -or $peBytes[$peOffset + 3] -ne 0) {
+  throw "The generated provider has an invalid PE signature."
+}
+$machineCode = [BitConverter]::ToUInt16($peBytes, $peOffset + 4)
+$peMachine = switch ($machineCode) {
+  0xA641 { "0xA641 ARM64EC" }
+  0xA64E { "0xA64E ARM64X" }
+  0x8664 { "0x8664 ARM64X-hybrid" }
+  default { throw ("The generated provider has unsupported PE machine 0x{0:X4}." -f $machineCode) }
+}
+
 $headers = (& $dumpbin /headers $builtDll | Out-String)
 if ($LASTEXITCODE -ne 0) {
   throw "dumpbin could not read the generated provider's PE headers."
 }
-$peMachine = if ($headers -match "(?im)^\s*A641 machine \(ARM64EC\)") {
-  "0xA641 ARM64EC"
-} elseif ($headers -match "(?im)^\s*A64E machine \(ARM64X\)") {
-  "0xA64E ARM64X"
-} elseif ($headers -match "(?im)^\s*8664 machine \(x64\) \(ARM64X\)") {
-  "0x8664 ARM64X-hybrid"
-} else {
-  throw "The generated provider is neither ARM64EC nor an ARM64X hybrid PE."
+if ($headers -notmatch "(?im)^\s*(A641 machine \(ARM64EC\)|A64E machine \(ARM64X\)|8664 machine \(x64\) \(ARM64X\))") {
+  throw "dumpbin did not recognize the generated provider as ARM64EC/ARM64X."
 }
 $exportLines = & $dumpbin /exports $builtDll
 if ($LASTEXITCODE -ne 0) {
