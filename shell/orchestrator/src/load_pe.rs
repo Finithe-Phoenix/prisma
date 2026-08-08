@@ -6,7 +6,7 @@
 //! addresses into the IAT. The result is a [`MappedImage`] whose import table is
 //! bound and which is ready to hand to the translator at its entry PC.
 
-use crate::iat_patch::{apply_iat_patches, IatError, IatPatch};
+use crate::iat_patch::{apply_iat_patches, IatError, IatPatch, IatWidth};
 use crate::import_resolver::{resolve_imports, ImportError, ImportRequest};
 use crate::module_table::ModuleTable;
 use crate::pe_loader::{self, ImportSymbol, MappedImage, PeError};
@@ -39,6 +39,11 @@ pub fn load_pe_with_image(
 
     let imports = pe_loader::parse_imports(&img, file)?;
     let thunk_width: u32 = if img.pe32_plus { 8 } else { 4 };
+    let iat_width = if img.pe32_plus {
+        IatWidth::Pe32Plus
+    } else {
+        IatWidth::Pe32
+    };
 
     let mut patches: Vec<IatPatch> = Vec::new();
     for imp in &imports {
@@ -61,6 +66,7 @@ pub fn load_pe_with_image(
             patches.push(IatPatch {
                 slot_va: slot_addr,
                 value: resolved[0].address,
+                width: iat_width,
             });
         }
     }
@@ -87,6 +93,7 @@ pub enum LoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::module_table::{ExportedSymbol, LoadedModule};
 
     /// Minimal valid PE32+ with one `.text` section and no imports.
     fn minimal_pe() -> Vec<u8> {
@@ -108,6 +115,29 @@ mod tests {
         buf[sec..sec + 5].copy_from_slice(b".text");
         buf[sec + 8..sec + 12].copy_from_slice(&0x1000u32.to_le_bytes()); // virtual_size
         buf[sec + 12..sec + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // virtual_address
+        buf
+    }
+
+    fn pe_with_imports() -> Vec<u8> {
+        let mut buf = minimal_pe();
+        let opt = 64 + 4 + 20;
+        let sec = opt + 240;
+        buf[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes());
+        buf[opt + 120..opt + 124].copy_from_slice(&0x1000u32.to_le_bytes());
+        buf[opt + 124..opt + 128].copy_from_slice(&40u32.to_le_bytes());
+        let raw_off = u32::try_from(buf.len()).expect("small fixture");
+        buf[sec + 16..sec + 20].copy_from_slice(&0x100u32.to_le_bytes());
+        buf[sec + 20..sec + 24].copy_from_slice(&raw_off.to_le_bytes());
+
+        let mut idata = vec![0u8; 0x100];
+        idata[0..4].copy_from_slice(&0x1040u32.to_le_bytes());
+        idata[12..16].copy_from_slice(&0x1060u32.to_le_bytes());
+        idata[16..20].copy_from_slice(&0x10A0u32.to_le_bytes());
+        idata[0x40..0x48].copy_from_slice(&0x1080u64.to_le_bytes());
+        idata[0x48..0x50].copy_from_slice(&((1u64 << 63) | 7).to_le_bytes());
+        idata[0x60..0x6D].copy_from_slice(b"KERNEL32.dll\0");
+        idata[0x82..0x91].copy_from_slice(b"GetProcAddress\0");
+        buf.extend_from_slice(&idata);
         buf
     }
 
@@ -137,5 +167,38 @@ mod tests {
         assert_eq!(img.sections[0].virtual_address, 0x1000);
         assert_eq!(mapped.base, 0x1_4000_0000);
         assert_eq!(mapped.entry_pc, 0x1_4000_1000);
+    }
+
+    #[test]
+    fn binds_named_and_ordinal_imports_into_the_pe32_plus_iat() {
+        let mut modules = ModuleTable::new();
+        modules
+            .insert(LoadedModule {
+                name: "kernel32.dll".to_owned(),
+                base: 0x1_8000_0000,
+                exports: vec![
+                    ExportedSymbol {
+                        name: "GetProcAddress".to_owned(),
+                        rva: 0x1000,
+                        ordinal: 1,
+                    },
+                    ExportedSymbol {
+                        name: "OrdinalSeven".to_owned(),
+                        rva: 0x7000,
+                        ordinal: 7,
+                    },
+                ],
+            })
+            .expect("module");
+
+        let mapped = load_pe(&pe_with_imports(), &modules).expect("load");
+        assert_eq!(
+            u64::from_le_bytes(mapped.bytes[0x10A0..0x10A8].try_into().unwrap()),
+            0x1_8000_1000
+        );
+        assert_eq!(
+            u64::from_le_bytes(mapped.bytes[0x10A8..0x10B0].try_into().unwrap()),
+            0x1_8000_7000
+        );
     }
 }

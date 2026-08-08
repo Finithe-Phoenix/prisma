@@ -189,6 +189,9 @@ pub enum PeError {
     #[error("import name/string at {0:#x} is not NUL-terminated within bounds")]
     ImportStringUnterminated(u32),
 
+    #[error("PE32+ import thunk carries a non-RVA value: {0:#x}")]
+    ImportThunkRvaOutOfRange(u64),
+
     #[error("export directory RVA {0:#x} does not map into any section's file data")]
     ExportRvaUnmapped(u32),
 
@@ -598,8 +601,11 @@ fn parse_thunks(img: &PeImage, file: &[u8], thunk_rva: u32) -> Result<Vec<Import
         if thunk & ordinal_flag != 0 {
             symbols.push(ImportSymbol::Ordinal((thunk & 0xFFFF) as u16));
         } else {
-            // Low 31 bits are an RVA to IMAGE_IMPORT_BY_NAME { hint: u16, name }.
-            let by_name_rva = (thunk & 0x7FFF_FFFF) as u32;
+            // A non-ordinal thunk is an RVA to IMAGE_IMPORT_BY_NAME. PE32+
+            // stores it in a 64-bit slot, but an RVA must still fit in u32.
+            let raw_rva = thunk & !ordinal_flag;
+            let by_name_rva =
+                u32::try_from(raw_rva).map_err(|_| PeError::ImportThunkRvaOutOfRange(thunk))?;
             let name_off = rva_to_file_offset(img, by_name_rva)
                 .ok_or(PeError::ImportRvaUnmapped(by_name_rva))?;
             let name = read_cstr(file, name_off + 2, 1024)
@@ -969,6 +975,18 @@ mod tests {
         img.import_dir_rva = 0xDEAD_BEEF; // maps into no section
         let r = parse_imports(&img, &buf);
         assert!(matches!(r, Err(PeError::ImportRvaUnmapped(0xDEAD_BEEF))));
+    }
+
+    #[test]
+    fn pe32_plus_import_rejects_high_bits_in_a_name_rva() {
+        let mut buf = synth_pe_with_imports();
+        let img = parse(&buf).expect("parse");
+        let thunk_off = rva_to_file_offset(&img, 0x1040).expect("ILT");
+        buf[thunk_off..thunk_off + 8].copy_from_slice(&(0x1_0000_1080u64).to_le_bytes());
+        assert!(matches!(
+            parse_imports(&img, &buf),
+            Err(PeError::ImportThunkRvaOutOfRange(0x1_0000_1080))
+        ));
     }
 
     #[test]
