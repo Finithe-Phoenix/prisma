@@ -1,0 +1,22 @@
+{
+  "schema": "prisma-windows-fixture/v1",
+  "id": "oh-my-posh-windows-amd64",
+  "upstream": "JanDeDobbeleer/oh-my-posh",
+  "version": "30.6.3",
+  "tag": "v30.6.3",
+  "architecture": "x86-64",
+  "pe_machine": "0x8664",
+  "filename": "posh-windows-amd64.exe",
+  "artifact_path": "artifacts/oh-my-posh.exe",
+  "official_release_url": "https://github.com/JanDeDobbeleer/oh-my-posh/releases/tag/v30.6.3",
+  "source_url": "https://github.com/JanDeDobbeleer/oh-my-posh/releases/download/v30.6.3/posh-windows-amd64.exe",
+  "checksums_url": "https://github.com/JanDeDobbeleer/oh-my-posh/releases/download/v30.6.3/checksums.txt",
+  "size": 14691080,
+  "sha256": "770c11d133ce635f2412aeb0c1cdd6dd679021eda68beb51213848d8a5c863f6",
+  "license": {
+    "spdx": "MIT",
+    "copyright": "Copyright 2022 Jan De Dobbeleer",
+    "attribution_file": "COPYING",
+    "source_url": "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/v30.6.3/COPYING"
+  }
+}
