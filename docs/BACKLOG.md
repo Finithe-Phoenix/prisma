@@ -609,7 +609,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 ### F3-WN — Wine and Windows programs
 
 - [x] (e171cf1) F3-WN-001: Fork Wine 9.x ARM64 under `third_party/wine`.
-- [~|codex] F3-WN-002: Build Wine with our CMake glue.
+- [x] (16eaff5) F3-WN-002: Build Wine with our CMake glue.
 - [x] (9bd0c6e) F3-WN-003: Implement `wow64cpu.dll` stub matching Wine's BTCpu interface.
 - [x] (f40f158) F3-WN-004: `pBTCpuProcessInit` / `pBTCpuThreadInit`.
 - [x] (03bd145) F3-WN-005: `pBTCpuSimulate` — main dispatch loop.
