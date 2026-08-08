@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "ARM64EC xtajit64 provider ABI stub for Wine's AMD64 emulation path"
+description = "ARM64EC xtajit64 lifecycle provider for Wine's AMD64 emulation path"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
