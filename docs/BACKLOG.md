@@ -618,7 +618,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-WN-008: `pBTCpuFlushInstructionCache2`.
 - [ ] F3-WN-009: Loader PE parser (fallback if Wine's isn't reused).
 - [ ] F3-WN-010: Relocations handling for guest DLLs.
-- [~|codex] F3-WN-011: Import table translation.
+- [x] (21c44eb) F3-WN-011: Import table translation.
 - [ ] F3-WN-012: TLS callback handling.
 - [ ] F3-WN-013: Integration test: run Notepad.exe (Windows XP).
 - [ ] F3-WN-014: Integration test: run Calc.exe.
@@ -654,7 +654,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-SH-010: P2P cache client (libp2p).
 - [ ] F3-SH-011: Translation cache persistence to disk.
 - [x] F3-SH-012: Unit tests + integration tests.
-- [~|codex-console] F3-SH-013: Windows console session API with owned stdin/stdout/stderr
+- [x] (43042ab) F3-SH-013: Windows console session API with owned stdin/stdout/stderr
       pipes, environment and working directory; `Drop` plus explicit stop must
       terminate/reap the child and close every handle deterministically.
 - [ ] F3-SH-014: Console integration tests for UTF-8, ANSI, resize, cancellation,
