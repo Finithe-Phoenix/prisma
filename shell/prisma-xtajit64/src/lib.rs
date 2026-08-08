@@ -2,15 +2,24 @@
 //!
 //! Wine's current `xtajit64` ABI calls [`ProcessInit`] and [`ThreadInit`]
 //! without arguments. This crate owns one typed context per initialized host
-//! thread and releases every context and mapping on termination. The simulation
-//! entry points remain explicitly unsupported until F3-WN-005.
+//! thread and releases every context and mapping on termination. The dispatch
+//! bridge uses Prisma's real translator and ARM64 JIT executor; unsupported
+//! Wine transition/syscall boundaries fail explicitly.
 
 #![allow(non_snake_case)]
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+
+mod dispatch;
+
+use dispatch::{live_runtime_count, ThreadRuntime};
+pub use dispatch::{
+    Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
+    GuestMemory, PrismaExecutor,
+};
 
 pub type NtStatus = i32;
 pub type WinBoolean = u8;
@@ -54,7 +63,9 @@ pub enum ProviderPhase {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThreadPhase {
     Ready,
-    SimulationUnsupported,
+    Dispatching,
+    Stopped,
+    Failed,
 }
 
 /// Result of an idempotent process or thread initialization request.
@@ -70,14 +81,14 @@ pub enum LifecycleError {
     ProcessNotInitialized,
     ProcessTerminating,
     ThreadNotInitialized,
-    SimulationUnsupported,
+    DispatchFailed,
 }
 
 impl LifecycleError {
     #[must_use]
     pub const fn nt_status(self) -> NtStatus {
         match self {
-            Self::SimulationUnsupported => STATUS_NOT_SUPPORTED,
+            Self::DispatchFailed => STATUS_NOT_SUPPORTED,
             Self::ProcessNotInitialized | Self::ProcessTerminating | Self::ThreadNotInitialized => {
                 STATUS_INVALID_DEVICE_STATE
             }
@@ -91,7 +102,9 @@ impl fmt::Display for LifecycleError {
             Self::ProcessNotInitialized => "xtajit64 process is not initialized",
             Self::ProcessTerminating => "xtajit64 process termination is pending",
             Self::ThreadNotInitialized => "current xtajit64 thread is not initialized",
-            Self::SimulationUnsupported => "xtajit64 simulation is not implemented",
+            Self::DispatchFailed => {
+                "xtajit64 dispatch could not cross the Wine transition boundary"
+            }
         })
     }
 }
@@ -108,6 +121,8 @@ pub struct ProviderSnapshot {
     pub simulation_requests: usize,
     pub cache_notifications: usize,
     pub last_status: NtStatus,
+    pub active_dispatches: usize,
+    pub live_runtimes: usize,
 }
 
 /// Read-only state of the current thread context.
@@ -115,18 +130,19 @@ pub struct ProviderSnapshot {
 pub struct ThreadContextSnapshot {
     pub generation: u64,
     pub phase: ThreadPhase,
+    pub last_report: Option<DispatchReport>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ThreadKey(u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ThreadContext {
     generation: u64,
     phase: ThreadPhase,
+    runtime: Arc<ThreadRuntime>,
+    last_report: Option<DispatchReport>,
 }
 
-#[derive(Debug)]
 struct ProviderState {
     phase: ProviderPhase,
     generation: u64,
@@ -160,6 +176,9 @@ impl ProviderState {
     }
 
     fn release_owned_resources(&mut self) {
+        for context in self.threads.values() {
+            context.runtime.cancel();
+        }
         self.threads = HashMap::new();
         self.mappings = HashSet::new();
         self.simulation_requests = 0;
@@ -175,6 +194,12 @@ impl ProviderState {
             simulation_requests: self.simulation_requests,
             cache_notifications: self.cache_notifications,
             last_status: self.last_status,
+            active_dispatches: self
+                .threads
+                .values()
+                .map(|context| context.runtime.active_dispatches())
+                .sum(),
+            live_runtimes: live_runtime_count(),
         }
     }
 }
@@ -214,6 +239,7 @@ pub fn current_thread_context() -> Result<ThreadContextSnapshot, LifecycleError>
         .map(|context| ThreadContextSnapshot {
             generation: context.generation,
             phase: context.phase,
+            last_report: context.last_report,
         })
         .ok_or(LifecycleError::ThreadNotInitialized)
 }
@@ -264,6 +290,8 @@ pub fn initialize_thread() -> Result<InitOutcome, LifecycleError> {
             entry.insert(ThreadContext {
                 generation,
                 phase: ThreadPhase::Ready,
+                runtime: Arc::new(ThreadRuntime::new()),
+                last_report: None,
             });
             state.last_status = STATUS_SUCCESS;
             Ok(InitOutcome::Initialized { generation })
@@ -279,30 +307,69 @@ pub fn initialize_thread() -> Result<InitOutcome, LifecycleError> {
     outcome
 }
 
-/// Records a simulation request without pretending that execution occurred.
+/// Translate and execute mapped Wine guest code for the calling thread.
+///
+/// This public bridge makes the memory and execution boundaries injectable for
+/// tests and embedders. The exported [`BeginSimulation`] supplies the real
+/// current-process reader and Prisma JIT executor.
 ///
 /// # Errors
 ///
-/// Returns a lifecycle error if process/thread initialization is incomplete;
-/// otherwise returns [`LifecycleError::SimulationUnsupported`] by design.
-pub fn request_simulation() -> Result<(), LifecycleError> {
+/// Returns a typed context, memory, translation, execution, or unsupported
+/// boundary error without reporting synthetic guest progress.
+pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
+    context: &mut Arm64EcContext,
+    memory: &M,
+    executor: &E,
+    limits: DispatchLimits,
+) -> Result<DispatchReport, DispatchError> {
+    let key = current_thread_key();
     let mut state = lock_provider();
-    let outcome = if !state.is_running() {
+    if !state.is_running() {
         let error = phase_error(state.phase);
         state.last_status = error.nt_status();
-        Err(error)
-    } else if let Some(context) = state.threads.get_mut(&current_thread_key()) {
-        context.phase = ThreadPhase::SimulationUnsupported;
+        drop(state);
+        return Err(DispatchError::ContextUnavailable);
+    }
+    let Some(thread) = state.threads.get_mut(&key) else {
+        state.last_status = STATUS_INVALID_DEVICE_STATE;
+        drop(state);
+        return Err(DispatchError::ContextUnavailable);
+    };
+    thread.phase = ThreadPhase::Dispatching;
+    let runtime = Arc::clone(&thread.runtime);
+    drop(state);
+
+    let result = runtime.dispatch(context, memory, executor, limits);
+    let mut state = lock_provider();
+    if state.is_running() {
+        if let Some(thread) = state.threads.get_mut(&key) {
+            if let Ok(report) = &result {
+                thread.last_report = Some(*report);
+                thread.phase = ThreadPhase::Stopped;
+            } else {
+                thread.phase = ThreadPhase::Failed;
+            }
+            state.last_status = STATUS_NOT_SUPPORTED;
+        }
         state.phase = ProviderPhase::SimulationRequested;
         state.simulation_requests = state.simulation_requests.saturating_add(1);
-        state.last_status = STATUS_NOT_SUPPORTED;
-        Err(LifecycleError::SimulationUnsupported)
-    } else {
-        state.last_status = STATUS_INVALID_DEVICE_STATE;
-        Err(LifecycleError::ThreadNotInitialized)
-    };
+    }
     drop(state);
-    outcome
+    result
+}
+
+fn record_failed_dispatch() {
+    let mut state = lock_provider();
+    let key = current_thread_key();
+    if let Some(thread) = state.threads.get_mut(&key) {
+        thread.phase = ThreadPhase::Failed;
+    }
+    if state.is_running() {
+        state.phase = ProviderPhase::SimulationRequested;
+        state.simulation_requests = state.simulation_requests.saturating_add(1);
+    }
+    state.last_status = STATUS_NOT_SUPPORTED;
 }
 
 fn phase_error(phase: ProviderPhase) -> LifecycleError {
@@ -340,7 +407,9 @@ fn thread_term(handle: Handle) {
         return;
     }
     if let Some(key) = thread_key_from_handle(handle) {
-        state.threads.remove(&key);
+        if let Some(context) = state.threads.remove(&key) {
+            context.runtime.cancel();
+        }
     }
 }
 
@@ -357,9 +426,21 @@ fn with_running_state(action: impl FnOnce(&mut ProviderState)) {
 
 #[unsafe(no_mangle)]
 pub extern "system" fn BTCpu64FlushInstructionCache(_address: *const c_void, _size: usize) {
-    with_running_state(|state| {
+    let runtimes = {
+        let mut state = lock_provider();
+        if !state.is_running() {
+            return;
+        }
         state.cache_notifications = state.cache_notifications.saturating_add(1);
-    });
+        state
+            .threads
+            .values()
+            .map(|context| Arc::clone(&context.runtime))
+            .collect::<Vec<_>>()
+    };
+    for runtime in runtimes {
+        runtime.clear_cache();
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -386,7 +467,25 @@ pub extern "system" fn BTCpu64NotifyReadFile(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn BeginSimulation() {
-    let _ = request_simulation();
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    {
+        // SAFETY: Wine invokes this callback after installing the current
+        // thread's CHPE v2 CPU area and owns the context for the call duration.
+        let context = unsafe { dispatch::current_wine_context() };
+        match context {
+            Ok(context) => {
+                let _ = dispatch_context(
+                    context,
+                    &dispatch::ProcessMemory,
+                    &PrismaExecutor,
+                    DispatchLimits::default(),
+                );
+            }
+            Err(_) => record_failed_dispatch(),
+        }
+    }
+    #[cfg(not(all(windows, target_arch = "arm64ec")))]
+    record_failed_dispatch();
 }
 
 #[unsafe(no_mangle)]
@@ -486,7 +585,7 @@ pub extern "system" fn ResetToConsistentState(
     _amd64_context: *mut Amd64Context,
     _arm64_context: *mut Arm64NtContext,
 ) {
-    let _ = request_simulation();
+    record_failed_dispatch();
 }
 
 /// Wine 11.14 `xtajit64.spec`: `NTSTATUS ThreadInit(void)`.
@@ -504,21 +603,22 @@ pub extern "system" fn ThreadTerm(thread: Handle, _exit_code: i32) {
 #[unsafe(no_mangle)]
 pub extern "system" fn UpdateProcessorInformation(_information: *mut SystemCpuInformation) {}
 
-// Wine treats these as transition thunks. Until F3-WN-005 they only record an
-// explicit unsupported request and never claim that guest instructions ran.
+// Wine treats these symbols as transition thunks. Rust functions cannot
+// implement the required non-returning ARM64EC register/stack transfer, so
+// they record an explicit boundary failure rather than claim a transition.
 #[unsafe(no_mangle)]
 pub extern "system" fn ExitToX64() {
-    let _ = request_simulation();
+    record_failed_dispatch();
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn DispatchJump() {
-    let _ = request_simulation();
+    record_failed_dispatch();
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn RetToEntryThunk() {
-    let _ = request_simulation();
+    record_failed_dispatch();
 }
 
 #[cfg(windows)]
@@ -639,23 +739,15 @@ mod tests {
     }
 
     #[test]
-    fn simulation_requires_a_thread_and_remains_explicitly_unsupported() {
+    fn simulation_requires_a_thread_and_reports_missing_host_context() {
         let _guard = TEST_LOCK.lock().unwrap();
         reset();
         ProcessInit();
-        assert_eq!(
-            request_simulation(),
-            Err(LifecycleError::ThreadNotInitialized)
-        );
+        BeginSimulation();
+        assert_eq!(provider_snapshot().last_status, STATUS_NOT_SUPPORTED);
         ThreadInit();
-        assert_eq!(
-            request_simulation(),
-            Err(LifecycleError::SimulationUnsupported)
-        );
-        assert_eq!(
-            current_thread_context().unwrap().phase,
-            ThreadPhase::SimulationUnsupported
-        );
+        BeginSimulation();
+        assert_eq!(current_thread_context().unwrap().phase, ThreadPhase::Failed);
         assert_eq!(provider_snapshot().last_status, STATUS_NOT_SUPPORTED);
         reset();
     }

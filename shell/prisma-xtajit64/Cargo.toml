@@ -8,6 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 description = "ARM64EC xtajit64 lifecycle provider for Wine's AMD64 emulation path"
 
+[dependencies]
+prisma-runtime = { path = "../prisma-runtime" }
+prisma-translator = { path = "../prisma-translator" }
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
