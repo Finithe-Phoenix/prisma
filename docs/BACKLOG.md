@@ -625,7 +625,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-WN-015: Integration test: run Paint.exe.
 - [ ] F3-WN-016: First bigger target: Photoshop 7 (or AutoCAD LT 2000).
 - [ ] F3-WN-017: Document our Wine patch series for future upstream.
-- [~|codex-fixture] F3-WN-018: Pin an x86-64 Windows Oh My Posh compatibility fixture with
+- [x] (14108fa) F3-WN-018: Pin an x86-64 Windows Oh My Posh compatibility fixture with
       version, SHA-256 and MIT attribution; never silently download `latest` in
       a test.
 - [ ] F3-WN-019: Run `oh-my-posh.exe version` on Android ARM64 through Prisma;
