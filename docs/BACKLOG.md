@@ -630,7 +630,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [x] (14108fa) F3-WN-018: Pin an x86-64 Windows Oh My Posh compatibility fixture with
       version, SHA-256 and MIT attribution; never silently download `latest` in
       a test.
-- [ ] F3-WN-019: Run `oh-my-posh.exe version` on Android ARM64 through Prisma;
+- [~|codex] F3-WN-019: Run `oh-my-posh.exe version` on Android ARM64 through Prisma;
       assert exit code 0 and captured stdout/stderr.
 - [ ] F3-WN-020: Render a deterministic local prompt with
       `oh-my-posh.exe print primary --config sample.omp.json --shell uni` and
