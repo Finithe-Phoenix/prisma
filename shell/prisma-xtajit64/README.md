@@ -39,9 +39,21 @@ is idempotent, each thread owns one generation-tagged context, and the two-phase
 ownership before process termination. A failed post-call returns the provider
 to an initialized but resource-empty state so it can recover honestly.
 
-`BeginSimulation` and the transition thunks deliberately do not execute guest
-code. They record `STATUS_NOT_SUPPORTED`, making the boundary to F3-WN-005
-observable rather than fabricating successful emulation.
+`BeginSimulation` now executes real Prisma-translated blocks against Wine's
+complete AMD64-compatible context. The bridge generates its dense 264-entry
+Win64 syscall table from the pinned Wine 11.14 source, marshals R10/RDX/R8/R9
+and stack arguments, and resolves the corresponding native `Nt*` export.
+
+The ARM64EC transition thunks are non-returning ABI bridges. They capture the
+hybrid context, transfer x64 calls and tail jumps into the Prisma loop, keep a
+per-thread LIFO stack for nested native returns, and use Wine's `NtContinue`
+boundary to restore native ARM64EC state. Thread and process teardown drop the
+translation runtime and every pending native-return frame deterministically.
+
+This is an implemented and link-audited provider, not yet a compatibility
+claim. F3-WN-019 remains the acceptance gate: the DLL must be installed into
+the ARM64 Wine prefix and run the pinned Oh My Posh fixture on Android with
+real exit code and captured output.
 
 Host-side lifecycle tests run with:
 

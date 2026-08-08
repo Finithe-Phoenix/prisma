@@ -220,7 +220,7 @@ try {
     target = $target
     pe_machine = $peMachine
     sha256 = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
-    simulation = "not-implemented"
+    simulation = "implemented-awaiting-f3-wn-019"
     exports = $requiredExports
   }
   $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $stagingPath "prisma-xtajit64.json") -Encoding utf8
