@@ -1,0 +1,16 @@
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+
+COPY wine-rootfs /
+COPY xtajit64.dll /opt/prisma-wine/lib/wine/aarch64-windows/xtajit64.dll
+COPY oh-my-posh.exe /opt/prisma-fixtures/oh-my-posh.exe
+
+ENV LD_LIBRARY_PATH=/opt/prisma-wine/lib
+ENV WINEPREFIX=/tmp/prisma-prefix
+ENV WINEDEBUG=err+all,warn+all
+ENV WINELOADERNOEXEC=1
+ENV WINEDLLOVERRIDES=xtajit64=n
+ENV GOMAXPROCS=1
+ENV GODEBUG=asyncpreemptoff=1
+ENV QEMU_CPU=max,sve=off
+ENV GLIBC_TUNABLES=glibc.cpu.hwcaps=-SVE
+

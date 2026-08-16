@@ -1,0 +1,124 @@
+name: Phase 1 Oh My Posh execution
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    name: Build ARM64EC provider
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize the pinned Wine source
+        run: git submodule update --init --depth 1 third_party/wine
+
+      - name: Install Rust ARM64EC target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add arm64ec-pc-windows-msvc
+
+      - name: Build and audit provider
+        shell: pwsh
+        run: >-
+          ./scripts/build-prisma-xtajit64.ps1
+          -OutputDirectory "$env:GITHUB_WORKSPACE/android/app/build/ci-provider"
+          -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prisma-xtajit64
+          path: android/app/build/ci-provider/*
+          if-no-files-found: error
+          retention-days: 3
+
+  execute:
+    name: Execute Oh My Posh on Wine ARM64
+    needs: provider
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize the pinned Wine source
+        run: git submodule update --init --depth 1 third_party/wine
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: prisma-xtajit64
+          path: .ci/provider
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Prepare reproducible Wine context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/wine-context
+          git -C third_party/wine archive --format=tar.gz --output="$GITHUB_WORKSPACE/.ci/wine-context/wine-source.tar.gz" HEAD
+          git -C third_party/wine grep -Il -e . -- > .ci/wine-context/wine-text-files.txt
+          cp docker/Dockerfile.wine-arm64 .ci/wine-context/Dockerfile
+          cp third_party/wine-prisma/patches/0001-prisma-no-preload-reserve.patch .ci/wine-context/wine-prisma-no-preload-reserve.patch
+
+      - name: Build Wine 11.14 ARM64 runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .ci/wine-context
+          file: .ci/wine-context/Dockerfile
+          platforms: linux/arm64
+          outputs: type=local,dest=.ci/wine-rootfs
+          build-args: |
+            WINE_VERSION=11.14
+            WINE_JOBS=2
+
+      - name: Fetch and verify official Oh My Posh 30.6.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output .ci/oh-my-posh.exe \
+            https://github.com/JanDeDobbeleer/oh-my-posh/releases/download/v30.6.3/posh-windows-amd64.exe
+          echo '770c11d133ce635f2412aeb0c1cdd6dd679021eda68beb51213848d8a5c863f6  .ci/oh-my-posh.exe' | sha256sum --check --strict
+          test "$(stat --format=%s .ci/oh-my-posh.exe)" -eq 14691080
+
+      - name: Assemble bounded ARM64 execution image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/runtime-context/wine-rootfs
+          cp -a .ci/wine-rootfs/. .ci/runtime-context/wine-rootfs/
+          cp .ci/provider/xtajit64.dll .ci/runtime-context/xtajit64.dll
+          cp .ci/oh-my-posh.exe .ci/runtime-context/oh-my-posh.exe
+          cp .github/ci/Dockerfile.phase1-runtime .ci/runtime-context/Dockerfile
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            --tag prisma-phase1:ci \
+            .ci/runtime-context
+
+      - name: Run three clean lifecycle cycles
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform linux/arm64 \
+            --cpus 1 \
+            --memory 512m \
+            --memory-swap 2g \
+            --pids-limit 256 \
+            --volume "$GITHUB_WORKSPACE/.github/ci/run-oh-my-posh.sh:/run-oh-my-posh.sh:ro" \
+            prisma-phase1:ci \
+            bash /run-oh-my-posh.sh
+
+      - name: Verify container cleanup
+        if: always()
+        shell: bash
+        run: |
+          test -z "$(docker ps --quiet --filter ancestor=prisma-phase1:ci)"
