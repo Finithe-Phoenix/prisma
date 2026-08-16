@@ -4,6 +4,21 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("arm64ec") {
+        // Wine loads xtajit64 before the initial thread has a PE TLS block.
+        // Rust's default _DllMainCRTStartup consults TLS and faults before
+        // ProcessInit, so enter through the no-CRT native shim in lib.rs.
+        println!("cargo:rustc-cdylib-link-arg=/ENTRY:prisma_xtajit64_entry");
+        println!("cargo:rustc-cdylib-link-arg=/DEFAULTLIB:ucrt.lib");
+        println!("cargo:rustc-cdylib-link-arg=/DEFAULTLIB:vcruntime.lib");
+        // The custom entrypoint bypasses _DllMainCRTStartup, so the linker
+        // would otherwise discard _tls_used even though Rust std code contains
+        // thread locals. Wine must still see the TLS template/index and assign
+        // a block before ThreadInit; the packaging script suppresses only the
+        // unsafe early callback array.
+        println!("cargo:rustc-cdylib-link-arg=/INCLUDE:_tls_used");
+    }
+
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let header = manifest_dir
         .join("../..")

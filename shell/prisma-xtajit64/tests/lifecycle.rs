@@ -37,10 +37,12 @@ fn process_and_thread_init_are_idempotent() {
         Ok(InitOutcome::AlreadyInitialized { generation })
     );
     assert_eq!(provider_snapshot().active_threads, 1);
+    assert_eq!(provider_snapshot().live_dispatch_stacks, 1);
 
     ThreadTerm(std::ptr::null_mut(), 0);
     ThreadTerm(std::ptr::null_mut(), 0);
     assert_eq!(provider_snapshot().active_threads, 0);
+    assert_eq!(provider_snapshot().live_dispatch_stacks, 0);
     reset_provider();
 }
 
@@ -101,11 +103,13 @@ fn concurrent_threads_own_exactly_one_context_each() {
 
     initialized.wait();
     assert_eq!(provider_snapshot().active_threads, THREADS);
+    assert_eq!(provider_snapshot().live_dispatch_stacks, THREADS);
     release.wait();
     for worker in workers {
         worker.join().unwrap();
     }
     assert_eq!(provider_snapshot().active_threads, 0);
+    assert_eq!(provider_snapshot().live_dispatch_stacks, 0);
     reset_provider();
 }
 
@@ -121,6 +125,7 @@ fn repeated_generations_release_all_owned_resources() {
         let snapshot = provider_snapshot();
         assert!(snapshot.generation > previous_generation);
         assert_eq!(snapshot.active_threads, 1);
+        assert_eq!(snapshot.live_dispatch_stacks, 1);
 
         let address = (0x1_0000 + cycle * 0x1000) as *mut c_void;
         prisma_xtajit64::NotifyMemoryAlloc(address, 0x1000, 0, 0, 1, STATUS_SUCCESS);
@@ -135,6 +140,7 @@ fn repeated_generations_release_all_owned_resources() {
         assert_eq!(released.tracked_mappings, 0);
         assert_eq!(released.simulation_requests, 0);
         assert_eq!(released.cache_notifications, 0);
+        assert_eq!(released.live_dispatch_stacks, 0);
         previous_generation = released.generation;
     }
 }

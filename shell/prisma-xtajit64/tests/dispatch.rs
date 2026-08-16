@@ -34,7 +34,12 @@ struct RecordingExecutor {
 }
 
 impl BlockExecutor for RecordingExecutor {
-    fn execute(&self, code: &[u8], frame: &mut CpuStateFrame) -> Result<(), ExecError> {
+    fn execute(
+        &self,
+        _guest_rip: u64,
+        code: &[u8],
+        frame: &mut CpuStateFrame,
+    ) -> Result<(), ExecError> {
         self.saw_code.fetch_or(!code.is_empty(), Ordering::SeqCst);
         self.calls.fetch_add(1, Ordering::SeqCst);
         frame.gpr[0] = self.rax;
@@ -129,7 +134,13 @@ fn branch_exit_updates_rip_and_obeys_bound() {
 struct XmmExecutor;
 
 impl BlockExecutor for XmmExecutor {
-    fn execute(&self, _code: &[u8], frame: &mut CpuStateFrame) -> Result<(), ExecError> {
+    fn execute(
+        &self,
+        guest_rip: u64,
+        _code: &[u8],
+        frame: &mut CpuStateFrame,
+    ) -> Result<(), ExecError> {
+        assert_eq!(guest_rip, 0x2800);
         assert_eq!(frame.xmm(3), Some([0x3c; 16]));
         assert!(frame.set_xmm(5, [0xa5; 16]));
         frame.exit_reason = EXIT_NORMAL;
@@ -214,7 +225,12 @@ struct CoordinatedExecutor {
 }
 
 impl BlockExecutor for CoordinatedExecutor {
-    fn execute(&self, _code: &[u8], frame: &mut CpuStateFrame) -> Result<(), ExecError> {
+    fn execute(
+        &self,
+        _guest_rip: u64,
+        _code: &[u8],
+        frame: &mut CpuStateFrame,
+    ) -> Result<(), ExecError> {
         if !self.first_call.swap(true, Ordering::AcqRel) {
             self.entered.wait();
             self.release.wait();
@@ -223,6 +239,69 @@ impl BlockExecutor for CoordinatedExecutor {
         frame.next_pc = 0x5000;
         Ok(())
     }
+}
+
+struct ConcurrentRipExecutor {
+    entered: Barrier,
+    seen: Mutex<Vec<u64>>,
+}
+
+impl BlockExecutor for ConcurrentRipExecutor {
+    fn execute(
+        &self,
+        guest_rip: u64,
+        _code: &[u8],
+        frame: &mut CpuStateFrame,
+    ) -> Result<(), ExecError> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(guest_rip);
+        self.entered.wait();
+        frame.exit_reason = EXIT_NORMAL;
+        Ok(())
+    }
+}
+
+#[test]
+fn concurrent_dispatches_keep_their_own_guest_rip() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset();
+    assert_eq!(ProcessInit(), STATUS_SUCCESS);
+    let executor = Arc::new(ConcurrentRipExecutor {
+        entered: Barrier::new(2),
+        seen: Mutex::new(Vec::new()),
+    });
+
+    let workers = [0x6000, 0x7000].map(|guest_rip| {
+        let executor = Arc::clone(&executor);
+        thread::spawn(move || {
+            assert_eq!(ThreadInit(), STATUS_SUCCESS);
+            let memory = FixtureMemory {
+                base: guest_rip,
+                bytes: vec![0x90],
+            };
+            let mut context = Arm64EcContext {
+                pc_rip: guest_rip,
+                ..Arm64EcContext::default()
+            };
+            dispatch_context(&mut context, &memory, executor.as_ref(), limits(1)).unwrap()
+        })
+    });
+
+    for worker in workers {
+        assert_eq!(worker.join().unwrap().stop, DispatchStop::BlockLimit);
+    }
+    let mut seen = executor
+        .seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    seen.sort_unstable();
+    assert_eq!(seen, vec![0x6000, 0x7000]);
+    reset();
 }
 
 #[test]
