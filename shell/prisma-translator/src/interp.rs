@@ -1059,6 +1059,10 @@ pub fn interpret_block(stmts: &[Stmt], regs: &mut GuestRegs) -> BlockOutcome {
                 );
                 nzcv_live = false;
             }
+            // Fused blocks publish the precise x86 PC before every decoded
+            // instruction for exception recovery. The marker has no guest
+            // architectural effect in the reference interpreter.
+            Op::GuestPc(_) => {}
             Op::Select(s) => {
                 if !nzcv_live {
                     flags = flags_from_rflags(regs.rflags);
@@ -1104,13 +1108,34 @@ mod tests {
     use super::*;
     use prisma_decoder::decode::decode_one;
     use prisma_ir::{
-        CmpFlags, Constant, LoadCarry, LoadReg, LoadRflags, Stmt, StoreCarry, StoreReg, StoreRflags,
+        CmpFlags, Constant, GuestPc, LoadCarry, LoadReg, LoadRflags, Stmt, StoreCarry, StoreReg,
+        StoreRflags,
     };
 
     fn vec_bytes(bytes: &[u8]) -> u128 {
         let mut out = [0u8; 16];
         out[..bytes.len()].copy_from_slice(bytes);
         u128::from_le_bytes(out)
+    }
+
+    #[test]
+    fn guest_pc_marker_has_no_architectural_effect() {
+        let marker = Stmt::new(None, Op::GuestPc(GuestPc { pc: 0x1_4000_1000 }));
+        let mut regs = GuestRegs {
+            gpr: [0x55aa; 16],
+            cf: 1,
+            rflags: 0x8c3,
+            ..GuestRegs::default()
+        };
+        let before = regs.clone();
+
+        assert_eq!(
+            interpret_block(&[marker], &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(regs.gpr, before.gpr);
+        assert_eq!(regs.cf, before.cf);
+        assert_eq!(regs.rflags, before.rflags);
     }
 
     #[test]
