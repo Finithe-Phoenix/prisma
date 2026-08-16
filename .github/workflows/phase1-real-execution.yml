@@ -31,6 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Initialize the pinned Wine source
+        run: git submodule update --init --depth 1 third_party/wine
+
       - name: Install Rust test toolchain
         run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
 
