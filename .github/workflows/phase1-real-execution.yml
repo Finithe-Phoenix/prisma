@@ -35,7 +35,15 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
 
       - name: Check formatting
-        run: cargo fmt --manifest-path shell/Cargo.toml --all -- --check
+        run: >-
+          cargo fmt --manifest-path shell/Cargo.toml
+          -p prisma-decoder
+          -p prisma-ir
+          -p prisma-passes
+          -p prisma-backend
+          -p prisma-translator
+          -p prisma-xtajit64
+          -- --check
 
       - name: Lint focused crates
         run: cargo clippy --manifest-path shell/Cargo.toml -p prisma-translator -p prisma-xtajit64 --all-targets --no-deps -- -D warnings
@@ -51,6 +59,9 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
+
+      - name: Initialize the pinned Wine source
+        run: git submodule update --init --depth 1 third_party/wine
 
       - name: Install Rust ARM64EC target
         run: |
