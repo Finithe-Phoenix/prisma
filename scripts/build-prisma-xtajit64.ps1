@@ -129,7 +129,7 @@ try {
     (Join-Path $sdkIncludeRoot "winrt")
     (Join-Path $sdkIncludeRoot "cppwinrt")
   ) -join [IO.Path]::PathSeparator
-  & cargo build --manifest-path $manifestPath -p prisma-xtajit64 --target $target --release --target-dir $targetDirectory
+  & cargo build --manifest-path $manifestPath -p prisma-xtajit64 --target $target --release --jobs 1 --target-dir $targetDirectory
   if ($LASTEXITCODE -ne 0) {
     throw "The ARM64EC xtajit64 provider build failed."
   }
