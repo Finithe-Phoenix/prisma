@@ -71,6 +71,9 @@ impl Drop for ActiveJitFrameGuard {
     }
 }
 
+// The private module's parent owns Wine's exception callbacks and is the only
+// caller allowed to consume this thread-local publication.
+#[allow(clippy::redundant_pub_crate)]
 pub(super) unsafe fn reset_active_exception_context(context: *mut Arm64EcContext) -> bool {
     #[cfg(all(windows, target_arch = "arm64ec"))]
     let (frame, block_rip) = unsafe {
@@ -914,6 +917,9 @@ pub struct PrismaExecutor {
 }
 
 impl BlockExecutor for PrismaExecutor {
+    // Keep allocation, publication, execution and cache ownership in one
+    // boundary: splitting it would make non-local Wine recovery unsound.
+    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         guest_rip: u64,
@@ -1289,6 +1295,9 @@ impl ThreadRuntime {
         Ok(block)
     }
 
+    // This loop is the state-machine boundary for one guest thread. Helpers
+    // may compute transitions, but ownership and cleanup remain visible here.
+    #[allow(clippy::too_many_lines)]
     pub fn dispatch<M: GuestMemory, E: BlockExecutor>(
         &self,
         context: &mut Arm64EcContext,
@@ -2789,7 +2798,7 @@ mod tests {
         assert_eq!(context.x8_rax, frame.gpr[gpr::RAX]);
         assert_eq!(context.x2_r8, frame.gpr[gpr::R8]);
         assert_eq!(context.sp_rsp, frame.gpr[gpr::RSP]);
-        assert_eq!(context.e_flags, frame.rflags as u32);
+        assert_eq!(context.e_flags, u32::try_from(frame.rflags).unwrap());
         assert_eq!(context.pc_rip, frame.next_pc);
         // SAFETY: no guard is active after leaving the scope.
         assert!(!unsafe { reset_active_exception_context(&raw mut context) });
@@ -2871,12 +2880,13 @@ mod tests {
         let cache = runtime
             .translation_cache
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(
             cache.entries.get(&rip).unwrap().source,
             [0xb8, 0x2b, 0, 0, 0]
         );
+        drop(cache);
     }
 
     #[test]

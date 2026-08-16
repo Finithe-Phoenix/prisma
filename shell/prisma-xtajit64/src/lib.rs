@@ -714,6 +714,9 @@ pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+// Ownership is intentionally transferred into the per-thread LIFO; borrowing
+// would require a second large copy and obscure which layer releases it.
+#[allow(clippy::large_types_passed_by_value)]
 fn push_native_return(frame: NativeReturnFrame) -> Result<(), LifecycleError> {
     let mut state = lock_provider();
     if !state.is_running() {
@@ -1525,6 +1528,8 @@ fn ret_to_entry_thunk_address() -> u64 {
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+// The frame is popped by value from the owned LIFO and consumed exactly once.
+#[allow(clippy::large_types_passed_by_value)]
 fn restore_native_return_context(
     context: &mut Arm64EcContext,
     frame: NativeReturnFrame,
@@ -1644,6 +1649,9 @@ fn thread_key_from_handle(handle: Handle) -> Option<ThreadKey> {
 }
 
 #[cfg(not(windows))]
+// Match the Windows handle-resolution contract so shared lifecycle code can
+// exercise both success and failure-shaped paths on host test platforms.
+#[allow(clippy::unnecessary_wraps)]
 fn thread_key_from_handle(_handle: Handle) -> Option<ThreadKey> {
     Some(current_thread_key())
 }
@@ -1794,19 +1802,21 @@ mod tests {
 
     #[test]
     fn native_return_restores_full_context_and_x64_result() {
-        let mut saved = Arm64EcContext::default();
-        saved.x0_rcx = 0x1010;
-        saved.x1_rdx = 0x1111;
-        saved.x2_r8 = 0x1212;
-        saved.x3_r9 = 0x1313;
-        saved.x27_rbx = 0x1717;
-        saved.fp_rbp = 0x1818;
-        saved.x19_r12 = 0x1919;
-        saved.x20_r13 = 0x2020;
-        saved.x21_r14 = 0x2121;
-        saved.x22_r15 = 0x2222;
-        saved.x25_rsi = 0x2525;
-        saved.x26_rdi = 0x2626;
+        let mut saved = Arm64EcContext {
+            x0_rcx: 0x1010,
+            x1_rdx: 0x1111,
+            x2_r8: 0x1212,
+            x3_r9: 0x1313,
+            x27_rbx: 0x1717,
+            fp_rbp: 0x1818,
+            x19_r12: 0x1919,
+            x20_r13: 0x2020,
+            x21_r14: 0x2121,
+            x22_r15: 0x2222,
+            x25_rsi: 0x2525,
+            x26_rdi: 0x2626,
+            ..Arm64EcContext::default()
+        };
         saved.tail.arm64_x9 = 0xfefe;
         saved.tail.arm64_lr = 0xaaaa;
         let frame = NativeReturnFrame {
@@ -1889,20 +1899,22 @@ mod tests {
         assert_eq!(std::mem::offset_of!(EntryReturnSaveArea, native_rax), 0x108);
         assert_eq!(std::mem::offset_of!(EntryReturnSaveArea, stack), 0x110);
 
-        let mut saved = EntryReturnSaveArea::default();
-        saved.native = NativeNonvolatileRegisters {
-            x19: 0x19,
-            x20: 0x20,
-            x21: 0x21,
-            x22: 0x22,
-            x25: 0x25,
-            x26: 0x26,
-            x27: 0x27,
-            fp: 0x29,
+        let mut saved = EntryReturnSaveArea {
+            native: NativeNonvolatileRegisters {
+                x19: 0x19,
+                x20: 0x20,
+                x21: 0x21,
+                x22: 0x22,
+                x25: 0x25,
+                x26: 0x26,
+                x27: 0x27,
+                fp: 0x29,
+            },
+            arguments: [0x10, 0x11, 0x12, 0x13],
+            native_rax: 0x88,
+            stack: 0x1000,
+            ..EntryReturnSaveArea::default()
         };
-        saved.arguments = [0x10, 0x11, 0x12, 0x13];
-        saved.native_rax = 0x88;
-        saved.stack = 0x1000;
         for (index, register) in saved.simd_nonvolatile.iter_mut().enumerate() {
             let index = u64::try_from(index).unwrap();
             *register = XmmRegister {
