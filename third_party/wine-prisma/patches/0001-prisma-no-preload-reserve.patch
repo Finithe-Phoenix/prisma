@@ -1,0 +1,199 @@
+From: Prisma Project <prisma@example.invalid>
+Subject: [PATCH] loader: route ARM64EC entry and skip fixed reserves
+
+QEMU user-mode and Android hosts own their guest address-space reservation.
+Wine's Unix preloader uses large MAP_FIXED mappings that QEMU user-mode cannot
+represent safely. Preserve the preloader's ELF handoff, but let an opt-in host
+leave an empty preload map so ntdll performs its normal dynamic reservation.
+
+The native ARM64 BaseThreadInitThunk cannot call an x64 application entry
+point directly. Export an ARM64/ARM64EC hybrid alias and select it only from
+the ARM64EC loader so native Wine service processes keep their native path.
+
+---
+ dlls/kernel32/kernel32.spec  |  1 +
+ dlls/ntdll/loader.c          | 23 +++++++++++++++++++++++
+ dlls/ntdll/ntdll_misc.h      |  2 ++
+ dlls/ntdll/signal_arm64ec.c  | 12 +++++++-----
+ loader/preloader.c           | 43 +++++++++++++++++++++++++------------------
+ 5 files changed, 62 insertions(+), 23 deletions(-)
+
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 3f8c74a622d..1fd05053174 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -185,6 +185,7 @@
+ # @ stub BaseQueryModuleData
+ # @ stub BaseSetLastNTError
+ @ stdcall -fastcall BaseThreadInitThunk(long ptr ptr)
++@ stdcall -fastcall -arch=arm64,arm64ec __wine_arm64ec_BaseThreadInitThunk(long ptr ptr) BaseThreadInitThunk
+ @ stub BaseUpdateAppcompatCache
+ # @ stub BaseVerifyUnicodeString
+ # @ stub Basep8BitStringToDynamicUnicodeString
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index d8b7a9256c3..3dc9b8f3abe 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4304,6 +4304,18 @@ static void load_arm64ec_module(void)
+     }
+ }
+ 
++static void refresh_arm64ec_load_configs(void)
++{
++    LIST_ENTRY *entry, *mark = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
++    LDR_DATA_TABLE_ENTRY *module;
++
++    for (entry = mark->Flink; entry != mark; entry = entry->Flink)
++    {
++        module = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
++        update_load_config( module->DllBase );
++    }
++}
++
+ #endif
+ 
+ #ifdef _WIN64
+@@ -4492,7 +4504,8 @@ void loader_init( CONTEXT *context, void **entry )
+         build_ntdll_module();
+ #ifdef __arm64ec__
+         load_arm64ec_module();
++        refresh_arm64ec_load_configs();
+         update_load_config( wm->ldr.DllBase );
+ #endif
+ 
+         if ((status = load_dll( NULL, L"kernel32.dll", 0, &kernel32, FALSE )) != STATUS_SUCCESS)
+@@ -4502,6 +4515,16 @@ void loader_init( CONTEXT *context, void **entry )
+         }
+         node_kernel32 = kernel32->ldr.DdagNode;
++#ifdef __arm64ec__
++        pBaseThreadInitThunk = RtlFindExportedRoutineByName( kernel32->ldr.DllBase,
++                                                             "__wine_arm64ec_BaseThreadInitThunk" );
++        if (!pBaseThreadInitThunk)
++            pBaseThreadInitThunk = RtlFindExportedRoutineByName( kernel32->ldr.DllBase,
++                                                                 "BaseThreadInitThunk" );
++        pBaseThreadInitThunk = arm64ec_redirect_ptr( kernel32->ldr.DllBase, pBaseThreadInitThunk,
++                                                     arm64ec_get_module_metadata( kernel32->ldr.DllBase ) );
++#else
+         pBaseThreadInitThunk = RtlFindExportedRoutineByName( kernel32->ldr.DllBase, "BaseThreadInitThunk" );
++#endif
+         LdrGetProcedureAddress( kernel32->ldr.DllBase, &ctrl_routine, 0, (void **)&pCtrlRoutine );
+ 
+         actctx_init();
+
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 14e18010b87..8b584d25443 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -165,6 +165,8 @@ extern NTSTATUS arm64ec_process_init( HMODULE module );
+ extern NTSTATUS arm64ec_thread_init(void);
+ extern IMAGE_ARM64EC_METADATA *arm64ec_get_module_metadata( HMODULE module );
++extern void *arm64ec_redirect_ptr( HMODULE module, void *ptr,
++                                  const IMAGE_ARM64EC_METADATA *metadata );
+ extern void arm64ec_update_hybrid_metadata( void *module, IMAGE_NT_HEADERS *nt,
+                                             const IMAGE_ARM64EC_METADATA *metadata );
+ extern void invoke_arm64ec_syscall(void);
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index b11e3d54e01..c99aaed46b3 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -163,12 +163,15 @@ static BOOL queue_process_work( DWORD id, void *addr, SIZE_T size, int nb_args, .
+ }
+ 
+ 
+-static void *arm64ec_redirect_ptr( HMODULE module, void *ptr, const IMAGE_ARM64EC_METADATA *metadata )
++void *arm64ec_redirect_ptr( HMODULE module, void *ptr, const IMAGE_ARM64EC_METADATA *metadata )
+ {
+-    const IMAGE_ARM64EC_REDIRECTION_ENTRY *map = get_rva( module, metadata->RedirectionMetadata );
++    const IMAGE_ARM64EC_REDIRECTION_ENTRY *map;
+-    int min = 0, max = metadata->RedirectionMetadataCount - 1;
++    int min = 0, max;
+-    ULONG_PTR rva = (ULONG_PTR)ptr - (ULONG_PTR)module;
++    ULONG_PTR rva;
+ 
+-    if (!ptr) return NULL;
++    if (!ptr || !metadata) return ptr;
++    rva = (ULONG_PTR)ptr - (ULONG_PTR)module;
++    map = get_rva( module, metadata->RedirectionMetadata );
++    max = metadata->RedirectionMetadataCount - 1;
+     while (min <= max)
+     {
+
+diff --git a/loader/preloader.c b/loader/preloader.c
+index 47b79295a9f..f849329017b 100644
+--- a/loader/preloader.c
++++ b/loader/preloader.c
+@@ -1400,5 +1400,6 @@ void* wld_start( void **stack )
+ {
+     long i, *pargc;
++    int skip_preload_reserve = 0;
+     char **argv, **p;
+     char *interp, *reserve = NULL;
+     struct wld_auxv new_av[8], delete_av[3], *av;
+@@ -1416,7 +1417,9 @@ void* wld_start( void **stack )
+     while (*p)
+     {
+         static const char res[] = "WINEPRELOADRESERVE=";
++        static const char prisma[] = "PRISMA_WINE_NO_PRELOAD_RESERVE=1";
+         if (!wld_strncmp( *p, res, sizeof(res)-1 )) reserve = *p + sizeof(res) - 1;
++        if (!wld_strcmp( *p, prisma )) skip_preload_reserve = 1;
+         p++;
+     }
+ 
+@@ -1435,28 +1438,35 @@ void* wld_start( void **stack )
+ #endif
+ 
+     /* reserve memory that Wine needs */
+-    if (reserve) preload_reserve( reserve );
+-    for (i = 0; preload_info[i].size; i++)
++    if (skip_preload_reserve)
+     {
+-        if ((char *)av >= (char *)preload_info[i].addr &&
+-            (char *)pargc - 0x1000 <= (char *)preload_info[i].addr + preload_info[i].size)
+-        {
+-            remove_preload_range( i );
+-            i--;
+-        }
+-        else if (wld_mmap( preload_info[i].addr, preload_info[i].size, PROT_NONE,
+-                           MAP_FIXED | MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0 ) == (void *)-1)
++        while (preload_info[0].size) remove_preload_range( 0 );
++    }
++    else
++    {
++        if (reserve) preload_reserve( reserve );
++        for (i = 0; preload_info[i].size; i++)
+         {
+-            /* don't warn for low 64k */
+-            if (preload_info[i].addr >= (void *)0x10000
++            if ((char *)av >= (char *)preload_info[i].addr &&
++                (char *)pargc - 0x1000 <= (char *)preload_info[i].addr + preload_info[i].size)
++            {
++                remove_preload_range( i );
++                i--;
++            }
++            else if (wld_mmap( preload_info[i].addr, preload_info[i].size, PROT_NONE,
++                               MAP_FIXED | MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0 ) == (void *)-1)
++            {
++                /* don't warn for low 64k */
++                if (preload_info[i].addr >= (void *)0x10000
+ #ifdef __aarch64__
+-                && preload_info[i].addr < (void *)0x7fffffffff /* ARM64 address space might end here*/
++                    && preload_info[i].addr < (void *)0x7fffffffff /* ARM64 address space might end here*/
+ #endif
+-            )
+-                wld_printf( "preloader: Warning: failed to reserve range %p-%p\n",
+-                            preload_info[i].addr, (char *)preload_info[i].addr + preload_info[i].size );
+-            remove_preload_range( i );
+-            i--;
++                )
++                    wld_printf( "preloader: Warning: failed to reserve range %p-%p\n",
++                                preload_info[i].addr, (char *)preload_info[i].addr + preload_info[i].size );
++                remove_preload_range( i );
++                i--;
++            }
+         }
+     }
+ 
+-- 
+2.50.1
