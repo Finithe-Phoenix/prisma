@@ -16,6 +16,7 @@ on:
       - "shell/prisma-passes/**"
       - "shell/prisma-translator/**"
       - "shell/prisma-xtajit64/**"
+      - "third_party/wine-prisma/patches/**"
 
 permissions:
   contents: read
