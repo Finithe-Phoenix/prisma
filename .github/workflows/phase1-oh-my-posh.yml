@@ -89,6 +89,8 @@ jobs:
           file: .ci/wine-context/Dockerfile
           platforms: linux/arm64
           outputs: type=local,dest=.ci/wine-rootfs
+          cache-from: type=gha,scope=phase1-wine-arm64-11.14
+          cache-to: type=gha,mode=max,scope=phase1-wine-arm64-11.14
           build-args: |
             WINE_VERSION=11.14
             WINE_JOBS=2
