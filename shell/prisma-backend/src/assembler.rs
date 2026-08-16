@@ -257,9 +257,19 @@ impl Arm64Assembler {
         self.emit_word(lsl_x(dst, lhs, rhs));
     }
 
+    /// Emits `LSL Xd, Xn, #shift`.
+    pub fn lsl_x_imm(&mut self, dst: u8, src: u8, shift: u8) {
+        self.emit_word(lsl_x_imm(dst, src, shift));
+    }
+
     /// Emits `LSRV Xd, Xn, Xm`.
     pub fn lsr_x(&mut self, dst: u8, lhs: u8, rhs: u8) {
         self.emit_word(lsr_x(dst, lhs, rhs));
+    }
+
+    /// Emits `LSR Xd, Xn, #shift`.
+    pub fn lsr_x_imm(&mut self, dst: u8, src: u8, shift: u8) {
+        self.emit_word(lsr_x_imm(dst, src, shift));
     }
 
     /// Emits `ASRV Xd, Xn, Xm`.
@@ -350,6 +360,56 @@ impl Arm64Assembler {
     /// Emits a zero-extension of the low word into `Xd`.
     pub fn uxtw_x(&mut self, dst: u8, src: u8) {
         self.emit_word(uxtw_x(dst, src));
+    }
+
+    /// Emits `SCVTF Dd, Xn`.
+    pub fn scvtf_d_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(scvtf_d_x(dst, src));
+    }
+
+    /// Emits `FMOV Xd, Dn`.
+    pub fn fmov_x_d(&mut self, dst: u8, src: u8) {
+        self.emit_word(fmov_x_d(dst, src));
+    }
+
+    /// Emits `FMOV Dd, Xn`.
+    pub fn fmov_d_x(&mut self, dst: u8, src: u8) {
+        self.emit_word(fmov_d_x(dst, src));
+    }
+
+    /// Emits `FADD Dd, Dn, Dm`.
+    pub fn fadd_d(&mut self, dst: u8, lhs: u8, rhs: u8) {
+        self.emit_word(fadd_d(dst, lhs, rhs));
+    }
+
+    /// Emits `FSUB Dd, Dn, Dm`.
+    pub fn fsub_d(&mut self, dst: u8, lhs: u8, rhs: u8) {
+        self.emit_word(fsub_d(dst, lhs, rhs));
+    }
+
+    /// Emits `FMUL Dd, Dn, Dm`.
+    pub fn fmul_d(&mut self, dst: u8, lhs: u8, rhs: u8) {
+        self.emit_word(fmul_d(dst, lhs, rhs));
+    }
+
+    /// Emits `FDIV Dd, Dn, Dm`.
+    pub fn fdiv_d(&mut self, dst: u8, lhs: u8, rhs: u8) {
+        self.emit_word(fdiv_d(dst, lhs, rhs));
+    }
+
+    /// Emits `FCMP Dn, Dm`.
+    pub fn fcmp_d(&mut self, lhs: u8, rhs: u8) {
+        self.emit_word(fcmp_d(lhs, rhs));
+    }
+
+    /// Emits `FCVTZS Wd, Dn`.
+    pub fn fcvtzs_w_d(&mut self, dst: u8, src: u8) {
+        self.emit_word(fcvtzs_w_d(dst, src));
+    }
+
+    /// Emits `FCVTZS Xd, Dn`.
+    pub fn fcvtzs_x_d(&mut self, dst: u8, src: u8) {
+        self.emit_word(fcvtzs_x_d(dst, src));
     }
 
     /// Emits `MUL Xd, Xn, Xm`.
@@ -837,6 +897,19 @@ pub fn lsl_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
     encode_shift_x_reg(0x9AC0_2000, dst, lhs, rhs)
 }
 
+/// Encodes `LSL Xd, Xn, #shift` (the `UBFM` alias).
+///
+/// # Panics
+///
+/// Panics if either register is outside `0..32` or `shift` is outside `0..64`.
+#[must_use]
+pub fn lsl_x_imm(dst: u8, src: u8, shift: u8) -> u32 {
+    assert!(shift < 64, "invalid LSL immediate");
+    let rotate = (64 - shift) & 63;
+    let top_bit = 63 - shift;
+    encode_bitfield_x(0xD340_0000, dst, src, rotate, top_bit)
+}
+
 /// Encodes `LSRV Xd, Xn, Xm`.
 ///
 /// # Panics
@@ -846,6 +919,17 @@ pub fn lsl_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
 #[must_use]
 pub fn lsr_x(dst: u8, lhs: u8, rhs: u8) -> u32 {
     encode_shift_x_reg(0x9AC0_2400, dst, lhs, rhs)
+}
+
+/// Encodes `LSR Xd, Xn, #shift` (the `UBFM` alias).
+///
+/// # Panics
+///
+/// Panics if either register is outside `0..32` or `shift` is outside `0..64`.
+#[must_use]
+pub fn lsr_x_imm(dst: u8, src: u8, shift: u8) -> u32 {
+    assert!(shift < 64, "invalid LSR immediate");
+    encode_bitfield_x(0xD340_0000, dst, src, shift, 63)
 }
 
 /// Encodes `ASRV Xd, Xn, Xm`.
@@ -1044,6 +1128,68 @@ pub fn uxth_x(dst: u8, src: u8) -> u32 {
 #[must_use]
 pub fn uxtw_x(dst: u8, src: u8) -> u32 {
     encode_bitfield_x(0xD340_0000, dst, src, 0, 31)
+}
+
+/// Encodes `SCVTF Dd, Xn`.
+#[must_use]
+pub fn scvtf_d_x(dst: u8, src: u8) -> u32 {
+    encode_fp_one_source(0x9E62_0000, dst, src)
+}
+
+/// Encodes `FMOV Xd, Dn`.
+#[must_use]
+pub fn fmov_x_d(dst: u8, src: u8) -> u32 {
+    encode_fp_one_source(0x9E66_0000, dst, src)
+}
+
+/// Encodes `FMOV Dd, Xn`.
+#[must_use]
+pub fn fmov_d_x(dst: u8, src: u8) -> u32 {
+    encode_fp_one_source(0x9E67_0000, dst, src)
+}
+
+/// Encodes `FADD Dd, Dn, Dm`.
+#[must_use]
+pub fn fadd_d(dst: u8, lhs: u8, rhs: u8) -> u32 {
+    encode_fp_two_source(0x1E60_2800, dst, lhs, rhs)
+}
+
+/// Encodes `FSUB Dd, Dn, Dm`.
+#[must_use]
+pub fn fsub_d(dst: u8, lhs: u8, rhs: u8) -> u32 {
+    encode_fp_two_source(0x1E60_3800, dst, lhs, rhs)
+}
+
+/// Encodes `FMUL Dd, Dn, Dm`.
+#[must_use]
+pub fn fmul_d(dst: u8, lhs: u8, rhs: u8) -> u32 {
+    encode_fp_two_source(0x1E60_0800, dst, lhs, rhs)
+}
+
+/// Encodes `FDIV Dd, Dn, Dm`.
+#[must_use]
+pub fn fdiv_d(dst: u8, lhs: u8, rhs: u8) -> u32 {
+    encode_fp_two_source(0x1E60_1800, dst, lhs, rhs)
+}
+
+/// Encodes `FCMP Dn, Dm`.
+#[must_use]
+pub fn fcmp_d(lhs: u8, rhs: u8) -> u32 {
+    assert!(lhs < 32, "left register out of range");
+    assert!(rhs < 32, "right register out of range");
+    0x1E60_2000 | (u32::from(rhs) << 16) | (u32::from(lhs) << 5)
+}
+
+/// Encodes `FCVTZS Wd, Dn`.
+#[must_use]
+pub fn fcvtzs_w_d(dst: u8, src: u8) -> u32 {
+    encode_fp_one_source(0x1E78_0000, dst, src)
+}
+
+/// Encodes `FCVTZS Xd, Dn`.
+#[must_use]
+pub fn fcvtzs_x_d(dst: u8, src: u8) -> u32 {
+    encode_fp_one_source(0x9E78_0000, dst, src)
 }
 
 /// Encodes `MUL Xd, Xn, Xm` as `MADD Xd, Xn, Xm, XZR`.
@@ -1387,6 +1533,19 @@ fn encode_logical_x_reg(base: u32, dst: u8, lhs: u8, rhs: u8) -> u32 {
 }
 
 fn encode_shift_x_reg(base: u32, dst: u8, lhs: u8, rhs: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    assert!(lhs < 32, "left register out of range");
+    assert!(rhs < 32, "right register out of range");
+    base | (u32::from(rhs) << 16) | (u32::from(lhs) << 5) | u32::from(dst)
+}
+
+fn encode_fp_one_source(base: u32, dst: u8, src: u8) -> u32 {
+    assert!(dst < 32, "destination register out of range");
+    assert!(src < 32, "source register out of range");
+    base | (u32::from(src) << 5) | u32::from(dst)
+}
+
+fn encode_fp_two_source(base: u32, dst: u8, lhs: u8, rhs: u8) -> u32 {
     assert!(dst < 32, "destination register out of range");
     assert!(lhs < 32, "left register out of range");
     assert!(rhs < 32, "right register out of range");
@@ -1738,6 +1897,29 @@ mod tests {
         assert_eq!(lsr_x(11, 9, 10), 0x9ACA_252B);
         assert_eq!(asr_x(11, 9, 10), 0x9ACA_292B);
         assert_eq!(ror_x(11, 9, 10), 0x9ACA_2D2B);
+    }
+
+    #[test]
+    fn encodes_shift_immediate_ops() {
+        assert_eq!(lsl_x_imm(0, 1, 1), 0xD37F_F820);
+        assert_eq!(lsr_x_imm(0, 1, 1), 0xD341_FC20);
+        assert_eq!(lsl_x_imm(11, 9, 63), 0xD341_012B);
+        assert_eq!(lsr_x_imm(11, 9, 63), 0xD37F_FD2B);
+    }
+
+    #[test]
+    fn encodes_native_f64_operations() {
+        // Golden words generated with Microsoft ARM Macro Assembler 14.44.
+        assert_eq!(scvtf_d_x(0, 1), 0x9E62_0020);
+        assert_eq!(fmov_x_d(2, 0), 0x9E66_0002);
+        assert_eq!(fmov_d_x(3, 4), 0x9E67_0083);
+        assert_eq!(fadd_d(5, 6, 7), 0x1E67_28C5);
+        assert_eq!(fsub_d(8, 9, 10), 0x1E6A_3928);
+        assert_eq!(fmul_d(11, 12, 13), 0x1E6D_098B);
+        assert_eq!(fdiv_d(14, 15, 16), 0x1E70_19EE);
+        assert_eq!(fcmp_d(5, 6), 0x1E66_20A0);
+        assert_eq!(fcvtzs_w_d(17, 18), 0x1E78_0251);
+        assert_eq!(fcvtzs_x_d(19, 20), 0x9E78_0293);
     }
 
     #[test]

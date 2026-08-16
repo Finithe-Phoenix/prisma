@@ -53,6 +53,8 @@ pub fn dead_store_eliminate(func: Function) -> Function {
                     | Op::LoadMemTSO(_)
                     | Op::StoreMemTSO(_)
                     | Op::AtomicCmpxchg(_)
+                    | Op::AtomicXchg(_)
+                    | Op::AtomicXadd(_)
                     | Op::AtomicCmpxchgPair(_)
                     | Op::Fence(_) => pending.clear(),
                     _ => {}

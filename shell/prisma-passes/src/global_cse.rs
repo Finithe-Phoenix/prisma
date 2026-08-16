@@ -23,6 +23,8 @@ fn is_flushing_op(op: &Op) -> bool {
             | Op::StoreMem(_)
             | Op::StoreMemTSO(_)
             | Op::AtomicCmpxchg(_)
+            | Op::AtomicXchg(_)
+            | Op::AtomicXadd(_)
             | Op::AtomicCmpxchgPair(_)
             | Op::StoreRflags(_)
             | Op::StoreRflagsFromNzcv(_)

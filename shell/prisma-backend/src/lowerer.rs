@@ -15,9 +15,16 @@ const FIRST_VALUE_REG: u8 = 9;
 /// Number of temporary integer registers managed by this migration slice.
 const VALUE_REG_COUNT: u8 = 8;
 
+/// Volatile scratch used to publish exact x64 instruction boundaries. It is
+/// outside the x9..x16 value pool and never aliases the ARM64EC TEB in x18.
+const GUEST_PC_SCRATCH_REG: u8 = 17;
+
 /// Scratch registers used for transient flag-alignment lowering.
 const FLAG_ALIGN_LHS_REG: u8 = 17;
-const FLAG_ALIGN_RHS_REG: u8 = 18;
+// Windows ARM64 and ARM64EC reserve x18 for the current TEB. JIT blocks must
+// preserve it across their entire lifetime, including helper calls and return
+// dispatch, so use the otherwise available callee-saved x28 instead.
+const FLAG_ALIGN_RHS_REG: u8 = 28;
 const FLAG_ALIGN_SHIFT_REG: u8 = 19;
 
 /// Scratch register used for quotient materialization in modulo lowering.
@@ -42,6 +49,12 @@ const WIDE_TMP_REG: u8 = ALU_FLAGS_TMP_REG;
 const WIDE_QUOT_SIGN_REG: u8 = MEM_ADDR_SCRATCH;
 const WIDE_REM_SIGN_REG: u8 = CAS_STATUS_REG;
 const WIDE_SHIFT_REG: u8 = 26;
+// Atomic read-modify-write ops keep their input live across the exclusive loop.
+// Preserve it outside the cyclic x9..x16 SSA pool so LDAXR cannot overwrite it
+// when result/input slots alias.
+const ATOMIC_RMW_SOURCE_REG: u8 = WIDE_SHIFT_REG;
+const ATOMIC_CMPXCHG_EXPECTED_REG: u8 = WIDE_SHIFT_REG;
+const ATOMIC_CMPXCHG_NEW_REG: u8 = ALU_FLAGS_TMP_REG;
 const PCMP_HELPER_TARGET_REG: u8 = 16;
 
 /// Scalar register pairs used for the current XMM lowering frontier. The Rust
@@ -58,6 +71,197 @@ const PCMP_LEN_LHS_EXPLICIT: u64 = 1;
 const PCMP_LEN_RHS_EXPLICIT: u64 = 2;
 
 type PcmpStrHelper = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64;
+type VecUnpackHelper = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64;
+type VecShuffleH4Helper = extern "C" fn(u64, u64, u64, u64, u64) -> u64;
+type VecCmpHelper = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64;
+type VecMaskMsbHelper = extern "C" fn(u64, u64) -> u64;
+
+extern "C" fn vec_mask_msb_helper(src_lo: u64, src_hi: u64) -> u64 {
+    let src = (u128::from(src_hi) << 64) | u128::from(src_lo);
+    let mut result = 0u64;
+    for byte in 0..16 {
+        result |= u64::try_from((src >> (byte * 8 + 7)) & 1).expect("single mask bit") << byte;
+    }
+    result
+}
+
+extern "C" fn vec_cmp_helper(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lane: u64,
+    kind: u64,
+    output_high: u64,
+) -> u64 {
+    let lhs = (u128::from(lhs_hi) << 64) | u128::from(lhs_lo);
+    let rhs = (u128::from(rhs_hi) << 64) | u128::from(rhs_lo);
+    let lane_bits = match lane {
+        x if x == u64::from(prisma_ir::VecLane::B16 as u8) => 8,
+        x if x == u64::from(prisma_ir::VecLane::H8 as u8) => 16,
+        x if x == u64::from(prisma_ir::VecLane::S4 as u8) => 32,
+        x if x == u64::from(prisma_ir::VecLane::D2 as u8) => 64,
+        _ => return 0,
+    };
+    let lane_mask = (1u128 << lane_bits) - 1;
+    let sign_bit = 1u128 << (lane_bits - 1);
+    let mut result = 0u128;
+    for lane_index in 0..(128 / lane_bits) {
+        let left = (lhs >> (lane_index * lane_bits)) & lane_mask;
+        let right = (rhs >> (lane_index * lane_bits)) & lane_mask;
+        let matches = if kind == u64::from(prisma_ir::VecCmpKind::Eq as u8) {
+            left == right
+        } else {
+            (left ^ sign_bit) > (right ^ sign_bit)
+        };
+        if matches {
+            result |= lane_mask << (lane_index * lane_bits);
+        }
+    }
+    if output_high != 0 {
+        u64::try_from(result >> 64).expect("upper compare half is 64 bits")
+    } else {
+        u64::try_from(result & u128::from(u64::MAX)).expect("lower compare half is 64 bits")
+    }
+}
+
+extern "C" fn vec_shuffle_h4_helper(
+    src_lo: u64,
+    src_hi: u64,
+    control: u64,
+    is_high: u64,
+    output_high: u64,
+) -> u64 {
+    let src = (u128::from(src_hi) << 64) | u128::from(src_lo);
+    let first = if is_high != 0 { 4 } else { 0 };
+    let mut result = src;
+    for output_lane in 0..4 {
+        let source_lane = first
+            + usize::try_from((control >> (output_lane * 2)) & 0x03)
+                .expect("shuffle selector is two bits");
+        let target_lane = first + output_lane;
+        let value = (src >> (source_lane * 16)) & 0xffff;
+        result &= !(0xffffu128 << (target_lane * 16));
+        result |= value << (target_lane * 16);
+    }
+    if output_high != 0 {
+        u64::try_from(result >> 64).expect("upper shuffle half is 64 bits")
+    } else {
+        u64::try_from(result & u128::from(u64::MAX)).expect("lower shuffle half is 64 bits")
+    }
+}
+
+extern "C" fn vec_unpack_helper(
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+    lane: u64,
+    is_high: u64,
+    output_high: u64,
+) -> u64 {
+    let lhs = (u128::from(lhs_hi) << 64) | u128::from(lhs_lo);
+    let rhs = (u128::from(rhs_hi) << 64) | u128::from(rhs_lo);
+    let lane_bits = match lane {
+        x if x == u64::from(prisma_ir::VecLane::B16 as u8) => 8,
+        x if x == u64::from(prisma_ir::VecLane::H8 as u8) => 16,
+        x if x == u64::from(prisma_ir::VecLane::S4 as u8) => 32,
+        x if x == u64::from(prisma_ir::VecLane::D2 as u8) => 64,
+        _ => return 0,
+    };
+    let lanes = 128 / lane_bits;
+    let first = if is_high != 0 { lanes / 2 } else { 0 };
+    let mask = (1u128 << lane_bits) - 1;
+    let mut result = 0u128;
+    for output_pair in 0..(lanes / 2) {
+        let source_lane = first + output_pair;
+        result |= ((lhs >> (source_lane * lane_bits)) & mask) << ((output_pair * 2) * lane_bits);
+        result |=
+            ((rhs >> (source_lane * lane_bits)) & mask) << ((output_pair * 2 + 1) * lane_bits);
+    }
+    if output_high != 0 {
+        u64::try_from(result >> 64).expect("upper unpack half is 64 bits")
+    } else {
+        u64::try_from(result & u128::from(u64::MAX)).expect("lower unpack half is 64 bits")
+    }
+}
+
+extern "C" fn fp32_rflags_helper(lhs: u64, rhs: u64) -> u64 {
+    fp_rflags(
+        f64::from(f32::from_bits(low32(lhs))),
+        f64::from(f32::from_bits(low32(rhs))),
+    )
+}
+
+#[cfg(test)]
+extern "C" fn fp64_rflags_helper(lhs: u64, rhs: u64) -> u64 {
+    fp_rflags(f64::from_bits(lhs), f64::from_bits(rhs))
+}
+
+#[cfg(test)]
+extern "C" fn i64_to_f64_helper(value: u64) -> u64 {
+    (value as i64 as f64).to_bits()
+}
+
+#[cfg(test)]
+extern "C" fn i32_to_f64_helper(value: u64) -> u64 {
+    (i64::from(value as u32 as i32) as f64).to_bits()
+}
+
+#[cfg(test)]
+extern "C" fn f64_add_helper(lhs: u64, rhs: u64) -> u64 {
+    (f64::from_bits(lhs) + f64::from_bits(rhs)).to_bits()
+}
+
+#[cfg(test)]
+extern "C" fn f64_sub_helper(lhs: u64, rhs: u64) -> u64 {
+    (f64::from_bits(lhs) - f64::from_bits(rhs)).to_bits()
+}
+
+#[cfg(test)]
+extern "C" fn f64_mul_helper(lhs: u64, rhs: u64) -> u64 {
+    (f64::from_bits(lhs) * f64::from_bits(rhs)).to_bits()
+}
+
+#[cfg(test)]
+extern "C" fn f64_div_helper(lhs: u64, rhs: u64) -> u64 {
+    (f64::from_bits(lhs) / f64::from_bits(rhs)).to_bits()
+}
+
+#[cfg(test)]
+extern "C" fn f64_to_i32_trunc_helper(value: u64) -> u64 {
+    let value = f64::from_bits(value);
+    if !value.is_finite() || !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
+        u64::from(0x8000_0000_u32)
+    } else {
+        u64::from(value.trunc() as i32 as u32)
+    }
+}
+
+#[cfg(test)]
+extern "C" fn f64_to_i64_trunc_helper(value: u64) -> u64 {
+    let value = f64::from_bits(value);
+    if !value.is_finite()
+        || !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&value)
+    {
+        i64::MIN as u64
+    } else {
+        value.trunc() as i64 as u64
+    }
+}
+
+#[allow(clippy::float_cmp)] // IEEE equality is the exact UCOMI architectural rule.
+fn fp_rflags(lhs: f64, rhs: f64) -> u64 {
+    if lhs.is_nan() || rhs.is_nan() {
+        RFLAGS_ZF_BIT | RFLAGS_PF_BIT | RFLAGS_CF_BIT
+    } else if lhs < rhs {
+        RFLAGS_CF_BIT
+    } else if lhs == rhs {
+        RFLAGS_ZF_BIT
+    } else {
+        0
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct BackendPcmpStrEval {
@@ -726,6 +930,46 @@ fn lower_stmt(
             emit_u64_constant(asm, lo, c.lo);
             emit_u64_constant(asm, hi, c.hi);
         }
+        Op::VecBinOp(bin) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("VecBinOp"))?;
+            let (lhs_lo, lhs_hi) = vec_pair(vec_values, bin.lhs)?;
+            let (rhs_lo, rhs_hi) = vec_pair(vec_values, bin.rhs)?;
+            let (dst_lo, dst_hi) = alloc_vec_pair(vec_values, result)?;
+            match bin.op {
+                prisma_ir::VecBinOpKind::Add if bin.lane == prisma_ir::VecLane::S4 => {
+                    emit_vec_add_u32x2(asm, dst_lo, lhs_lo, rhs_lo);
+                    emit_vec_add_u32x2(asm, dst_hi, lhs_hi, rhs_hi);
+                }
+                prisma_ir::VecBinOpKind::And => {
+                    asm.and_x(dst_lo, lhs_lo, rhs_lo);
+                    asm.and_x(dst_hi, lhs_hi, rhs_hi);
+                }
+                prisma_ir::VecBinOpKind::Or => {
+                    asm.orr_x(dst_lo, lhs_lo, rhs_lo);
+                    asm.orr_x(dst_hi, lhs_hi, rhs_hi);
+                }
+                prisma_ir::VecBinOpKind::Xor => {
+                    asm.eor_x(dst_lo, lhs_lo, rhs_lo);
+                    asm.eor_x(dst_hi, lhs_hi, rhs_hi);
+                }
+                _ => return Err(LowerError::UnsupportedOp("VecBinOp")),
+            }
+        }
+        Op::VecShuffle32x4(shuffle) => {
+            lower_vec_shuffle32x4(stmt, asm, vec_values, shuffle)?;
+        }
+        Op::VecUnpack(unpack) => {
+            lower_vec_unpack(stmt, asm, vec_values, unpack)?;
+        }
+        Op::VecShuffleH4(shuffle) => {
+            lower_vec_shuffle_h4(stmt, asm, vec_values, shuffle)?;
+        }
+        Op::VecCmp(compare) => {
+            lower_vec_cmp(stmt, asm, vec_values, compare)?;
+        }
+        Op::VecShiftImm(shift) => {
+            lower_vec_shift_imm(stmt, asm, vec_values, shift)?;
+        }
         Op::LoadVecReg(load) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("LoadVecReg"))?;
             let (lo, hi) = alloc_vec_pair(vec_values, result)?;
@@ -749,6 +993,52 @@ fn lower_stmt(
                 .ok_or(LowerError::MissingValue(store.addr))?;
             let (lo, hi) = vec_pair(vec_values, store.value)?;
             emit_store_vec_mem(asm, lo, hi, addr);
+        }
+        Op::VecMaskMsb(mask) => {
+            let result = stmt.result.ok_or(LowerError::MissingResult("VecMaskMsb"))?;
+            let src = vec_pair(vec_values, mask.src_xmm)?;
+            let dst = value_reg(result);
+            emit_save_for_helper_call(asm);
+            asm.mov_x(0, src.0);
+            asm.mov_x(1, src.1);
+            emit_u64_constant(
+                asm,
+                PCMP_HELPER_TARGET_REG,
+                vec_mask_msb_helper as VecMaskMsbHelper as usize as u64,
+            );
+            asm.blr_x(PCMP_HELPER_TARGET_REG);
+            emit_restore_after_helper_call(asm);
+            asm.mov_x(dst, 0);
+            values.insert(result, dst);
+        }
+        Op::WriteFlagsFp(write) => {
+            let (lhs_lo, _) = vec_pair(vec_values, write.lhs)?;
+            let (rhs_lo, _) = vec_pair(vec_values, write.rhs)?;
+            if write.size == prisma_ir::FpSize::F64 {
+                lower_write_flags_fp64(asm, lhs_lo, rhs_lo);
+            } else {
+                emit_save_for_helper_call(asm);
+                asm.mov_x(0, lhs_lo);
+                asm.mov_x(1, rhs_lo);
+                emit_u64_constant(
+                    asm,
+                    PCMP_HELPER_TARGET_REG,
+                    fp32_rflags_helper as *const () as usize as u64,
+                );
+                asm.blr_x(PCMP_HELPER_TARGET_REG);
+                emit_restore_after_helper_call(asm);
+                lower_store_rflags(asm, 0);
+            }
+            *nzcv_live = false;
+        }
+        Op::IntToFpScalar(convert) => {
+            lower_int_to_fp_scalar(stmt, asm, values, vec_values, convert)?;
+        }
+        Op::VecFpScalarBinOp(bin) => {
+            lower_vec_fp_scalar_bin(stmt, asm, vec_values, bin)?;
+        }
+        Op::FpToIntScalar(convert) => {
+            lower_fp_to_int_scalar(stmt, asm, values, vec_values, convert)?;
         }
         Op::XmmFromGpr(x) => {
             let result = stmt.result.ok_or(LowerError::MissingResult("XmmFromGpr"))?;
@@ -845,6 +1135,14 @@ fn lower_stmt(
             lower_atomic_cmpxchg(stmt, asm, values, cas)?;
             *nzcv_live = false;
         }
+        Op::AtomicXchg(xchg) => {
+            lower_atomic_xchg(stmt, asm, values, xchg)?;
+            *nzcv_live = false;
+        }
+        Op::AtomicXadd(xadd) => {
+            lower_atomic_xadd(stmt, asm, values, xadd)?;
+            *nzcv_live = false;
+        }
         Op::AtomicCmpxchgPair(cas) => {
             lower_atomic_cmpxchg_pair(stmt, asm, values, cas)?;
             *nzcv_live = false;
@@ -870,7 +1168,11 @@ fn lower_stmt(
         }
         Op::Trap(_) => {
             asm.movz_x(0, 0, 0);
-            asm.ret();
+            if exit.return_via_epilogue {
+                abi::emit_block_epilogue_and_ret(asm);
+            } else {
+                asm.ret();
+            }
         }
         Op::TrapIf(trap) => {
             let condition = *values
@@ -913,7 +1215,10 @@ fn lower_stmt(
                 asm.fence(fence.kind);
             }
         },
-        Op::GuestPc(_) => {}
+        Op::GuestPc(guest_pc) => {
+            emit_u64_constant(asm, GUEST_PC_SCRATCH_REG, guest_pc.pc);
+            asm.str_x_unsigned(GUEST_PC_SCRATCH_REG, abi::K_STATE_PTR_REG, NEXT_PC_OFFSET);
+        }
         Op::WriteFlags(write_flags) => {
             lower_write_flags(asm, values, flags, write_flags, stmt)?;
             *nzcv_live = true;
@@ -1164,6 +1469,30 @@ fn lower_stmt(
         Op::PcmpStrFlags(pcmp) => {
             lower_pcmpstr_flags(stmt, asm, values, vec_values, pcmp)?;
         }
+        Op::RepMovs(rep) => {
+            lower_rep_string(
+                asm,
+                rep.size,
+                rep.reverse,
+                rep.pc_of_rep,
+                rep.pc_after_rep,
+                true,
+                exit,
+            );
+            *nzcv_live = false;
+        }
+        Op::RepStos(rep) => {
+            lower_rep_string(
+                asm,
+                rep.size,
+                rep.reverse,
+                rep.pc_of_rep,
+                rep.pc_after_rep,
+                false,
+                exit,
+            );
+            *nzcv_live = false;
+        }
         _ => return Err(LowerError::UnsupportedOp("unsupported")),
     }
 
@@ -1209,7 +1538,8 @@ const MEM_BASE_OFFSET: u16 = 840;
 /// Scratch register holding the rebased host address inside a memory op. Outside
 /// the value-register pool (x9..x16) so it never aliases the `addr`/`value`/`dst`
 /// operands, and inside the prologue's callee-saved set so the body may clobber
-/// it. The block body otherwise touches only x9..x26, x27 (state) and x28.
+/// it. The block body otherwise touches x9..x17, x19..x26, x27 (state) and
+/// x28; Windows' platform register x18 is never allocated.
 const MEM_ADDR_SCRATCH: u8 = 24;
 /// Scratch register receiving `STLXR*` status in atomic compare-exchange loops.
 const CAS_STATUS_REG: u8 = 25;
@@ -1845,10 +2175,10 @@ fn lower_alu_flags(
     match alu.op {
         BinOpKind::Sub => asm.cmp_x(lhs, rhs),
         BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
-        BinOpKind::And => asm.ands_x(ALU_FLAGS_TMP_REG, lhs, rhs),
-        // OR/XOR have no flag-setting ARM64 form; materialise the result
-        // then re-AND it with itself so NZCV picks up N/Z and clears C/V,
-        // matching x86 logical-op flags (SF/ZF from result, CF=OF=0).
+        BinOpKind::And => emit_logical_flags_and(asm, lhs, rhs),
+        // x86 logical ops clear CF/OF. Direct unsigned Jcc lowering interprets
+        // ARM C as !x86-CF, so comparing the result with zero preserves N/Z,
+        // forces ARM C=1 (x86 CF=0), and clears V.
         BinOpKind::Or => emit_logical_flags_or_xor(asm, lhs, rhs, false),
         BinOpKind::Xor => emit_logical_flags_or_xor(asm, lhs, rhs, true),
         _ => {
@@ -1905,10 +2235,18 @@ fn ensure_nzcv_live(asm: &mut Arm64Assembler, nzcv_live: &mut bool) {
 
 fn lower_restore_nzcv_from_rflags(asm: &mut Arm64Assembler) {
     asm.ldr_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET);
-    emit_u64_constant(asm, NZCV_CARRY_REG, 0);
+    // ARM subtraction records C as "no borrow", while x86 records CF as
+    // "borrow". Seed ARM C and toggle it with the persisted x86 CF below.
+    emit_u64_constant(asm, NZCV_CARRY_REG, 1_u64 << 29);
     emit_or_rflags_bit_into_nzcv(asm, 7, 31); // SF -> N
     emit_or_rflags_bit_into_nzcv(asm, 6, 30); // ZF -> Z
-    emit_or_rflags_bit_into_nzcv(asm, 0, 29); // CF -> C (matches existing CondCode contract)
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 0);
+    asm.lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 1);
+    asm.and_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, 29);
+    asm.lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
+    asm.eor_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
     emit_or_rflags_bit_into_nzcv(asm, 11, 28); // OF -> V
     asm.msr_nzcv(NZCV_CARRY_REG);
 }
@@ -1943,6 +2281,33 @@ fn lower_store_rflags(asm: &mut Arm64Assembler, value: u8) {
     emit_u64_constant(asm, NZCV_MASK_REG, 1);
     asm.and_x(NZCV_CARRY_REG, NZCV_TMP_REG, NZCV_MASK_REG);
     asm.str_x_unsigned(NZCV_CARRY_REG, abi::K_STATE_PTR_REG, CF_OFFSET);
+}
+
+fn lower_write_flags_fp64(asm: &mut Arm64Assembler, lhs: u8, rhs: u8) {
+    asm.fmov_d_x(0, lhs);
+    asm.fmov_d_x(1, rhs);
+    asm.fcmp_d(0, 1);
+    asm.mrs_nzcv(FLAG_ALIGN_LHS_REG);
+    emit_u64_constant(asm, FLAG_ALIGN_RHS_REG, 0);
+    emit_u64_constant(asm, MEM_ADDR_SCRATCH, 1);
+
+    // ARM FCMP: less=N, equal=Z, unordered=V. x86 UCOMI requires
+    // CF=N|V, ZF=Z|V, PF=V; greater clears all three.
+    emit_nzcv_bit_into_rflags(asm, 31, 0);
+    emit_nzcv_bit_into_rflags(asm, 28, 0);
+    emit_nzcv_bit_into_rflags(asm, 30, 6);
+    emit_nzcv_bit_into_rflags(asm, 28, 6);
+    emit_nzcv_bit_into_rflags(asm, 28, 2);
+    lower_store_rflags(asm, FLAG_ALIGN_RHS_REG);
+}
+
+fn emit_nzcv_bit_into_rflags(asm: &mut Arm64Assembler, nzcv_shift: u8, rflags_shift: u8) {
+    asm.lsr_x_imm(CAS_STATUS_REG, FLAG_ALIGN_LHS_REG, nzcv_shift);
+    asm.and_x(CAS_STATUS_REG, CAS_STATUS_REG, MEM_ADDR_SCRATCH);
+    if rflags_shift != 0 {
+        asm.lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, rflags_shift);
+    }
+    asm.orr_x(FLAG_ALIGN_RHS_REG, FLAG_ALIGN_RHS_REG, CAS_STATUS_REG);
 }
 
 fn lower_store_rflags_from_nzcv(
@@ -2064,15 +2429,19 @@ fn emit_or_ref_bit_into_rflags(asm: &mut Arm64Assembler, value: u8, rflags_shift
 
 /// Emit a flag-setting OR (`is_xor == false`) or XOR over the flag-aligned
 /// operands. ARM64 has no `orrs`/`eors`, so we compute into the ALU flags
-/// scratch register and follow with `ands Xt, Xt, Xt` to publish N/Z and
-/// clear C/V.
+/// scratch register and compare with zero to publish x86-compatible N/Z/C/V.
+fn emit_logical_flags_and(asm: &mut Arm64Assembler, lhs: u8, rhs: u8) {
+    asm.and_x(ALU_FLAGS_TMP_REG, lhs, rhs);
+    asm.cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG);
+}
+
 fn emit_logical_flags_or_xor(asm: &mut Arm64Assembler, lhs: u8, rhs: u8, is_xor: bool) {
     if is_xor {
         asm.eor_x(ALU_FLAGS_TMP_REG, lhs, rhs);
     } else {
         asm.orr_x(ALU_FLAGS_TMP_REG, lhs, rhs);
     }
-    asm.ands_x(ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG);
+    asm.cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG);
 }
 
 fn lower_load_seg_base(
@@ -2147,7 +2516,7 @@ fn lower_write_flags(
     match write.op {
         BinOpKind::Sub => asm.cmp_x(lhs, rhs),
         BinOpKind::Add => asm.adds_x(ALU_FLAGS_TMP_REG, lhs, rhs),
-        BinOpKind::And => asm.ands_x(ALU_FLAGS_TMP_REG, lhs, rhs),
+        BinOpKind::And => emit_logical_flags_and(asm, lhs, rhs),
         BinOpKind::Or => emit_logical_flags_or_xor(asm, lhs, rhs, false),
         BinOpKind::Xor => emit_logical_flags_or_xor(asm, lhs, rhs, true),
         _ => {
@@ -2352,12 +2721,141 @@ fn lower_cond_jump_rel(
 /// so clobbering them is safe — the same reasoning `lower_syscall` uses for x9.
 const BRANCH_EXIT_TARGET_REG: u8 = 9;
 const BRANCH_EXIT_FALL_REG: u8 = 10;
+// A return target is loaded from guest memory after every ordinary SSA value
+// is dead. Keep it out of the cyclic x9..x16 value pool all the way through the
+// frame write: long fused blocks can otherwise leave x9 participating in the
+// final guest-memory sequence, which is needlessly fragile on ARM64EC.
+const RETURN_EXIT_TARGET_REG: u8 = WIDE_SHIFT_REG;
+
+// REP string operations are terminators, so all transient SSA values are dead
+// when this bounded native loop starts. These callee-saved scratch registers
+// are preserved by the block wrapper and deliberately avoid x18 (Windows TEB),
+// x24 (memory rebasing), and x27 (the CpuStateFrame pointer).
+const REP_RCX_REG: u8 = 19;
+const REP_RDI_REG: u8 = 20;
+const REP_RSI_REG: u8 = 21;
+const REP_MAX_REG: u8 = 22;
+const REP_ITER_REG: u8 = 23;
+const REP_VALUE_REG: u8 = 25;
+
+#[allow(clippy::too_many_arguments)]
+fn lower_rep_string(
+    asm: &mut Arm64Assembler,
+    size: OpSize,
+    reverse: bool,
+    pc_of_rep: u64,
+    pc_after_rep: u64,
+    copy_source: bool,
+    exit: ExitAbi,
+) {
+    asm.ldr_x_unsigned(
+        REP_RCX_REG,
+        abi::K_STATE_PTR_REG,
+        gpr_offset_bytes(Gpr::Rcx),
+    );
+    asm.ldr_x_unsigned(
+        REP_RDI_REG,
+        abi::K_STATE_PTR_REG,
+        gpr_offset_bytes(Gpr::Rdi),
+    );
+    if copy_source {
+        asm.ldr_x_unsigned(
+            REP_RSI_REG,
+            abi::K_STATE_PTR_REG,
+            gpr_offset_bytes(Gpr::Rsi),
+        );
+    } else {
+        asm.ldr_x_unsigned(
+            REP_VALUE_REG,
+            abi::K_STATE_PTR_REG,
+            gpr_offset_bytes(Gpr::Rax),
+        );
+    }
+
+    let done = asm.create_label();
+    asm.cbz_x_label(REP_RCX_REG, done);
+    let step = match size {
+        OpSize::I8 => 1_u16,
+        OpSize::I16 => 2,
+        OpSize::I32 => 4,
+        OpSize::I64 => 8,
+    };
+    let iteration_cap = prisma_ir::REP_MAX_BYTES_PER_CALL / u64::from(step);
+    emit_u64_constant(asm, REP_MAX_REG, iteration_cap);
+    asm.cmp_x(REP_RCX_REG, REP_MAX_REG);
+    asm.csel_x(
+        REP_ITER_REG,
+        REP_RCX_REG,
+        REP_MAX_REG,
+        prisma_ir::CondCode::Ult,
+    );
+    asm.sub_x(REP_RCX_REG, REP_RCX_REG, REP_ITER_REG);
+
+    let loop_body = asm.create_label();
+    asm.bind_label(loop_body);
+    if copy_source {
+        emit_load_mem(asm, size, REP_VALUE_REG, REP_RSI_REG);
+    }
+    emit_store_mem(asm, size, REP_VALUE_REG, REP_RDI_REG);
+    if reverse {
+        asm.sub_x_imm(REP_RDI_REG, REP_RDI_REG, step);
+        if copy_source {
+            asm.sub_x_imm(REP_RSI_REG, REP_RSI_REG, step);
+        }
+    } else {
+        asm.add_x_imm(REP_RDI_REG, REP_RDI_REG, step);
+        if copy_source {
+            asm.add_x_imm(REP_RSI_REG, REP_RSI_REG, step);
+        }
+    }
+    asm.sub_x_imm(REP_ITER_REG, REP_ITER_REG, 1);
+    asm.cbnz_x_label(REP_ITER_REG, loop_body);
+    asm.bind_label(done);
+
+    asm.str_x_unsigned(
+        REP_RCX_REG,
+        abi::K_STATE_PTR_REG,
+        gpr_offset_bytes(Gpr::Rcx),
+    );
+    asm.str_x_unsigned(
+        REP_RDI_REG,
+        abi::K_STATE_PTR_REG,
+        gpr_offset_bytes(Gpr::Rdi),
+    );
+    if copy_source {
+        asm.str_x_unsigned(
+            REP_RSI_REG,
+            abi::K_STATE_PTR_REG,
+            gpr_offset_bytes(Gpr::Rsi),
+        );
+    }
+
+    emit_u64_constant(asm, BRANCH_EXIT_TARGET_REG, pc_after_rep);
+    let target_ready = asm.create_label();
+    asm.cbz_x_label(REP_RCX_REG, target_ready);
+    emit_u64_constant(asm, BRANCH_EXIT_TARGET_REG, pc_of_rep);
+    asm.bind_label(target_ready);
+    if exit.branch_via_frame {
+        emit_branch_exit(asm);
+    } else {
+        asm.mov_x(0, BRANCH_EXIT_TARGET_REG);
+        if exit.return_via_epilogue {
+            abi::emit_block_epilogue_and_ret(asm);
+        } else {
+            asm.ret();
+        }
+    }
+}
 
 /// Record `next_pc` + `EXIT_BRANCH` in the frame and return to the host run loop.
 /// `MOVZ`/`MOVK` (constant emission) and `STR` do not touch NZCV, so a preceding
 /// condition stays live for [`lower_cond_jump_rel_exit`]'s `CSEL`.
 fn emit_branch_exit(asm: &mut Arm64Assembler) {
-    asm.str_x_unsigned(BRANCH_EXIT_TARGET_REG, abi::K_STATE_PTR_REG, NEXT_PC_OFFSET);
+    emit_branch_exit_from(asm, BRANCH_EXIT_TARGET_REG);
+}
+
+fn emit_branch_exit_from(asm: &mut Arm64Assembler, target_reg: u8) {
+    asm.str_x_unsigned(target_reg, abi::K_STATE_PTR_REG, NEXT_PC_OFFSET);
     asm.movz_x(BRANCH_EXIT_TARGET_REG, EXIT_BRANCH_MARK, 0);
     asm.str_x_unsigned(
         BRANCH_EXIT_TARGET_REG,
@@ -2418,12 +2916,12 @@ fn lower_call_rel_exit(
 fn lower_return_exit(asm: &mut Arm64Assembler, rsp_delta: u64) -> Result<(), LowerError> {
     // target = [rsp] (rebased to host through mem_base by emit_load_mem)
     emit_load_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
-    emit_load_mem(asm, OpSize::I64, BRANCH_EXIT_TARGET_REG, RSP_ADJUST_TMP_REG);
+    emit_load_mem(asm, OpSize::I64, RETURN_EXIT_TARGET_REG, RSP_ADJUST_TMP_REG);
     // rsp += rsp_delta
     let delta = i64::try_from(rsp_delta).map_err(|_| LowerError::ImmediateOutOfRange(rsp_delta))?;
     emit_rsp_imm_add(asm, RSP_ADJUST_TMP_REG, delta)?;
     emit_store_reg(asm, OpSize::I64, RSP_ADJUST_TMP_REG, Gpr::Rsp);
-    emit_branch_exit(asm);
+    emit_branch_exit_from(asm, RETURN_EXIT_TARGET_REG);
     Ok(())
 }
 
@@ -2557,6 +3055,313 @@ fn vec_pair(vec_values: &HashMap<Ref, (u8, u8)>, reference: Ref) -> Result<(u8, 
         .ok_or(LowerError::MissingValue(reference))
 }
 
+fn lower_vec_shuffle32x4(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    shuffle: &prisma_ir::VecShuffle32x4,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("VecShuffle32x4"))?;
+    let src = vec_pair(vec_values, shuffle.src)?;
+    let dst = alloc_vec_pair(vec_values, result)?;
+    debug_assert!(dst.0 != src.0 && dst.0 != src.1 && dst.1 != src.0 && dst.1 != src.1);
+
+    emit_vec_u32_lane(asm, dst.0, src, shuffle.control & 0x03);
+    emit_vec_u32_lane(asm, CAS_STATUS_REG, src, (shuffle.control >> 2) & 0x03);
+    asm.lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, 32);
+    asm.orr_x(dst.0, dst.0, CAS_STATUS_REG);
+
+    emit_vec_u32_lane(asm, dst.1, src, (shuffle.control >> 4) & 0x03);
+    emit_vec_u32_lane(asm, CAS_STATUS_REG, src, (shuffle.control >> 6) & 0x03);
+    asm.lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, 32);
+    asm.orr_x(dst.1, dst.1, CAS_STATUS_REG);
+    Ok(())
+}
+
+fn lower_vec_unpack(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    unpack: &prisma_ir::VecUnpack,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("VecUnpack"))?;
+    let lhs = vec_pair(vec_values, unpack.lhs)?;
+    let rhs = vec_pair(vec_values, unpack.rhs)?;
+    let dst = alloc_vec_pair(vec_values, result)?;
+    let helper = vec_unpack_helper as VecUnpackHelper as usize as u64;
+
+    for (output_high, output_reg) in [(0u64, dst.0), (1u64, dst.1)] {
+        emit_save_for_helper_call(asm);
+        asm.mov_x(0, lhs.0);
+        asm.mov_x(1, lhs.1);
+        asm.mov_x(2, rhs.0);
+        asm.mov_x(3, rhs.1);
+        emit_u64_constant(asm, 4, u64::from(unpack.lane as u8));
+        emit_u64_constant(asm, 5, u64::from(unpack.is_high));
+        emit_u64_constant(asm, 6, output_high);
+        emit_u64_constant(asm, PCMP_HELPER_TARGET_REG, helper);
+        asm.blr_x(PCMP_HELPER_TARGET_REG);
+        emit_restore_after_helper_call(asm);
+        asm.mov_x(output_reg, 0);
+    }
+    Ok(())
+}
+
+fn lower_vec_shuffle_h4(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    shuffle: &prisma_ir::VecShuffleH4,
+) -> Result<(), LowerError> {
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("VecShuffleH4"))?;
+    let src = vec_pair(vec_values, shuffle.src)?;
+    let dst = alloc_vec_pair(vec_values, result)?;
+    let helper = vec_shuffle_h4_helper as VecShuffleH4Helper as usize as u64;
+
+    for (output_high, output_reg) in [(0u64, dst.0), (1u64, dst.1)] {
+        emit_save_for_helper_call(asm);
+        asm.mov_x(0, src.0);
+        asm.mov_x(1, src.1);
+        emit_u64_constant(asm, 2, u64::from(shuffle.control));
+        emit_u64_constant(asm, 3, u64::from(shuffle.is_high));
+        emit_u64_constant(asm, 4, output_high);
+        emit_u64_constant(asm, PCMP_HELPER_TARGET_REG, helper);
+        asm.blr_x(PCMP_HELPER_TARGET_REG);
+        emit_restore_after_helper_call(asm);
+        asm.mov_x(output_reg, 0);
+    }
+    Ok(())
+}
+
+fn lower_vec_cmp(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    compare: &prisma_ir::VecCmp,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("VecCmp"))?;
+    let lhs = vec_pair(vec_values, compare.lhs)?;
+    let rhs = vec_pair(vec_values, compare.rhs)?;
+    let dst = alloc_vec_pair(vec_values, result)?;
+    let helper = vec_cmp_helper as VecCmpHelper as usize as u64;
+    for (output_high, output_reg) in [(0u64, dst.0), (1u64, dst.1)] {
+        emit_save_for_helper_call(asm);
+        asm.mov_x(0, lhs.0);
+        asm.mov_x(1, lhs.1);
+        asm.mov_x(2, rhs.0);
+        asm.mov_x(3, rhs.1);
+        emit_u64_constant(asm, 4, u64::from(compare.lane as u8));
+        emit_u64_constant(asm, 5, u64::from(compare.kind as u8));
+        emit_u64_constant(asm, 6, output_high);
+        emit_u64_constant(asm, PCMP_HELPER_TARGET_REG, helper);
+        asm.blr_x(PCMP_HELPER_TARGET_REG);
+        emit_restore_after_helper_call(asm);
+        asm.mov_x(output_reg, 0);
+    }
+    Ok(())
+}
+
+fn emit_vec_u32_lane(asm: &mut Arm64Assembler, dst: u8, src: (u8, u8), lane: u8) {
+    let word = if lane < 2 { src.0 } else { src.1 };
+    if lane & 1 == 0 {
+        asm.uxtw_x(dst, word);
+    } else {
+        asm.lsr_x_imm(dst, word, 32);
+        asm.uxtw_x(dst, dst);
+    }
+}
+
+fn emit_vec_add_u32x2(asm: &mut Arm64Assembler, dst: u8, lhs: u8, rhs: u8) {
+    asm.uxtw_x(dst, lhs);
+    asm.uxtw_x(CAS_STATUS_REG, rhs);
+    asm.add_x(dst, dst, CAS_STATUS_REG);
+    asm.uxtw_x(dst, dst);
+
+    asm.lsr_x_imm(FLAG_ALIGN_LHS_REG, lhs, 32);
+    asm.lsr_x_imm(CAS_STATUS_REG, rhs, 32);
+    asm.add_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, CAS_STATUS_REG);
+    asm.uxtw_x(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG);
+    asm.lsl_x_imm(FLAG_ALIGN_LHS_REG, FLAG_ALIGN_LHS_REG, 32);
+    asm.orr_x(dst, dst, FLAG_ALIGN_LHS_REG);
+}
+
+fn lower_vec_shift_imm(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    shift: &prisma_ir::VecShiftImm,
+) -> Result<(), LowerError> {
+    if shift.lane != prisma_ir::VecLane::S4
+        || !matches!(
+            shift.kind,
+            prisma_ir::VecShiftKind::ShiftL | prisma_ir::VecShiftKind::LogicalShr
+        )
+    {
+        return Err(LowerError::UnsupportedOp("VecShiftImm"));
+    }
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("VecShiftImm"))?;
+    let src = vec_pair(vec_values, shift.src)?;
+    let dst = alloc_vec_pair(vec_values, result)?;
+    emit_vec_shift_u32x2(asm, dst.0, src.0, shift.kind, shift.count);
+    emit_vec_shift_u32x2(asm, dst.1, src.1, shift.kind, shift.count);
+    Ok(())
+}
+
+fn lower_int_to_fp_scalar(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &HashMap<Ref, u8>,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    convert: &prisma_ir::IntToFpScalar,
+) -> Result<(), LowerError> {
+    if convert.fp_size != prisma_ir::FpSize::F64 {
+        return Err(LowerError::UnsupportedOp("IntToFpScalar"));
+    }
+    let src = *values
+        .get(&convert.value)
+        .ok_or(LowerError::MissingValue(convert.value))?;
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("IntToFpScalar"))?;
+    let (lo, hi) = alloc_vec_pair(vec_values, result)?;
+    let signed = match convert.int_size {
+        OpSize::I32 => {
+            asm.sxtw_x(FLAG_ALIGN_LHS_REG, src);
+            FLAG_ALIGN_LHS_REG
+        }
+        OpSize::I64 => src,
+        _ => return Err(LowerError::UnsupportedOp("IntToFpScalar")),
+    };
+    asm.scvtf_d_x(0, signed);
+    asm.fmov_x_d(lo, 0);
+    emit_u64_constant(asm, hi, 0);
+    Ok(())
+}
+
+fn lower_vec_fp_scalar_bin(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    vec_values: &mut HashMap<Ref, (u8, u8)>,
+    bin: &prisma_ir::VecFpScalarBinOp,
+) -> Result<(), LowerError> {
+    if bin.size != prisma_ir::FpSize::F64 {
+        return Err(LowerError::UnsupportedOp("VecFpScalarBinOp"));
+    }
+    let lhs = vec_pair(vec_values, bin.lhs)?;
+    let rhs = vec_pair(vec_values, bin.rhs)?;
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("VecFpScalarBinOp"))?;
+    let dst = alloc_vec_pair(vec_values, result)?;
+    asm.fmov_d_x(0, lhs.0);
+    asm.fmov_d_x(1, rhs.0);
+    match bin.op {
+        prisma_ir::VecFpBinOpKind::Add => asm.fadd_d(0, 0, 1),
+        prisma_ir::VecFpBinOpKind::Sub => asm.fsub_d(0, 0, 1),
+        prisma_ir::VecFpBinOpKind::Mul => asm.fmul_d(0, 0, 1),
+        prisma_ir::VecFpBinOpKind::Div => asm.fdiv_d(0, 0, 1),
+        _ => return Err(LowerError::UnsupportedOp("VecFpScalarBinOp")),
+    }
+    asm.fmov_x_d(dst.0, 0);
+    asm.mov_x(dst.1, lhs.1);
+    Ok(())
+}
+
+fn lower_fp_to_int_scalar(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    vec_values: &HashMap<Ref, (u8, u8)>,
+    convert: &prisma_ir::FpToIntScalar,
+) -> Result<(), LowerError> {
+    if convert.fp_size != prisma_ir::FpSize::F64 {
+        return Err(LowerError::UnsupportedOp("FpToIntScalar"));
+    }
+    let src = vec_pair(vec_values, convert.value)?.0;
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("FpToIntScalar"))?;
+    let dst = value_reg(result);
+    let limit = match convert.int_size {
+        OpSize::I32 => 0x41e0_0000_0000_0000,
+        OpSize::I64 => 0x43e0_0000_0000_0000,
+        _ => return Err(LowerError::UnsupportedOp("FpToIntScalar")),
+    };
+    emit_u64_constant(asm, FLAG_ALIGN_RHS_REG, 0x7fff_ffff_ffff_ffff);
+    asm.and_x(FLAG_ALIGN_LHS_REG, src, FLAG_ALIGN_RHS_REG);
+    emit_u64_constant(asm, CAS_STATUS_REG, limit);
+    asm.lsr_x_imm(FLAG_ALIGN_RHS_REG, src, 63);
+
+    let negative = asm.create_label();
+    let convert_value = asm.create_label();
+    let invalid = asm.create_label();
+    let done = asm.create_label();
+    asm.cbnz_x_label(FLAG_ALIGN_RHS_REG, negative);
+    asm.cmp_x(FLAG_ALIGN_LHS_REG, CAS_STATUS_REG);
+    asm.b_cond_label(prisma_ir::CondCode::Uge, invalid);
+    asm.b_label(convert_value);
+    asm.bind_label(negative);
+    asm.cmp_x(FLAG_ALIGN_LHS_REG, CAS_STATUS_REG);
+    asm.b_cond_label(prisma_ir::CondCode::Ugt, invalid);
+    asm.bind_label(convert_value);
+    asm.fmov_d_x(0, src);
+    match convert.int_size {
+        OpSize::I32 => asm.fcvtzs_w_d(dst, 0),
+        OpSize::I64 => asm.fcvtzs_x_d(dst, 0),
+        _ => unreachable!("validated above"),
+    }
+    asm.b_label(done);
+    asm.bind_label(invalid);
+    emit_u64_constant(
+        asm,
+        dst,
+        if convert.int_size == OpSize::I32 {
+            u64::from(0x8000_0000_u32)
+        } else {
+            i64::MIN as u64
+        },
+    );
+    asm.bind_label(done);
+    values.insert(result, dst);
+    Ok(())
+}
+
+fn emit_vec_shift_u32x2(
+    asm: &mut Arm64Assembler,
+    dst: u8,
+    src: u8,
+    kind: prisma_ir::VecShiftKind,
+    count: u8,
+) {
+    if count >= 32 {
+        emit_u64_constant(asm, dst, 0);
+        return;
+    }
+    asm.uxtw_x(dst, src);
+    asm.lsr_x_imm(CAS_STATUS_REG, src, 32);
+    match kind {
+        prisma_ir::VecShiftKind::ShiftL => {
+            asm.lsl_x_imm(dst, dst, count);
+            asm.uxtw_x(dst, dst);
+            asm.lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, count);
+            asm.uxtw_x(CAS_STATUS_REG, CAS_STATUS_REG);
+        }
+        prisma_ir::VecShiftKind::LogicalShr => {
+            asm.lsr_x_imm(dst, dst, count);
+            asm.lsr_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, count);
+        }
+        prisma_ir::VecShiftKind::ArithShr => unreachable!("validated by caller"),
+    }
+    asm.lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, 32);
+    asm.orr_x(dst, dst, CAS_STATUS_REG);
+}
+
 fn lower_vec_clmul(
     stmt: &Stmt,
     asm: &mut Arm64Assembler,
@@ -2564,11 +3369,9 @@ fn lower_vec_clmul(
     op: &prisma_ir::VecClMul,
 ) -> Result<(), LowerError> {
     const CLMUL_WORK_LO: u8 = FLAG_ALIGN_LHS_REG; // X17
-    const CLMUL_WORK_HI: u8 = FLAG_ALIGN_RHS_REG; // X18
+    const CLMUL_WORK_HI: u8 = FLAG_ALIGN_RHS_REG; // X28
     const CLMUL_RHS: u8 = MEM_ADDR_SCRATCH; // X24
     const CLMUL_TMP: u8 = CAS_STATUS_REG; // X25
-    const CLMUL_ONE: u8 = 28;
-    const CLMUL_SHIFT63: u8 = 29;
     const CLMUL_COUNT: u8 = 30;
 
     let result = stmt.result.ok_or(LowerError::MissingResult("VecClMul"))?;
@@ -2583,23 +3386,21 @@ fn lower_vec_clmul(
     asm.mov_x(CLMUL_RHS, rhs_reg);
     emit_u64_constant(asm, out_lo, 0);
     emit_u64_constant(asm, out_hi, 0);
-    emit_u64_constant(asm, CLMUL_ONE, 1);
-    emit_u64_constant(asm, CLMUL_SHIFT63, 63);
     emit_u64_constant(asm, CLMUL_COUNT, 64);
 
     let loop_label = asm.create_label();
     let skip_xor = asm.create_label();
     asm.bind_label(loop_label);
-    asm.and_x(CLMUL_TMP, CLMUL_RHS, CLMUL_ONE);
+    asm.lsl_x_imm(CLMUL_TMP, CLMUL_RHS, 63);
     asm.cbz_x_label(CLMUL_TMP, skip_xor);
     asm.eor_x(out_lo, out_lo, CLMUL_WORK_LO);
     asm.eor_x(out_hi, out_hi, CLMUL_WORK_HI);
     asm.bind_label(skip_xor);
-    asm.lsr_x(CLMUL_TMP, CLMUL_WORK_LO, CLMUL_SHIFT63);
-    asm.lsl_x(CLMUL_WORK_LO, CLMUL_WORK_LO, CLMUL_ONE);
-    asm.lsl_x(CLMUL_WORK_HI, CLMUL_WORK_HI, CLMUL_ONE);
+    asm.lsr_x_imm(CLMUL_TMP, CLMUL_WORK_LO, 63);
+    asm.lsl_x_imm(CLMUL_WORK_LO, CLMUL_WORK_LO, 1);
+    asm.lsl_x_imm(CLMUL_WORK_HI, CLMUL_WORK_HI, 1);
     asm.orr_x(CLMUL_WORK_HI, CLMUL_WORK_HI, CLMUL_TMP);
-    asm.lsr_x(CLMUL_RHS, CLMUL_RHS, CLMUL_ONE);
+    asm.lsr_x_imm(CLMUL_RHS, CLMUL_RHS, 1);
     asm.sub_x_imm(CLMUL_COUNT, CLMUL_COUNT, 1);
     asm.cbnz_x_label(CLMUL_COUNT, loop_label);
 
@@ -2884,6 +3685,10 @@ fn lower_atomic_cmpxchg(
         .ok_or(LowerError::MissingValue(cas.new_value))?;
     let loaded = value_reg(result);
 
+    asm.mov_x(ATOMIC_CMPXCHG_EXPECTED_REG, expected);
+    asm.mov_x(ATOMIC_CMPXCHG_NEW_REG, new_value);
+    values.insert(cas.expected, ATOMIC_CMPXCHG_EXPECTED_REG);
+    values.insert(cas.new_value, ATOMIC_CMPXCHG_NEW_REG);
     emit_rebase_addr(asm, addr);
     let retry = asm.create_label();
     let fail = asm.create_label();
@@ -2891,10 +3696,16 @@ fn lower_atomic_cmpxchg(
 
     asm.bind_label(retry);
     emit_atomic_load_acquire(asm, cas.size, loaded, MEM_ADDR_SCRATCH);
-    let (lhs, rhs) = align_flag_operands(asm, cas.size, loaded, expected);
+    let (lhs, rhs) = align_flag_operands(asm, cas.size, loaded, ATOMIC_CMPXCHG_EXPECTED_REG);
     asm.cmp_x(lhs, rhs);
     asm.b_cond_label(prisma_ir::CondCode::Ne, fail);
-    emit_atomic_store_release(asm, cas.size, CAS_STATUS_REG, new_value, MEM_ADDR_SCRATCH);
+    emit_atomic_store_release(
+        asm,
+        cas.size,
+        CAS_STATUS_REG,
+        ATOMIC_CMPXCHG_NEW_REG,
+        MEM_ADDR_SCRATCH,
+    );
     asm.cbnz_x_label(CAS_STATUS_REG, retry);
     asm.b_label(done);
     asm.bind_label(fail);
@@ -2902,6 +3713,68 @@ fn lower_atomic_cmpxchg(
     asm.bind_label(done);
 
     values.insert(result, loaded);
+    Ok(())
+}
+
+fn lower_atomic_xadd(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    xadd: &prisma_ir::AtomicXadd,
+) -> Result<(), LowerError> {
+    const NEW_VALUE: u8 = FLAG_ALIGN_LHS_REG;
+    let result = stmt.result.ok_or(LowerError::MissingResult("AtomicXadd"))?;
+    let addr = *values
+        .get(&xadd.addr)
+        .ok_or(LowerError::MissingValue(xadd.addr))?;
+    let value = *values
+        .get(&xadd.value)
+        .ok_or(LowerError::MissingValue(xadd.value))?;
+    let old = value_reg(result);
+
+    emit_rebase_addr(asm, addr);
+    asm.mov_x(ATOMIC_RMW_SOURCE_REG, value);
+    values.insert(xadd.value, ATOMIC_RMW_SOURCE_REG);
+    let retry = asm.create_label();
+    asm.bind_label(retry);
+    emit_atomic_load_acquire(asm, xadd.size, old, MEM_ADDR_SCRATCH);
+    asm.add_x(NEW_VALUE, old, ATOMIC_RMW_SOURCE_REG);
+    emit_atomic_store_release(asm, xadd.size, CAS_STATUS_REG, NEW_VALUE, MEM_ADDR_SCRATCH);
+    asm.cbnz_x_label(CAS_STATUS_REG, retry);
+    values.insert(result, old);
+    Ok(())
+}
+
+fn lower_atomic_xchg(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    xchg: &prisma_ir::AtomicXchg,
+) -> Result<(), LowerError> {
+    let result = stmt.result.ok_or(LowerError::MissingResult("AtomicXchg"))?;
+    let addr = *values
+        .get(&xchg.addr)
+        .ok_or(LowerError::MissingValue(xchg.addr))?;
+    let value = *values
+        .get(&xchg.value)
+        .ok_or(LowerError::MissingValue(xchg.value))?;
+    let old = value_reg(result);
+
+    asm.mov_x(ATOMIC_RMW_SOURCE_REG, value);
+    values.insert(xchg.value, ATOMIC_RMW_SOURCE_REG);
+    emit_rebase_addr(asm, addr);
+    let retry = asm.create_label();
+    asm.bind_label(retry);
+    emit_atomic_load_acquire(asm, xchg.size, old, MEM_ADDR_SCRATCH);
+    emit_atomic_store_release(
+        asm,
+        xchg.size,
+        CAS_STATUS_REG,
+        ATOMIC_RMW_SOURCE_REG,
+        MEM_ADDR_SCRATCH,
+    );
+    asm.cbnz_x_label(CAS_STATUS_REG, retry);
+    values.insert(result, old);
     Ok(())
 }
 
@@ -3066,22 +3939,27 @@ mod tests {
     use super::*;
     use crate::abi;
     use crate::assembler::{
-        add_x, add_x_imm, adds_x, and_x, ands_x, b, b_cond, blr_x, clrex, clz_w, clz_x, cmp_x,
-        crc32cb, crc32ch, crc32cw, crc32cx, cset_x, eor_x, fence, ldaxp_x, ldaxr_x, ldp_x_post_sp,
-        ldr_w_unsigned, ldr_x_unsigned, ldrb_unsigned, ldrh_unsigned, lsl_x, lsr_x, mov_x, movk_x,
-        movz_x, mrs_cntvct, mrs_nzcv, msr_nzcv, orr_x, rbit_w, rbit_x, stlxp_x, stlxr_x,
-        stp_x_pre_sp, str_w_unsigned, str_x_unsigned, strb_unsigned, strh_unsigned, sub_x,
-        sub_x_imm, sxtb_x, uxth_x, uxtw_x,
+        add_x, add_x_imm, adds_x, and_x, b, b_cond, blr_x, clrex, clz_w, clz_x, cmp_x, crc32cb,
+        crc32ch, crc32cw, crc32cx, cset_x, eor_x, fadd_d, fcmp_d, fcvtzs_w_d, fence, fmov_d_x,
+        fmov_x_d, ldaxp_x, ldaxr_x, ldp_x_post_sp, ldr_w_unsigned, ldr_x_unsigned, ldrb_unsigned,
+        ldrh_unsigned, lsl_x, lsl_x_imm, lsr_x, lsr_x_imm, mov_x, movk_x, movz_x, mrs_cntvct,
+        mrs_nzcv, msr_nzcv, orr_x, rbit_w, rbit_x, scvtf_d_x, stlxp_x, stlxr_x, stp_x_pre_sp,
+        str_w_unsigned, str_x_unsigned, strb_unsigned, strh_unsigned, sub_x, sub_x_imm, sxtb_x,
+        uxth_x, uxtw_x,
     };
     use prisma_ir::{
-        AluFlags, AluFlagsPreserveCarry, AtomicCmpxchg, AtomicCmpxchgPair, BasicBlock, BinOp,
-        Bswap, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags, CondJumpRel, Constant, Crc32c,
-        Fence, FenceKind, FlagBit, Gpr, Jump, LoadMem, LoadMemTSO, LoadReg, LoadRflags,
-        LoadSegBase, LoadVec, LoadVecReg, Lzcnt, PcmpStrFlags, PcmpStrIndex, PcmpStrMask, Popcnt,
-        Rdtsc, ReadFlag, Return, RflagsCarryMode, RspAdjust, SegmentReg, Select, Stmt, StoreCarry,
-        StoreMem, StoreMemTSO, StoreReg, StoreRflags, StoreRflagsFromBits, StoreRflagsFromNzcv,
-        StoreVec, StoreVecReg, Truncate, Tzcnt, VecClMul, VecConstant, VecF16Cvt, VecF16CvtKind,
-        WideDiv, WideDivResult, WriteFlags, WriteFlagsCountZero, WriteFlagsPopcnt,
+        AluFlags, AluFlagsPreserveCarry, AtomicCmpxchg, AtomicCmpxchgPair, AtomicXadd, AtomicXchg,
+        BasicBlock, BinOp, Bswap, CmpFlags, Compare, CondCode, CondJump, CondJumpFlags,
+        CondJumpRel, Constant, Crc32c, Fence, FenceKind, FlagBit, FpSize, FpToIntScalar, Gpr,
+        GuestPc, IntToFpScalar, Jump, LoadMem, LoadMemTSO, LoadReg, LoadRflags, LoadSegBase,
+        LoadVec, LoadVecReg, Lzcnt, PcmpStrFlags, PcmpStrIndex, PcmpStrMask, Popcnt, Rdtsc,
+        ReadFlag, RepMovs, RepStos, Return, RflagsCarryMode, RspAdjust, SegmentReg, Select, Stmt,
+        StoreCarry, StoreMem, StoreMemTSO, StoreReg, StoreRflags, StoreRflagsFromBits,
+        StoreRflagsFromNzcv, StoreVec, StoreVecReg, Truncate, Tzcnt, VecBinOp, VecBinOpKind,
+        VecClMul, VecCmp, VecCmpKind, VecConstant, VecF16Cvt, VecF16CvtKind, VecFpBinOpKind,
+        VecFpScalarBinOp, VecLane, VecMaskMsb, VecShiftImm, VecShiftKind, VecShuffle32x4,
+        VecUnpack, WideDiv, WideDivResult, WriteFlags, WriteFlagsCountZero, WriteFlagsFp,
+        WriteFlagsPopcnt,
     };
 
     fn function(stmts: Vec<Stmt>) -> Function {
@@ -3089,6 +3967,44 @@ mod tests {
             blocks: vec![BasicBlock { id: 0, stmts }],
             entry: 0,
         }
+    }
+
+    #[test]
+    fn windows_platform_register_x18_is_not_allocated() {
+        let scalar_pool = FIRST_VALUE_REG..FIRST_VALUE_REG + VALUE_REG_COUNT;
+        assert!(!scalar_pool.contains(&18));
+        assert_ne!(FLAG_ALIGN_LHS_REG, 18);
+        assert_ne!(FLAG_ALIGN_RHS_REG, 18);
+        assert_ne!(FLAG_ALIGN_SHIFT_REG, 18);
+        assert_ne!(MOD_QUOTIENT_REG, 18);
+        assert_ne!(RSP_ADJUST_TMP_REG, 18);
+        assert_ne!(RSP_ADJUST_IMM_REG, 18);
+        assert_ne!(ALU_FLAGS_TMP_REG, 18);
+        assert_ne!(MEM_ADDR_SCRATCH, 18);
+        assert_ne!(CAS_STATUS_REG, 18);
+        assert_ne!(WIDE_SHIFT_REG, 18);
+        assert_ne!(PCMP_HELPER_TARGET_REG, 18);
+        assert!(VEC_REG_PAIRS.iter().all(|(lo, hi)| *lo != 18 && *hi != 18));
+    }
+
+    #[test]
+    fn lowers_guest_pc_marker_into_the_shared_state_frame() {
+        let guest_pc = 0x1_4000_1234;
+        let func = function(vec![Stmt::new(None, Op::GuestPc(GuestPc { pc: guest_pc }))]);
+        let words = Lowerer::new().lower_function(&func).unwrap();
+
+        let expected = [
+            movz_x(GUEST_PC_SCRATCH_REG, 0x1234, 0),
+            movk_x(GUEST_PC_SCRATCH_REG, 0x4000, 16),
+            movk_x(GUEST_PC_SCRATCH_REG, 0x0001, 32),
+            str_x_unsigned(GUEST_PC_SCRATCH_REG, abi::K_STATE_PTR_REG, NEXT_PC_OFFSET),
+        ];
+        assert!(
+            words
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "guest PC marker reaches CpuStateFrame::next_pc"
+        );
     }
 
     fn function_with_blocks(blocks: Vec<BasicBlock>, entry: u32) -> Function {
@@ -3099,8 +4015,29 @@ mod tests {
         let mut words = vec![
             ldr_x_unsigned(NZCV_TMP_REG, abi::K_STATE_PTR_REG, RFLAGS_OFFSET),
             movz_x(NZCV_CARRY_REG, 0, 0),
+            movk_x(NZCV_CARRY_REG, 1 << 13, 16),
         ];
-        for (rflags_shift, nzcv_shift) in [(7, 31), (6, 30), (0, 29), (11, 28)] {
+        for (rflags_shift, nzcv_shift) in [(7, 31), (6, 30)] {
+            words.extend([
+                movz_x(FLAG_ALIGN_SHIFT_REG, rflags_shift, 0),
+                lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, 1, 0),
+                and_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG),
+                movz_x(FLAG_ALIGN_SHIFT_REG, nzcv_shift, 0),
+                lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG),
+                orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG),
+            ]);
+        }
+        words.extend([
+            movz_x(FLAG_ALIGN_SHIFT_REG, 0, 0),
+            lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG),
+            movz_x(FLAG_ALIGN_SHIFT_REG, 1, 0),
+            and_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG),
+            movz_x(FLAG_ALIGN_SHIFT_REG, 29, 0),
+            lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG),
+            eor_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG),
+        ]);
+        for (rflags_shift, nzcv_shift) in [(11, 28)] {
             words.extend([
                 movz_x(FLAG_ALIGN_SHIFT_REG, rflags_shift, 0),
                 lsr_x(NZCV_MASK_REG, NZCV_TMP_REG, FLAG_ALIGN_SHIFT_REG),
@@ -4267,6 +5204,53 @@ mod tests {
     }
 
     #[test]
+    fn lowers_rep_movs_and_stos_to_bounded_stateful_loops() {
+        let movs = function(vec![Stmt::new(
+            None,
+            Op::RepMovs(RepMovs {
+                size: OpSize::I64,
+                reverse: false,
+                pc_of_rep: 0x1_4001_5c3e,
+                pc_after_rep: 0x1_4001_5c41,
+            }),
+        )]);
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&movs)
+            .expect("lower REP MOVSQ");
+        assert!(words.contains(&ldr_x_unsigned(
+            REP_RCX_REG,
+            abi::K_STATE_PTR_REG,
+            gpr_offset_bytes(Gpr::Rcx)
+        )));
+        assert!(words.contains(&ldr_x_unsigned(REP_VALUE_REG, MEM_ADDR_SCRATCH, 0)));
+        assert!(words.contains(&str_x_unsigned(REP_VALUE_REG, MEM_ADDR_SCRATCH, 0)));
+        assert!(words.contains(&str_x_unsigned(
+            REP_RSI_REG,
+            abi::K_STATE_PTR_REG,
+            gpr_offset_bytes(Gpr::Rsi)
+        )));
+        assert_eq!(words.last(), Some(&0xD65F_03C0));
+
+        let stos = function(vec![Stmt::new(
+            None,
+            Op::RepStos(RepStos {
+                size: OpSize::I8,
+                reverse: true,
+                pc_of_rep: 0x2000,
+                pc_after_rep: 0x2002,
+            }),
+        )]);
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&stos)
+            .expect("lower REP STOSB");
+        assert!(words.contains(&strb_unsigned(REP_VALUE_REG, MEM_ADDR_SCRATCH, 0)));
+        assert!(words.contains(&sub_x_imm(REP_RDI_REG, REP_RDI_REG, 1)));
+        assert_eq!(words.last(), Some(&0xD65F_03C0));
+    }
+
+    #[test]
     fn lowers_vec_constant_and_xmm_round_trip_as_two_u64_words() {
         let func = function(vec![
             Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 0x11, hi: 0x22 })),
@@ -4358,14 +5342,14 @@ mod tests {
         ]);
 
         let code = Lowerer::new().lower_function(&func).unwrap();
-        assert!(code.contains(&and_x(CAS_STATUS_REG, MEM_ADDR_SCRATCH, 28)));
+        assert!(code.contains(&lsl_x_imm(CAS_STATUS_REG, MEM_ADDR_SCRATCH, 63)));
         assert!(code.contains(&eor_x(
             ALU_FLAGS_TMP_REG,
             ALU_FLAGS_TMP_REG,
             FLAG_ALIGN_LHS_REG
         )));
         assert!(code.contains(&eor_x(WIDE_SHIFT_REG, WIDE_SHIFT_REG, FLAG_ALIGN_RHS_REG)));
-        assert!(code.contains(&lsr_x(CAS_STATUS_REG, FLAG_ALIGN_LHS_REG, 29)));
+        assert!(code.contains(&lsr_x_imm(CAS_STATUS_REG, FLAG_ALIGN_LHS_REG, 63)));
         assert!(code.contains(&sub_x_imm(30, 30, 1)));
     }
 
@@ -4549,6 +5533,405 @@ mod tests {
     }
 
     #[test]
+    fn lowers_vec_xor_as_two_scalar_eors() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 2 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 3, hi: 4 })),
+            Stmt::new(
+                Some(2),
+                Op::VecBinOp(VecBinOp {
+                    op: VecBinOpKind::Xor,
+                    lhs: 0,
+                    rhs: 1,
+                    lane: VecLane::B16,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&eor_x(
+            VEC_REG_PAIRS[2].0,
+            VEC_REG_PAIRS[0].0,
+            VEC_REG_PAIRS[1].0
+        )));
+        assert!(code.contains(&eor_x(
+            VEC_REG_PAIRS[2].1,
+            VEC_REG_PAIRS[0].1,
+            VEC_REG_PAIRS[1].1
+        )));
+    }
+
+    #[test]
+    fn vec_unpack_helper_matches_punpck_low_and_high_families() {
+        let lhs = 0x0f0e_0d0c_0b0a_0908_0706_0504_0302_0100u128;
+        let rhs = 0x1f1e_1d1c_1b1a_1918_1716_1514_1312_1110u128;
+        for (lane, high, expected) in [
+            (
+                VecLane::B16,
+                false,
+                0x1707_1606_1505_1404_1303_1202_1101_1000u128,
+            ),
+            (
+                VecLane::H8,
+                true,
+                0x1f1e_0f0e_1d1c_0d0c_1b1a_0b0a_1918_0908u128,
+            ),
+            (
+                VecLane::S4,
+                false,
+                0x1716_1514_0706_0504_1312_1110_0302_0100u128,
+            ),
+            (
+                VecLane::D2,
+                true,
+                0x1f1e_1d1c_1b1a_1918_0f0e_0d0c_0b0a_0908u128,
+            ),
+        ] {
+            let lo = vec_unpack_helper(
+                lhs as u64,
+                (lhs >> 64) as u64,
+                rhs as u64,
+                (rhs >> 64) as u64,
+                u64::from(lane as u8),
+                u64::from(high),
+                0,
+            );
+            let hi = vec_unpack_helper(
+                lhs as u64,
+                (lhs >> 64) as u64,
+                rhs as u64,
+                (rhs >> 64) as u64,
+                u64::from(lane as u8),
+                u64::from(high),
+                1,
+            );
+            assert_eq!((u128::from(hi) << 64) | u128::from(lo), expected);
+        }
+    }
+
+    #[test]
+    fn lowers_vec_unpack_through_the_arm64ec_safe_helper() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 2 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 3, hi: 4 })),
+            Stmt::new(
+                Some(2),
+                Op::VecUnpack(VecUnpack {
+                    is_high: false,
+                    lhs: 0,
+                    rhs: 1,
+                    lane: VecLane::B16,
+                }),
+            ),
+        ]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert_eq!(
+            code.iter()
+                .filter(|word| **word == blr_x(PCMP_HELPER_TARGET_REG))
+                .count(),
+            2
+        );
+        assert!(code.contains(&mov_x(VEC_REG_PAIRS[2].0, 0)));
+        assert!(code.contains(&mov_x(VEC_REG_PAIRS[2].1, 0)));
+    }
+
+    #[test]
+    fn vec_shuffle_h4_helper_matches_pshuflw_and_pshufhw() {
+        let src = 0x7777_6666_5555_4444_3333_2222_1111_0000u128;
+        for (high, control, expected) in [
+            (false, 0x00, 0x7777_6666_5555_4444_0000_0000_0000_0000u128),
+            (true, 0x1b, 0x4444_5555_6666_7777_3333_2222_1111_0000u128),
+        ] {
+            let lo =
+                vec_shuffle_h4_helper(src as u64, (src >> 64) as u64, control, u64::from(high), 0);
+            let hi =
+                vec_shuffle_h4_helper(src as u64, (src >> 64) as u64, control, u64::from(high), 1);
+            assert_eq!((u128::from(hi) << 64) | u128::from(lo), expected);
+        }
+    }
+
+    #[test]
+    fn vector_compare_and_mask_helpers_match_pcmpeqb_pipeline() {
+        let lhs = 0x0f0e_0d0c_0b0a_0908_0706_0504_0302_0100u128;
+        let rhs = 0xff0e_ff0c_ff0a_ff08_ff06_ff04_ff02_ff00u128;
+        let lo = vec_cmp_helper(
+            lhs as u64,
+            (lhs >> 64) as u64,
+            rhs as u64,
+            (rhs >> 64) as u64,
+            u64::from(VecLane::B16 as u8),
+            u64::from(VecCmpKind::Eq as u8),
+            0,
+        );
+        let hi = vec_cmp_helper(
+            lhs as u64,
+            (lhs >> 64) as u64,
+            rhs as u64,
+            (rhs >> 64) as u64,
+            u64::from(VecLane::B16 as u8),
+            u64::from(VecCmpKind::Eq as u8),
+            1,
+        );
+        assert_eq!(vec_mask_msb_helper(lo, hi), 0x5555);
+    }
+
+    #[test]
+    fn lowers_vec_compare_and_mask_with_abi_safe_helpers() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 2 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 3, hi: 4 })),
+            Stmt::new(
+                Some(2),
+                Op::VecCmp(VecCmp {
+                    kind: VecCmpKind::Eq,
+                    lhs: 0,
+                    rhs: 1,
+                    lane: VecLane::B16,
+                }),
+            ),
+            Stmt::new(Some(3), Op::VecMaskMsb(VecMaskMsb { src_xmm: 2 })),
+        ]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert_eq!(
+            code.iter()
+                .filter(|word| **word == blr_x(PCMP_HELPER_TARGET_REG))
+                .count(),
+            3
+        );
+        assert!(code.contains(&mov_x(value_reg(3), 0)));
+    }
+
+    #[test]
+    fn lowers_pshufd_lane_zero_broadcast_to_four_u32_lanes() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::VecConstant(VecConstant {
+                    lo: 0x1122_3344_5566_7788,
+                    hi: 0x99aa_bbcc_ddee_ff00,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::VecShuffle32x4(VecShuffle32x4 { src: 0, control: 0 }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert_eq!(
+            &code[code.len() - 8..],
+            &[
+                uxtw_x(VEC_REG_PAIRS[1].0, VEC_REG_PAIRS[0].0),
+                uxtw_x(CAS_STATUS_REG, VEC_REG_PAIRS[0].0),
+                lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, 32),
+                orr_x(VEC_REG_PAIRS[1].0, VEC_REG_PAIRS[1].0, CAS_STATUS_REG),
+                uxtw_x(VEC_REG_PAIRS[1].1, VEC_REG_PAIRS[0].0),
+                uxtw_x(CAS_STATUS_REG, VEC_REG_PAIRS[0].0),
+                lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, 32),
+                orr_x(VEC_REG_PAIRS[1].1, VEC_REG_PAIRS[1].1, CAS_STATUS_REG),
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_paddd_without_carry_between_u32_lanes() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 2 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 3, hi: 4 })),
+            Stmt::new(
+                Some(2),
+                Op::VecBinOp(VecBinOp {
+                    op: VecBinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    lane: VecLane::S4,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        for (dst, lhs, rhs) in [
+            (VEC_REG_PAIRS[2].0, VEC_REG_PAIRS[0].0, VEC_REG_PAIRS[1].0),
+            (VEC_REG_PAIRS[2].1, VEC_REG_PAIRS[0].1, VEC_REG_PAIRS[1].1),
+        ] {
+            assert!(code.contains(&uxtw_x(dst, lhs)));
+            assert!(code.contains(&add_x(dst, dst, CAS_STATUS_REG)));
+            assert!(code.contains(&uxtw_x(dst, dst)));
+            assert!(code.contains(&lsr_x_imm(FLAG_ALIGN_LHS_REG, lhs, 32)));
+            assert!(code.contains(&lsr_x_imm(CAS_STATUS_REG, rhs, 32)));
+        }
+    }
+
+    #[test]
+    fn lowers_pslld_and_psrld_per_u32_lane() {
+        for kind in [VecShiftKind::ShiftL, VecShiftKind::LogicalShr] {
+            let func = function(vec![
+                Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 2 })),
+                Stmt::new(
+                    Some(1),
+                    Op::VecShiftImm(VecShiftImm {
+                        kind,
+                        src: 0,
+                        count: 16,
+                        lane: VecLane::S4,
+                    }),
+                ),
+            ]);
+            let code = Lowerer::new().lower_function(&func).unwrap();
+            assert!(code.contains(&uxtw_x(VEC_REG_PAIRS[1].0, VEC_REG_PAIRS[0].0)));
+            assert!(code.contains(&lsr_x_imm(CAS_STATUS_REG, VEC_REG_PAIRS[0].0, 32)));
+            assert!(code.contains(&lsl_x_imm(CAS_STATUS_REG, CAS_STATUS_REG, 32)));
+            assert!(code.contains(&orr_x(
+                VEC_REG_PAIRS[1].0,
+                VEC_REG_PAIRS[1].0,
+                CAS_STATUS_REG
+            )));
+        }
+    }
+
+    #[test]
+    fn fp_compare_helpers_match_x86_ucomi_flags() {
+        assert_eq!(
+            fp64_rflags_helper(1.0f64.to_bits(), 2.0f64.to_bits()),
+            RFLAGS_CF_BIT
+        );
+        assert_eq!(fp64_rflags_helper(2.0f64.to_bits(), 1.0f64.to_bits()), 0);
+        assert_eq!(
+            fp64_rflags_helper((-0.0f64).to_bits(), 0.0f64.to_bits()),
+            RFLAGS_ZF_BIT
+        );
+        assert_eq!(
+            fp64_rflags_helper(f64::NAN.to_bits(), 0.0f64.to_bits()),
+            RFLAGS_ZF_BIT | RFLAGS_PF_BIT | RFLAGS_CF_BIT
+        );
+    }
+
+    #[test]
+    fn lowers_signed_integer_to_f64_with_native_fp() {
+        assert_eq!(i64_to_f64_helper(u64::MAX), (-1.0f64).to_bits());
+        assert_eq!(i32_to_f64_helper(u64::from(u32::MAX)), (-1.0f64).to_bits());
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 42,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::IntToFpScalar(IntToFpScalar {
+                    value: 0,
+                    int_size: OpSize::I64,
+                    fp_size: FpSize::F64,
+                }),
+            ),
+        ]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&scvtf_d_x(0, value_reg(0))));
+        assert!(code.contains(&fmov_x_d(VEC_REG_PAIRS[0].0, 0)));
+        assert!(code.contains(&movz_x(VEC_REG_PAIRS[0].1, 0, 0)));
+    }
+
+    #[test]
+    fn lowers_scalar_f64_arithmetic_and_preserves_upper_xmm() {
+        assert_eq!(
+            f64_add_helper(1.5f64.to_bits(), 2.0f64.to_bits()),
+            3.5f64.to_bits()
+        );
+        assert_eq!(
+            f64_sub_helper(1.5f64.to_bits(), 2.0f64.to_bits()),
+            (-0.5f64).to_bits()
+        );
+        assert_eq!(
+            f64_mul_helper(1.5f64.to_bits(), 2.0f64.to_bits()),
+            3.0f64.to_bits()
+        );
+        assert_eq!(
+            f64_div_helper(1.5f64.to_bits(), 2.0f64.to_bits()),
+            0.75f64.to_bits()
+        );
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 2 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 3, hi: 4 })),
+            Stmt::new(
+                Some(2),
+                Op::VecFpScalarBinOp(VecFpScalarBinOp {
+                    op: VecFpBinOpKind::Add,
+                    lhs: 0,
+                    rhs: 1,
+                    size: FpSize::F64,
+                }),
+            ),
+        ]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&fmov_d_x(0, VEC_REG_PAIRS[0].0)));
+        assert!(code.contains(&fmov_d_x(1, VEC_REG_PAIRS[1].0)));
+        assert!(code.contains(&fadd_d(0, 0, 1)));
+        assert!(code.contains(&fmov_x_d(VEC_REG_PAIRS[2].0, 0)));
+        assert!(code.contains(&mov_x(VEC_REG_PAIRS[2].1, VEC_REG_PAIRS[0].1)));
+    }
+
+    #[test]
+    fn lowers_cvttsd2si_with_x86_indefinite_results() {
+        assert_eq!(f64_to_i32_trunc_helper(42.9f64.to_bits()), 42);
+        assert_eq!(
+            f64_to_i32_trunc_helper((-42.9f64).to_bits()),
+            u64::from((-42_i32) as u32)
+        );
+        assert_eq!(
+            f64_to_i32_trunc_helper(f64::NAN.to_bits()),
+            u64::from(0x8000_0000_u32)
+        );
+        assert_eq!(
+            f64_to_i64_trunc_helper(f64::INFINITY.to_bits()),
+            i64::MIN as u64
+        );
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 0 })),
+            Stmt::new(
+                Some(1),
+                Op::FpToIntScalar(FpToIntScalar {
+                    value: 0,
+                    fp_size: FpSize::F64,
+                    int_size: OpSize::I32,
+                }),
+            ),
+        ]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&fmov_d_x(0, VEC_REG_PAIRS[0].0)));
+        assert!(code.contains(&fcvtzs_w_d(value_reg(1), 0)));
+        assert!(!code.contains(&blr_x(PCMP_HELPER_TARGET_REG)));
+    }
+
+    #[test]
+    fn lowers_fp64_flag_compare_without_arm64ec_helper_transition() {
+        let func = function(vec![
+            Stmt::new(Some(0), Op::VecConstant(VecConstant { lo: 1, hi: 0 })),
+            Stmt::new(Some(1), Op::VecConstant(VecConstant { lo: 2, hi: 0 })),
+            Stmt::new(
+                None,
+                Op::WriteFlagsFp(WriteFlagsFp {
+                    lhs: 0,
+                    rhs: 1,
+                    size: prisma_ir::FpSize::F64,
+                }),
+            ),
+        ]);
+
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code.contains(&fmov_d_x(0, VEC_REG_PAIRS[0].0)));
+        assert!(code.contains(&fmov_d_x(1, VEC_REG_PAIRS[1].0)));
+        assert!(code.contains(&fcmp_d(0, 1)));
+        assert!(!code.contains(&blr_x(PCMP_HELPER_TARGET_REG)));
+        assert!(code.contains(&str_x_unsigned(
+            NZCV_TMP_REG,
+            abi::K_STATE_PTR_REG,
+            RFLAGS_OFFSET
+        )));
+    }
+
+    #[test]
     fn lowers_tso_memory_ops_with_full_barriers() {
         let func = function(vec![
             Stmt::new(
@@ -4641,17 +6024,240 @@ mod tests {
                 movz_x(value_reg(0), 0x1000, 0),
                 movz_x(value_reg(1), 0x2a, 0),
                 movz_x(value_reg(2), 0x63, 0),
+                mov_x(ATOMIC_CMPXCHG_EXPECTED_REG, value_reg(1)),
+                mov_x(ATOMIC_CMPXCHG_NEW_REG, value_reg(2)),
                 ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
                 add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
                 ldaxr_x(value_reg(3), MEM_ADDR_SCRATCH),
-                cmp_x(value_reg(3), value_reg(1)),
+                cmp_x(value_reg(3), ATOMIC_CMPXCHG_EXPECTED_REG),
                 b_cond(CondCode::Ne, 16),
-                stlxr_x(CAS_STATUS_REG, value_reg(2), MEM_ADDR_SCRATCH),
+                stlxr_x(CAS_STATUS_REG, ATOMIC_CMPXCHG_NEW_REG, MEM_ADDR_SCRATCH),
                 crate::assembler::cbnz_x(CAS_STATUS_REG, -16),
                 b(8),
                 clrex(),
             ]
         );
+    }
+
+    #[test]
+    fn atomic_cmpxchg_preserves_new_value_when_result_register_wraps_to_same_slot() {
+        let mut stmts = vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1806_09ee_e000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+        ];
+        for reference in 3..8 {
+            stmts.push(Stmt::new(
+                Some(reference),
+                Op::Constant(Constant {
+                    value: u64::from(reference),
+                    size: OpSize::I64,
+                }),
+            ));
+        }
+        stmts.push(Stmt::new(
+            Some(8),
+            Op::AtomicCmpxchg(AtomicCmpxchg {
+                addr: 1,
+                expected: 2,
+                new_value: 0,
+                size: OpSize::I64,
+            }),
+        ));
+
+        assert_eq!(value_reg(0), value_reg(8), "test requires allocator wrap");
+        let code = Lowerer::new().lower_function(&function(stmts)).unwrap();
+        let preserve = mov_x(ATOMIC_CMPXCHG_NEW_REG, value_reg(0));
+        let load_old = ldaxr_x(value_reg(8), MEM_ADDR_SCRATCH);
+        let preserve_index = code.iter().position(|word| *word == preserve).unwrap();
+        let load_index = code.iter().position(|word| *word == load_old).unwrap();
+        assert!(preserve_index < load_index);
+        assert!(code.iter().any(|word| {
+            *word == stlxr_x(CAS_STATUS_REG, ATOMIC_CMPXCHG_NEW_REG, MEM_ADDR_SCRATCH)
+        }));
+    }
+
+    #[test]
+    fn lowers_atomic_xadd_i64_to_exclusive_retry_loop() {
+        let func = function(vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::AtomicXadd(AtomicXadd {
+                    addr: 0,
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+        let code = Lowerer::new().lower_function(&func).unwrap();
+        assert!(code
+            .iter()
+            .any(|word| *word == mov_x(ATOMIC_RMW_SOURCE_REG, value_reg(1))));
+        assert!(code
+            .iter()
+            .any(|word| *word == ldaxr_x(value_reg(2), MEM_ADDR_SCRATCH)));
+        assert!(code.iter().any(|word| {
+            *word == add_x(FLAG_ALIGN_LHS_REG, value_reg(2), ATOMIC_RMW_SOURCE_REG)
+        }));
+        assert!(code.iter().any(|word| {
+            *word == stlxr_x(CAS_STATUS_REG, FLAG_ALIGN_LHS_REG, MEM_ADDR_SCRATCH)
+        }));
+    }
+
+    #[test]
+    fn atomic_xadd_preserves_source_when_result_register_wraps_to_same_slot() {
+        let mut stmts = vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 7,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+        ];
+        for reference in 2..8 {
+            stmts.push(Stmt::new(
+                Some(reference),
+                Op::Constant(Constant {
+                    value: u64::from(reference),
+                    size: OpSize::I64,
+                }),
+            ));
+        }
+        stmts.extend([
+            Stmt::new(
+                Some(8),
+                Op::AtomicXadd(AtomicXadd {
+                    addr: 1,
+                    value: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rbx,
+                    value: 8,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::AluFlags(AluFlags {
+                    op: BinOpKind::Add,
+                    lhs: 8,
+                    rhs: 0,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(value_reg(0), value_reg(8), "test requires allocator wrap");
+        let code = Lowerer::new().lower_function(&function(stmts)).unwrap();
+        let preserve = mov_x(ATOMIC_RMW_SOURCE_REG, value_reg(0));
+        let load_old = ldaxr_x(value_reg(8), MEM_ADDR_SCRATCH);
+        let add_new = add_x(FLAG_ALIGN_LHS_REG, value_reg(8), ATOMIC_RMW_SOURCE_REG);
+        let flags = adds_x(ALU_FLAGS_TMP_REG, value_reg(8), ATOMIC_RMW_SOURCE_REG);
+        let preserve_index = code.iter().position(|word| *word == preserve).unwrap();
+        let load_index = code.iter().position(|word| *word == load_old).unwrap();
+        assert!(
+            preserve_index < load_index,
+            "source must be saved before LDAXR"
+        );
+        assert!(
+            code.contains(&add_new),
+            "atomic sum must use preserved input"
+        );
+        assert!(code.contains(&flags), "flags must use preserved input");
+    }
+
+    #[test]
+    fn atomic_xchg_i8_preserves_source_before_exclusive_load_when_registers_alias() {
+        let mut stmts = vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x7f,
+                    size: OpSize::I8,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+        ];
+        for reference in 2..8 {
+            stmts.push(Stmt::new(
+                Some(reference),
+                Op::Constant(Constant {
+                    value: u64::from(reference),
+                    size: OpSize::I64,
+                }),
+            ));
+        }
+        stmts.push(Stmt::new(
+            Some(8),
+            Op::AtomicXchg(AtomicXchg {
+                addr: 1,
+                value: 0,
+                size: OpSize::I8,
+            }),
+        ));
+
+        assert_eq!(value_reg(0), value_reg(8), "test requires allocator wrap");
+        let code = Lowerer::new().lower_function(&function(stmts)).unwrap();
+        let preserve = mov_x(ATOMIC_RMW_SOURCE_REG, value_reg(0));
+        let load_old = crate::assembler::ldaxrb(value_reg(8), MEM_ADDR_SCRATCH);
+        let store_new =
+            crate::assembler::stlxrb(CAS_STATUS_REG, ATOMIC_RMW_SOURCE_REG, MEM_ADDR_SCRATCH);
+        let retry = crate::assembler::cbnz_x(CAS_STATUS_REG, -8);
+        let preserve_index = code.iter().position(|word| *word == preserve).unwrap();
+        let load_index = code.iter().position(|word| *word == load_old).unwrap();
+        assert!(preserve_index < load_index, "source must survive LDAXRB");
+        assert!(code.contains(&store_new), "exchange must use STLXRB");
+        assert!(code.contains(&retry), "failed exclusive store must retry");
     }
 
     #[test]
@@ -5597,7 +7203,8 @@ mod tests {
                 0xD280_006A,
                 0xEB0A_013F,
                 adds_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
-                ands_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                and_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
+                cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG),
             ]
         );
     }
@@ -6172,9 +7779,9 @@ mod tests {
                 0xD280_00E9,
                 0xD280_006A,
                 orr_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
-                ands_x(ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG),
+                cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG),
                 eor_x(ALU_FLAGS_TMP_REG, value_reg(0), value_reg(1)),
-                ands_x(ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG, ALU_FLAGS_TMP_REG),
+                cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG),
             ]
         );
     }
@@ -6379,7 +7986,8 @@ mod tests {
                 movz_x(FLAG_ALIGN_SHIFT_REG, 56, 0),
                 lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
                 lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
-                ands_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                and_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG),
                 movz_x(FLAG_ALIGN_SHIFT_REG, 56, 0),
                 lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
                 lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
@@ -6450,7 +8058,8 @@ mod tests {
                 movz_x(FLAG_ALIGN_SHIFT_REG, 32, 0),
                 lsl_x(FLAG_ALIGN_LHS_REG, value_reg(0), FLAG_ALIGN_SHIFT_REG),
                 lsl_x(FLAG_ALIGN_RHS_REG, value_reg(1), FLAG_ALIGN_SHIFT_REG),
-                ands_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                and_x(ALU_FLAGS_TMP_REG, FLAG_ALIGN_LHS_REG, FLAG_ALIGN_RHS_REG),
+                cmp_x(ALU_FLAGS_TMP_REG, ZERO_REG),
             ]
         );
     }
@@ -6514,8 +8123,8 @@ mod tests {
                 0xD280_002A,
                 0xD280_0713,
                 0x9AD3_2131,
-                0x9AD3_2152,
-                0xEB12_023F,
+                0x9AD3_215C,
+                0xEB1C_023F,
                 0x5400_0043,
                 0x1400_0002,
                 0xD65F_03C0,
@@ -6584,8 +8193,8 @@ mod tests {
                 0xD280_002A,
                 0xD280_0413,
                 0x9AD3_2131,
-                0x9AD3_2152,
-                0xEB12_023F,
+                0x9AD3_215C,
+                0xEB1C_023F,
                 0x5400_004B,
                 0x1400_0002,
                 0xD65F_03C0,
@@ -6842,12 +8451,24 @@ mod tests {
             "rebased load of the return address: {words:#x?}"
         );
         assert!(
+            words.contains(&ldr_x_unsigned(RETURN_EXIT_TARGET_REG, MEM_ADDR_SCRATCH, 0)),
+            "return target stays in the dedicated register: {words:#x?}"
+        );
+        assert!(
             words.contains(&add_x_imm(21, 21, 8)),
             "rsp increment: {words:#x?}"
         );
         assert!(
             words.contains(&movz_x(9, 2, 0)),
             "EXIT_BRANCH mark: {words:#x?}"
+        );
+        assert!(
+            words.contains(&str_x_unsigned(
+                RETURN_EXIT_TARGET_REG,
+                abi::K_STATE_PTR_REG,
+                NEXT_PC_OFFSET
+            )),
+            "dedicated return target reaches next_pc: {words:#x?}"
         );
         assert_eq!(words.last().copied(), Some(0xD65F_03C0), "ends with ret");
     }

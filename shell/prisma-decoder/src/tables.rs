@@ -227,6 +227,42 @@ pub enum TwoByteOpcode {
     Prefetchw,
     /// EMMS/FEMMS MMX state cleanup no-op for integer IR (0F 77, 0F 0E).
     MmxStateNoop,
+    /// MOVAPS/MOVDQA xmm, xmm/m128 (0F 28 /r, 66 0F 6F /r).
+    MovVecLoad,
+    /// MOVAPS/MOVDQA xmm/m128, xmm (0F 29 /r, 66 0F 7F /r).
+    MovVecStore,
+    /// MOVD/MOVQ xmm, r/m32|r/m64 (66 0F 6E /r).
+    MovGprToXmm,
+    /// PSHUFD xmm, xmm/m128, imm8 (66 0F 70 /r ib).
+    Pshufd,
+    /// Packed dword shift by immediate group (66 0F 72 /2,/6 ib).
+    ShiftDImm,
+    /// PUNPCKL*/PUNPCKH* xmm, xmm/m128 (66 0F 60..6D /r).
+    Punpck,
+    /// PCMPEQ*/PCMPGT* xmm, xmm/m128 (66 0F 64..66,74..76 /r).
+    VecCmp,
+    /// PMOVMSKB r32, xmm (66 0F D7 /r).
+    Pmovmskb,
+    /// PADDD xmm, xmm/m128 (66 0F FE /r).
+    Paddd,
+    /// MOVD/MOVQ r/m32|r/m64, xmm (66 0F 7E /r).
+    MovXmmToGpr,
+    /// MOVQ xmm/m64, xmm (66 0F D6 /r).
+    MovqStore,
+    /// XORPS xmm, xmm/m128 (0F 57 /r).
+    XorPs,
+    /// PXOR xmm, xmm/m128 (66 0F EF /r).
+    Pxor,
+    /// MOVSS/MOVSD scalar load (F3/F2 0F 10 /r).
+    MovScalarLoad,
+    /// UCOMISS/UCOMISD scalar comparison (0F/66 0F 2E /r).
+    Ucomi,
+    /// CVTSI2SD xmm, r/m32|r/m64 (F2 0F 2A /r).
+    Cvtsi2sd,
+    /// CVTTSD2SI r32|r64, xmm/m64 (F2 0F 2C /r).
+    Cvttsd2si,
+    /// Scalar-double arithmetic (F2 0F 58/59/5C/5E /r).
+    ScalarFpBin,
     /// ENDBR32/ENDBR64 (F3 0F 1E FB/FA).
     Endbr,
     /// CMOVcc r, r/m (0F 40..0F 4F).
@@ -237,6 +273,9 @@ pub enum TwoByteOpcode {
     Setcc,
     /// CPUID (0F A2).
     Cpuid,
+    /// BT/BTS/BTR/BTC r/m16|r/m32|r/m64, r16|r32|r64
+    /// (0F A3/AB/B3/BB /r).
+    BtRmReg,
     /// MOVZX r64, r/m8 (0F B6)
     MovzxI8,
     /// MOVZX r64, r/m16 (0F B7)
@@ -398,15 +437,32 @@ pub const fn classify_two_byte(opcode: u8) -> TwoByteOpcode {
         0x0Bu8 => TwoByteOpcode::Ud2,
         0x0Du8 => TwoByteOpcode::Prefetchw,
         0x0Eu8 => TwoByteOpcode::MmxStateNoop,
+        0x10u8 => TwoByteOpcode::MovScalarLoad,
+        0x11u8 => TwoByteOpcode::MovVecStore,
         0x18u8 => TwoByteOpcode::Prefetch,
         0x1Eu8 => TwoByteOpcode::Endbr,
         0x1Fu8 => TwoByteOpcode::NopRm,
         0x20u8..=0x23u8 => TwoByteOpcode::SystemTrapRm,
+        0x28u8 => TwoByteOpcode::MovVecLoad,
+        0x29u8 => TwoByteOpcode::MovVecStore,
+        0x2Au8 => TwoByteOpcode::Cvtsi2sd,
+        0x2Cu8 => TwoByteOpcode::Cvttsd2si,
+        0x2Eu8 => TwoByteOpcode::Ucomi,
         0x37u8 => TwoByteOpcode::SystemTrap,
         0x30u8 | 0x32u8 | 0x33u8 | 0x34u8 | 0x35u8 => TwoByteOpcode::SystemTrap,
         0x31u8 => TwoByteOpcode::Rdtsc,
         0x40u8..=0x4Fu8 => TwoByteOpcode::Cmov,
+        0x57u8 => TwoByteOpcode::XorPs,
+        0x58u8 | 0x59u8 | 0x5Cu8 | 0x5Eu8 => TwoByteOpcode::ScalarFpBin,
+        0x60u8..=0x62u8 | 0x68u8..=0x6Au8 | 0x6Cu8 | 0x6Du8 => TwoByteOpcode::Punpck,
+        0x64u8..=0x66u8 | 0x74u8..=0x76u8 => TwoByteOpcode::VecCmp,
+        0x6Eu8 => TwoByteOpcode::MovGprToXmm,
+        0x6Fu8 => TwoByteOpcode::MovVecLoad,
+        0x70u8 => TwoByteOpcode::Pshufd,
+        0x72u8 => TwoByteOpcode::ShiftDImm,
         0x77u8 => TwoByteOpcode::MmxStateNoop,
+        0x7Eu8 => TwoByteOpcode::MovXmmToGpr,
+        0x7Fu8 => TwoByteOpcode::MovVecStore,
         0x78u8 | 0x79u8 => TwoByteOpcode::SystemTrapRm,
         0x80u8..=0x8Fu8 => TwoByteOpcode::CondJumpRel32,
         0x90u8..=0x9Fu8 => TwoByteOpcode::Setcc,
@@ -425,9 +481,14 @@ pub const fn classify_two_byte(opcode: u8) -> TwoByteOpcode {
         0xBDu8 => TwoByteOpcode::Lzcnt,
         0xBCu8 => TwoByteOpcode::Tzcnt,
         0xB0u8 | 0xB1u8 => TwoByteOpcode::Cmpxchg,
+        0xA3u8 | 0xABu8 | 0xB3u8 | 0xBBu8 => TwoByteOpcode::BtRmReg,
         0xBAu8 => TwoByteOpcode::BtGroup,
         0xC7u8 => TwoByteOpcode::Cmpxchg8b16b,
         0xC8u8..=0xCFu8 => TwoByteOpcode::Bswap,
+        0xD6u8 => TwoByteOpcode::MovqStore,
+        0xD7u8 => TwoByteOpcode::Pmovmskb,
+        0xEFu8 => TwoByteOpcode::Pxor,
+        0xFEu8 => TwoByteOpcode::Paddd,
         0x38u8 => TwoByteOpcode::ThreeByte0F38,
         0x3Au8 => TwoByteOpcode::ThreeByte0F3A,
         _ => TwoByteOpcode::Unsupported,
@@ -575,6 +636,7 @@ mod tests {
         assert_eq!(classify_two_byte(0x09), TwoByteOpcode::CacheTrap);
         assert_eq!(classify_two_byte(0x0B), TwoByteOpcode::Ud2);
         assert_eq!(classify_two_byte(0x0E), TwoByteOpcode::MmxStateNoop);
+        assert_eq!(classify_two_byte(0x10), TwoByteOpcode::MovScalarLoad);
         assert_eq!(classify_two_byte(0x1F), TwoByteOpcode::NopRm);
         assert_eq!(classify_two_byte(0x0D), TwoByteOpcode::Prefetchw);
         assert_eq!(classify_two_byte(0x18), TwoByteOpcode::Prefetch);
@@ -582,6 +644,23 @@ mod tests {
         assert_eq!(classify_two_byte(0x20), TwoByteOpcode::SystemTrapRm);
         assert_eq!(classify_two_byte(0x23), TwoByteOpcode::SystemTrapRm);
         assert_eq!(classify_two_byte(0x31), TwoByteOpcode::Rdtsc);
+        for opcode in [0x60, 0x61, 0x62, 0x68, 0x69, 0x6A, 0x6C, 0x6D] {
+            assert_eq!(classify_two_byte(opcode), TwoByteOpcode::Punpck);
+        }
+        for opcode in [0x64, 0x65, 0x66, 0x74, 0x75, 0x76] {
+            assert_eq!(classify_two_byte(opcode), TwoByteOpcode::VecCmp);
+        }
+        assert_eq!(classify_two_byte(0x6E), TwoByteOpcode::MovGprToXmm);
+        assert_eq!(classify_two_byte(0x70), TwoByteOpcode::Pshufd);
+        assert_eq!(classify_two_byte(0x72), TwoByteOpcode::ShiftDImm);
+        assert_eq!(classify_two_byte(0x7E), TwoByteOpcode::MovXmmToGpr);
+        assert_eq!(classify_two_byte(0xD6), TwoByteOpcode::MovqStore);
+        assert_eq!(classify_two_byte(0xD7), TwoByteOpcode::Pmovmskb);
+        assert_eq!(classify_two_byte(0xEF), TwoByteOpcode::Pxor);
+        assert_eq!(classify_two_byte(0xFE), TwoByteOpcode::Paddd);
+        assert_eq!(classify_two_byte(0x2E), TwoByteOpcode::Ucomi);
+        assert_eq!(classify_two_byte(0x2A), TwoByteOpcode::Cvtsi2sd);
+        assert_eq!(classify_two_byte(0x2C), TwoByteOpcode::Cvttsd2si);
         assert_eq!(classify_two_byte(0x30), TwoByteOpcode::SystemTrap);
         assert_eq!(classify_two_byte(0x32), TwoByteOpcode::SystemTrap);
         assert_eq!(classify_two_byte(0x33), TwoByteOpcode::SystemTrap);
@@ -596,6 +675,9 @@ mod tests {
         assert_eq!(classify_two_byte(0xA2), TwoByteOpcode::Cpuid);
         assert_eq!(classify_two_byte(0xAA), TwoByteOpcode::SystemTrap);
         assert_eq!(classify_two_byte(0x44), TwoByteOpcode::Cmov);
+        assert_eq!(classify_two_byte(0x57), TwoByteOpcode::XorPs);
+        assert_eq!(classify_two_byte(0x58), TwoByteOpcode::ScalarFpBin);
+        assert_eq!(classify_two_byte(0x5E), TwoByteOpcode::ScalarFpBin);
         assert_eq!(classify_two_byte(0xAF), TwoByteOpcode::ImulRm);
         assert_eq!(classify_two_byte(0xB6), TwoByteOpcode::MovzxI8);
         assert_eq!(classify_two_byte(0xB9), TwoByteOpcode::UndefinedRm);
@@ -606,6 +688,10 @@ mod tests {
         assert_eq!(classify_two_byte(0xC3), TwoByteOpcode::Movnti);
         assert_eq!(classify_two_byte(0xB0), TwoByteOpcode::Cmpxchg);
         assert_eq!(classify_two_byte(0xB1), TwoByteOpcode::Cmpxchg);
+        assert_eq!(classify_two_byte(0xA3), TwoByteOpcode::BtRmReg);
+        assert_eq!(classify_two_byte(0xAB), TwoByteOpcode::BtRmReg);
+        assert_eq!(classify_two_byte(0xB3), TwoByteOpcode::BtRmReg);
+        assert_eq!(classify_two_byte(0xBB), TwoByteOpcode::BtRmReg);
         assert_eq!(classify_two_byte(0xC7), TwoByteOpcode::Cmpxchg8b16b);
         assert_eq!(classify_two_byte(0xC8), TwoByteOpcode::Bswap);
         assert_eq!(classify_two_byte(0xCF), TwoByteOpcode::Bswap);

@@ -161,6 +161,14 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
             into.insert(x.expected);
             into.insert(x.new_value);
         }
+        Op::AtomicXchg(x) => {
+            into.insert(x.addr);
+            into.insert(x.value);
+        }
+        Op::AtomicXadd(x) => {
+            into.insert(x.addr);
+            into.insert(x.value);
+        }
         Op::AtomicCmpxchgPair(x) => {
             into.insert(x.addr);
             into.insert(x.expected_low);

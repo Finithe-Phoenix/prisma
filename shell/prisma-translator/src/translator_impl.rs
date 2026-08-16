@@ -197,7 +197,22 @@ impl Translator {
                 break;
             };
 
-            let mut renumbered = decoded.stmts.clone();
+            // Optimize one instruction at a time before fusion. Each decoded
+            // instruction ends by publishing its architectural state; keeping
+            // those stores prevents cross-instruction SSA values from hiding
+            // live guest registers from Wine exception recovery at GuestPc.
+            let optimized_instruction = self.pipeline.run(Function {
+                entry: 0,
+                blocks: vec![BasicBlock {
+                    id: 0,
+                    stmts: decoded.stmts.clone(),
+                }],
+            });
+            let mut renumbered = optimized_instruction
+                .blocks
+                .into_iter()
+                .flat_map(|block| block.stmts)
+                .collect::<Vec<_>>();
             let mut local_max = base;
             let mut overflow = false;
             for stmt in &mut renumbered {
@@ -219,6 +234,10 @@ impl Translator {
                 break;
             }
 
+            // Publish the exact x64 instruction boundary before its effects.
+            // The ARM64EC exception bridge reads this marker from the shared
+            // state frame, so fused native blocks retain precise Wine SEH PCs.
+            stmts.push(Stmt::new(None, Op::GuestPc(GuestPc { pc })));
             stmts.extend(renumbered);
             instruction_count += 1;
             offset = end;
@@ -241,7 +260,7 @@ impl Translator {
             blocks: vec![BasicBlock { id: 0, stmts }],
         };
         Ok(OptimizedBlock {
-            func: self.pipeline.run(func),
+            func,
             instruction_count,
             guest_bytes: offset,
             ended_at_terminator,

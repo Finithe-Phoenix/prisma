@@ -39,25 +39,53 @@ pub fn decode_one_at(
 
     // Dispatch based on opcode
     let consumed = match tables::classify_one_byte(opcode) {
-        tables::OneByteOpcode::MovRmR8 => {
-            decode_mov_rm_r_with_size(&prefixes, bytes, cursor, &mut stmts, OpSize::I8)?
+        tables::OneByteOpcode::MovRmR8 => decode_mov_rm_r_with_size(
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+            OpSize::I8,
+        )?,
+        tables::OneByteOpcode::MovRmR => {
+            decode_mov_rm_r(&prefixes, bytes, cursor, opcode_guest_pc, &mut stmts)?
         }
-        tables::OneByteOpcode::MovRmR => decode_mov_rm_r(&prefixes, bytes, cursor, &mut stmts)?,
-        tables::OneByteOpcode::MovR8Rm => {
-            decode_mov_r_rm_with_size(&prefixes, bytes, cursor, &mut stmts, OpSize::I8)?
+        tables::OneByteOpcode::MovR8Rm => decode_mov_r_rm_with_size(
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+            OpSize::I8,
+        )?,
+        tables::OneByteOpcode::MovRRm => {
+            decode_mov_r_rm(&prefixes, bytes, cursor, opcode_guest_pc, &mut stmts)?
         }
-        tables::OneByteOpcode::MovRRm => decode_mov_r_rm(&prefixes, bytes, cursor, &mut stmts)?,
         tables::OneByteOpcode::PopRm => decode_pop_rm(&prefixes, bytes, cursor, &mut stmts)?,
-        tables::OneByteOpcode::Lea => decode_lea(&prefixes, bytes, cursor, &mut stmts)?,
+        tables::OneByteOpcode::Lea => {
+            decode_lea(&prefixes, bytes, cursor, opcode_guest_pc, &mut stmts)?
+        }
         tables::OneByteOpcode::MovMoffsToAcc => {
             decode_mov_moffs(&prefixes, opcode, bytes, cursor, &mut stmts)?
         }
         tables::OneByteOpcode::MovAccToMoffs => {
             decode_mov_moffs(&prefixes, opcode, bytes, cursor, &mut stmts)?
         }
-        tables::OneByteOpcode::Movsb => decode_movs(&prefixes, opcode, &mut stmts)?,
+        tables::OneByteOpcode::Movsb => decode_movs(
+            &prefixes,
+            opcode,
+            instruction_guest_pc,
+            cursor - offset + 1,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::Cmpsb => decode_cmps(&prefixes, opcode, &mut stmts)?,
-        tables::OneByteOpcode::Stosb => decode_stos(&prefixes, opcode, &mut stmts)?,
+        tables::OneByteOpcode::Stosb => decode_stos(
+            &prefixes,
+            opcode,
+            instruction_guest_pc,
+            cursor - offset + 1,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::Lodsb => decode_lods(&prefixes, opcode, &mut stmts)?,
         tables::OneByteOpcode::Scasb => decode_scas(&prefixes, opcode, &mut stmts)?,
         tables::OneByteOpcode::MovR8I8 => {
@@ -71,12 +99,18 @@ pub fn decode_one_at(
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::AddRmR => {
-            decode_binop_rm_r(BinOpKind::Add, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::AddRmR => decode_binop_rm_r(
+            BinOpKind::Add,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::AdcRmR => decode_adc_sbb_rm_r(
             false,
             &prefixes,
@@ -126,12 +160,18 @@ pub fn decode_one_at(
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::AddRRm => {
-            decode_binop_r_rm(BinOpKind::Add, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::AddRRm => decode_binop_r_rm(
+            BinOpKind::Add,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::AccImm => {
             decode_acc_imm(&prefixes, opcode, bytes, cursor, &mut stmts)?
         }
@@ -159,93 +199,148 @@ pub fn decode_one_at(
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::SubRmR => {
-            decode_binop_rm_r(BinOpKind::Sub, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::SubRmR => decode_binop_rm_r(
+            BinOpKind::Sub,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::SubR8Rm => decode_binop_r_rm_with_size(
             BinOpKind::Sub,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::SubRRm => {
-            decode_binop_r_rm(BinOpKind::Sub, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::SubRRm => decode_binop_r_rm(
+            BinOpKind::Sub,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::AndRmR8 => decode_binop_rm_r_with_size(
             BinOpKind::And,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::AndRmR => {
-            decode_binop_rm_r(BinOpKind::And, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::AndRmR => decode_binop_rm_r(
+            BinOpKind::And,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::AndR8Rm => decode_binop_r_rm_with_size(
             BinOpKind::And,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::AndRRm => {
-            decode_binop_r_rm(BinOpKind::And, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::AndRRm => decode_binop_r_rm(
+            BinOpKind::And,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::OrRmR8 => decode_binop_rm_r_with_size(
             BinOpKind::Or,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::OrRmR => {
-            decode_binop_rm_r(BinOpKind::Or, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::OrRmR => decode_binop_rm_r(
+            BinOpKind::Or,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::OrR8Rm => decode_binop_r_rm_with_size(
             BinOpKind::Or,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::OrRRm => {
-            decode_binop_r_rm(BinOpKind::Or, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::OrRRm => decode_binop_r_rm(
+            BinOpKind::Or,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::XorRmR8 => decode_binop_rm_r_with_size(
             BinOpKind::Xor,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::XorRmR => {
-            decode_binop_rm_r(BinOpKind::Xor, &prefixes, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::XorRmR => decode_binop_rm_r(
+            BinOpKind::Xor,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::XorR8Rm => decode_binop_r_rm_with_size(
             BinOpKind::Xor,
             &prefixes,
             bytes,
             cursor,
+            opcode_guest_pc,
             &mut stmts,
             OpSize::I8,
         )?,
-        tables::OneByteOpcode::XorRRm => {
-            decode_binop_r_rm(BinOpKind::Xor, &prefixes, bytes, cursor, &mut stmts)?
+        tables::OneByteOpcode::XorRRm => decode_binop_r_rm(
+            BinOpKind::Xor,
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
+        tables::OneByteOpcode::CmpRmR8 => decode_cmp_rm_r_with_size(
+            &prefixes,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+            OpSize::I8,
+        )?,
+        tables::OneByteOpcode::CmpRmR => {
+            decode_cmp_rm_r(&prefixes, bytes, cursor, opcode_guest_pc, &mut stmts)?
         }
-        tables::OneByteOpcode::CmpRmR8 => {
-            decode_cmp_rm_r_with_size(&prefixes, bytes, cursor, &mut stmts, OpSize::I8)?
-        }
-        tables::OneByteOpcode::CmpRmR => decode_cmp_rm_r(&prefixes, bytes, cursor, &mut stmts)?,
         tables::OneByteOpcode::CmpR8Rm => {
             decode_cmp_r_rm_with_size(&prefixes, bytes, cursor, &mut stmts, OpSize::I8)?
         }
@@ -273,9 +368,14 @@ pub fn decode_one_at(
         tables::OneByteOpcode::ImulRmImm8 => {
             decode_imul_imm(&prefixes, 0x6B, bytes, cursor, &mut stmts)?
         }
-        tables::OneByteOpcode::MovRmImm => {
-            decode_mov_rm_imm(&prefixes, opcode, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::MovRmImm => decode_mov_rm_imm(
+            &prefixes,
+            opcode,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::CallRel32 => {
             if prefixes.rex.present || prefixes.lock || prefixes.segment.is_some() {
                 return Err(crate::DecodeError::UnsupportedOpcode(opcode));
@@ -979,20 +1079,87 @@ fn decode_two_byte(
         tables::TwoByteOpcode::Prefetch => decode_prefetch(op2, bytes, start),
         tables::TwoByteOpcode::Prefetchw => decode_prefetchw(op2, bytes, start),
         tables::TwoByteOpcode::MmxStateNoop => decode_mmx_state_noop(prefixes, op2),
+        tables::TwoByteOpcode::MovVecLoad => {
+            decode_mov_vec(prefixes, op2, bytes, start, opcode_guest_pc, false, stmts)
+        }
+        tables::TwoByteOpcode::MovVecStore => {
+            decode_mov_vec(prefixes, op2, bytes, start, opcode_guest_pc, true, stmts)
+        }
+        tables::TwoByteOpcode::MovGprToXmm => {
+            decode_mov_gpr_to_xmm(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::Pshufd => {
+            decode_pshufd(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::ShiftDImm => decode_shift_d_imm(prefixes, op2, bytes, start, stmts),
+        tables::TwoByteOpcode::Punpck => {
+            decode_punpck(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::VecCmp => {
+            decode_vec_cmp(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::Pmovmskb => decode_pmovmskb(prefixes, op2, bytes, start, stmts),
+        tables::TwoByteOpcode::Paddd => {
+            decode_paddd(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::MovXmmToGpr => {
+            decode_mov_xmm_to_gpr(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::MovqStore => {
+            decode_movq_store(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::XorPs => {
+            decode_xorps(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::ScalarFpBin => {
+            decode_scalar_fp_bin(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::Pxor => {
+            decode_xorps(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::MovScalarLoad => {
+            if prefixes.rep.is_none() && !prefixes.operand_override {
+                decode_mov_vec(prefixes, op2, bytes, start, opcode_guest_pc, false, stmts)
+            } else {
+                decode_mov_scalar_load(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+            }
+        }
+        tables::TwoByteOpcode::Ucomi => {
+            decode_ucomi(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::Cvtsi2sd => {
+            decode_cvtsi2sd(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
+        tables::TwoByteOpcode::Cvttsd2si => {
+            decode_cvttsd2si(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
         tables::TwoByteOpcode::Endbr => decode_endbr(prefixes, op2, bytes, start),
         tables::TwoByteOpcode::NopRm => decode_nop_rm(op2, bytes, start),
         tables::TwoByteOpcode::Rdtsc => decode_rdtsc(prefixes, op2, stmts),
         tables::TwoByteOpcode::Cmov => decode_cmov(prefixes, op2, bytes, start, stmts),
-        tables::TwoByteOpcode::MovzxI8 => decode_movzx(prefixes, bytes, start, stmts, OpSize::I8),
-        tables::TwoByteOpcode::MovzxI16 => decode_movzx(prefixes, bytes, start, stmts, OpSize::I16),
+        tables::TwoByteOpcode::MovzxI8 => {
+            decode_movzx(prefixes, bytes, start, opcode_guest_pc, stmts, OpSize::I8)
+        }
+        tables::TwoByteOpcode::MovzxI16 => {
+            decode_movzx(prefixes, bytes, start, opcode_guest_pc, stmts, OpSize::I16)
+        }
         tables::TwoByteOpcode::UndefinedRm => {
             decode_two_byte_any_rm_trap(prefixes, op2, bytes, start, TrapKind::Sigill, stmts)
         }
-        tables::TwoByteOpcode::ImulRm => {
-            decode_binop_r_rm(BinOpKind::Mul, prefixes, bytes, start, stmts)
+        tables::TwoByteOpcode::ImulRm => decode_binop_r_rm(
+            BinOpKind::Mul,
+            prefixes,
+            bytes,
+            start,
+            opcode_guest_pc,
+            stmts,
+        ),
+        tables::TwoByteOpcode::MovsxI8 => {
+            decode_movsx(prefixes, bytes, start, opcode_guest_pc, stmts, OpSize::I8)
         }
-        tables::TwoByteOpcode::MovsxI8 => decode_movsx(prefixes, bytes, start, stmts, OpSize::I8),
-        tables::TwoByteOpcode::MovsxI16 => decode_movsx(prefixes, bytes, start, stmts, OpSize::I16),
+        tables::TwoByteOpcode::MovsxI16 => {
+            decode_movsx(prefixes, bytes, start, opcode_guest_pc, stmts, OpSize::I16)
+        }
         tables::TwoByteOpcode::Popcnt => {
             if prefixes.rep == Some(0xF3) {
                 decode_popcnt(prefixes, bytes, start, stmts)
@@ -1019,6 +1186,7 @@ fn decode_two_byte(
                 decode_bsf_bsr(prefixes, op2, bytes, start, false, stmts)
             }
         }
+        tables::TwoByteOpcode::BtRmReg => decode_bt_rm_reg(prefixes, op2, bytes, start, stmts),
         tables::TwoByteOpcode::BtGroup => decode_bt_group_imm8(prefixes, op2, bytes, start, stmts),
         tables::TwoByteOpcode::Bswap => decode_bswap(prefixes, op2, stmts),
         tables::TwoByteOpcode::Cmpxchg => decode_cmpxchg(prefixes, op2, bytes, start, stmts),
@@ -1038,11 +1206,1053 @@ fn decode_two_byte(
                 decode_cond_jump_rel32(op2, bytes, cursor, opcode_guest_pc, stmts)
             }
         }
-        tables::TwoByteOpcode::Setcc => decode_setcc(prefixes, op2, bytes, start, stmts),
+        tables::TwoByteOpcode::Setcc => {
+            decode_setcc(prefixes, op2, bytes, start, opcode_guest_pc, stmts)
+        }
         tables::TwoByteOpcode::Cpuid => decode_cpuid(prefixes, op2, stmts),
         tables::TwoByteOpcode::Unsupported => Err(crate::DecodeError::UnsupportedOpcode(op2)),
     }?;
     Ok(1 + consumed_after_escape)
+}
+
+fn decode_mov_vec(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    store: bool,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let valid_prefix = match opcode {
+        0x10 | 0x11 | 0x28 | 0x29 => !prefixes.operand_override && prefixes.rep.is_none(),
+        0x6f | 0x7f => {
+            (prefixes.operand_override && prefixes.rep.is_none())
+                || (!prefixes.operand_override && prefixes.rep == Some(0xF3))
+        }
+        _ => false,
+    };
+    if !valid_prefix
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let reg_xmm = map_xmm_index(modrm.reg, &prefixes.rex, true);
+
+    if store {
+        let value = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(value),
+            Op::LoadVecReg(LoadVecReg { xmm_index: reg_xmm }),
+        ));
+        if modrm.mod_ == 3 {
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreVecReg(StoreVecReg {
+                    xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+                    value,
+                }),
+            ));
+        } else {
+            let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+            let (addr, actual_used) =
+                emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+            debug_assert_eq!(actual_used, used);
+            stmts.push(Stmt::new(None, Op::StoreVec(StoreVec { addr, value })));
+        }
+    } else {
+        let value = if modrm.mod_ == 3 {
+            let value = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(value),
+                Op::LoadVecReg(LoadVecReg {
+                    xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+                }),
+            ));
+            value
+        } else {
+            let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+            let (addr, actual_used) =
+                emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+            debug_assert_eq!(actual_used, used);
+            let value = alloc_ref(stmts);
+            stmts.push(Stmt::new(Some(value), Op::LoadVec(LoadVec { addr })));
+            value
+        };
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreVecReg(StoreVecReg {
+                xmm_index: reg_xmm,
+                value,
+            }),
+        ));
+    }
+
+    Ok(1 + used)
+}
+
+fn decode_cvtsi2sd(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.rep != Some(0xF2)
+        || prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.addr_override
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let int_size = if prefixes.rex.w {
+        OpSize::I64
+    } else {
+        OpSize::I32
+    };
+    let value = if modrm.mod_ == 3 {
+        let value = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(value),
+            Op::LoadReg(LoadReg {
+                reg: map_reg(modrm.rm, &prefixes.rex, false),
+                size: int_size,
+            }),
+        ));
+        value
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let value = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(value),
+            Op::LoadMem(LoadMem {
+                addr,
+                size: int_size,
+            }),
+        ));
+        value
+    };
+    let converted = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(converted),
+        Op::IntToFpScalar(IntToFpScalar {
+            value,
+            int_size,
+            fp_size: FpSize::F64,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+            value: converted,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_cvttsd2si(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.rep != Some(0xF2)
+        || prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.addr_override
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let src = if modrm.mod_ == 3 {
+        let src = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(src),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        src
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let scalar = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(scalar),
+            Op::LoadMem(LoadMem {
+                addr,
+                size: OpSize::I64,
+            }),
+        ));
+        let src = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(src),
+            Op::XmmFromGpr(XmmFromGpr {
+                value: scalar,
+                size: OpSize::I64,
+            }),
+        ));
+        src
+    };
+    let int_size = if prefixes.rex.w {
+        OpSize::I64
+    } else {
+        OpSize::I32
+    };
+    let converted = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(converted),
+        Op::FpToIntScalar(FpToIntScalar {
+            value: src,
+            fp_size: FpSize::F64,
+            int_size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: map_reg(modrm.reg, &prefixes.rex, true),
+            value: converted,
+            size: int_size,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_pshufd(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let shuffle_high_halfwords = match (prefixes.operand_override, prefixes.rep) {
+        (true, None) => None,
+        (false, Some(0xF2)) => Some(false),
+        (false, Some(0xF3)) => Some(true),
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    if prefixes.lock || prefixes.segment.is_some() || prefixes.addr_override || prefixes.rex.w {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let control = *bytes
+        .get(cursor + 1 + used)
+        .ok_or(crate::DecodeError::Truncated)?;
+    let src = if modrm.mod_ == 3 {
+        let src = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(src),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        src
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(3 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let src = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(src), Op::LoadVec(LoadVec { addr })));
+        src
+    };
+    let shuffled = alloc_ref(stmts);
+    let op = match shuffle_high_halfwords {
+        Some(is_high) => Op::VecShuffleH4(VecShuffleH4 {
+            is_high,
+            src,
+            control,
+        }),
+        None => Op::VecShuffle32x4(VecShuffle32x4 { src, control }),
+    };
+    stmts.push(Stmt::new(Some(shuffled), op));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+            value: shuffled,
+        }),
+    ));
+
+    Ok(2 + used)
+}
+
+fn decode_paddd(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if !prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let dst_xmm = map_xmm_index(modrm.reg, &prefixes.rex, true);
+    let lhs = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lhs),
+        Op::LoadVecReg(LoadVecReg { xmm_index: dst_xmm }),
+    ));
+    let rhs = if modrm.mod_ == 3 {
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        rhs
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(rhs), Op::LoadVec(LoadVec { addr })));
+        rhs
+    };
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(result),
+        Op::VecBinOp(VecBinOp {
+            op: VecBinOpKind::Add,
+            lhs,
+            rhs,
+            lane: VecLane::S4,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: dst_xmm,
+            value: result,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_punpck(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if !prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (lane, is_high) = match opcode {
+        0x60 => (VecLane::B16, false),
+        0x61 => (VecLane::H8, false),
+        0x62 => (VecLane::S4, false),
+        0x6C => (VecLane::D2, false),
+        0x68 => (VecLane::B16, true),
+        0x69 => (VecLane::H8, true),
+        0x6A => (VecLane::S4, true),
+        0x6D => (VecLane::D2, true),
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let dst_xmm = map_xmm_index(modrm.reg, &prefixes.rex, true);
+    let lhs = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lhs),
+        Op::LoadVecReg(LoadVecReg { xmm_index: dst_xmm }),
+    ));
+    let rhs = if modrm.mod_ == 3 {
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        rhs
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(rhs), Op::LoadVec(LoadVec { addr })));
+        rhs
+    };
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(result),
+        Op::VecUnpack(VecUnpack {
+            is_high,
+            lhs,
+            rhs,
+            lane,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: dst_xmm,
+            value: result,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_vec_cmp(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if !prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let kind = if opcode & 0xf0 == 0x70 {
+        VecCmpKind::Eq
+    } else {
+        VecCmpKind::Gt
+    };
+    let lane = match opcode & 0x0f {
+        4 => VecLane::B16,
+        5 => VecLane::H8,
+        6 => VecLane::S4,
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let dst_xmm = map_xmm_index(modrm.reg, &prefixes.rex, true);
+    let lhs = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lhs),
+        Op::LoadVecReg(LoadVecReg { xmm_index: dst_xmm }),
+    ));
+    let rhs = if modrm.mod_ == 3 {
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        rhs
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(rhs), Op::LoadVec(LoadVec { addr })));
+        rhs
+    };
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(result),
+        Op::VecCmp(VecCmp {
+            kind,
+            lhs,
+            rhs,
+            lane,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: dst_xmm,
+            value: result,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_pmovmskb(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if !prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let src = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(src),
+        Op::LoadVecReg(LoadVecReg {
+            xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+        }),
+    ));
+    let mask = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(mask),
+        Op::VecMaskMsb(VecMaskMsb { src_xmm: src }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreReg(StoreReg {
+            reg: map_reg(modrm.reg, &prefixes.rex, true),
+            value: mask,
+            size: OpSize::I32,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_shift_d_imm(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if !prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+        || prefixes.rex.r
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let kind = match modrm.reg {
+        2 => VecShiftKind::LogicalShr,
+        6 => VecShiftKind::ShiftL,
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let count = *bytes
+        .get(cursor + 1 + used)
+        .ok_or(crate::DecodeError::Truncated)?;
+    let xmm_index = map_xmm_index(modrm.rm, &prefixes.rex, false);
+    let src = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(src),
+        Op::LoadVecReg(LoadVecReg { xmm_index }),
+    ));
+    let shifted = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(shifted),
+        Op::VecShiftImm(VecShiftImm {
+            kind,
+            src,
+            count,
+            lane: VecLane::S4,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index,
+            value: shifted,
+        }),
+    ));
+    Ok(2 + used)
+}
+
+fn decode_xorps(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let valid_prefix = match opcode {
+        0x57 => !prefixes.operand_override && prefixes.rep.is_none(),
+        0xEF => prefixes.operand_override && prefixes.rep.is_none(),
+        _ => false,
+    };
+    if !valid_prefix
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let dst_xmm = map_xmm_index(modrm.reg, &prefixes.rex, true);
+
+    let lhs = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lhs),
+        Op::LoadVecReg(LoadVecReg { xmm_index: dst_xmm }),
+    ));
+    let rhs = if modrm.mod_ == 3 {
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        rhs
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(rhs), Op::LoadVec(LoadVec { addr })));
+        rhs
+    };
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(result),
+        Op::VecBinOp(VecBinOp {
+            op: VecBinOpKind::Xor,
+            lhs,
+            rhs,
+            lane: VecLane::B16,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: dst_xmm,
+            value: result,
+        }),
+    ));
+
+    Ok(1 + used)
+}
+
+fn decode_scalar_fp_bin(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.rep != Some(0xF2)
+        || prefixes.operand_override
+        || prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.addr_override
+        || prefixes.rex.w
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let op = match opcode {
+        0x58 => VecFpBinOpKind::Add,
+        0x59 => VecFpBinOpKind::Mul,
+        0x5C => VecFpBinOpKind::Sub,
+        0x5E => VecFpBinOpKind::Div,
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let dst_xmm = map_xmm_index(modrm.reg, &prefixes.rex, true);
+    let lhs = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lhs),
+        Op::LoadVecReg(LoadVecReg { xmm_index: dst_xmm }),
+    ));
+    let rhs = if modrm.mod_ == 3 {
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        rhs
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let scalar = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(scalar),
+            Op::LoadMem(LoadMem {
+                addr,
+                size: OpSize::I64,
+            }),
+        ));
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::XmmFromGpr(XmmFromGpr {
+                value: scalar,
+                size: OpSize::I64,
+            }),
+        ));
+        rhs
+    };
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(result),
+        Op::VecFpScalarBinOp(VecFpScalarBinOp {
+            op,
+            lhs,
+            rhs,
+            size: FpSize::F64,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: dst_xmm,
+            value: result,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_mov_gpr_to_xmm(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || !prefixes.operand_override
+        || prefixes.addr_override
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let size = if prefixes.rex.w {
+        OpSize::I64
+    } else {
+        OpSize::I32
+    };
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let scalar = if modrm.mod_ == 3 {
+        let value = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(value),
+            Op::LoadReg(LoadReg {
+                reg: map_reg(modrm.rm, &prefixes.rex, false),
+                size,
+            }),
+        ));
+        value
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let value = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(value), Op::LoadMem(LoadMem { addr, size })));
+        value
+    };
+    let vector = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(vector),
+        Op::XmmFromGpr(XmmFromGpr {
+            value: scalar,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+            value: vector,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_mov_xmm_to_gpr(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || !prefixes.operand_override
+        || prefixes.addr_override
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let size = if prefixes.rex.w {
+        OpSize::I64
+    } else {
+        OpSize::I32
+    };
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let vector = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(vector),
+        Op::LoadVecReg(LoadVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+        }),
+    ));
+    let scalar = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(scalar),
+        Op::GprFromXmm(GprFromXmm {
+            value: vector,
+            size,
+        }),
+    ));
+    if modrm.mod_ == 3 {
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreReg(StoreReg {
+                reg: map_reg(modrm.rm, &prefixes.rex, false),
+                value: scalar,
+                size,
+            }),
+        ));
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreMem(StoreMem {
+                addr,
+                value: scalar,
+                size,
+            }),
+        ));
+    }
+    Ok(1 + used)
+}
+
+fn decode_movq_store(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.lock
+        || prefixes.segment.is_some()
+        || prefixes.rep.is_some()
+        || !prefixes.operand_override
+        || prefixes.addr_override
+    {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let vector = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(vector),
+        Op::LoadVecReg(LoadVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+        }),
+    ));
+    let scalar = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(scalar),
+        Op::GprFromXmm(GprFromXmm {
+            value: vector,
+            size: OpSize::I64,
+        }),
+    ));
+    if modrm.mod_ == 3 {
+        let result = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(result),
+            Op::XmmFromGpr(XmmFromGpr {
+                value: scalar,
+                size: OpSize::I64,
+            }),
+        ));
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreVecReg(StoreVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+                value: result,
+            }),
+        ));
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreMem(StoreMem {
+                addr,
+                value: scalar,
+                size: OpSize::I64,
+            }),
+        ));
+    }
+    Ok(1 + used)
+}
+
+fn decode_mov_scalar_load(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let size = match (prefixes.rep, prefixes.operand_override) {
+        (Some(0xF3), false) => OpSize::I32,
+        (Some(0xF2), false) => OpSize::I64,
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    if prefixes.lock || prefixes.segment.is_some() || prefixes.addr_override || prefixes.rex.w {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ == 3 {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+    let (addr, actual_used) =
+        emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+    debug_assert_eq!(actual_used, used);
+    let scalar = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(scalar), Op::LoadMem(LoadMem { addr, size })));
+    let vector = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(vector),
+        Op::XmmFromGpr(XmmFromGpr {
+            value: scalar,
+            size,
+        }),
+    ));
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreVecReg(StoreVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+            value: vector,
+        }),
+    ));
+    Ok(1 + used)
+}
+
+fn decode_ucomi(
+    prefixes: &PrefixSet,
+    opcode: u8,
+    bytes: &[u8],
+    cursor: usize,
+    opcode_guest_pc: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let size = match (prefixes.rep, prefixes.operand_override) {
+        (None, false) => FpSize::F32,
+        (None, true) => FpSize::F64,
+        _ => return Err(crate::DecodeError::UnsupportedOpcode(opcode)),
+    };
+    if prefixes.lock || prefixes.segment.is_some() || prefixes.addr_override || prefixes.rex.w {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    }
+
+    let (modrm, _) = modrm::parse_modrm(bytes, cursor + 1)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let lhs = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(lhs),
+        Op::LoadVecReg(LoadVecReg {
+            xmm_index: map_xmm_index(modrm.reg, &prefixes.rex, true),
+        }),
+    ));
+    let rhs = if modrm.mod_ == 3 {
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(rhs),
+            Op::LoadVecReg(LoadVecReg {
+                xmm_index: map_xmm_index(modrm.rm, &prefixes.rex, false),
+            }),
+        ));
+        rhs
+    } else {
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
+        let rhs = alloc_ref(stmts);
+        stmts.push(Stmt::new(Some(rhs), Op::LoadVec(LoadVec { addr })));
+        rhs
+    };
+    stmts.push(Stmt::new(
+        None,
+        Op::WriteFlagsFp(WriteFlagsFp { lhs, rhs, size }),
+    ));
+    Ok(1 + used)
 }
 
 fn decode_descriptor_group(
@@ -1596,7 +2806,16 @@ fn decode_cond_jump_rel8(
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let opcode = *bytes.get(cursor).ok_or(crate::DecodeError::Truncated)?;
-    let cc = jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?;
+    let condition = opcode & 0x0f;
+    let cc = if matches!(condition, 0x02 | 0x03) {
+        push_carry_jcc_flags(stmts, condition == 0x02)
+    } else if let Some(cc) = jcc_condition(opcode) {
+        cc
+    } else if matches!(condition, 0x0a | 0x0b) {
+        push_parity_jcc_flags(stmts, condition == 0x0a)
+    } else {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    };
     let rel = i64::from(i8::from_le_bytes([*bytes
         .get(cursor + 1)
         .ok_or(crate::DecodeError::Truncated)?]));
@@ -1620,7 +2839,16 @@ fn decode_cond_jump_rel32(
     opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    let cc = jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?;
+    let condition = opcode & 0x0f;
+    let cc = if matches!(condition, 0x02 | 0x03) {
+        push_carry_jcc_flags(stmts, condition == 0x02)
+    } else if let Some(cc) = jcc_condition(opcode) {
+        cc
+    } else if matches!(condition, 0x0a | 0x0b) {
+        push_parity_jcc_flags(stmts, condition == 0x0a)
+    } else {
+        return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+    };
     let rel_bytes = bytes
         .get(cursor + 2..cursor + 6)
         .ok_or(crate::DecodeError::Truncated)?;
@@ -1640,6 +2868,36 @@ fn decode_cond_jump_rel32(
         }),
     ));
     Ok(5)
+}
+
+fn push_parity_jcc_flags(stmts: &mut Vec<Stmt>, jump_if_parity: bool) -> CondCode {
+    push_rflags_bit_condition(stmts, 1 << 2, jump_if_parity)
+}
+
+fn push_carry_jcc_flags(stmts: &mut Vec<Stmt>, jump_if_carry: bool) -> CondCode {
+    push_rflags_bit_condition(stmts, 1, jump_if_carry)
+}
+
+fn push_rflags_bit_condition(stmts: &mut Vec<Stmt>, mask: u64, jump_if_set: bool) -> CondCode {
+    let rflags = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(rflags), Op::LoadRflags(LoadRflags)));
+    let flag_mask = push_constant_ref(stmts, mask, OpSize::I64);
+    let flag = push_binop_ref(stmts, BinOpKind::And, rflags, flag_mask, OpSize::I64);
+    let zero = push_constant_ref(stmts, 0, OpSize::I64);
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::CmpFlags(CmpFlags {
+            lhs: flag,
+            rhs: zero,
+            size: OpSize::I64,
+        }),
+    ));
+    if jump_if_set {
+        CondCode::Ne
+    } else {
+        CondCode::Eq
+    }
 }
 
 fn decode_call_rel32(
@@ -2017,11 +3275,15 @@ fn emit_alu_flags_preserve_carry(
     size: OpSize,
 ) {
     let result = push_binop_ref(stmts, op, lhs, rhs, size);
-    let (pf, af) = push_pf_af_for_alu(stmts, op, lhs, rhs, result, size);
+    // Publish NZCV while lhs/rhs still occupy their original physical slots.
+    // The PF/AF graph below uses non-flag-setting operations, so NZCV remains
+    // valid until StoreRflagsFromNzcv serializes it to the guest frame. This
+    // ordering matters once a fused block wraps the eight-register value pool.
     stmts.push(Stmt::new(
         None,
         Op::AluFlagsPreserveCarry(AluFlagsPreserveCarry { op, lhs, rhs, size }),
     ));
+    let (pf, af) = push_pf_af_for_alu(stmts, op, lhs, rhs, result, size);
     stmts.push(Stmt::new(
         None,
         Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
@@ -2038,7 +3300,7 @@ fn decode_group4(
     cursor: usize,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    if prefixes.rep.is_some() || prefixes.lock || prefixes.segment.is_some() {
+    if prefixes.rep.is_some() || prefixes.segment.is_some() {
         return Err(crate::DecodeError::UnsupportedOpcode(0xFE));
     }
 
@@ -2152,8 +3414,11 @@ fn decode_group5(
                 emit_alu_flags_preserve_carry(stmts, BinOpKind::Add, value_ref, one, size);
                 Ok(2)
             } else {
-                let (addr_ref, used) =
-                    emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+                let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+                let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+                let (addr_ref, actual_used) =
+                    emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+                debug_assert_eq!(actual_used, used);
                 let value_ref = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(value_ref),
@@ -2219,8 +3484,11 @@ fn decode_group5(
                 emit_alu_flags_preserve_carry(stmts, BinOpKind::Sub, value_ref, one, size);
                 Ok(2)
             } else {
-                let (addr_ref, used) =
-                    emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+                let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+                let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+                let (addr_ref, actual_used) =
+                    emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+                debug_assert_eq!(actual_used, used);
                 let value_ref = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(value_ref),
@@ -2257,9 +3525,9 @@ fn decode_group5(
             // 64-bit mode (REX.W / 0x66 do not change it), so the full guest PC
             // is loaded — a 32-bit load would truncate a >4 GiB target.
             let size = OpSize::I64;
-            let target_ref = alloc_ref(stmts);
             if modrm.mod_ == 3 {
                 let src_reg = map_reg(modrm.rm, &prefixes.rex, false);
+                let target_ref = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(target_ref),
                     Op::LoadReg(LoadReg { reg: src_reg, size }),
@@ -2273,8 +3541,12 @@ fn decode_group5(
                 ));
                 Ok(2)
             } else {
-                let (addr_ref, used) =
-                    emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+                let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+                let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+                let (addr_ref, actual_used) =
+                    emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+                debug_assert_eq!(actual_used, used);
+                let target_ref = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(target_ref),
                     Op::LoadMem(LoadMem {
@@ -2296,9 +3568,9 @@ fn decode_group5(
         4 => {
             // Near indirect jump: target operand is forced to 64-bit (see call).
             let size = OpSize::I64;
-            let target_ref = alloc_ref(stmts);
             if modrm.mod_ == 3 {
                 let src_reg = map_reg(modrm.rm, &prefixes.rex, false);
+                let target_ref = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(target_ref),
                     Op::LoadReg(LoadReg { reg: src_reg, size }),
@@ -2306,8 +3578,12 @@ fn decode_group5(
                 stmts.push(Stmt::new(None, Op::JumpReg(JumpReg { target: target_ref })));
                 Ok(2)
             } else {
-                let (addr_ref, used) =
-                    emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+                let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+                let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+                let (addr_ref, actual_used) =
+                    emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+                debug_assert_eq!(actual_used, used);
+                let target_ref = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(target_ref),
                     Op::LoadMem(LoadMem {
@@ -2333,8 +3609,11 @@ fn decode_group5(
                 ));
                 value
             } else {
-                let (addr_ref, used) =
-                    emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+                let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+                let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+                let (addr_ref, actual_used) =
+                    emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+                debug_assert_eq!(actual_used, used);
                 let value = alloc_ref(stmts);
                 stmts.push(Stmt::new(
                     Some(value),
@@ -3325,16 +4604,18 @@ fn decode_mov_rm_r(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let size = operand_size(prefixes, true);
-    decode_mov_rm_r_with_size(prefixes, bytes, cursor, stmts, size)
+    decode_mov_rm_r_with_size(prefixes, bytes, cursor, opcode_guest_pc, stmts, size)
 }
 
 fn decode_mov_rm_r_with_size(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     size: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -3361,7 +4642,11 @@ fn decode_mov_rm_r_with_size(
         ));
         Ok(2)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         stmts.push(Stmt::new(
             None,
             Op::StoreMem(StoreMem {
@@ -3434,16 +4719,18 @@ fn decode_mov_r_rm(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let size = operand_size(prefixes, true);
-    decode_mov_r_rm_with_size(prefixes, bytes, cursor, stmts, size)
+    decode_mov_r_rm_with_size(prefixes, bytes, cursor, opcode_guest_pc, stmts, size)
 }
 
 fn decode_mov_r_rm_with_size(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     size: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -3459,7 +4746,11 @@ fn decode_mov_r_rm_with_size(
         ));
         (src, 1)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         let src = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(src),
@@ -3486,6 +4777,7 @@ fn decode_lea(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     if prefixes.rep.is_some()
@@ -3508,7 +4800,11 @@ fn decode_lea(
     } else {
         OpSize::I32
     };
-    let (addr, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+    let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+    let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+    let (addr, actual_used) =
+        emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+    debug_assert_eq!(actual_used, used);
     stmts.push(Stmt::new(
         None,
         Op::StoreReg(StoreReg {
@@ -3581,9 +4877,10 @@ fn decode_mov_rm_imm(
     opcode: u8,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    if prefixes.rep.is_some() || prefixes.lock || prefixes.segment.is_some() {
+    if prefixes.rep.is_some() || prefixes.segment.is_some() {
         return Err(crate::DecodeError::UnsupportedOpcode(opcode));
     }
 
@@ -3617,10 +4914,16 @@ fn decode_mov_rm_imm(
     ));
 
     if modrm.mod_ == 3 {
+        if prefixes.lock {
+            return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+        }
         let reg = map_reg(modrm.rm, &prefixes.rex, false);
         stmts.push(Stmt::new(None, Op::StoreReg(StoreReg { reg, value, size })));
     } else {
-        let (addr, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let rip_after = opcode_guest_pc.wrapping_add((1 + modrm_bytes + imm_bytes) as u64);
+        let (addr, used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(used, modrm_bytes);
         stmts.push(Stmt::new(
             None,
             Op::StoreMem(StoreMem { addr, value, size }),
@@ -3729,10 +5032,11 @@ fn decode_binop_rm_r(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let size = operand_size(prefixes, true);
-    decode_binop_rm_r_with_size(kind, prefixes, bytes, cursor, stmts, size)
+    decode_binop_rm_r_with_size(kind, prefixes, bytes, cursor, opcode_guest_pc, stmts, size)
 }
 
 fn push_constant_ref(stmts: &mut Vec<Stmt>, value: u64, size: OpSize) -> Ref {
@@ -4095,12 +5399,12 @@ fn push_cmp_flags(stmts: &mut Vec<Stmt>, lhs: Ref, rhs: Ref, size: OpSize) -> Re
 }
 
 /// Append the implicit NZCV flag write for a flag-setting ALU op and publish
-/// the RFLAGS subset. PF/AF are computed before the NZCV writer so the final
-/// transient flags still come from `AluFlags`.
+/// the RFLAGS subset. Publish NZCV while lhs/rhs still occupy their original
+/// physical slots; the PF/AF graph uses non-flag-setting operations and cannot
+/// disturb it before `StoreRflagsFromNzcv` serializes the result.
 fn push_alu_flags(stmts: &mut Vec<Stmt>, kind: BinOpKind, lhs: Ref, rhs: Ref, size: OpSize) {
     if let Some(carry) = rflags_carry_mode_for_alu(kind) {
         let result = push_binop_ref(stmts, kind, lhs, rhs, size);
-        let (pf, af) = push_pf_af_for_alu(stmts, kind, lhs, rhs, result, size);
         stmts.push(Stmt::new(
             None,
             Op::AluFlags(AluFlags {
@@ -4110,6 +5414,7 @@ fn push_alu_flags(stmts: &mut Vec<Stmt>, kind: BinOpKind, lhs: Ref, rhs: Ref, si
                 size,
             }),
         ));
+        let (pf, af) = push_pf_af_for_alu(stmts, kind, lhs, rhs, result, size);
         push_store_rflags_from_nzcv(stmts, carry, pf, af);
     }
 }
@@ -4119,6 +5424,7 @@ fn decode_binop_rm_r_with_size(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     size: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -4158,7 +5464,11 @@ fn decode_binop_rm_r_with_size(
         push_alu_flags(stmts, kind, lhs_ref, rhs_ref, size);
         Ok(2)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         let mem_val = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(mem_val),
@@ -4195,10 +5505,11 @@ fn decode_binop_r_rm(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let size = operand_size(prefixes, true);
-    decode_binop_r_rm_with_size(kind, prefixes, bytes, cursor, stmts, size)
+    decode_binop_r_rm_with_size(kind, prefixes, bytes, cursor, opcode_guest_pc, stmts, size)
 }
 
 /// ADC/SBB r, r/m. Both register and memory sources use real carry because the
@@ -4249,6 +5560,7 @@ fn decode_binop_r_rm_with_size(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     size: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -4269,7 +5581,11 @@ fn decode_binop_r_rm_with_size(
         ));
         (r, 1)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         let r = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(r),
@@ -4310,7 +5626,7 @@ fn decode_xadd(
     cursor: usize,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    if prefixes.rep.is_some() || prefixes.lock || prefixes.segment.is_some() {
+    if prefixes.rep.is_some() || prefixes.segment.is_some() {
         return Err(crate::DecodeError::UnsupportedOpcode(opcode));
     }
 
@@ -4328,6 +5644,9 @@ fn decode_xadd(
     ));
 
     if modrm.mod_ == 3 {
+        if prefixes.lock {
+            return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+        }
         let dst_reg = map_reg(modrm.rm, &prefixes.rex, false);
         let dst = alloc_ref(stmts);
         stmts.push(Stmt::new(
@@ -4344,7 +5663,6 @@ fn decode_xadd(
                 size,
             }),
         ));
-        push_alu_flags(stmts, BinOpKind::Add, dst, src, size);
         stmts.push(Stmt::new(
             None,
             Op::StoreReg(StoreReg {
@@ -4361,9 +5679,31 @@ fn decode_xadd(
                 size,
             }),
         ));
+        push_alu_flags(stmts, BinOpKind::Add, dst, src, size);
         Ok(2)
     } else {
         let (addr, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        if prefixes.lock {
+            let old = alloc_ref(stmts);
+            stmts.push(Stmt::new(
+                Some(old),
+                Op::AtomicXadd(AtomicXadd {
+                    addr,
+                    value: src,
+                    size,
+                }),
+            ));
+            stmts.push(Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: src_reg,
+                    value: old,
+                    size,
+                }),
+            ));
+            push_alu_flags(stmts, BinOpKind::Add, old, src, size);
+            return Ok(1 + used);
+        }
         let dst = alloc_ref(stmts);
         stmts.push(Stmt::new(Some(dst), Op::LoadMem(LoadMem { addr, size })));
         let result = alloc_ref(stmts);
@@ -4376,7 +5716,6 @@ fn decode_xadd(
                 size,
             }),
         ));
-        push_alu_flags(stmts, BinOpKind::Add, dst, src, size);
         stmts.push(Stmt::new(
             None,
             Op::StoreReg(StoreReg {
@@ -4393,6 +5732,7 @@ fn decode_xadd(
                 size,
             }),
         ));
+        push_alu_flags(stmts, BinOpKind::Add, dst, src, size);
         Ok(1 + used)
     }
 }
@@ -5475,16 +6815,18 @@ fn decode_cmp_rm_r(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let size = operand_size(prefixes, true);
-    decode_cmp_rm_r_with_size(prefixes, bytes, cursor, stmts, size)
+    decode_cmp_rm_r_with_size(prefixes, bytes, cursor, opcode_guest_pc, stmts, size)
 }
 
 fn decode_cmp_rm_r_with_size(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     size: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -5505,7 +6847,11 @@ fn decode_cmp_rm_r_with_size(
         ));
         (r, 1)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(1 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         let r = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(r),
@@ -5744,21 +7090,17 @@ fn decode_xchg(
         let val_mem = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(val_mem),
-            Op::LoadMem(LoadMem { addr, size }),
+            Op::AtomicXchg(AtomicXchg {
+                addr,
+                value: val_a,
+                size,
+            }),
         ));
         stmts.push(Stmt::new(
             None,
             Op::StoreReg(StoreReg {
                 reg: reg_a,
                 value: val_mem,
-                size,
-            }),
-        ));
-        stmts.push(Stmt::new(
-            None,
-            Op::StoreMem(StoreMem {
-                addr,
-                value: val_a,
                 size,
             }),
         ));
@@ -5995,17 +7337,34 @@ fn decode_lods(
 fn decode_stos(
     prefixes: &PrefixSet,
     opcode: u8,
+    instruction_guest_pc: u64,
+    instruction_bytes: usize,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    if prefixes.addr_override
-        || prefixes.lock
-        || prefixes.segment.is_some()
-        || prefixes.rep.is_some()
-    {
+    if prefixes.addr_override || prefixes.lock || prefixes.segment.is_some() {
         return Err(crate::DecodeError::UnsupportedOpcode(opcode));
     }
 
     let size = string_op_size(prefixes, opcode);
+    if let Some(rep) = prefixes.rep {
+        if rep != 0xF3
+            || (opcode == 0xAA && (prefixes.rex.present || prefixes.operand_override))
+            || (opcode == 0xAB && prefixes.rex.w && prefixes.operand_override)
+        {
+            return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+        }
+        stmts.push(Stmt::new(
+            None,
+            Op::RepStos(RepStos {
+                size,
+                reverse: false,
+                pc_of_rep: instruction_guest_pc,
+                pc_after_rep: instruction_guest_pc.wrapping_add(instruction_bytes as u64),
+            }),
+        ));
+        return Ok(1);
+    }
+
     let rdi = alloc_ref(stmts);
     stmts.push(Stmt::new(
         Some(rdi),
@@ -6225,17 +7584,34 @@ fn decode_cmps(
 fn decode_movs(
     prefixes: &PrefixSet,
     opcode: u8,
+    instruction_guest_pc: u64,
+    instruction_bytes: usize,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
-    if prefixes.addr_override
-        || prefixes.lock
-        || prefixes.segment.is_some()
-        || prefixes.rep.is_some()
-    {
+    if prefixes.addr_override || prefixes.lock || prefixes.segment.is_some() {
         return Err(crate::DecodeError::UnsupportedOpcode(opcode));
     }
 
     let size = string_op_size(prefixes, opcode);
+    if let Some(rep) = prefixes.rep {
+        if rep != 0xF3
+            || (opcode == 0xA4 && (prefixes.rex.present || prefixes.operand_override))
+            || (opcode == 0xA5 && prefixes.rex.w && prefixes.operand_override)
+        {
+            return Err(crate::DecodeError::UnsupportedOpcode(opcode));
+        }
+        stmts.push(Stmt::new(
+            None,
+            Op::RepMovs(RepMovs {
+                size,
+                reverse: false,
+                pc_of_rep: instruction_guest_pc,
+                pc_after_rep: instruction_guest_pc.wrapping_add(instruction_bytes as u64),
+            }),
+        ));
+        return Ok(1);
+    }
+
     let rsi = alloc_ref(stmts);
     stmts.push(Stmt::new(
         Some(rsi),
@@ -6580,6 +7956,7 @@ fn decode_movzx(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     from: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -6599,7 +7976,11 @@ fn decode_movzx(
         ));
         (r, 1)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         let r = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(r),
@@ -6636,6 +8017,7 @@ fn decode_movsx(
     prefixes: &PrefixSet,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
     from: OpSize,
 ) -> Result<usize, crate::DecodeError> {
@@ -6655,7 +8037,11 @@ fn decode_movsx(
         ));
         (r, 1)
     } else {
-        let (addr_ref, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr_ref, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         let r = alloc_ref(stmts);
         stmts.push(Stmt::new(
             Some(r),
@@ -6791,7 +8177,12 @@ fn decode_cmov(
         return Err(crate::DecodeError::UnsupportedOpcode(opcode));
     }
 
-    let cc = jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?;
+    let condition = opcode & 0x0f;
+    let cc = if matches!(condition, 0x02 | 0x03) {
+        push_carry_jcc_flags(stmts, condition == 0x02)
+    } else {
+        jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?
+    };
     let size = operand_size(prefixes, true);
     let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
     let dst_reg = map_reg(modrm.reg, &prefixes.rex, true);
@@ -6849,13 +8240,19 @@ fn decode_setcc(
     opcode: u8,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     if prefixes.rep.is_some() || prefixes.lock || prefixes.segment.is_some() {
         return Err(crate::DecodeError::UnsupportedOpcode(opcode));
     }
 
-    let cc = jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?;
+    let condition = opcode & 0x0f;
+    let cc = if matches!(condition, 0x02 | 0x03) {
+        push_carry_jcc_flags(stmts, condition == 0x02)
+    } else {
+        jcc_condition(opcode).ok_or(crate::DecodeError::UnsupportedOpcode(opcode))?
+    };
     let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
 
     let one = alloc_ref(stmts);
@@ -6897,7 +8294,11 @@ fn decode_setcc(
         ));
         Ok(2)
     } else {
-        let (addr, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
+        let used = bytes_for_modrm(&modrm, bytes, cursor + 1)?;
+        let rip_after = opcode_guest_pc.wrapping_add(2 + used as u64);
+        let (addr, actual_used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        debug_assert_eq!(actual_used, used);
         stmts.push(Stmt::new(
             None,
             Op::StoreMem(StoreMem {
@@ -7350,6 +8751,81 @@ fn decode_bt_group_imm8(
     ));
     // op2 + ModRM path + imm8 (consumed after the 0F escape byte).
     Ok(1 + used + 1)
+}
+
+fn decode_bt_rm_reg(
+    prefixes: &PrefixSet,
+    op2: u8,
+    bytes: &[u8],
+    cursor: usize,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    if prefixes.lock || prefixes.rep.is_some() {
+        return Err(crate::DecodeError::UnsupportedOpcode(op2));
+    }
+
+    let (modrm, _after) = modrm::parse_modrm(bytes, cursor + 1)?;
+    if modrm.mod_ != 3 {
+        return Err(crate::DecodeError::UnsupportedOpcode(op2));
+    }
+
+    let size = operand_size(prefixes, true);
+    let source = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(source),
+        Op::LoadReg(LoadReg {
+            reg: map_reg(modrm.rm, &prefixes.rex, false),
+            size,
+        }),
+    ));
+    let raw_index = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(raw_index),
+        Op::LoadReg(LoadReg {
+            reg: map_reg(modrm.reg, &prefixes.rex, true),
+            size,
+        }),
+    ));
+    let index_mask = push_constant_ref(stmts, u64::from(size.bit_width() - 1), size);
+    let bit_index = push_binop_ref(stmts, BinOpKind::And, raw_index, index_mask, size);
+    let shifted = push_binop_ref(stmts, BinOpKind::Shr, source, bit_index, size);
+    let one = push_constant_ref(stmts, 1, size);
+    let bit = push_binop_ref(stmts, BinOpKind::And, shifted, one, size);
+
+    if op2 != 0xA3 {
+        let bit_mask = push_binop_ref(stmts, BinOpKind::Shl, one, bit_index, size);
+        let value = match op2 {
+            0xAB => push_binop_ref(stmts, BinOpKind::Or, source, bit_mask, size),
+            0xB3 => {
+                let all_ones = push_constant_ref(stmts, u64::MAX, size);
+                let inverse = push_binop_ref(stmts, BinOpKind::Xor, bit_mask, all_ones, size);
+                push_binop_ref(stmts, BinOpKind::And, source, inverse, size)
+            }
+            0xBB => push_binop_ref(stmts, BinOpKind::Xor, source, bit_mask, size),
+            _ => return Err(crate::DecodeError::UnsupportedOpcode(op2)),
+        };
+        let destination = map_reg(modrm.rm, &prefixes.rex, false);
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreReg(StoreReg {
+                reg: destination,
+                value,
+                size,
+            }),
+        ));
+    }
+
+    stmts.push(Stmt::new(None, Op::StoreCarry(StoreCarry { value: bit })));
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::CmpFlags(CmpFlags {
+            lhs: bit,
+            rhs: one,
+            size,
+        }),
+    ));
+    Ok(2)
 }
 
 fn store_bt_value(
@@ -7895,7 +9371,7 @@ fn bytes_for_modrm(
     cursor: usize,
 ) -> Result<usize, crate::DecodeError> {
     let mut total = 1;
-    if modrm.rm == 4 {
+    if modrm.mod_ != 3 && modrm.rm == 4 {
         total += 1;
         let sib_byte = *bytes.get(cursor + 1).ok_or(crate::DecodeError::Truncated)?;
         let base = sib_byte & 0x7;
@@ -7943,7 +9419,15 @@ fn emit_addr_with_size_at(
     };
     let disp_offset = cursor + 1 + usize::from(sib.is_some());
     let (addr, _next) = modrm::decode_addr(&modrm, sib.as_ref(), prefixes, bytes, disp_offset)?;
-    let addr_ref = emit_addr_mode_at(&addr, rip_after, stmts);
+    let mut addr_ref = emit_addr_mode_at(&addr, rip_after, stmts);
+    if let Some(seg) = prefixes.segment {
+        let segment_base = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(segment_base),
+            Op::LoadSegBase(LoadSegBase { seg }),
+        ));
+        addr_ref = emit_addr_binop(stmts, BinOpKind::Add, segment_base, addr_ref);
+    }
     Ok((addr_ref, n))
 }
 
@@ -8065,10 +9549,10 @@ mod tests {
     use prisma_ir::{
         AluFlags, AluFlagsPreserveCarry, BinOp, BinOpKind, Bswap, CallReg, CallRel, CondCode,
         CondJumpRel, Constant, Cpuid, Extend, Fence, FenceKind, Gpr, GprFromXmm, JumpReg, JumpRel,
-        LoadMem, LoadReg, LoadVec, LoadVecReg, Op, OpSize, PcmpStrFlags, PcmpStrIndex, PcmpStrMask,
-        Popcnt, Rdtsc, RetAdjusted, Return, RspAdjust, Select, Stmt, StoreMem, StoreReg,
-        StoreRflagsFromBits, StoreVecReg, Syscall, Trap, TrapKind, VecF16Cvt, VecF16CvtKind,
-        Xgetbv, XmmFromGpr,
+        LoadMem, LoadReg, LoadSegBase, LoadVec, LoadVecReg, Op, OpSize, PcmpStrFlags, PcmpStrIndex,
+        PcmpStrMask, Popcnt, Rdtsc, RetAdjusted, Return, RspAdjust, Select, Stmt, StoreMem,
+        StoreReg, StoreRflagsFromBits, StoreVec, StoreVecReg, Syscall, Trap, TrapKind, VecF16Cvt,
+        VecF16CvtKind, Xgetbv, XmmFromGpr,
     };
 
     fn without_rflags_publish(stmts: &[Stmt]) -> Vec<Stmt> {
@@ -9545,6 +11029,39 @@ mod tests {
     }
 
     #[test]
+    fn decode_mov_rm_imm_rip_relative_uses_pc_after_the_immediate() {
+        let d = decode_one_at(b"\xC6\x05\x16\x58\xD7\x00\x01", 0, 0x1_4008_9A41).unwrap();
+        assert_eq!(d.bytes_consumed, 7);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 1,
+                        size: OpSize::I8,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::Constant(Constant {
+                        value: 0x1_40DF_F25E,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreMem(StoreMem {
+                        addr: 1,
+                        value: 0,
+                        size: OpSize::I8,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn decode_mov_rm_imm_rejects_nonzero_group_subop() {
         let r = decode_one(b"\xC7\xC8\x01\x00\x00\x00", 0);
         assert_eq!(r.unwrap_err(), crate::DecodeError::UnsupportedOpcode(0xC7));
@@ -9687,6 +11204,87 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn decode_mov_rip_relative_store_uses_the_next_instruction_pc() {
+        let d = decode_one_at(b"\x89\x05\xB3\x58\xD7\x00", 0, 0x1_4008_9A4F).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I32,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::Constant(Constant {
+                        value: 0x1_40DF_F308,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreMem(StoreMem {
+                        addr: 1,
+                        value: 0,
+                        size: OpSize::I32,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_mov_rip_relative_i64_store_uses_prefixed_instruction_end() {
+        // Exact Oh My Posh v30.6.3 instruction at 0x140020ab9:
+        // mov qword ptr [0x140dff430], rsi
+        let d = decode_one_at(b"\x48\x89\x35\x70\xE9\xDD\x00", 0, 0x1_4002_0AB9)
+            .expect("decode RIP-relative qword store");
+        assert_eq!(d.bytes_consumed, 7);
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_40DF_F430,
+                size: OpSize::I64,
+            })
+        )));
+    }
+
+    #[test]
+    fn decode_sub_rip_relative_i64_uses_prefixed_instruction_end() {
+        // Exact Oh My Posh v30.6.3 instruction at 0x140020ac0:
+        // sub qword ptr [0x140dff438], rax
+        let d = decode_one_at(b"\x48\x29\x05\x71\xE9\xDD\x00", 0, 0x1_4002_0AC0)
+            .expect("decode RIP-relative qword subtraction");
+        assert_eq!(d.bytes_consumed, 7);
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_40DF_F438,
+                size: OpSize::I64,
+            })
+        )));
+    }
+
+    #[test]
+    fn decode_sub_register_from_rip_relative_i64_uses_instruction_end() {
+        // Exact Oh My Posh v30.6.3 instruction at 0x140052af9:
+        // sub rax, qword ptr [0x140dbb898]
+        let d = decode_one_at(b"\x48\x2B\x05\x98\x8D\xD6\x00", 0, 0x1_4005_2AF9)
+            .expect("decode RIP-relative qword source subtraction");
+        assert_eq!(d.bytes_consumed, 7);
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_40DB_B898,
+                size: OpSize::I64,
+            })
+        )));
     }
 
     #[test]
@@ -9861,14 +11459,44 @@ mod tests {
     fn decode_xchg_memory_form() {
         let d = decode_one(b"\x48\x87\x08", 0).unwrap();
         assert_eq!(d.bytes_consumed, 3);
-        assert!(matches!(
-            d.stmts.last().unwrap().op,
-            Op::StoreMem(StoreMem {
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::AtomicXchg(AtomicXchg {
                 addr: 1,
                 value: 0,
                 size: OpSize::I64,
             })
+        )));
+        assert!(matches!(
+            d.stmts.last().unwrap().op,
+            Op::StoreReg(StoreReg {
+                reg: Gpr::Rcx,
+                value: 2,
+                size: OpSize::I64,
+            })
         ));
+        assert!(!d
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt.op, Op::LoadMem(_) | Op::StoreMem(_))));
+    }
+
+    #[test]
+    fn decode_xchg_byte_memory_is_implicitly_atomic() {
+        for bytes in [&b"\x86\x1A"[..], &b"\x40\x86\x32"[..]] {
+            let d = decode_one(bytes, 0).unwrap();
+            assert!(d.stmts.iter().any(|stmt| matches!(
+                stmt.op,
+                Op::AtomicXchg(AtomicXchg {
+                    size: OpSize::I8,
+                    ..
+                })
+            )));
+            assert!(!d
+                .stmts
+                .iter()
+                .any(|stmt| matches!(stmt.op, Op::LoadMem(_) | Op::StoreMem(_))));
+        }
     }
 
     #[test]
@@ -10384,6 +12012,42 @@ mod tests {
     }
 
     #[test]
+    fn decode_rep_movsq_and_stosq_as_bounded_pc_aware_ops() {
+        let movs = decode_one_at(b"\xF3\x48\xA5", 0, 0x1_4001_5c3e).unwrap();
+        assert_eq!(movs.bytes_consumed, 3);
+        assert_eq!(
+            movs.stmts,
+            vec![Stmt::new(
+                None,
+                Op::RepMovs(RepMovs {
+                    size: OpSize::I64,
+                    reverse: false,
+                    pc_of_rep: 0x1_4001_5c3e,
+                    pc_after_rep: 0x1_4001_5c41,
+                })
+            )]
+        );
+
+        let stos = decode_one_at(b"\xF3\x48\xAB", 0, 0x1_4002_0000).unwrap();
+        assert_eq!(stos.bytes_consumed, 3);
+        assert!(matches!(
+            stos.stmts.as_slice(),
+            [Stmt {
+                op: Op::RepStos(RepStos {
+                    size: OpSize::I64,
+                    pc_of_rep: 0x1_4002_0000,
+                    pc_after_rep: 0x1_4002_0003,
+                    ..
+                }),
+                ..
+            }]
+        ));
+
+        assert!(decode_one(b"\xF2\x48\xA5", 0).is_err());
+        assert!(decode_one(b"\x67\xF3\x48\xA5", 0).is_err());
+    }
+
+    #[test]
     fn decode_sign_extend_accumulator_opcode() {
         let cdqe = decode_one(b"\x48\x98", 0).unwrap();
         assert_eq!(cdqe.bytes_consumed, 2);
@@ -10528,6 +12192,39 @@ mod tests {
     }
 
     #[test]
+    fn decode_mov_rip_relative_load_uses_the_next_instruction_pc() {
+        let d = decode_one_at(b"\x4C\x8B\x0D\xE6\x0E\x00\x00", 0, 0x1_4000_14BB).unwrap();
+        assert_eq!(d.bytes_consumed, 7);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1_4000_23A8,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadMem(LoadMem {
+                        addr: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::R9,
+                        value: 1,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn decode_mov_r8_rm8_reg_and_memory() {
         let reg = decode_one(b"\x8A\xC1", 0).unwrap();
         assert_eq!(reg.bytes_consumed, 2);
@@ -10572,6 +12269,690 @@ mod tests {
     }
 
     #[test]
+    fn decode_mov_from_gs_absolute_adds_the_segment_base() {
+        let d = decode_one(b"\x65\x48\x8B\x04\x25\x30\x00\x00\x00", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 9);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x30,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadSegBase(LoadSegBase {
+                        seg: SegmentReg::Gs,
+                    }),
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Add,
+                        lhs: 1,
+                        rhs: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(3),
+                    Op::LoadMem(LoadMem {
+                        addr: 2,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_movdqa_store_preserves_the_full_xmm_value() {
+        let d = decode_one(b"\x66\x0F\x7F\x44\x24\x20", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert!(matches!(
+            d.stmts.first(),
+            Some(Stmt {
+                result: Some(0),
+                op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),
+            })
+        ));
+        assert!(matches!(
+            d.stmts.last(),
+            Some(Stmt {
+                result: None,
+                op: Op::StoreVec(StoreVec { value: 0, .. }),
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_movdqu_load_and_store_accept_f3_prefix() {
+        // Exact Oh My Posh load at 0x140016d79: MOVDQU xmm12, [rsp].
+        let load = decode_one(b"\xF3\x44\x0F\x6F\x24\x24", 0).unwrap();
+        assert_eq!(load.bytes_consumed, 6);
+        assert!(load
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt.op, Op::LoadVec(_))));
+        assert!(matches!(
+            load.stmts.last(),
+            Some(Stmt {
+                op: Op::StoreVecReg(StoreVecReg { xmm_index: 12, .. }),
+                ..
+            })
+        ));
+
+        let store = decode_one(b"\xF3\x44\x0F\x7F\x64\x24\x10", 0).unwrap();
+        assert_eq!(store.bytes_consumed, 7);
+        assert!(matches!(
+            store.stmts.first(),
+            Some(Stmt {
+                op: Op::LoadVecReg(LoadVecReg { xmm_index: 12 }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.stmts.last(),
+            Some(Stmt {
+                op: Op::StoreVec(_),
+                ..
+            })
+        ));
+
+        assert_eq!(
+            decode_one(b"\xF2\x0F\x6F\xC0", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0x6F))
+        );
+    }
+
+    #[test]
+    fn decode_movaps_store_preserves_the_full_xmm_value() {
+        let d = decode_one(b"\x0F\x29\xB4\x24\x50\x40\x00\x00", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 8);
+        assert!(matches!(
+            d.stmts.first(),
+            Some(Stmt {
+                result: Some(0),
+                op: Op::LoadVecReg(LoadVecReg { xmm_index: 6 }),
+            })
+        ));
+        assert!(matches!(
+            d.stmts.last(),
+            Some(Stmt {
+                result: None,
+                op: Op::StoreVec(StoreVec { value: 0, .. }),
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_movups_store_honors_rex_xmm_extension() {
+        let d = decode_one(b"\x44\x0F\x11\x3B", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert!(matches!(
+            d.stmts.first(),
+            Some(Stmt {
+                result: Some(0),
+                op: Op::LoadVecReg(LoadVecReg { xmm_index: 15 }),
+            })
+        ));
+        assert!(matches!(
+            d.stmts.last(),
+            Some(Stmt {
+                result: None,
+                op: Op::StoreVec(StoreVec { value: 0, .. }),
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_movdqa_rip_relative_load_uses_the_next_instruction_pc() {
+        let d = decode_one_at(b"\x66\x0F\x6F\x05\x10\x00\x00\x00", 0, 0x1_4000_1000).unwrap();
+        assert_eq!(d.bytes_consumed, 8);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1_4000_1018,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(Some(1), Op::LoadVec(LoadVec { addr: 0 })),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 1,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_pshufd_register_broadcast_matches_oh_my_posh() {
+        let decoded = decode_one_at(b"\x66\x0F\x70\xC0\x00", 0, 0x1_4001_6d32).unwrap();
+        assert_eq!(decoded.bytes_consumed, 5);
+        assert_eq!(
+            decoded.stmts,
+            vec![
+                Stmt::new(Some(0), Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),),
+                Stmt::new(
+                    Some(1),
+                    Op::VecShuffle32x4(VecShuffle32x4 { src: 0, control: 0 }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 1,
+                    }),
+                ),
+            ]
+        );
+        assert_eq!(
+            decode_one(b"\x0F\x70\xC0\x00", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0x70))
+        );
+    }
+
+    #[test]
+    fn decode_punpcklbw_self_matches_oh_my_posh() {
+        let decoded = decode_one_at(b"\x66\x0F\x60\xC0", 0, 0x1_4000_71fa).unwrap();
+        assert_eq!(decoded.bytes_consumed, 4);
+        assert_eq!(
+            decoded.stmts,
+            vec![
+                Stmt::new(Some(0), Op::LoadVecReg(LoadVecReg { xmm_index: 0 })),
+                Stmt::new(Some(1), Op::LoadVecReg(LoadVecReg { xmm_index: 0 })),
+                Stmt::new(
+                    Some(2),
+                    Op::VecUnpack(VecUnpack {
+                        is_high: false,
+                        lhs: 0,
+                        rhs: 1,
+                        lane: VecLane::B16,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 2,
+                    }),
+                ),
+            ]
+        );
+        assert_eq!(
+            decode_one(b"\x0F\x60\xC0", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0x60))
+        );
+    }
+
+    #[test]
+    fn decode_pshuflw_self_matches_oh_my_posh() {
+        let decoded = decode_one_at(b"\xF2\x0F\x70\xC0\x00", 0, 0x1_4000_71fe).unwrap();
+        assert_eq!(decoded.bytes_consumed, 5);
+        assert_eq!(
+            decoded.stmts,
+            vec![
+                Stmt::new(Some(0), Op::LoadVecReg(LoadVecReg { xmm_index: 0 })),
+                Stmt::new(
+                    Some(1),
+                    Op::VecShuffleH4(VecShuffleH4 {
+                        is_high: false,
+                        src: 0,
+                        control: 0,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 1,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_pcmpeqb_and_pmovmskb_match_oh_my_posh() {
+        let compare = decode_one_at(b"\x66\x0F\x74\xC1", 0, 0x1_4000_7208).unwrap();
+        assert_eq!(compare.bytes_consumed, 4);
+        assert!(matches!(
+            compare.stmts.as_slice(),
+            [
+                Stmt {
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),
+                    ..
+                },
+                Stmt {
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 1 }),
+                    ..
+                },
+                Stmt {
+                    op: Op::VecCmp(VecCmp {
+                        kind: VecCmpKind::Eq,
+                        lane: VecLane::B16,
+                        ..
+                    }),
+                    ..
+                },
+                Stmt {
+                    op: Op::StoreVecReg(StoreVecReg { xmm_index: 0, .. }),
+                    ..
+                }
+            ]
+        ));
+
+        let mask = decode_one_at(b"\x66\x0F\xD7\xF0", 0, 0x1_4000_720c).unwrap();
+        assert_eq!(mask.bytes_consumed, 4);
+        assert!(matches!(
+            mask.stmts.as_slice(),
+            [
+                Stmt {
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),
+                    ..
+                },
+                Stmt {
+                    op: Op::VecMaskMsb(VecMaskMsb { .. }),
+                    ..
+                },
+                Stmt {
+                    op: Op::StoreReg(StoreReg {
+                        reg: Gpr::Rsi,
+                        size: OpSize::I32,
+                        ..
+                    }),
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn decode_pshufd_rip_relative_uses_pc_after_imm8() {
+        let decoded = decode_one_at(b"\x66\x0F\x70\x05\x20\x00\x00\x00\xE4", 0, 0x1000).unwrap();
+        assert_eq!(decoded.bytes_consumed, 9);
+        assert_eq!(
+            decoded.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1029,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(Some(1), Op::LoadVec(LoadVec { addr: 0 })),
+                Stmt::new(
+                    Some(2),
+                    Op::VecShuffle32x4(VecShuffle32x4 {
+                        src: 1,
+                        control: 0xE4,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 2,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_paddd_matches_oh_my_posh_register_form() {
+        let decoded = decode_one(b"\x66\x0F\xFE\xC4", 0).unwrap();
+        assert_eq!(decoded.bytes_consumed, 4);
+        assert!(matches!(
+            decoded.stmts.as_slice(),
+            [
+                Stmt {
+                    result: Some(0),
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),
+                },
+                Stmt {
+                    result: Some(1),
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 4 }),
+                },
+                Stmt {
+                    result: Some(2),
+                    op: Op::VecBinOp(VecBinOp {
+                        op: VecBinOpKind::Add,
+                        lhs: 0,
+                        rhs: 1,
+                        lane: VecLane::S4,
+                    }),
+                },
+                Stmt {
+                    result: None,
+                    op: Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 2,
+                    }),
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn decode_pslld_and_psrld_match_oh_my_posh() {
+        for (bytes, xmm_index, kind) in [
+            (
+                b"\x66\x41\x0F\x72\xF7\x10".as_slice(),
+                15,
+                VecShiftKind::ShiftL,
+            ),
+            (
+                b"\x66\x41\x0F\x72\xD4\x10".as_slice(),
+                12,
+                VecShiftKind::LogicalShr,
+            ),
+        ] {
+            let decoded = decode_one(bytes, 0).unwrap();
+            assert_eq!(decoded.bytes_consumed, 6);
+            assert!(matches!(
+                decoded.stmts.as_slice(),
+                [
+                    Stmt {
+                        result: Some(0),
+                        op: Op::LoadVecReg(LoadVecReg { xmm_index: actual }),
+                    },
+                    Stmt {
+                        result: Some(1),
+                        op: Op::VecShiftImm(VecShiftImm {
+                            kind: actual_kind,
+                            src: 0,
+                            count: 16,
+                            lane: VecLane::S4,
+                        }),
+                    },
+                    Stmt {
+                        result: None,
+                        op: Op::StoreVecReg(StoreVecReg {
+                            xmm_index: stored,
+                            value: 1,
+                        }),
+                    }
+                ] if *actual == xmm_index && *stored == xmm_index && *actual_kind == kind
+            ));
+        }
+    }
+
+    #[test]
+    fn decode_xorps_rex_extended_registers() {
+        let d = decode_one(b"\x45\x0F\x57\xFF", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(Some(0), Op::LoadVecReg(LoadVecReg { xmm_index: 15 }),),
+                Stmt::new(Some(1), Op::LoadVecReg(LoadVecReg { xmm_index: 15 }),),
+                Stmt::new(
+                    Some(2),
+                    Op::VecBinOp(VecBinOp {
+                        op: VecBinOpKind::Xor,
+                        lhs: 0,
+                        rhs: 1,
+                        lane: VecLane::B16,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 15,
+                        value: 2,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_pxor_matches_oh_my_posh_extended_register_form() {
+        let decoded = decode_one(b"\x66\x44\x0F\xEF\xE0", 0).unwrap();
+        assert_eq!(decoded.bytes_consumed, 5);
+        assert!(matches!(
+            decoded.stmts.as_slice(),
+            [
+                Stmt {
+                    result: Some(0),
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 12 }),
+                },
+                Stmt {
+                    result: Some(1),
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),
+                },
+                Stmt {
+                    result: Some(2),
+                    op: Op::VecBinOp(VecBinOp {
+                        op: VecBinOpKind::Xor,
+                        lhs: 0,
+                        rhs: 1,
+                        lane: VecLane::B16,
+                    }),
+                },
+                Stmt {
+                    result: None,
+                    op: Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 12,
+                        value: 2,
+                    }),
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn decode_cvtsi2sd_matches_oh_my_posh_i64_form() {
+        let decoded = decode_one(b"\xF2\x48\x0F\x2A\xC2", 0).unwrap();
+        assert_eq!(decoded.bytes_consumed, 5);
+        assert!(matches!(
+            decoded.stmts.as_slice(),
+            [
+                Stmt {
+                    result: Some(0),
+                    op: Op::LoadReg(LoadReg {
+                        reg: Gpr::Rdx,
+                        size: OpSize::I64,
+                    }),
+                },
+                Stmt {
+                    result: Some(1),
+                    op: Op::IntToFpScalar(IntToFpScalar {
+                        value: 0,
+                        int_size: OpSize::I64,
+                        fp_size: FpSize::F64,
+                    }),
+                },
+                Stmt {
+                    result: None,
+                    op: Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 0,
+                        value: 1,
+                    }),
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn decode_scalar_double_arithmetic_matches_oh_my_posh() {
+        for (opcode, op) in [
+            (0x58, VecFpBinOpKind::Add),
+            (0x59, VecFpBinOpKind::Mul),
+            (0x5C, VecFpBinOpKind::Sub),
+            (0x5E, VecFpBinOpKind::Div),
+        ] {
+            let decoded = decode_one(&[0xF2, 0x0F, opcode, 0xC2], 0).unwrap();
+            assert_eq!(decoded.bytes_consumed, 4);
+            assert!(decoded.stmts.iter().any(|stmt| matches!(
+                stmt.op,
+                Op::VecFpScalarBinOp(VecFpScalarBinOp {
+                    op: actual,
+                    lhs: 0,
+                    rhs: 1,
+                    size: FpSize::F64,
+                }) if actual == op
+            )));
+        }
+    }
+
+    #[test]
+    fn decode_cvttsd2si_matches_oh_my_posh_i32_form() {
+        let decoded = decode_one(b"\xF2\x0F\x2C\xC0", 0).unwrap();
+        assert_eq!(decoded.bytes_consumed, 4);
+        assert!(matches!(
+            decoded.stmts.as_slice(),
+            [
+                Stmt {
+                    result: Some(0),
+                    op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }),
+                },
+                Stmt {
+                    result: Some(1),
+                    op: Op::FpToIntScalar(FpToIntScalar {
+                        value: 0,
+                        fp_size: FpSize::F64,
+                        int_size: OpSize::I32,
+                    }),
+                },
+                Stmt {
+                    result: None,
+                    op: Op::StoreReg(StoreReg {
+                        reg: Gpr::Rax,
+                        value: 1,
+                        size: OpSize::I32,
+                    }),
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn decode_movsd_memory_load_zeroes_the_upper_half() {
+        let d = decode_one(b"\xF2\x0F\x10\x44\x24\x28", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert!(matches!(
+            d.stmts.as_slice(),
+            [.., Stmt { result: Some(scalar), op: Op::LoadMem(LoadMem { size: OpSize::I64, .. }) }, Stmt { result: Some(vector), op: Op::XmmFromGpr(XmmFromGpr { value, size: OpSize::I64 }) }, Stmt { result: None, op: Op::StoreVecReg(StoreVecReg { xmm_index: 0, value: stored }) }]
+            if scalar == value && vector == stored
+        ));
+    }
+
+    #[test]
+    fn decode_movq_extended_gpr_to_xmm() {
+        let d = decode_one(b"\x66\x49\x0F\x6E\xD0", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 5);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::R8,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::XmmFromGpr(XmmFromGpr {
+                        value: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreVecReg(StoreVecReg {
+                        xmm_index: 2,
+                        value: 1,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_movq_xmm_to_gpr() {
+        let d = decode_one(b"\x66\x48\x0F\x7E\xCA", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 5);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(Some(0), Op::LoadVecReg(LoadVecReg { xmm_index: 1 }),),
+                Stmt::new(
+                    Some(1),
+                    Op::GprFromXmm(GprFromXmm {
+                        value: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rdx,
+                        value: 1,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_movq_xmm_to_memory() {
+        let d = decode_one(b"\x66\x0F\xD6\x41\x20", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 5);
+        assert!(matches!(
+            d.stmts.as_slice(),
+            [
+                Stmt { result: Some(vector), op: Op::LoadVecReg(LoadVecReg { xmm_index: 0 }) },
+                Stmt { result: Some(scalar), op: Op::GprFromXmm(GprFromXmm { value, size: OpSize::I64 }) },
+                ..,
+                Stmt { result: None, op: Op::StoreMem(StoreMem { value: stored, size: OpSize::I64, .. }) },
+            ] if vector == value && scalar == stored
+        ));
+    }
+
+    #[test]
+    fn decode_ucomisd_register_form_writes_fp_flags() {
+        let d = decode_one(b"\x66\x0F\x2E\xC0", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(Some(0), Op::LoadVecReg(LoadVecReg { xmm_index: 0 })),
+                Stmt::new(Some(1), Op::LoadVecReg(LoadVecReg { xmm_index: 0 })),
+                Stmt::new(
+                    None,
+                    Op::WriteFlagsFp(WriteFlagsFp {
+                        lhs: 0,
+                        rhs: 1,
+                        size: FpSize::F64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn decode_lea_stores_effective_address_without_loading_memory() {
         let d = decode_one(b"\x48\x8D\x41\x08", 0).unwrap();
         assert_eq!(d.bytes_consumed, 4);
@@ -10606,6 +12987,32 @@ mod tests {
                     Op::StoreReg(StoreReg {
                         reg: Gpr::Rax,
                         value: 2,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_lea_rip_relative_uses_the_next_instruction_pc() {
+        let d = decode_one_at(b"\x48\x8D\x0D\x7D\x0D\x00\x00", 0, 0x1_4000_1424).unwrap();
+        assert_eq!(d.bytes_consumed, 7);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1_4000_21A8,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::StoreReg(StoreReg {
+                        reg: Gpr::Rcx,
+                        value: 0,
                         size: OpSize::I64,
                     }),
                 ),
@@ -10945,6 +13352,44 @@ mod tests {
     }
 
     #[test]
+    fn decode_sub_rsp_imm8_does_not_consume_a_sib_byte() {
+        // Register-direct rm=4 names RSP. It does not introduce a SIB byte.
+        let d = decode_one(b"\x48\x83\xEC\x20", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert!(matches!(
+            d.stmts.first(),
+            Some(Stmt {
+                result: Some(0),
+                op: Op::Constant(Constant {
+                    value: 0x20,
+                    size: OpSize::I64,
+                }),
+            })
+        ));
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt,
+            Stmt {
+                op: Op::LoadReg(LoadReg {
+                    reg: Gpr::Rsp,
+                    size: OpSize::I64,
+                }),
+                ..
+            }
+        )));
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt,
+            Stmt {
+                op: Op::StoreReg(StoreReg {
+                    reg: Gpr::Rsp,
+                    size: OpSize::I64,
+                    ..
+                }),
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn decode_logical_rm_imm8() {
         let cases = [
             (b"\x48\x83\xC8\x10".as_slice(), BinOpKind::Or),
@@ -11263,6 +13708,26 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn decode_cmp_rm_r_rip_relative_uses_next_instruction_pc() {
+        let d = decode_one_at(b"\x48\x39\x15\x39\x01\xCC\x00", 0, 0x1_4006_5ED0).unwrap();
+        assert_eq!(d.bytes_consumed, 7);
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_40D2_6010,
+                size: OpSize::I64,
+            })
+        )));
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::LoadMem(LoadMem {
+                size: OpSize::I64,
+                ..
+            })
+        )));
     }
 
     #[test]
@@ -12786,6 +15251,29 @@ mod tests {
     }
 
     #[test]
+    fn decode_movzx_movsx_rip_relative_use_next_instruction_pc() {
+        let movzx = decode_one_at(b"\x0F\xB6\x05\xEF\xC1\xD0\x00", 0, 0x1_4001_FF92).unwrap();
+        assert_eq!(movzx.bytes_consumed, 7);
+        assert!(movzx.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_40D2_C188,
+                size: OpSize::I64,
+            })
+        )));
+
+        let movsx = decode_one_at(b"\x0F\xBE\x05\x20\x00\x00\x00", 0, 0x1_4001_0000).unwrap();
+        assert_eq!(movsx.bytes_consumed, 7);
+        assert!(movsx.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_4001_0027,
+                size: OpSize::I64,
+            })
+        )));
+    }
+
+    #[test]
     fn decode_movzx_without_rex_w_extends_to_i32() {
         let d = decode_one(b"\x0F\xB6\xC1", 0).unwrap();
         assert_eq!(d.bytes_consumed, 3);
@@ -12924,15 +15412,6 @@ mod tests {
                 ),
                 Stmt::new(
                     None,
-                    Op::AluFlags(AluFlags {
-                        op: BinOpKind::Add,
-                        lhs: 1,
-                        rhs: 0,
-                        size: OpSize::I64,
-                    }),
-                ),
-                Stmt::new(
-                    None,
                     Op::StoreReg(StoreReg {
                         reg: Gpr::Rcx,
                         value: 1,
@@ -12944,6 +15423,15 @@ mod tests {
                     Op::StoreReg(StoreReg {
                         reg: Gpr::Rax,
                         value: 2,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    None,
+                    Op::AluFlags(AluFlags {
+                        op: BinOpKind::Add,
+                        lhs: 1,
+                        rhs: 0,
                         size: OpSize::I64,
                     }),
                 ),
@@ -12963,11 +15451,61 @@ mod tests {
                 ..
             })
         )));
+        let store_reg = d
+            .stmts
+            .iter()
+            .position(|s| matches!(s.op, Op::StoreReg(StoreReg { reg: Gpr::Rcx, .. })))
+            .unwrap();
+        let store_mem = d
+            .stmts
+            .iter()
+            .position(|s| matches!(s.op, Op::StoreMem(_)))
+            .unwrap();
+        let flags = d
+            .stmts
+            .iter()
+            .position(|s| matches!(s.op, Op::AluFlags(_)))
+            .unwrap();
+        assert!(store_reg < flags);
+        assert!(store_mem < flags);
+    }
+
+    #[test]
+    fn decode_lock_xadd_memory_uses_atomic_ir() {
+        let d = decode_one(b"\xF0\x48\x0F\xC1\x11", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 5);
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::AtomicXadd(AtomicXadd {
+                size: OpSize::I64,
+                ..
+            })
+        )));
+        assert!(!d
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt.op, Op::StoreMem(_))));
         assert!(d
             .stmts
             .iter()
-            .any(|s| matches!(s.op, Op::StoreReg(StoreReg { reg: Gpr::Rcx, .. }))));
-        assert!(matches!(d.stmts.last().unwrap().op, Op::StoreMem(_)));
+            .any(|stmt| matches!(stmt.op, Op::StoreReg(StoreReg { reg: Gpr::Rdx, .. }))));
+        let atomic = d
+            .stmts
+            .iter()
+            .position(|stmt| matches!(stmt.op, Op::AtomicXadd(_)))
+            .unwrap();
+        let store_reg = d
+            .stmts
+            .iter()
+            .position(|stmt| matches!(stmt.op, Op::StoreReg(StoreReg { reg: Gpr::Rdx, .. })))
+            .unwrap();
+        let flags = d
+            .stmts
+            .iter()
+            .position(|stmt| matches!(stmt.op, Op::AluFlags(_)))
+            .unwrap();
+        assert!(atomic < store_reg);
+        assert!(store_reg < flags);
     }
 
     #[test]
@@ -13319,6 +15857,26 @@ mod tests {
                 cc: CondCode::Ne,
                 size: OpSize::I8,
                 ..
+            })
+        )));
+        assert!(matches!(
+            d.stmts.last().unwrap().op,
+            Op::StoreMem(StoreMem {
+                size: OpSize::I8,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_setcc_rip_relative_uses_next_instruction_pc() {
+        let d = decode_one_at(b"\x0F\x95\x05\x7D\x4C\xDB\x00", 0, 0x1_4004_A623).unwrap();
+        assert_eq!(d.bytes_consumed, 7);
+        assert!(d.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::Constant(Constant {
+                value: 0x1_40DF_F2A7,
+                size: OpSize::I64,
             })
         )));
         assert!(matches!(
@@ -14137,8 +16695,6 @@ mod tests {
         let supported: &[(u8, CondCode)] = &[
             (0x70, CondCode::Ov),
             (0x71, CondCode::NoOv),
-            (0x72, CondCode::Nc),
-            (0x73, CondCode::Cc),
             (0x74, CondCode::Eq),
             (0x75, CondCode::Ne),
             (0x76, CondCode::Ule),
@@ -14177,15 +16733,95 @@ mod tests {
     }
 
     #[test]
-    fn decode_cond_jump_rel8_rejects_pf_and_npf() {
-        assert_eq!(
-            decode_one(b"\x7A\x00", 0),
-            Err(crate::DecodeError::UnsupportedOpcode(0x7A))
-        );
-        assert_eq!(
-            decode_one(b"\x7B\x00", 0),
-            Err(crate::DecodeError::UnsupportedOpcode(0x7B))
-        );
+    fn decode_cond_jump_rel8_reads_persistent_parity_flag() {
+        for (opcode, expected_cc) in [(0x7A, CondCode::Ne), (0x7B, CondCode::Eq)] {
+            let d = decode_one(&[opcode, 0], 0).unwrap();
+            assert_eq!(d.bytes_consumed, 2);
+            assert!(matches!(
+                d.stmts.first(),
+                Some(Stmt {
+                    op: Op::LoadRflags(_),
+                    ..
+                })
+            ));
+            assert!(matches!(
+                d.stmts.last(),
+                Some(Stmt {
+                    op: Op::CondJumpRel(CondJumpRel { cc, .. }),
+                    ..
+                }) if *cc == expected_cc
+            ));
+        }
+    }
+
+    #[test]
+    fn decode_cond_jump_rel8_reads_persistent_carry_flag() {
+        for (opcode, expected_cc) in [(0x72, CondCode::Ne), (0x73, CondCode::Eq)] {
+            let d = decode_one(&[opcode, 0], 0).unwrap();
+            assert_eq!(d.bytes_consumed, 2);
+            assert!(matches!(
+                d.stmts.first(),
+                Some(Stmt {
+                    op: Op::LoadRflags(_),
+                    ..
+                })
+            ));
+            assert!(matches!(
+                d.stmts.last(),
+                Some(Stmt {
+                    op: Op::CondJumpRel(CondJumpRel { cc, .. }),
+                    ..
+                }) if *cc == expected_cc
+            ));
+        }
+    }
+
+    #[test]
+    fn decode_jnp_rel32_reads_persistent_parity_flag() {
+        let d = decode_one_at(b"\x0F\x8B\x2C\x01\x00\x00", 0, 0x1_4006_24c6).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert!(matches!(
+            d.stmts.first(),
+            Some(Stmt {
+                op: Op::LoadRflags(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            d.stmts.last(),
+            Some(Stmt {
+                op: Op::CondJumpRel(CondJumpRel {
+                    cc: CondCode::Eq,
+                    target_guest_pc: 0x1_4006_25f8,
+                    fallthrough_guest_pc: 0x1_4006_24cc,
+                }),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn decode_jb_rel32_reads_persistent_carry_flag() {
+        let d = decode_one_at(b"\x0F\x82\x6B\x00\x00\x00", 0, 0x1_4005_0a58).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert!(matches!(
+            d.stmts.first(),
+            Some(Stmt {
+                op: Op::LoadRflags(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            d.stmts.last(),
+            Some(Stmt {
+                op: Op::CondJumpRel(CondJumpRel {
+                    cc: CondCode::Ne,
+                    target_guest_pc: 0x1_4005_0ac9,
+                    fallthrough_guest_pc: 0x1_4005_0a5e,
+                }),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -14227,8 +16863,6 @@ mod tests {
         let supported: &[(u8, CondCode)] = &[
             (0x80, CondCode::Ov),
             (0x81, CondCode::NoOv),
-            (0x82, CondCode::Nc),
-            (0x83, CondCode::Cc),
             (0x84, CondCode::Eq),
             (0x85, CondCode::Ne),
             (0x86, CondCode::Ule),
@@ -14802,6 +17436,12 @@ mod tests {
         let d = decode_one(b"\x48\x85\xC8", 0).unwrap();
         assert_eq!(d.bytes_consumed, 3);
         assert_rflags_publish(&d.stmts, RflagsCarryMode::Clear);
+        let nzcv_write = d
+            .stmts
+            .iter()
+            .position(|stmt| matches!(stmt.op, Op::AluFlags(_)))
+            .unwrap();
+        assert_eq!(nzcv_write, 3, "NZCV must be written before the PF graph");
         assert_eq!(
             without_rflags_publish(&d.stmts),
             vec![
@@ -15068,7 +17708,16 @@ mod tests {
             .iter()
             .position(|stmt| matches!(&stmt.op, Op::StoreRflagsFromNzcv(_)))
             .expect("DEC must publish RFLAGS");
+        let dec_nzcv_index = dec
+            .stmts
+            .iter()
+            .position(|stmt| matches!(&stmt.op, Op::AluFlagsPreserveCarry(_)))
+            .expect("DEC must publish NZCV");
         assert!(dec_destination_index < dec_rflags_index);
+        assert!(
+            dec_nzcv_index + 1 < dec_rflags_index,
+            "DEC must publish NZCV before the PF/AF graph can recycle its operands"
+        );
         assert!(dec.stmts.iter().any(|s| matches!(
             s.op,
             Op::BinOp(BinOp {
@@ -15834,6 +18483,32 @@ mod tests {
     }
 
     #[test]
+    fn decode_group5_rip_relative_jump_uses_next_instruction_pc() {
+        let d = decode_one_at(b"\xFF\x25\xA2\x0D\x00\x00", 0, 0x1_4000_15B0).unwrap();
+        assert_eq!(d.bytes_consumed, 6);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::Constant(Constant {
+                        value: 0x1_4000_2358,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadMem(LoadMem {
+                        addr: 0,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(None, Op::JumpReg(JumpReg { target: 1 })),
+            ]
+        );
+    }
+
+    #[test]
     fn decode_group5_memory_operands_rexw() {
         let inc = decode_one_at(b"\x48\xFF\x00", 0, 0x3000).unwrap();
         assert_eq!(inc.bytes_consumed, 3);
@@ -15874,7 +18549,7 @@ mod tests {
                     }),
                 ..
             } => {
-                assert_eq!(*target, 0);
+                assert_eq!(*target, 1);
                 assert_eq!(*return_guest_pc, 0x3003);
             }
             other => panic!("unexpected stmt: {other:?}"),
@@ -15886,7 +18561,7 @@ mod tests {
             Stmt {
                 op: Op::JumpReg(JumpReg { target }),
                 ..
-            } => assert_eq!(*target, 0),
+            } => assert_eq!(*target, 1),
             other => panic!("unexpected stmt: {other:?}"),
         }
 
@@ -15947,7 +18622,7 @@ mod tests {
                     }),
                 ..
             } => {
-                assert_eq!(*target, 0);
+                assert_eq!(*target, 1);
                 assert_eq!(*return_guest_pc, 0x3002);
             }
             other => panic!("unexpected stmt: {other:?}"),
@@ -15959,7 +18634,7 @@ mod tests {
             Stmt {
                 op: Op::JumpReg(JumpReg { target }),
                 ..
-            } => assert_eq!(*target, 0),
+            } => assert_eq!(*target, 1),
             other => panic!("unexpected stmt: {other:?}"),
         }
     }
@@ -16019,14 +18694,6 @@ mod tests {
         assert_eq!(
             decode_one(b"\x4F\x0F\x80\x00\x00\x00\x00", 0),
             Err(crate::DecodeError::UnsupportedOpcode(0x80))
-        );
-        assert_eq!(
-            decode_one(b"\x0F\x8A\x00\x00\x00\x00", 0),
-            Err(crate::DecodeError::UnsupportedOpcode(0x8A))
-        );
-        assert_eq!(
-            decode_one(b"\x0F\x8B\x00\x00\x00\x00", 0),
-            Err(crate::DecodeError::UnsupportedOpcode(0x8B))
         );
     }
 
@@ -16477,6 +19144,109 @@ mod tests {
                 "sahf prefix {prog:02X?}"
             );
         }
+    }
+
+    #[test]
+    fn decode_bt_rm64_reg_publishes_tested_bit_to_carry() {
+        // Exact Oh My Posh sequence: BT rdx, rax (48 0F A3 C2).
+        let d = decode_one(b"\x48\x0F\xA3\xC2", 0).unwrap();
+        assert_eq!(d.bytes_consumed, 4);
+        assert_eq!(
+            d.stmts,
+            vec![
+                Stmt::new(
+                    Some(0),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rdx,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(1),
+                    Op::LoadReg(LoadReg {
+                        reg: Gpr::Rax,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(2),
+                    Op::Constant(Constant {
+                        value: 63,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(3),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::And,
+                        lhs: 1,
+                        rhs: 2,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(4),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::Shr,
+                        lhs: 0,
+                        rhs: 3,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(5),
+                    Op::Constant(Constant {
+                        value: 1,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(
+                    Some(6),
+                    Op::BinOp(BinOp {
+                        op: BinOpKind::And,
+                        lhs: 4,
+                        rhs: 5,
+                        size: OpSize::I64,
+                    }),
+                ),
+                Stmt::new(None, Op::StoreCarry(StoreCarry { value: 6 })),
+                Stmt::new(
+                    Some(8),
+                    Op::CmpFlags(CmpFlags {
+                        lhs: 6,
+                        rhs: 5,
+                        size: OpSize::I64,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_bt_rm_reg_honors_operand_size_and_rejects_unimplemented_memory() {
+        let d32 = decode_one(b"\x0F\xA3\xC2", 0).unwrap();
+        assert_eq!(d32.bytes_consumed, 3);
+        assert!(d32.stmts.iter().all(|stmt| match &stmt.op {
+            Op::LoadReg(x) => x.size == OpSize::I32,
+            Op::Constant(x) => x.size == OpSize::I32,
+            Op::BinOp(x) => x.size == OpSize::I32,
+            Op::CmpFlags(x) => x.size == OpSize::I32,
+            Op::StoreCarry(_) => true,
+            _ => false,
+        }));
+
+        let d16 = decode_one(b"\x66\x0F\xA3\xC2", 0).unwrap();
+        assert!(d16.stmts.iter().any(|stmt| matches!(
+            stmt.op,
+            Op::LoadReg(LoadReg {
+                size: OpSize::I16,
+                ..
+            })
+        )));
+        assert_eq!(
+            decode_one(b"\x48\x0F\xA3\x02", 0),
+            Err(crate::DecodeError::UnsupportedOpcode(0xA3))
+        );
     }
 
     #[test]

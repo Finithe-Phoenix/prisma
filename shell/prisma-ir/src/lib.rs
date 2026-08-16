@@ -409,6 +409,18 @@ pub struct AtomicCmpxchg {
     pub size: OpSize,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AtomicXchg {
+    pub addr: Ref,
+    pub value: Ref,
+    pub size: OpSize,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AtomicXadd {
+    pub addr: Ref,
+    pub value: Ref,
+    pub size: OpSize,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtomicCmpxchgPair {
     pub addr: Ref,
     pub expected_low: Ref,
@@ -1005,6 +1017,8 @@ pub enum Op {
     LoadMemTSO(LoadMemTSO),
     StoreMemTSO(StoreMemTSO),
     AtomicCmpxchg(AtomicCmpxchg),
+    AtomicXchg(AtomicXchg),
+    AtomicXadd(AtomicXadd),
     AtomicCmpxchgPair(AtomicCmpxchgPair),
     Jump(Jump),
     CondJump(CondJump),
@@ -1174,6 +1188,14 @@ impl Op {
                 x.addr = f(x.addr);
                 x.expected = f(x.expected);
                 x.new_value = f(x.new_value);
+            }
+            Self::AtomicXchg(x) => {
+                x.addr = f(x.addr);
+                x.value = f(x.value);
+            }
+            Self::AtomicXadd(x) => {
+                x.addr = f(x.addr);
+                x.value = f(x.value);
             }
             Self::AtomicCmpxchgPair(x) => {
                 x.addr = f(x.addr);

@@ -78,6 +78,16 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.new_value = resolve_alias(op.new_value, aliases);
             Op::AtomicCmpxchg(op)
         }
+        Op::AtomicXchg(mut op) => {
+            op.addr = resolve_alias(op.addr, aliases);
+            op.value = resolve_alias(op.value, aliases);
+            Op::AtomicXchg(op)
+        }
+        Op::AtomicXadd(mut op) => {
+            op.addr = resolve_alias(op.addr, aliases);
+            op.value = resolve_alias(op.value, aliases);
+            Op::AtomicXadd(op)
+        }
         Op::AtomicCmpxchgPair(mut op) => {
             op.addr = resolve_alias(op.addr, aliases);
             op.expected_low = resolve_alias(op.expected_low, aliases);

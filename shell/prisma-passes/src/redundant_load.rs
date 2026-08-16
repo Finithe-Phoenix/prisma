@@ -64,6 +64,8 @@ pub fn redundant_load_eliminate(func: Function) -> Function {
                     Op::StoreMem(_)
                     | Op::StoreMemTSO(_)
                     | Op::AtomicCmpxchg(_)
+                    | Op::AtomicXchg(_)
+                    | Op::AtomicXadd(_)
                     | Op::AtomicCmpxchgPair(_)
                     | Op::Fence(_) => {
                         // Any store could alias; a fence orders memory.

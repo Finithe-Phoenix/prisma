@@ -593,6 +593,76 @@ fn vec_lane_u64(value: u128, high: bool) -> u64 {
     }
 }
 
+fn vec_unpack(lhs: u128, rhs: u128, lane: prisma_ir::VecLane, high: bool) -> u128 {
+    let lane_bits = match lane {
+        prisma_ir::VecLane::B16 => 8,
+        prisma_ir::VecLane::H8 => 16,
+        prisma_ir::VecLane::S4 => 32,
+        prisma_ir::VecLane::D2 => 64,
+    };
+    let lanes = 128 / lane_bits;
+    let first = if high { lanes / 2 } else { 0 };
+    let lane_mask = if lane_bits == 128 {
+        u128::MAX
+    } else {
+        (1u128 << lane_bits) - 1
+    };
+    let mut result = 0u128;
+    for output_pair in 0..(lanes / 2) {
+        let source_lane = first + output_pair;
+        let lhs_lane = (lhs >> (source_lane * lane_bits)) & lane_mask;
+        let rhs_lane = (rhs >> (source_lane * lane_bits)) & lane_mask;
+        result |= lhs_lane << ((output_pair * 2) * lane_bits);
+        result |= rhs_lane << ((output_pair * 2 + 1) * lane_bits);
+    }
+    result
+}
+
+fn vec_shuffle_h4(src: u128, control: u8, high: bool) -> u128 {
+    let first = if high { 4 } else { 0 };
+    let mut result = src;
+    for output_lane in 0..4 {
+        let source_lane = first + usize::from((control >> (output_lane * 2)) & 0x03);
+        let target_lane = first + output_lane;
+        let value = (src >> (source_lane * 16)) & 0xffff;
+        result &= !(0xffffu128 << (target_lane * 16));
+        result |= value << (target_lane * 16);
+    }
+    result
+}
+
+fn vec_cmp(lhs: u128, rhs: u128, lane: prisma_ir::VecLane, kind: prisma_ir::VecCmpKind) -> u128 {
+    let lane_bits = match lane {
+        prisma_ir::VecLane::B16 => 8,
+        prisma_ir::VecLane::H8 => 16,
+        prisma_ir::VecLane::S4 => 32,
+        prisma_ir::VecLane::D2 => 64,
+    };
+    let lane_mask = (1u128 << lane_bits) - 1;
+    let sign_bit = 1u128 << (lane_bits - 1);
+    let mut result = 0u128;
+    for lane_index in 0..(128 / lane_bits) {
+        let left = (lhs >> (lane_index * lane_bits)) & lane_mask;
+        let right = (rhs >> (lane_index * lane_bits)) & lane_mask;
+        let matches = match kind {
+            prisma_ir::VecCmpKind::Eq => left == right,
+            prisma_ir::VecCmpKind::Gt => (left ^ sign_bit) > (right ^ sign_bit),
+        };
+        if matches {
+            result |= lane_mask << (lane_index * lane_bits);
+        }
+    }
+    result
+}
+
+fn vec_mask_msb(src: u128) -> u64 {
+    let mut result = 0u64;
+    for byte in 0..16 {
+        result |= u64::try_from((src >> (byte * 8 + 7)) & 1).expect("single mask bit") << byte;
+    }
+    result
+}
+
 fn carryless_mul_u64(lhs: u64, rhs: u64) -> u128 {
     let mut acc = 0u128;
     let lhs = u128::from(lhs);
@@ -769,6 +839,45 @@ pub fn interpret_block(stmts: &[Stmt], regs: &mut GuestRegs) -> BlockOutcome {
             }
             Op::StoreVecReg(s) => {
                 regs.xmm[usize::from(s.xmm_index)] = get_vec(&vec_vals, s.value);
+            }
+            Op::VecUnpack(p) => {
+                if let Some(d) = stmt.result {
+                    vec_vals.insert(
+                        d,
+                        vec_unpack(
+                            get_vec(&vec_vals, p.lhs),
+                            get_vec(&vec_vals, p.rhs),
+                            p.lane,
+                            p.is_high,
+                        ),
+                    );
+                }
+            }
+            Op::VecShuffleH4(p) => {
+                if let Some(d) = stmt.result {
+                    vec_vals.insert(
+                        d,
+                        vec_shuffle_h4(get_vec(&vec_vals, p.src), p.control, p.is_high),
+                    );
+                }
+            }
+            Op::VecCmp(p) => {
+                if let Some(d) = stmt.result {
+                    vec_vals.insert(
+                        d,
+                        vec_cmp(
+                            get_vec(&vec_vals, p.lhs),
+                            get_vec(&vec_vals, p.rhs),
+                            p.lane,
+                            p.kind,
+                        ),
+                    );
+                }
+            }
+            Op::VecMaskMsb(p) => {
+                if let Some(d) = stmt.result {
+                    vals.insert(d, vec_mask_msb(get_vec(&vec_vals, p.src_xmm)));
+                }
             }
             Op::VecClMul(p) => {
                 if let Some(d) = stmt.result {
@@ -1002,6 +1111,83 @@ mod tests {
         let mut out = [0u8; 16];
         out[..bytes.len()].copy_from_slice(bytes);
         u128::from_le_bytes(out)
+    }
+
+    #[test]
+    fn decoded_bts_register_sets_the_bit_and_preserves_old_bit_in_carry() {
+        let decoded = decode_one(b"\x48\x0F\xAB\xD1", 0).expect("decode bts rcx, rdx");
+        let mut regs = GuestRegs::default();
+        regs.gpr[Gpr::Rcx as usize] = 0;
+        regs.gpr[Gpr::Rdx as usize] = 3;
+        assert_eq!(
+            interpret_block(&decoded.stmts, &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(regs.gpr[Gpr::Rcx as usize], 8);
+        assert_eq!(regs.cf, 0);
+
+        assert_eq!(
+            interpret_block(&decoded.stmts, &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(regs.gpr[Gpr::Rcx as usize], 8);
+        assert_eq!(regs.cf, 1);
+    }
+
+    #[test]
+    fn decoded_punpcklbw_interleaves_the_low_bytes() {
+        let decoded = decode_one(b"\x66\x0F\x60\xC0", 0).expect("decode punpcklbw xmm0, xmm0");
+        let mut regs = GuestRegs::default();
+        regs.xmm[0] = vec_bytes(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(
+            interpret_block(&decoded.stmts, &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(
+            regs.xmm[0],
+            vec_bytes(&[0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7])
+        );
+    }
+
+    #[test]
+    fn decoded_pshuflw_broadcasts_low_halfword_and_preserves_high_half() {
+        let decoded = decode_one(b"\xF2\x0F\x70\xC0\x00", 0).expect("decode pshuflw xmm0, xmm0, 0");
+        let mut regs = GuestRegs::default();
+        regs.xmm[0] = vec_bytes(&[
+            0x00, 0x01, 0x10, 0x11, 0x20, 0x21, 0x30, 0x31, 0x40, 0x41, 0x50, 0x51, 0x60,
+            0x61, 0x70, 0x71,
+        ]);
+        assert_eq!(
+            interpret_block(&decoded.stmts, &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(
+            regs.xmm[0],
+            vec_bytes(&[
+                0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x40, 0x41, 0x50, 0x51,
+                0x60, 0x61, 0x70, 0x71,
+            ])
+        );
+    }
+
+    #[test]
+    fn decoded_pcmpeqb_then_pmovmskb_produces_the_expected_mask() {
+        let compare = decode_one(b"\x66\x0F\x74\xC1", 0).expect("decode pcmpeqb xmm0, xmm1");
+        let mask = decode_one(b"\x66\x0F\xD7\xF0", 0).expect("decode pmovmskb esi, xmm0");
+        let mut regs = GuestRegs::default();
+        regs.xmm[0] = vec_bytes(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        regs.xmm[1] = vec_bytes(&[
+            0, 0xff, 2, 0xff, 4, 0xff, 6, 0xff, 8, 0xff, 10, 0xff, 12, 0xff, 14, 0xff,
+        ]);
+        assert_eq!(
+            interpret_block(&compare.stmts, &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(
+            interpret_block(&mask.stmts, &mut regs),
+            BlockOutcome::Fallthrough
+        );
+        assert_eq!(regs.gpr[Gpr::Rsi as usize], 0x5555);
     }
 
     #[test]

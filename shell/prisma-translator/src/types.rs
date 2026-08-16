@@ -5,7 +5,7 @@ use prisma_cache::cache::{fnv1a_64, LookupResult};
 use prisma_cache::{CacheEntry, TranslationCache};
 use prisma_decoder::decode::{decode_one_at, Decoded};
 use prisma_decoder::DecodeError;
-use prisma_ir::{BasicBlock, Function, Op};
+use prisma_ir::{BasicBlock, Function, GuestPc, Op, Stmt};
 use prisma_passes::pipeline::{default_pipeline, PassPipeline};
 
 /// A translated guest instruction: the ARM64 machine code plus how many guest
@@ -56,6 +56,8 @@ fn static_successors(op: &Op) -> Vec<u64> {
         Op::JumpRel(j) => vec![j.target_guest_pc],
         Op::CondJumpRel(c) => vec![c.target_guest_pc, c.fallthrough_guest_pc],
         Op::CallRel(c) => vec![c.target_guest_pc, c.return_guest_pc],
+        Op::RepStos(rep) => vec![rep.pc_of_rep, rep.pc_after_rep],
+        Op::RepMovs(rep) => vec![rep.pc_of_rep, rep.pc_after_rep],
         _ => Vec::new(),
     }
 }
@@ -114,6 +116,8 @@ fn is_terminator(op: &Op) -> bool {
             | Op::RetAdjusted(_)
             | Op::Trap(_)
             | Op::Syscall(_)
+            | Op::RepStos(_)
+            | Op::RepMovs(_)
     )
 }
 
