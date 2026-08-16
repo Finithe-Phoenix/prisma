@@ -1,0 +1,75 @@
+name: Phase 1 real execution
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/real-execution
+  pull_request:
+    paths:
+      - ".github/workflows/phase1-real-execution.yml"
+      - "scripts/build-prisma-xtajit64.ps1"
+      - "shell/prisma-backend/**"
+      - "shell/prisma-decoder/**"
+      - "shell/prisma-ir/**"
+      - "shell/prisma-passes/**"
+      - "shell/prisma-translator/**"
+      - "shell/prisma-xtajit64/**"
+
+concurrency:
+  group: phase1-real-execution-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-tests:
+    name: focused-tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust test toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path shell/Cargo.toml --all -- --check
+
+      - name: Lint focused crates
+        run: cargo clippy --manifest-path shell/Cargo.toml -p prisma-translator -p prisma-xtajit64 --all-targets --no-deps -- -D warnings
+
+      - name: Test translator
+        run: cargo test --manifest-path shell/Cargo.toml -p prisma-translator
+
+      - name: Test ARM64EC provider on host
+        run: cargo test --manifest-path shell/Cargo.toml -p prisma-xtajit64
+
+  arm64ec-check:
+    name: arm64ec-check (windows-2022)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust ARM64EC target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add arm64ec-pc-windows-msvc
+
+      - name: Enter Visual Studio ARM64 environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $installation) {
+            throw "The hosted runner does not provide the Visual C++ ARM64 tools."
+          }
+          Import-Module "$installation\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation -Arch arm64 -HostArch amd64
+          foreach ($name in @("PATH", "INCLUDE", "LIB", "LIBPATH")) {
+            "{0}={1}" -f $name, [Environment]::GetEnvironmentVariable($name) >> $env:GITHUB_ENV
+          }
+
+      - name: Type-check ARM64EC provider
+        run: cargo check --manifest-path shell/Cargo.toml -p prisma-xtajit64 --target arm64ec-pc-windows-msvc --release --jobs 1
