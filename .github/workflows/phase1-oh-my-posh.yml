@@ -2,6 +2,20 @@ name: Phase 1 Oh My Posh execution
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/real-execution
+    paths:
+      - ".github/ci/Dockerfile.phase1-runtime"
+      - ".github/ci/run-oh-my-posh.sh"
+      - ".github/workflows/phase1-oh-my-posh.yml"
+      - "scripts/build-prisma-xtajit64.ps1"
+      - "shell/prisma-backend/**"
+      - "shell/prisma-decoder/**"
+      - "shell/prisma-ir/**"
+      - "shell/prisma-passes/**"
+      - "shell/prisma-translator/**"
+      - "shell/prisma-xtajit64/**"
 
 permissions:
   contents: read

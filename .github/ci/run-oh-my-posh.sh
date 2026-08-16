@@ -17,4 +17,3 @@ for cycle in 1 2 3; do
   /opt/prisma-wine/bin/wineserver -w
   rm -rf -- "$WINEPREFIX"
 done
-
