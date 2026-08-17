@@ -26,6 +26,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     gcc-aarch64-linux-gnu \
     libc6-dev-arm64-cross \
     make \
+    patch \
     python3 \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -42,6 +43,9 @@ RUN archive="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
 ENV PATH="/usr/local/llvm-mingw/bin:${PATH}"
 
 COPY --from=source /src/wine /src/wine
+COPY wine-prisma-no-preload-reserve.patch /tmp/wine-prisma-no-preload-reserve.patch
+
+RUN patch --directory=/src/wine --strip=1 < /tmp/wine-prisma-no-preload-reserve.patch
 
 RUN test "$(cat /src/wine/VERSION)" = "Wine version ${WINE_VERSION}"
 
@@ -123,10 +127,15 @@ RUN make install DESTDIR=/staging >/tmp/wine-install.log 2>&1 \
     || { tail -n 240 /tmp/wine-install.log; exit 1; }
 RUN wine=/staging/opt/prisma-wine/bin/wine \
     && xtajit=/staging/opt/prisma-wine/lib/wine/aarch64-windows/xtajit64.dll \
+    && kernel32=/staging/opt/prisma-wine/lib/wine/aarch64-windows/kernel32.dll \
     && test -x "${wine}" \
     && test -f "${xtajit}" \
+    && test -f "${kernel32}" \
     && llvm-readelf --file-header "${wine}" | grep -q 'Machine:.*AArch64' \
     && llvm-readobj --file-headers "${xtajit}" | grep -Eq 'Machine: IMAGE_FILE_MACHINE_(ARM64EC|ARM64X)' \
+    && llvm-readobj --coff-exports "${kernel32}" \
+       | sed -n 's/^[[:space:]]*Name: //p' \
+       | grep -Fxq '__wine_arm64ec_BaseThreadInitThunk' \
     && llvm-readobj --coff-exports "${xtajit}" \
        | sed -n 's/^[[:space:]]*Name: //p' | sort -u > /tmp/actual-exports \
     && printf '%s\n' \

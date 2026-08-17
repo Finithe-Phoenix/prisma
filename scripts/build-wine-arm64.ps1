@@ -12,6 +12,7 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "android\app\build"))
 $wineRoot = Join-Path $repoRoot "third_party\wine"
 $dockerfile = Join-Path $repoRoot "docker\Dockerfile.wine-arm64"
+$noPreloadReservePatch = Join-Path $repoRoot "third_party\wine-prisma\patches\0001-prisma-no-preload-reserve.patch"
 $wineVersion = (Get-Content -LiteralPath (Join-Path $wineRoot "VERSION") -Raw).Trim() -replace '^Wine version ', ''
 $wineCommit = (git -C $wineRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $wineCommit) {
@@ -279,6 +280,7 @@ try {
         [Text.UTF8Encoding]::new($false)
     )
     Copy-Item -LiteralPath $dockerfile -Destination (Join-Path $contextPath "Dockerfile")
+    Copy-Item -LiteralPath $noPreloadReservePatch -Destination (Join-Path $contextPath "wine-prisma-no-preload-reserve.patch")
 
     $builderName = "prisma-wine-" + [Guid]::NewGuid().ToString("N")
     & docker buildx create --name $builderName --driver docker-container | Out-Null
