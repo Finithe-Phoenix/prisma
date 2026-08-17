@@ -32,17 +32,6 @@ core::arch::global_asm!(
     "ret",
 );
 
-// Silence temporary ARM64EC bring-up traces on the real execution hot path.
-// The probes themselves are deleted before closing the Phase 1 gate.
-#[cfg(all(windows, target_arch = "arm64ec"))]
-macro_rules! eprintln {
-    ($($argument:tt)*) => {{
-        if false {
-            std::eprintln!($($argument)*);
-        }
-    }};
-}
-
 use dispatch::{live_runtime_count, ThreadRuntime};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
@@ -708,14 +697,8 @@ pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
     executor: &E,
     limits: DispatchLimits,
 ) -> Result<DispatchReport, DispatchError> {
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    eprintln!("prisma: dispatch_context entered");
     let key = current_thread_key();
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    eprintln!("prisma: thread key acquired");
     let mut state = lock_provider();
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    eprintln!("prisma: provider locked");
     if !state.is_running() {
         let error = phase_error(state.phase);
         state.last_status = error.nt_status();
@@ -732,8 +715,6 @@ pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
     let dispatch_call = DispatchContextLease::new(Arc::clone(&thread.active_dispatch_calls));
     drop(state);
 
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    eprintln!("prisma: entering thread runtime");
     let result = runtime.dispatch(context, memory, executor, limits);
     let mut state = lock_provider();
     if state.is_running() {
@@ -806,7 +787,6 @@ fn is_native_return_continuation(rip: u64) -> bool {
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn run_simulation(context: &mut Arm64EcContext) -> ! {
     loop {
-        eprintln!("prisma: dispatch begin rip={:#x}", context.pc_rip);
         let executor = {
             let state = lock_provider();
             let Some(thread) = state.threads.get(&current_thread_key()) else {
@@ -833,13 +813,8 @@ fn run_simulation(context: &mut Arm64EcContext) -> ! {
             }) => {}
             Ok(DispatchReport {
                 stop: DispatchStop::NativeTransitionRequired,
-                blocks,
-                instructions,
-                rip,
+                ..
             }) => {
-                eprintln!(
-                    "prisma-transition-probe: native rip={rip:#x} blocks={blocks} instructions={instructions}"
-                );
                 // SAFETY: `context` is Wine's current-thread CHPE context,
                 // synchronized immediately before this non-returning boundary.
                 restore_dispatch_stack_bounds_or_terminate();
@@ -1122,10 +1097,6 @@ pub extern "system" fn BTCpu64NotifyReadFile(
 pub extern "system" fn BeginSimulation() {
     #[cfg(all(windows, target_arch = "arm64ec"))]
     {
-        std::eprintln!(
-            "prisma-lifecycle-checkpoint: begin-simulation thread-inits={}",
-            THREAD_INIT_COUNT.load(Ordering::Acquire)
-        );
         // SAFETY: Wine invokes this callback after installing the current
         // thread's CHPE v2 CPU area and owns the context for the call duration.
         let context = unsafe { dispatch::current_wine_context() };
@@ -1137,10 +1108,6 @@ pub extern "system" fn BeginSimulation() {
                 unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
         };
-        eprintln!(
-            "prisma-transition-probe: begin x64 rip={:#x} rsp={:#x}",
-            context.pc_rip, context.sp_rsp
-        );
         run_simulation_on_dispatch_stack(context)
     }
     #[cfg(not(all(windows, target_arch = "arm64ec")))]
@@ -1346,7 +1313,6 @@ unsafe fn start_x64_transition(
     context.x3_r9 = arguments[3];
     context.sp_rsp = stack;
     context.pc_rip = target;
-    eprintln!("prisma: activating simulation");
     // SAFETY: this thread owns the CHPE area and is transferring its context
     // from native execution to Prisma's x64 simulation loop.
     if unsafe { dispatch::set_simulation_active(true) }.is_err() {
@@ -1354,7 +1320,6 @@ unsafe fn start_x64_transition(
         // SAFETY: the CHPE ownership transfer could not be completed.
         unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
     }
-    eprintln!("prisma: simulation active");
     run_simulation_on_dispatch_stack(context)
 }
 
@@ -1374,25 +1339,18 @@ unsafe extern "system" fn exit_to_x64_transition(save_area: *const TransitionSav
     let target = saved.target;
     let continuation = saved.continuation;
     let stack = saved.stack;
-    eprintln!(
-        "prisma: ExitToX64 target={target:#x} continuation={continuation:#x} stack={stack:#x} last_guest={:#x}",
-        dispatch::last_guest_rip()
-    );
     restore_native_nonvolatile_registers(context, saved.native);
-    eprintln!("prisma: native context captured");
     for index in 0..8 {
         // SAFETY: the naked thunk passes a 16-byte-aligned eight-register save
         // area that remains live until this non-returning helper transfers it.
         let value = saved.simd[index];
         let _ = context.set_xmm(index, value);
     }
-    eprintln!("prisma: SIMD context captured");
     let Some(return_slot) = stack.checked_sub(8) else {
         record_failed_dispatch();
         // SAFETY: an invalid native stack cannot be resumed.
         unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
     };
-    eprintln!("prisma: return frame slot={return_slot:#x} continuation={continuation:#x}");
     let frame = NativeReturnFrame {
         continuation,
         stack,
@@ -1402,7 +1360,6 @@ unsafe extern "system" fn exit_to_x64_transition(save_area: *const TransitionSav
     // SAFETY: `return_slot` is the eight-byte slot immediately below the live
     // Wine stack pointer captured by this non-returning transition thunk.
     let write_result = unsafe { dispatch::write_current_process_u64(return_slot, continuation) };
-    eprintln!("prisma: return frame write={write_result:?}");
     if write_result.is_err() || push_native_return(frame).is_err() {
         record_failed_dispatch();
         // SAFETY: the synthetic cross-ISA return frame was not installed in
@@ -1427,7 +1384,6 @@ unsafe extern "system" fn dispatch_jump_transition(save_area: *const TransitionS
     let [rcx, rdx, r8, r9] = saved.arguments;
     let target = saved.target;
     let stack = saved.stack;
-    eprintln!("prisma: DispatchJump target={target:#x} stack={stack:#x}");
     restore_native_nonvolatile_registers(context, saved.native);
     for index in 0..8 {
         // SAFETY: see `exit_to_x64_transition`; the save area is owned by this
@@ -1512,25 +1468,15 @@ unsafe extern "system" fn ret_to_entry_transition(save_area: *const EntryReturnS
     let saved = unsafe { &*save_area };
     let return_address = saved.return_address;
     let native_rax = saved.native_rax;
-    eprintln!("prisma-ret-probe: entered return={return_address:#x} native_rax={native_rax:#x}");
     // SAFETY: the dispatcher thunk runs on the Wine thread that owns this area.
     let context = unsafe { transition_context_or_terminate() };
-    eprintln!(
-        "prisma-ret-probe: context rip={:#x} rsp={:#x}",
-        context.pc_rip, context.sp_rsp
-    );
     if return_address == 0 {
-        eprintln!("prisma-ret-probe: popping native return");
         let Ok(frame) = pop_native_return() else {
             record_failed_dispatch();
             // SAFETY: there is no matching native continuation to restore.
             unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
         };
         restore_native_return_context(context, frame, native_rax);
-        eprintln!(
-            "prisma-ret-probe: resuming continuation={:#x} stack={:#x}",
-            frame.continuation, frame.stack
-        );
         // SAFETY: the x64 result/nonvolatile state remains synchronized.
         unsafe { dispatch::resume_wine_context(context) }
     }
@@ -1541,8 +1487,6 @@ unsafe extern "system" fn ret_to_entry_transition(save_area: *const EntryReturnS
     restore_entry_return_context(context, saved);
     let stack = saved.stack;
     let arguments = saved.arguments;
-    eprintln!("prisma-ret-probe: restarting x64 return={return_address:#x} stack={stack:#x}");
-    eprintln!("prisma: RetToEntryThunk x64_return={return_address:#x} stack={stack:#x}");
     // SAFETY: ARM64EC's dispatch-ret ABI supplies the popped x64 return in LR.
     unsafe { start_x64_transition(context, return_address, stack, arguments) }
 }
