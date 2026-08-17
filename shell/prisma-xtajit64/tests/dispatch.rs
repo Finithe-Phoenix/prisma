@@ -338,16 +338,29 @@ fn process_term_cancels_an_active_dispatch() {
     entered.wait();
     assert_eq!(provider_snapshot().active_dispatches, 1);
     ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    let terminating = provider_snapshot();
+    assert_eq!(terminating.active_threads, 0);
+    assert_eq!(terminating.active_dispatches, 1);
+    assert_eq!(terminating.live_runtimes, 1);
+    assert_eq!(terminating.live_dispatch_stacks, 1);
     release.wait();
     let report = worker.join().unwrap();
     assert_eq!(report.stop, DispatchStop::Cancelled);
     assert_eq!(report.blocks, 1);
-    assert_eq!(provider_snapshot().live_runtimes, 0);
+    let quiescent = provider_snapshot();
+    assert_eq!(quiescent.live_runtimes, 0);
+    assert_eq!(quiescent.live_dispatch_stacks, 0);
     assert_eq!(
-        provider_snapshot().phase,
+        quiescent.phase,
         prisma_xtajit64::ProviderPhase::TerminationPending
     );
     ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    assert_eq!(ProcessInit(), STATUS_SUCCESS);
+    assert_eq!(ThreadInit(), STATUS_SUCCESS);
+    assert_eq!(provider_snapshot().live_runtimes, 1);
+    reset();
+    assert_eq!(provider_snapshot().live_runtimes, 0);
+    assert_eq!(provider_snapshot().live_dispatch_stacks, 0);
 }
 
 #[test]

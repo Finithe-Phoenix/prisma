@@ -174,11 +174,30 @@ struct ThreadContext {
     generation: u64,
     phase: ThreadPhase,
     runtime: Arc<ThreadRuntime>,
+    active_dispatch_calls: Arc<AtomicUsize>,
     #[cfg(all(windows, target_arch = "arm64ec"))]
     executor: Arc<PrismaExecutor>,
     last_report: Option<DispatchReport>,
     native_returns: Vec<NativeReturnFrame>,
     _dispatch_stacks: Vec<DispatchStack>,
+}
+
+struct DispatchContextLease {
+    active_calls: Arc<AtomicUsize>,
+}
+
+impl DispatchContextLease {
+    fn new(active_calls: Arc<AtomicUsize>) -> Self {
+        active_calls.fetch_add(1, Ordering::AcqRel);
+        Self { active_calls }
+    }
+}
+
+impl Drop for DispatchContextLease {
+    fn drop(&mut self) {
+        let previous = self.active_calls.fetch_sub(1, Ordering::AcqRel);
+        debug_assert_ne!(previous, 0, "dispatch call lease underflow");
+    }
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
@@ -387,6 +406,7 @@ struct ProviderState {
     phase: ProviderPhase,
     generation: u64,
     threads: BTreeMap<ThreadKey, ThreadContext>,
+    retired_threads: Vec<ThreadContext>,
     #[cfg(all(windows, target_arch = "arm64ec"))]
     executor: Option<Arc<PrismaExecutor>>,
     mappings: BTreeSet<usize>,
@@ -407,6 +427,7 @@ impl ProviderState {
             phase: ProviderPhase::Cold,
             generation: 0,
             threads: BTreeMap::new(),
+            retired_threads: Vec::new(),
             #[cfg(all(windows, target_arch = "arm64ec"))]
             executor: None,
             mappings: BTreeSet::new(),
@@ -424,10 +445,13 @@ impl ProviderState {
     }
 
     fn release_owned_resources(&mut self) {
-        for context in self.threads.values() {
+        self.reap_retired_threads();
+        for context in self.threads.values().chain(&self.retired_threads) {
             context.runtime.cancel();
         }
-        self.threads = BTreeMap::new();
+        for (_, context) in std::mem::take(&mut self.threads) {
+            self.retire_thread(context);
+        }
         #[cfg(all(windows, target_arch = "arm64ec"))]
         {
             self.executor = None;
@@ -435,6 +459,23 @@ impl ProviderState {
         self.mappings = BTreeSet::new();
         self.simulation_requests = 0;
         self.cache_notifications = 0;
+    }
+
+    fn retire_thread(&mut self, context: ThreadContext) {
+        if context.active_dispatch_calls.load(Ordering::Acquire) == 0
+            && context.runtime.active_dispatches() == 0
+        {
+            drop(context);
+        } else {
+            self.retired_threads.push(context);
+        }
+    }
+
+    fn reap_retired_threads(&mut self) {
+        self.retired_threads.retain(|context| {
+            context.active_dispatch_calls.load(Ordering::Acquire) != 0
+                || context.runtime.active_dispatches() != 0
+        });
     }
 
     fn snapshot(&self) -> ProviderSnapshot {
@@ -449,6 +490,7 @@ impl ProviderState {
             active_dispatches: self
                 .threads
                 .values()
+                .chain(&self.retired_threads)
                 .map(|context| context.runtime.active_dispatches())
                 .sum(),
             live_runtimes: live_runtime_count(),
@@ -613,6 +655,7 @@ pub fn initialize_thread() -> Result<InitOutcome, LifecycleError> {
         generation,
         phase: ThreadPhase::Ready,
         runtime: Arc::new(ThreadRuntime::new()),
+        active_dispatch_calls: Arc::new(AtomicUsize::new(0)),
         #[cfg(all(windows, target_arch = "arm64ec"))]
         executor: Arc::new(PrismaExecutor::default()),
         last_report: None,
@@ -686,6 +729,7 @@ pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
     };
     thread.phase = ThreadPhase::Dispatching;
     let runtime = Arc::clone(&thread.runtime);
+    let dispatch_call = DispatchContextLease::new(Arc::clone(&thread.active_dispatch_calls));
     drop(state);
 
     #[cfg(all(windows, target_arch = "arm64ec"))]
@@ -709,6 +753,8 @@ pub fn dispatch_context<M: GuestMemory, E: BlockExecutor>(
         state.phase = ProviderPhase::SimulationRequested;
         state.simulation_requests = state.simulation_requests.saturating_add(1);
     }
+    drop(dispatch_call);
+    state.reap_retired_threads();
     drop(state);
     result
 }
@@ -1012,6 +1058,7 @@ fn thread_term(handle: Handle) {
     if let Some(key) = thread_key_from_handle(handle) {
         if let Some(context) = state.threads.remove(&key) {
             context.runtime.cancel();
+            state.retire_thread(context);
         }
     }
 }
