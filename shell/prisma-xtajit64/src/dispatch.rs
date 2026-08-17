@@ -1064,9 +1064,6 @@ impl BlockExecutor for PrismaExecutor {
                 PRISMA_FAULT_SNAPSHOT[24].store(probe_rip, Ordering::Release);
                 PRISMA_FAULT_SNAPSHOT[25].store(watched_current, Ordering::Release);
                 PRISMA_FAULT_SNAPSHOT[26].store(0x5741_5443, Ordering::Release);
-                loop {
-                    core::hint::spin_loop();
-                }
             }
             let sp_after: usize;
             let teb_after: usize;
