@@ -1,4 +1,6 @@
 use prisma_runtime::dispatcher::{GuestTranslator, RustSmokeTranslator};
+#[cfg(target_arch = "aarch64")]
+use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame};
 
 struct SmokeFixture {
     name: &'static str,
@@ -1973,4 +1975,109 @@ fn words_to_le_bytes(words: &[u32]) -> Vec<u8> {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
     bytes
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct LockXaddExecutionCase {
+    name: &'static str,
+    guest_bytes: &'static [u8],
+    initial_memory: u64,
+    source: u64,
+    expected_memory: u64,
+    expected_source: u64,
+    expected_rflags: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+const ARITHMETIC_RFLAGS_MASK: u64 =
+    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
+
+#[cfg(target_arch = "aarch64")]
+const LOCK_XADD_EXECUTION_CASES: &[LockXaddExecutionCase] = &[
+    LockXaddExecutionCase {
+        name: "lock_xadd_i8",
+        guest_bytes: &[0xF0, 0x0F, 0xC0, 0x08],
+        initial_memory: 0x1122_3344_5566_777f,
+        source: 0xaabb_ccdd_eeff_0001,
+        expected_memory: 0x1122_3344_5566_7780,
+        expected_source: 0xaabb_ccdd_eeff_007f,
+        // 0x7f + 1: AF, SF and OF set; CF, PF and ZF clear.
+        expected_rflags: 0x892,
+    },
+    LockXaddExecutionCase {
+        name: "lock_xadd_i16",
+        guest_bytes: &[0xF0, 0x66, 0x0F, 0xC1, 0x08],
+        initial_memory: 0x1122_3344_5566_ffff,
+        source: 0xaabb_ccdd_eeee_0001,
+        expected_memory: 0x1122_3344_5566_0000,
+        expected_source: 0xaabb_ccdd_eeee_ffff,
+        // 0xffff + 1: CF, PF, AF and ZF set; SF and OF clear.
+        expected_rflags: 0x57,
+    },
+    LockXaddExecutionCase {
+        name: "lock_xadd_i32",
+        guest_bytes: &[0xF0, 0x0F, 0xC1, 0x08],
+        initial_memory: 0x1122_3344_7fff_ffff,
+        source: 0xaabb_ccdd_0000_0001,
+        expected_memory: 0x1122_3344_8000_0000,
+        expected_source: 0x7fff_ffff,
+        // 0x7fffffff + 1: PF, AF, SF and OF set; CF and ZF clear.
+        expected_rflags: 0x896,
+    },
+    LockXaddExecutionCase {
+        name: "lock_xadd_i64",
+        guest_bytes: &[0xF0, 0x48, 0x0F, 0xC1, 0x08],
+        initial_memory: u64::MAX,
+        source: 1,
+        expected_memory: 0,
+        expected_source: u64::MAX,
+        // u64::MAX + 1: CF, PF, AF and ZF set; SF and OF clear.
+        expected_rflags: 0x57,
+    },
+];
+
+#[cfg(target_arch = "aarch64")]
+fn translate_lock_xadd(guest_bytes: &[u8]) -> Vec<u8> {
+    RustSmokeTranslator::new()
+        .translate(0x1000, guest_bytes)
+        .expect("LOCK XADD should translate")
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn lock_xadd_executes_all_integer_widths_with_x86_flags() {
+    for case in LOCK_XADD_EXECUTION_CASES {
+        let code = translate_lock_xadd(case.guest_bytes);
+        let mut memory = Box::new(case.initial_memory);
+        let mut frame = CpuStateFrame::default();
+        let guest_address = 0x1000_u64;
+        let host_address = (&raw mut *memory) as usize as u64;
+        frame.gpr[gpr::RAX] = guest_address;
+        frame.gpr[gpr::RCX] = case.source;
+        frame.mem_base = host_address.wrapping_sub(guest_address);
+
+        execute_block(&code, &mut frame)
+            .unwrap_or_else(|error| panic!("{} failed to execute: {error:?}", case.name));
+
+        assert_eq!(*memory, case.expected_memory, "{} memory", case.name);
+        assert_eq!(
+            frame.gpr[gpr::RCX],
+            case.expected_source,
+            "{} source register",
+            case.name
+        );
+        assert_eq!(
+            frame.rflags & ARITHMETIC_RFLAGS_MASK,
+            case.expected_rflags,
+            "{} arithmetic flags",
+            case.name
+        );
+        assert_eq!(
+            frame.cf,
+            case.expected_rflags & 1,
+            "{} persistent carry",
+            case.name
+        );
+    }
 }
