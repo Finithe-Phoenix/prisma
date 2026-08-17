@@ -6,7 +6,7 @@ Last updated: 2026-08-17 America/Mexico_City.
 
 - Remote: `https://github.com/Finithe-Phoenix/prisma.git`
 - Branch: `codex/real-execution`
-- Remote migration checkpoint: `1cf1734f383f0f4e97aee5adfb999015428f408c`
+- Remote migration checkpoint: `49a301057c3810b8a6179534cc6df39a875c9084`
 - Active backlog claim: `F3-WN-019`
 - Wine submodule: `1012f3d99507b80d4869eabf0853567660a7ecbb`
 
@@ -34,10 +34,19 @@ The last focused CI evidence established:
 - `BeginSimulation` is not reached.
 - Execution then fails with a null execute access and fixture exit code 5.
 
-Therefore the next diagnosis starts between `ThreadInit` returning and Wine
-calling `BeginSimulation`. Do not reintroduce raw fault dumps or broad temporary
-instrumentation; use the existing symbolic phase markers and preserve the exact
-20-export provider contract.
+The gap is now isolated. Disassembly of the locally produced Wine runtime shows
+that ARM64EC `RtlUserThreadStart` dispatches the native ARM64
+`BaseThreadInitThunk`, whose body then invokes the x64 entrypoint with a direct
+`blr x1`. That inner call bypasses `__os_arm64x_dispatch_icall`, so Prisma never
+receives `BeginSimulation`. The versioned Wine patch now dispatches the x64
+entrypoint itself and then calls `RtlExitUserThread`; the Wine Dockerfile rejects
+the previous compiled thunk by inspecting `RtlUserThreadStart` disassembly.
+
+The patch applies cleanly to pinned Wine 11.14 and its three lightweight
+regression tests pass. A fresh Wine build plus the exact three lifecycle cycles
+remain required before closing `F3-WN-019`; they were not started below the
+6 GiB physical-memory gate. Do not reintroduce raw fault dumps or broad
+temporary instrumentation, and preserve the exact 20-export provider contract.
 
 While the new high-memory host is pending, Danny requested local serial work on
 the current machine: no subagents, no remote fan-out and no simultaneous heavy

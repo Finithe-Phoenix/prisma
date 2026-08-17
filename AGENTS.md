@@ -19,9 +19,10 @@ Hasta que Danny confirme la llegada del nuevo equipo:
   superior a 85%; liberar solamente procesos Prisma con ownership probado;
 - continuar el claim `F3-WN-019`, sin abrir otra fase antes de ejecutar Oh My
   Posh 30.6.3 con stdout/stderr, codigo 0 y tres ciclos limpios;
-- diagnosticar primero la brecha `ThreadInit` -> `BeginSimulation`: el provider
-  carga e inicializa, pero `BeginSimulation` no entra antes del execute-access
-  nulo observado;
+- la brecha `ThreadInit` -> `BeginSimulation` ya esta aislada: el
+  `BaseThreadInitThunk` ARM64 ejecutaba el entrypoint x64 con un `blr` directo.
+  Preservar el arreglo que enruta el entrypoint por
+  `__os_arm64x_dispatch_icall` y el gate de desensamblado del Dockerfile;
 - mantener exactamente 20 exports del provider y no reintroducir dumps crudos
   o instrumentacion temporal amplia.
 

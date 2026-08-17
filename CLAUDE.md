@@ -12,7 +12,7 @@ Este bloque sustituye cualquier instruccion historica incompatible mas abajo
 hasta que Danny confirme que el nuevo equipo de alta memoria esta listo.
 
 - Rama autoritativa: `codex/real-execution`. Checkpoint remoto verificado al
-  iniciar este modo: `1cf1734f383f0f4e97aee5adfb999015428f408c`.
+  iniciar este modo: `49a301057c3810b8a6179534cc6df39a875c9084`.
 - Handoff completo: [docs/HANDOFF/HANDOFF-migration-2026-08-17.md](docs/HANDOFF/HANDOFF-migration-2026-08-17.md).
 - Trabajar **sin agentes paralelos ni fan-out**. Un solo cambio, build y prueba
   a la vez; no iniciar trabajo remoto en `prisma-worker` mientras llega el
@@ -26,10 +26,13 @@ hasta que Danny confirme que el nuevo equipo de alta memoria esta listo.
 - Claim activo: `F3-WN-019`. El objetivo inmediato es ejecutar el Oh My Posh
   oficial 30.6.3 por Wine ARM64EC y Prisma con stdout/stderr exactos, codigo 0,
   20 exports y tres ciclos sin fugas.
-- Evidencia actual: Wine bootstrap y `ProcessInit`/`ThreadInit` del provider
-  completan; `BeginSimulation` no entra; despues ocurre un execute-access nulo
-  y el fixture termina con codigo 5. El siguiente diagnostico empieza entre el
-  retorno de `ThreadInit` y la llamada de Wine a `BeginSimulation`.
+- Causa aislada: tras `ThreadInit`, `RtlUserThreadStart` despacha el
+  `BaseThreadInitThunk` ARM64 nativo, pero ese thunk ejecuta el entrypoint x64
+  con `blr x1` directo. Asi se omite `__os_arm64x_dispatch_icall`,
+  `BeginSimulation` no entra y el proceso termina con execute-access nulo y
+  codigo 5. El patch versionado ahora despacha el entrypoint directamente y el
+  Dockerfile audita el thunk compilado. Falta reconstruir Wine y ejecutar los
+  tres ciclos cuando el gate de memoria permita trabajo pesado.
 - No restaurar dumps crudos ni instrumentacion masiva. Usar marcadores
   simbolicos acotados, commits atomicos y limpieza determinista.
 - Caches, builds, instaladores, keystore y logs locales no forman parte del

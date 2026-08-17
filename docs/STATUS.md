@@ -28,7 +28,11 @@ Windows de extremo a extremo: `F3-WN-019` permanece activo.
 - Wine 11.14 ARM64/ARM64EC y provider Prisma `xtajit64` con contrato exacto de
   20 exports.
 - `wineboot`, `ProcessInit` y `ThreadInit` completan.
-- `BeginSimulation` no entra; después se observa execute-access nulo y código 5.
+- Causa del fallo aislada por desensamblado: el `BaseThreadInitThunk` ARM64
+  ejecutaba el entrypoint x64 con `blr x1`, omitiendo el dispatcher híbrido.
+- El patch local ahora enruta el entrypoint por `__os_arm64x_dispatch_icall` y
+  exige esa secuencia en el binario compilado. La reconstrucción y ejecución
+  real siguen pendientes por el gate de memoria.
 - Gate pendiente: stdout de versión correcto, código 0 y tres ciclos limpios
   sin procesos, handles, mappings ni temporales sobrevivientes.
 
@@ -148,9 +152,10 @@ Windows de extremo a extremo: `F3-WN-019` permanece activo.
 
 ## 5. Brecha actual hacia Windows utilizable
 
-- **Wine existe como baseline experimental**, pero el handoff ARM64EC todavía
-  falla antes de `BeginSimulation`; no hay una ejecución Win32 completa que se
-  pueda declarar compatible.
+- **Wine existe como baseline experimental** y la causa del handoff previo a
+  `BeginSimulation` ya está corregida en fuente, pero aún falta validarla en un
+  runtime reconstruido; no hay una ejecución Win32 completa que se pueda
+  declarar compatible.
 - Hay PE mapping, resolución parcial y superficies Win32 en `shell/`, pero los
   prototipos `prisma-loader`/`prisma-wow64cpu` no sustituyen el provider
   ARM64EC ni constituyen un entorno Windows terminado.
