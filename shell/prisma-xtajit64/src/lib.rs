@@ -43,6 +43,42 @@ pub type WinBoolean = u8;
 pub type WinBool = i32;
 pub type Handle = *mut c_void;
 
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn phase_marker(message: &'static [u8]) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(kind: u32) -> Handle;
+        fn WriteFile(
+            file: Handle,
+            buffer: *const c_void,
+            bytes_to_write: u32,
+            bytes_written: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
+    }
+
+    const STD_ERROR_HANDLE: u32 = (-12_i32) as u32;
+    let Ok(bytes_to_write) = u32::try_from(message.len()) else {
+        return;
+    };
+    // SAFETY: both imports are direct native calls. The message is static and
+    // remains live for the synchronous write; diagnostics never own the handle.
+    let file = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if file.is_null() || file.addr() == usize::MAX {
+        return;
+    }
+    let mut bytes_written = 0_u32;
+    let _ = unsafe {
+        WriteFile(
+            file,
+            message.as_ptr().cast(),
+            bytes_to_write,
+            &raw mut bytes_written,
+            std::ptr::null_mut(),
+        )
+    };
+}
+
 #[repr(C)]
 pub struct ExceptionRecord {
     _private: [u8; 0],
@@ -786,6 +822,8 @@ fn is_native_return_continuation(rip: u64) -> bool {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn run_simulation(context: &mut Arm64EcContext) -> ! {
+    phase_marker(b"prisma-phase: dispatch-loop-enter\n");
+    let mut first_dispatch = true;
     loop {
         let executor = {
             let state = lock_provider();
@@ -803,6 +841,10 @@ fn run_simulation(context: &mut Arm64EcContext) -> ! {
             executor.as_ref(),
             DispatchLimits::default(),
         );
+        if first_dispatch {
+            phase_marker(b"prisma-phase: first-dispatch-returned\n");
+            first_dispatch = false;
+        }
         // `resume_wine_context` abandons this Rust stack. Release the temporary
         // strong reference first; ThreadContext remains the cache owner.
         drop(executor);
@@ -945,6 +987,7 @@ fn restore_dispatch_stack_bounds_or_terminate() {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 unsafe extern "system" fn dispatch_stack_entry(context: *mut Arm64EcContext) -> ! {
+    phase_marker(b"prisma-phase: dispatch-stack-enter\n");
     // SAFETY: the stack-switch thunk receives Wine's live, thread-owned context.
     let Some(context) = (unsafe { context.as_mut() }) else {
         record_failed_dispatch();
@@ -965,6 +1008,7 @@ fn run_simulation_on_dispatch_stack(context: &mut Arm64EcContext) -> ! {
             unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
         }
     };
+    phase_marker(b"prisma-phase: dispatch-stack-ready\n");
     let entry = dispatch_stack_entry as *const () as usize;
     // SAFETY: stack zero owns the initial simulation. Each nested native-to-x64
     // callback increments `native_returns` and therefore receives a distinct
@@ -1097,6 +1141,7 @@ pub extern "system" fn BTCpu64NotifyReadFile(
 pub extern "system" fn BeginSimulation() {
     #[cfg(all(windows, target_arch = "arm64ec"))]
     {
+        phase_marker(b"prisma-phase: begin-simulation-enter\n");
         // SAFETY: Wine invokes this callback after installing the current
         // thread's CHPE v2 CPU area and owns the context for the call duration.
         let context = unsafe { dispatch::current_wine_context() };
@@ -1108,6 +1153,7 @@ pub extern "system" fn BeginSimulation() {
                 unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
         };
+        phase_marker(b"prisma-phase: begin-simulation-context-ready\n");
         run_simulation_on_dispatch_stack(context)
     }
     #[cfg(not(all(windows, target_arch = "arm64ec")))]
@@ -1196,7 +1242,12 @@ pub extern "system" fn NotifyUnmapViewOfSection(
 /// Wine 11.14 `xtajit64.spec`: `NTSTATUS ProcessInit(void)`.
 #[unsafe(no_mangle)]
 pub extern "system" fn ProcessInit() -> NtStatus {
-    initialize_process().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS)
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    phase_marker(b"prisma-phase: process-init-enter\n");
+    let status = initialize_process().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS);
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    phase_marker(b"prisma-phase: process-init-exit\n");
+    status
 }
 
 /// Wine calls this before and after `NtTerminateProcess` for the current process.
@@ -1254,11 +1305,15 @@ pub extern "system" fn ResetToConsistentState(
 /// Wine 11.14 `xtajit64.spec`: `NTSTATUS ThreadInit(void)`.
 #[unsafe(no_mangle)]
 pub extern "system" fn ThreadInit() -> NtStatus {
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    phase_marker(b"prisma-phase: thread-init-enter\n");
     let status = initialize_thread().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS);
     #[cfg(all(windows, target_arch = "arm64ec"))]
     if successful(status) {
         THREAD_INIT_COUNT.fetch_add(1, Ordering::AcqRel);
     }
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    phase_marker(b"prisma-phase: thread-init-exit\n");
     status
 }
 
