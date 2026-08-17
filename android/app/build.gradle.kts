@@ -10,6 +10,18 @@ android {
     namespace = "dev.prismaemu.app"
     compileSdk = 35
 
+    val prismaDebugKeystore = rootProject.file("prisma-debug.keystore")
+    signingConfigs {
+        if (prismaDebugKeystore.exists()) {
+            create("prismaDebug") {
+                storeFile = prismaDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "dev.prismaemu.app"
         minSdk = 29  // Android 10 — required for our W^X / MAP_JIT story
@@ -28,7 +40,15 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
-            isJitDebuggable = true   // critical for our JIT pages.
+            isJniDebuggable = true   // critical for our JIT pages.
+            if (prismaDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("prismaDebug")
+            }
+            ndk {
+                // Desktop UI smoke tests run on the x86_64 AVD. Production
+                // execution remains arm64-v8a, where the Prisma DBT runs.
+                abiFilters += "x86_64"
+            }
         }
         release {
             isMinifyEnabled = true

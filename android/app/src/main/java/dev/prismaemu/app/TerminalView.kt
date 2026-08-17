@@ -1,18 +1,33 @@
 package dev.prismaemu.app
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -22,70 +37,118 @@ interface TerminalCallback {
 
 @Composable
 fun TerminalView(onDismiss: () -> Unit) {
-    var output by remember { mutableStateOf("Prisma Developer Terminal\n") }
+    val copy = technicalCopy()
+    var output by remember(copy) {
+        mutableStateOf("${copy.shellPreview}\n${copy.waitingBridge}\n")
+    }
     var input by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
 
+    BackHandler(onBack = onDismiss)
+
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {
-            OrchestratorJni.spawnTerminalProcess(object : TerminalCallback {
-                override fun onOutput(text: String) {
-                    output += text
+            try {
+                OrchestratorJni.spawnTerminalProcess(object : TerminalCallback {
+                    override fun onOutput(text: String) {
+                        scope.launch { output += text }
+                    }
+                })
+            } catch (_: UnsatisfiedLinkError) {
+                scope.launch {
+                    output += "${copy.bridgeUnavailable}\n"
                 }
-            })
+            }
         }
     }
 
-    // Auto-scroll to bottom when output changes
     LaunchedEffect(output) {
         scrollState.animateScrollTo(scrollState.maxValue)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(PrismaBackground)
+            .statusBarsPadding(),
+    ) {
+        PrismaTopBar(
+            title = copy.developerTerminal,
+            subtitle = copy.terminalSubtitle,
+            statusColor = PrismaWarning,
+            onBack = onDismiss,
+        ) {
+            TextButton(
+                onClick = {
+                    output = "${copy.shellPreview}\n"
+                },
+            ) {
+                Text(copy.clear, color = PrismaPrimary)
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(PrismaInspector.Panel)
+                .verticalScroll(scrollState)
+                .padding(PrismaSpacing.Lg),
+        ) {
             Text(
                 text = output,
-                color = Color.Green,
+                color = PrismaTextSecondary,
+                style = PrismaTypography.bodyMedium,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(scrollState)
             )
-
-            // Invisible/bottom-aligned TextField for capturing keystrokes
+        }
+        HorizontalDivider(color = PrismaBorder)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(PrismaSurface)
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(PrismaSpacing.Lg),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = ">",
+                color = PrismaPrimary,
+                style = PrismaTypography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+            )
             BasicTextField(
                 value = input,
                 onValueChange = { newValue ->
                     input = newValue
-                    if (newValue.isNotEmpty()) {
-                        val lastChar = newValue.last()
-                        if (lastChar == '\n') {
+                    if (newValue.endsWith('\n')) {
+                        try {
                             OrchestratorJni.sendTerminalInput(newValue)
-                            input = ""
+                        } catch (_: UnsatisfiedLinkError) {
+                            output += "> ${newValue.trim()}\n${copy.bridgeUnavailable}\n"
                         }
+                        input = ""
                     }
                 },
-                textStyle = TextStyle(color = Color.Green, fontFamily = FontFamily.Monospace),
-                modifier = Modifier.fillMaxWidth().background(Color.DarkGray).padding(8.dp),
+                textStyle = TextStyle(
+                    color = PrismaTextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = PrismaSpacing.Md),
                 decorationBox = { innerTextField ->
                     if (input.isEmpty()) {
-                        Text("Type command...", color = Color.Gray, fontFamily = FontFamily.Monospace)
+                        Text(
+                            text = copy.enterCommand,
+                            color = PrismaTextMuted,
+                            fontFamily = FontFamily.Monospace,
+                        )
                     }
                     innerTextField()
-                }
+                },
             )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.End),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
-            ) {
-                Text("Close Terminal", color = Color.White)
-            }
         }
     }
 }

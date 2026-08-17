@@ -1,11 +1,11 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 
 Write-Host "Building Android Emulator Docker image..."
 docker build -t android-emulator -f docker/Dockerfile.android .
 
 Write-Host "Stopping and removing existing container if it exists..."
-docker stop android-emulator-container 2>
-docker rm android-emulator-container 2>
+docker stop android-emulator-container 2>$null
+docker rm android-emulator-container 2>$null
 
 Write-Host "Starting Android Emulator container..."
 # Run the emulator in detached mode, mapping port 5555
