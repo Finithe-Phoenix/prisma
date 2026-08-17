@@ -1054,6 +1054,7 @@ impl ThreadRuntime {
 
     // This loop is the state-machine boundary for one guest thread. Helpers
     // may compute transitions, but ownership and cleanup remain visible here.
+    #[allow(clippy::too_many_lines)]
     pub fn dispatch<M: GuestMemory, E: BlockExecutor>(
         &self,
         context: &mut Arm64EcContext,
