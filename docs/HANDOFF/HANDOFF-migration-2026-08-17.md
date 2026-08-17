@@ -64,12 +64,17 @@ The Windows worktree was separated into atomic migration commits:
 - `0688b55` Wine and ARM64 worker build tooling;
 - `7ca79fd` verified Windows application target manifest.
 - `1cf1734` this migration handoff and the authoritative resume instructions.
+- `49a3010` synchronized agent guidance and the serial local-work checkpoint.
+- `24c9bfa` corrected the initial x64 thread-entry dispatch and added regression
+  gates.
+- `d1fe480` documented the isolated ARM64EC root cause and pending validation.
 
 The complete branch was also exported and verified as:
 
-- file: `prisma-codex-real-execution-20260817-1cf1734f383f.bundle`;
-- SHA-256: `E27D7F28C6B4B05B250B94624D08CC16307CB63EFE6970DA21AF618445F8B4F2`;
-- bundle ref: `codex/real-execution` at `1cf1734f383f0f4e97aee5adfb999015428f408c`.
+- file: `prisma-codex-real-execution-20260817-d1fe480.bundle`;
+- SHA-256: `6FF255A659EA3498EEFEF9B41C5ACA6B90F147F05F3AD76F7742B1FE66C9B17E`;
+- bundle ref: `codex/real-execution` at
+  `d1fe480238107c5a8d22c430e916015bc2f17761`.
 
 `cargo metadata --locked` passed. Changed Rust files passed `rustfmt`; the
 workspace-wide format check still reports pre-existing whitespace in
