@@ -128,14 +128,21 @@ RUN make install DESTDIR=/staging >/tmp/wine-install.log 2>&1 \
 RUN wine=/staging/opt/prisma-wine/bin/wine \
     && xtajit=/staging/opt/prisma-wine/lib/wine/aarch64-windows/xtajit64.dll \
     && kernel32=/staging/opt/prisma-wine/lib/wine/aarch64-windows/kernel32.dll \
+    && ntdll=/staging/opt/prisma-wine/lib/wine/aarch64-windows/ntdll.dll \
     && test -x "${wine}" \
     && test -f "${xtajit}" \
     && test -f "${kernel32}" \
+    && test -f "${ntdll}" \
     && llvm-readelf --file-header "${wine}" | grep -q 'Machine:.*AArch64' \
     && llvm-readobj --file-headers "${xtajit}" | grep -Eq 'Machine: IMAGE_FILE_MACHINE_(ARM64EC|ARM64X)' \
     && llvm-readobj --coff-exports "${kernel32}" \
        | sed -n 's/^[[:space:]]*Name: //p' \
        | grep -Fxq '__wine_arm64ec_BaseThreadInitThunk' \
+    && llvm-objdump --disassemble-symbols=RtlUserThreadStart "${ntdll}" \
+       > /tmp/rtl-user-thread-start.disasm \
+    && grep -Fq '<$iexit_thunk$cdecl$i8$i8>' /tmp/rtl-user-thread-start.disasm \
+    && grep -Eq 'bl[[:space:]].*<RtlExitUserThread>' /tmp/rtl-user-thread-start.disasm \
+    && ! grep -Fq '<$iexit_thunk$cdecl$v$i8i8i8>' /tmp/rtl-user-thread-start.disasm \
     && llvm-readobj --coff-exports "${xtajit}" \
        | sed -n 's/^[[:space:]]*Name: //p' | sort -u > /tmp/actual-exports \
     && printf '%s\n' \

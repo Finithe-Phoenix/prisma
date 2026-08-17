@@ -7,16 +7,18 @@ represent safely. Preserve the preloader's ELF handoff, but let an opt-in host
 leave an empty preload map so ntdll performs its normal dynamic reservation.
 
 The native ARM64 BaseThreadInitThunk cannot call an x64 application entry
-point directly. Export an ARM64/ARM64EC hybrid alias and select it only from
-the ARM64EC loader so native Wine service processes keep their native path.
+point directly. Route the ARM64EC initial thread entry through Wine's hybrid
+indirect-call dispatcher before terminating the thread, while retaining the
+hybrid alias for compatibility with loader paths that still resolve the
+kernel32 thunk.
 
 ---
  dlls/kernel32/kernel32.spec  |  1 +
  dlls/ntdll/loader.c          | 23 +++++++++++++++++++++++
  dlls/ntdll/ntdll_misc.h      |  2 ++
- dlls/ntdll/signal_arm64ec.c  | 12 +++++++-----
+ dlls/ntdll/signal_arm64ec.c  | 22 +++++++++++-----------
  loader/preloader.c           | 43 +++++++++++++++++++++++++------------------
- 5 files changed, 62 insertions(+), 23 deletions(-)
+ 5 files changed, 66 insertions(+), 29 deletions(-)
 
 diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
 index 3f8c74a622d..1fd05053174 100644
@@ -119,6 +121,30 @@ index b11e3d54e01..c99aaed46b3 100644
 +    max = metadata->RedirectionMetadataCount - 1;
      while (min <= max)
      {
+@@ -2088,19 +2091,17 @@ void __attribute__((naked)) RtlUserThreadStart( PRTL_THREAD_START_ROUTINE entry,
+ {
+     asm( ".seh_proc \"#RtlUserThreadStart\"\n\t"
+          "stp x29, x30, [sp, #-16]!\n\t"
+          ".seh_save_fplr_x 16\n\t"
+          ".seh_endprologue\n\t"
+-         "adrp x11, pBaseThreadInitThunk\n\t"
+-         "ldr x11, [x11, #:lo12:pBaseThreadInitThunk]\n\t"
+-         "adr x10, $iexit_thunk$cdecl$v$i8i8i8\n\t"
+-         "mov x2, x1\n\t"
+-         "mov x1, x0\n\t"
+-         "mov x0, #0\n\t"
++         "mov x11, x0\n\t"       /* entry */
++         "adr x10, $iexit_thunk$cdecl$i8$i8\n\t"
++         "mov x0, x1\n\t"        /* arg */
+          "adrp x16, __os_arm64x_dispatch_icall\n\t"
+          "ldr x16, [x16, #:lo12:__os_arm64x_dispatch_icall]\n\t"
+          "blr x16\n\t"
+          "blr x11\n\t"
++         "bl \"#RtlExitUserThread\"\n\t"
+          "brk #1\n\t"
+          ".seh_handler call_unhandled_exception_handler, @except\n\t"
+          ".seh_endproc" );
+ }
 
 diff --git a/loader/preloader.c b/loader/preloader.c
 index 47b79295a9f..f849329017b 100644
