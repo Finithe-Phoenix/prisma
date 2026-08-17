@@ -2,8 +2,6 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-#[cfg(all(windows, target_arch = "arm64ec"))]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -115,31 +113,7 @@ pub(super) unsafe fn reset_active_exception_context(context: *mut Arm64EcContext
     // SAFETY: the guard owns a live dispatch-stack frame for this exact thread,
     // while Wine owns the mutable exception context for this callback.
     unsafe { (*context).store_frame(&*frame, rip) };
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    if RESET_CAPTURED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        std::eprintln!(
-            "prisma-reset-capture: block={block_rip:#x} precise={precise_rip:#x} restored={rip:#x} exit={} next={:#x}",
-            unsafe { (*frame).exit_reason },
-            unsafe { (*frame).next_pc },
-        );
-    }
     true
-}
-
-// The current ARM64EC bring-up contains targeted diagnostics that must not sit
-// on the hot block-dispatch path. Keep them compiled for the next fault probe,
-// but silent during the real throughput run; all temporary probes are removed
-// before the Phase 1 gate is committed.
-#[cfg(all(windows, target_arch = "arm64ec"))]
-macro_rules! eprintln {
-    ($($argument:tt)*) => {{
-        if false {
-            std::eprintln!($($argument)*);
-        }
-    }};
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
@@ -533,10 +507,6 @@ fn dispatch_win64_syscall<M: GuestMemory>(
     let entry = wine_syscall_entry(id).ok_or(DispatchError::UnknownSyscall { rip, id })?;
     let arguments = marshal_win64_syscall_arguments(memory, frame, entry.argument_bytes)
         .map_err(|detail| DispatchError::SyscallArguments { rip, id, detail })?;
-    if SYSCALL_TRACE_COUNT.fetch_add(1, Ordering::AcqRel) < 64 {
-        let name = String::from_utf8_lossy(&entry.name[..entry.name.len() - 1]);
-        std::eprintln!("prisma-syscall-checkpoint: {name}");
-    }
     // SAFETY: both byte strings are statically generated NUL-terminated ASCII.
     let module = unsafe { GetModuleHandleA(c"ntdll.dll".as_ptr().cast()) };
     let address = if module.is_null() {
@@ -700,13 +670,6 @@ fn prepare_arm64ec_entry<M: GuestMemory>(
     context.x4_r10 = stack_arguments;
     context.tail.arm64_lr = return_address;
     context.tail.arm64_x9 = target;
-    eprintln!(
-        "prisma-native-entry-boundary: target={target:#x} entry={entry:#x} rdi={:#x} stack={:#x} thread_inits={}",
-        context.x26_rdi,
-        context.sp_rsp,
-        crate::thread_init_count()
-    );
-    std::eprintln!("prisma-native-target-before-module-query: target={target:#x}");
     let mut module_base = std::ptr::null_mut();
     // SAFETY: the routine only queries loader metadata for this mapped address.
     let _ = unsafe {
@@ -717,13 +680,6 @@ fn prepare_arm64ec_entry<M: GuestMemory>(
     };
     let module_base_address = module_base as usize as u64;
     let target_rva = target.wrapping_sub(module_base_address);
-    if NATIVE_TARGET_DIAGNOSTICS.fetch_add(1, Ordering::AcqRel)
-        < NATIVE_TARGET_TRACE_LIMIT.load(Ordering::Acquire)
-    {
-        std::eprintln!(
-            "prisma-native-target: base={module_base_address:#x} rva={target_rva:#x} return={return_address:#x}"
-        );
-    }
     if target_rva == 0x9_b6e4 {
         #[link(name = "kernel32")]
         unsafe extern "system" {
@@ -733,31 +689,8 @@ fn prepare_arm64ec_entry<M: GuestMemory>(
         unsafe extern "system" {
             fn LdrAddRefDll(flags: u32, module: *mut std::ffi::c_void) -> i32;
         }
-        let mut units = Vec::new();
-        for offset in (0..520_u64).step_by(2) {
-            let Ok(bytes) = memory.read_data(frame.gpr[gpr::RCX].wrapping_add(offset), 2) else {
-                break;
-            };
-            let Some(unit) = <[u8; 2]>::try_from(bytes.as_slice())
-                .ok()
-                .map(u16::from_le_bytes)
-            else {
-                break;
-            };
-            if unit == 0 {
-                break;
-            }
-            units.push(unit);
-        }
-        let path = String::from_utf16_lossy(&units);
-        let basename = path.rsplit(['\\', '/']).next().unwrap_or(&path);
-        // SAFETY: RCX is the live LoadLibraryExW UTF-16 argument; the decoder
-        // above bounded and validated reads from the same NUL-terminated span.
+        // SAFETY: RCX is the live LoadLibraryExW UTF-16 argument.
         let loaded = unsafe { GetModuleHandleW(frame.gpr[gpr::RCX] as usize as *const u16) };
-        std::eprintln!(
-            "prisma-loader-checkpoint: requested-module={basename} already-loaded={}",
-            !loaded.is_null()
-        );
         let kernelbase = "kernelbase.dll"
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -772,10 +705,6 @@ fn prepare_arm64ec_entry<M: GuestMemory>(
             } else {
                 None
             };
-        std::eprintln!(
-            "prisma-loader-checkpoint: module-match={module_matches} file-null={file_is_null} flags-allow-reuse={flags_allow_reuse} addref-success={}",
-            add_ref_status.is_some_and(|status| status >= 0)
-        );
         if add_ref_status.is_some_and(|status| status >= 0) {
             let next = complete_loaded_module_return(
                 frame,
@@ -784,41 +713,8 @@ fn prepare_arm64ec_entry<M: GuestMemory>(
                 loaded as usize as u64,
             )?;
             context.store_frame(frame, next);
-            std::eprintln!("prisma-loader-checkpoint: reused-loaded-module=true");
-            POST_LOADER_TRACE_REMAINING.store(128, Ordering::Release);
             return Ok(Arm64EcEntry::Returned(next));
         }
-    }
-    if (0x1_4004_b660..0x1_4004_b7c0).contains(&return_address) {
-        let stack_args = memory.read_data(stack.wrapping_add(0x28), 16).ok();
-        eprintln!(
-            "prisma-newosproc-native: return={return_address:#x} target={target:#x} rva={target_rva:#x} rcx={:#x} rdx={:#x} r8_start={:#x} r9_param={:#x} stack_args={stack_args:02x?}",
-            frame.gpr[gpr::RCX],
-            frame.gpr[gpr::RDX],
-            frame.gpr[gpr::R8],
-            frame.gpr[gpr::R9],
-        );
-    }
-    let api = match target_rva {
-        0x10_21b0 => Some("GetThreadContext"),
-        0x10_3ed0 => Some("ResumeThread"),
-        0x10_4600 => Some("SetThreadContext"),
-        0x10_4ba0 => Some("SuspendThread"),
-        _ => None,
-    };
-    if let Some(api) = api {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentThreadId() -> u32;
-        }
-        // SAFETY: GetCurrentThreadId has no preconditions.
-        let tid = unsafe { GetCurrentThreadId() };
-        eprintln!(
-            "prisma-thread-api: tid={tid} api={api} handle={:#x} arg1={:#x} rsp={:#x} return={return_address:#x}",
-            frame.gpr[gpr::RCX],
-            frame.gpr[gpr::RDX],
-            frame.gpr[gpr::RSP],
-        );
     }
     Ok(Arm64EcEntry::Native)
 }
@@ -919,7 +815,6 @@ pub struct PrismaExecutor {
 impl BlockExecutor for PrismaExecutor {
     // Keep allocation, publication, execution and cache ownership in one
     // boundary: splitting it would make non-local Wine recovery unsound.
-    #[allow(clippy::too_many_lines)]
     fn execute(
         &self,
         guest_rip: u64,
@@ -959,53 +854,10 @@ impl BlockExecutor for PrismaExecutor {
                     entry
                 }
             };
-            if guest_rip == 0x1_4005_6E49 {
-                eprintln!(
-                    "prisma-dfcc-jit: body={:02x?} callable={:02x?}",
-                    code, callable
-                );
-            }
-            if guest_rip == 0x1_4002_0AA9 {
-                eprintln!(
-                    "prisma-rip-store-probe: jit={:p} frame={:p} mem_base={:#x} callable={} body={}",
-                    entry,
-                    frame,
-                    frame.mem_base,
-                    callable.len(),
-                    code.len(),
-                );
-            }
-            eprintln!(
-                "prisma: JIT base={:p} frame={:p} bytes={}",
-                entry,
-                frame,
-                callable.len()
-            );
-            let probe_rip = guest_rip;
-            if !FAULT_CAPTURED.load(Ordering::Acquire) {
-                PRISMA_FAULT_SNAPSHOT[0].store(probe_rip, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[1].store(entry as usize as u64, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[2].store(
-                    frame as *mut CpuStateFrame as usize as u64,
-                    Ordering::Release,
-                );
-                PRISMA_FAULT_SNAPSHOT[3].store(frame.mem_base, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[4].store(code.len() as u64, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[5].store(callable.len() as u64, Ordering::Release);
-                for (index, value) in frame.gpr.iter().copied().enumerate() {
-                    PRISMA_FAULT_SNAPSHOT[index + 6].store(value, Ordering::Release);
-                }
-                PRISMA_FAULT_SNAPSHOT[22].store(frame.rflags, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[23].store(frame.gs_base, Ordering::Release);
-            }
             let sp_before: usize;
             let teb_before: usize;
-            let publish_slot = (probe_rip == 0x1_4006_83CB).then(|| {
-                frame.gpr[gpr::RAX]
-                    .wrapping_add(frame.gpr[gpr::RDX])
-                    .wrapping_add(0x8b0)
-            });
-            // SAFETY: these register reads are side-effect free diagnostics.
+            // SAFETY: these register reads establish the host-state invariants
+            // checked after returning from generated code.
             unsafe {
                 core::arch::asm!(
                     "mov {sp}, sp",
@@ -1019,7 +871,7 @@ impl BlockExecutor for PrismaExecutor {
             // state-frame prologue and epilogue. A Rust ARM64EC indirect call
             // would route this anonymous JIT page through the x64 dispatcher;
             // issue the native branch directly and pass the frame in x0.
-            let _active_jit_frame = ActiveJitFrameGuard::enter(frame, probe_rip);
+            let _active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
             unsafe {
                 core::arch::asm!(
                     "blr {entry}",
@@ -1028,46 +880,9 @@ impl BlockExecutor for PrismaExecutor {
                     clobber_abi("C"),
                 );
             }
-            if let Some(slot) = publish_slot {
-                let host_address = frame.mem_base.wrapping_add(slot) as *const u64;
-                // SAFETY: the translated block has just written this mapped guest slot.
-                let value = unsafe { host_address.read_volatile() };
-                if value >= (1_u64 << 32) {
-                    PUBLISH_WATCH_ADDRESS.store(slot, Ordering::Release);
-                    PUBLISH_WATCH_VALUE.store(value, Ordering::Release);
-                }
-            }
-            let watched_address = PUBLISH_WATCH_ADDRESS.load(Ordering::Acquire);
-            let watched_value = PUBLISH_WATCH_VALUE.load(Ordering::Acquire);
-            let watched_current = if watched_address == 0 {
-                0
-            } else {
-                let host_address = frame.mem_base.wrapping_add(watched_address) as *const u64;
-                // SAFETY: the watch address was established from a successful guest write.
-                unsafe { host_address.read_volatile() }
-            };
-            if watched_value >= (1_u64 << 32)
-                && watched_current == (watched_value & u64::from(u32::MAX))
-                && FAULT_CAPTURED
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            {
-                PRISMA_FAULT_SNAPSHOT[0].store(probe_rip, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[1].store(entry as usize as u64, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[2].store(
-                    frame as *mut CpuStateFrame as usize as u64,
-                    Ordering::Release,
-                );
-                PRISMA_FAULT_SNAPSHOT[3].store(watched_address, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[4].store(watched_value, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[5].store(callable.len() as u64, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[24].store(probe_rip, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[25].store(watched_current, Ordering::Release);
-                PRISMA_FAULT_SNAPSHOT[26].store(0x5741_5443, Ordering::Release);
-            }
             let sp_after: usize;
             let teb_after: usize;
-            // SAFETY: these register reads are side-effect free diagnostics.
+            // SAFETY: these register reads complete the host-state invariant checks.
             unsafe {
                 core::arch::asm!(
                     "mov {sp}, sp",
@@ -1077,9 +892,6 @@ impl BlockExecutor for PrismaExecutor {
                     options(nomem, nostack, preserves_flags),
                 );
             }
-            eprintln!(
-                "prisma: JIT host state sp={sp_before:#x}->{sp_after:#x} teb={teb_before:#x}->{teb_after:#x}"
-            );
             assert_eq!(
                 sp_before, sp_after,
                 "JIT corrupted the native stack pointer"
@@ -1099,58 +911,6 @@ impl BlockExecutor for PrismaExecutor {
 }
 
 static LIVE_RUNTIMES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static MORESTACK_TRACE_STARTED: AtomicBool = AtomicBool::new(false);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static MORESTACK_TRACE_REMAINING: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static SCAN_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static LAST_GUEST_RIP: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static EXPECTED_CHECK_GROWTH: AtomicBool = AtomicBool::new(false);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static FIRST_RUNTIME_THROW_REPORTED: AtomicBool = AtomicBool::new(false);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static RUNTIME_CHECK_PATH: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static SYSCALL_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static POST_LOADER_TRACE_REMAINING: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static NATIVE_TARGET_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static NATIVE_TARGET_TRACE_LIMIT: AtomicUsize = AtomicUsize::new(512);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static FAULT_CAPTURED: AtomicBool = AtomicBool::new(false);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static PUBLISH_WATCH_ADDRESS: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static PUBLISH_WATCH_VALUE: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-#[unsafe(no_mangle)]
-pub static PRISMA_FAULT_SNAPSHOT: [AtomicU64; 48] = [const { AtomicU64::new(0) }; 48];
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static BAD_GO_M_REPORTED: AtomicBool = AtomicBool::new(false);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static TSTART_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static NEWOSPROC_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static ALLOCM_OBJECT_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static MALG_OBJECT_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static ALLOCM_MALG_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static FIRST_CHANCE_DIAGNOSTICS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static RESET_CAPTURED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(all(windows, target_arch = "arm64ec"))]
-pub fn last_guest_rip() -> u64 {
-    LAST_GUEST_RIP.load(Ordering::Acquire)
-}
 
 pub struct ThreadRuntime {
     cancel: AtomicBool,
@@ -1294,7 +1054,6 @@ impl ThreadRuntime {
 
     // This loop is the state-machine boundary for one guest thread. Helpers
     // may compute transitions, but ownership and cleanup remain visible here.
-    #[allow(clippy::too_many_lines)]
     pub fn dispatch<M: GuestMemory, E: BlockExecutor>(
         &self,
         context: &mut Arm64EcContext,
@@ -1310,346 +1069,16 @@ impl ThreadRuntime {
         }
 
         let _lease = DispatchLease::new(self);
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        eprintln!("prisma: runtime lease acquired");
         // `Translator` contains non-Send pass objects. Wine dispatch is
         // thread-affine, so ownership remains on this stack and is dropped
         // before returning across the provider boundary.
         let mut translator = Translator::new();
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        eprintln!("prisma: translator created");
         let mut frame = context.load_frame();
         initialize_windows_segment_bases(&mut frame);
         let mut rip = context.pc_rip;
         let mut instructions = 0usize;
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        let mut rdi_history = [(0_u64, 0_u64, 0_u64); 64];
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        let mut rdi_history_count = 0_usize;
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        let mut rax_history = [(0_u64, 0_u64, 0_u64); 64];
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        let mut rax_history_count = 0_usize;
-        #[cfg(all(windows, target_arch = "arm64ec"))]
-        eprintln!(
-            "prisma: frame loaded rip={rip:#x} rsp={:#x}",
-            frame.gpr[gpr::RSP]
-        );
 
         for block_index in 0..limits.max_blocks {
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_4280 && !FIRST_RUNTIME_THROW_REPORTED.swap(true, Ordering::AcqRel) {
-                let caller = memory
-                    .read_data(frame.gpr[gpr::RSP], 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                std::eprintln!("prisma-runtime-init-probe: first_throw_caller={caller:x?}");
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if let Some(failure) = match rip {
-                0x1_4006_2685 => Some("cas1"),
-                0x1_4006_266F => Some("cas2"),
-                0x1_4006_265E => Some("cas3"),
-                0x1_4006_264D => Some("cas4"),
-                _ => None,
-            } {
-                std::eprintln!("prisma-runtime-init-probe: atomic_check_failure={failure}");
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_9D20 {
-                let caller = memory
-                    .read_data(frame.gpr[gpr::RSP], 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                std::eprintln!("prisma-runtime-init-probe: morestack_caller={caller:x?}");
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_ce60 {
-                let faulting_rip = LAST_GUEST_RIP.load(Ordering::Acquire);
-                if faulting_rip != 0x1_4002_0609
-                    && PUBLISH_WATCH_ADDRESS.load(Ordering::Acquire) != 0
-                    && FAULT_CAPTURED
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    let exception_pointers = frame.gpr[gpr::RCX];
-                    let read_u64 = |address| {
-                        memory
-                            .read_data(address, 8)
-                            .ok()
-                            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                            .map(u64::from_le_bytes)
-                    };
-                    let read_u32 = |address| {
-                        memory
-                            .read_data(address, 4)
-                            .ok()
-                            .and_then(|bytes| <[u8; 4]>::try_from(bytes.as_slice()).ok())
-                            .map(u32::from_le_bytes)
-                    };
-                    let exception_record = read_u64(exception_pointers).unwrap_or_default();
-                    PRISMA_FAULT_SNAPSHOT[24].store(faulting_rip, Ordering::Release);
-                    PRISMA_FAULT_SNAPSHOT[25].store(rip, Ordering::Release);
-                    PRISMA_FAULT_SNAPSHOT[26].store(
-                        u64::from(read_u32(exception_record).unwrap_or_default()),
-                        Ordering::Release,
-                    );
-                    PRISMA_FAULT_SNAPSHOT[27].store(
-                        read_u64(exception_record.wrapping_add(16)).unwrap_or_default(),
-                        Ordering::Release,
-                    );
-                    PRISMA_FAULT_SNAPSHOT[28].store(
-                        read_u64(exception_record.wrapping_add(32)).unwrap_or_default(),
-                        Ordering::Release,
-                    );
-                    PRISMA_FAULT_SNAPSHOT[29].store(
-                        read_u64(exception_record.wrapping_add(40)).unwrap_or_default(),
-                        Ordering::Release,
-                    );
-                    for (index, value) in frame.gpr.iter().copied().enumerate() {
-                        PRISMA_FAULT_SNAPSHOT[index + 30].store(value, Ordering::Release);
-                    }
-                    PRISMA_FAULT_SNAPSHOT[46].store(frame.rflags, Ordering::Release);
-                    PRISMA_FAULT_SNAPSHOT[47].store(frame.gs_base, Ordering::Release);
-                    std::eprintln!(
-                        "prisma-fault-capture: guest={faulting_rip:#x} handler={rip:#x} code={:#x} exception_address={:#x} access_kind={:#x} access_address={:#x}",
-                        read_u32(exception_record).unwrap_or_default(),
-                        read_u64(exception_record.wrapping_add(16)).unwrap_or_default(),
-                        read_u64(exception_record.wrapping_add(32)).unwrap_or_default(),
-                        read_u64(exception_record.wrapping_add(40)).unwrap_or_default(),
-                    );
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if matches!(
-                rip,
-                0x1_4002_20ed
-                    | 0x1_4002_2175
-                    | 0x1_4002_21a5
-                    | 0x1_4002_247c
-                    | 0x1_4002_2506
-                    | 0x1_4002_252e
-            ) {
-                let read_u64 = |address| {
-                    memory
-                        .read_data(address, 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                match rip {
-                    0x1_4002_20ed if frame.gpr[gpr::RAX] == 0x1c8 => {
-                        let mcache = frame.gpr[gpr::RSI];
-                        let index = frame.gpr[gpr::R10];
-                        let slot = mcache
-                            .wrapping_add(index.wrapping_mul(8))
-                            .wrapping_add(0x30);
-                        eprintln!(
-                            "prisma-small-noheader-slot: mcache={mcache:#x} index={index:#x} slot={slot:#x} span={:x?}",
-                            read_u64(slot),
-                        );
-                    }
-                    0x1_4002_2175 if frame.gpr[gpr::RAX] == 0x1c8 => {
-                        eprintln!(
-                            "prisma-small-noheader-object: span={:#x} object={:#x}",
-                            frame.gpr[gpr::R10],
-                            frame.gpr[gpr::R13],
-                        );
-                    }
-                    0x1_4002_21a5 => {
-                        eprintln!(
-                            "prisma-small-noheader-nextfree-return: object={:#x} span={:#x} rsp={:#x}",
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RBX],
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                    0x1_4002_247c if frame.gpr[gpr::RAX] == 0x7f8 => {
-                        let mcache = frame.gpr[gpr::RSI];
-                        let index = frame.gpr[gpr::R9];
-                        let slot = mcache
-                            .wrapping_add(index.wrapping_mul(8))
-                            .wrapping_add(0x30);
-                        eprintln!(
-                            "prisma-small-header-slot: mcache={mcache:#x} index={index:#x} slot={slot:#x} span={:x?}",
-                            read_u64(slot),
-                        );
-                    }
-                    0x1_4002_2506 if frame.gpr[gpr::RAX] == 0x7f8 => {
-                        eprintln!(
-                            "prisma-small-header-object: span={:#x} object={:#x}",
-                            frame.gpr[gpr::R9],
-                            frame.gpr[gpr::R12],
-                        );
-                    }
-                    0x1_4002_252e => {
-                        eprintln!(
-                            "prisma-small-header-nextfree-return: object={:#x} span={:#x} rsp={:#x}",
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RBX],
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if matches!(rip, 0x1_4002_2ca0 | 0x1_4008_1dc0) {
-                let read_u64 = |address| {
-                    memory
-                        .read_data(address, 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                #[link(name = "kernel32")]
-                unsafe extern "system" {
-                    fn GetCurrentThreadId() -> u32;
-                }
-                // SAFETY: GetCurrentThreadId has no preconditions.
-                let tid = unsafe { GetCurrentThreadId() };
-                if rip == 0x1_4002_2ca0 {
-                    let caller = read_u64(frame.gpr[gpr::RSP]);
-                    if matches!(caller, Some(0x1_4005_55b1 | 0x1_4005_b525)) {
-                        let type_address = frame.gpr[gpr::RAX];
-                        let size = read_u64(type_address);
-                        eprintln!(
-                            "prisma-newobject-entry: tid={tid} caller={caller:x?} type={type_address:#x} size={size:x?} rsp={:#x}",
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                } else {
-                    let newobject_caller = read_u64(frame.gpr[gpr::RSP].wrapping_add(0x28));
-                    if matches!(newobject_caller, Some(0x1_4005_55b1 | 0x1_4005_b525)) {
-                        eprintln!(
-                            "prisma-mallocgc-entry: tid={tid} caller={newobject_caller:x?} size={:#x} type={:#x} needzero={:#x} rsp={:#x}",
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RBX],
-                            frame.gpr[gpr::RCX],
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if matches!(rip, 0x1_4005_55b1 | 0x1_4005_b525 | 0x1_4005_55ef) {
-                #[link(name = "kernel32")]
-                unsafe extern "system" {
-                    fn GetCurrentThreadId() -> u32;
-                }
-                // SAFETY: GetCurrentThreadId has no preconditions.
-                let tid = unsafe { GetCurrentThreadId() };
-                match rip {
-                    0x1_4005_55b1
-                        if ALLOCM_OBJECT_DIAGNOSTICS.fetch_add(1, Ordering::AcqRel) < 12 =>
-                    {
-                        eprintln!(
-                            "prisma-allocm-newobject-return: tid={tid} object={:#x} rsp={:#x}",
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                    0x1_4005_b525
-                        if MALG_OBJECT_DIAGNOSTICS.fetch_add(1, Ordering::AcqRel) < 12 =>
-                    {
-                        eprintln!(
-                            "prisma-malg-newobject-return: tid={tid} object={:#x} rsp={:#x}",
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                    0x1_4005_55ef
-                        if ALLOCM_MALG_DIAGNOSTICS.fetch_add(1, Ordering::AcqRel) < 12 =>
-                    {
-                        let mp = memory
-                            .read_data(frame.gpr[gpr::RSP].wrapping_add(0x30), 8)
-                            .ok()
-                            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                            .map(u64::from_le_bytes);
-                        eprintln!(
-                            "prisma-allocm-malg-return: tid={tid} mp={mp:x?} g0={:#x} rsp={:#x}",
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RSP],
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4004_b660 && NEWOSPROC_DIAGNOSTICS.fetch_add(1, Ordering::AcqRel) < 8 {
-                let mp = frame.gpr[gpr::RAX];
-                let g0 = memory
-                    .read_data(mp, 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                let g0_m = g0.and_then(|g0| {
-                    memory
-                        .read_data(g0.wrapping_add(0x30), 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                });
-                eprintln!(
-                    "prisma-newosproc-entry: rax_mp={mp:#x} g0={g0:x?} g0_m={g0_m:x?} rbx={:#x} rcx={:#x} rdx={:#x} rsp={:#x}",
-                    frame.gpr[gpr::RBX],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RDX],
-                    frame.gpr[gpr::RSP],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_d180 && TSTART_DIAGNOSTICS.fetch_add(1, Ordering::AcqRel) < 8 {
-                let mp = frame.gpr[gpr::RCX];
-                let g0 = memory
-                    .read_data(mp, 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                let g0_m = g0.and_then(|g0| {
-                    memory
-                        .read_data(g0.wrapping_add(0x30), 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                });
-                let mp_bytes = memory.read_data(mp, 32).ok();
-                let g0_bytes = g0.and_then(|g0| memory.read_data(g0, 64).ok());
-                eprintln!(
-                    "prisma-tstart-entry: mp={mp:#x} g0={g0:x?} g0_m={g0_m:x?} rsp={:#x} mp_bytes={mp_bytes:02x?} g0_bytes={g0_bytes:02x?}",
-                    frame.gpr[gpr::RSP],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if (0x1_4000_0000..0x1_4100_0000).contains(&rip)
-                && !BAD_GO_M_REPORTED.load(Ordering::Acquire)
-            {
-                let g = frame.gpr[gpr::R14];
-                if g != 0 {
-                    let direct_m = memory
-                        .read_data(g.wrapping_add(0x30), 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes);
-                    if direct_m == Some(g.wrapping_add(8))
-                        && !BAD_GO_M_REPORTED.swap(true, Ordering::AcqRel)
-                    {
-                        let writer_rip = LAST_GUEST_RIP.load(Ordering::Acquire);
-                        let writer_bytes = memory.read_code(writer_rip, 64).ok();
-                        eprintln!(
-                            "prisma-go-m-corruption: writer_rip={writer_rip:#x} writer_bytes={writer_bytes:02x?} next_rip={rip:#x} g={g:#x} bad_m={:#x} rsp={:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x}",
-                            direct_m.unwrap_or_default(),
-                            frame.gpr[gpr::RSP],
-                            frame.gpr[gpr::RAX],
-                            frame.gpr[gpr::RBX],
-                            frame.gpr[gpr::RCX],
-                            frame.gpr[gpr::RDX],
-                        );
-                    }
-                }
-            }
             if self.cancel.load(Ordering::Acquire) {
                 context.store_frame(&frame, rip);
                 return Ok(DispatchReport {
@@ -1694,72 +1123,9 @@ impl ThreadRuntime {
                 });
             }
 
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if POST_LOADER_TRACE_REMAINING
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
-                std::eprintln!("prisma-post-loader-block: {rip:#x}");
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            eprintln!("prisma: reading block rip={rip:#x}");
-            let bytes = match memory.read_code(rip, limits.max_fetch_bytes) {
-                Ok(bytes) => bytes,
-                Err(detail) => {
-                    #[cfg(all(windows, target_arch = "arm64ec"))]
-                    std::eprintln!(
-                        "prisma-flow-probe: unreadable={rip:#x} previous={:#x} exit={} next={:#x} rsp={:#x}",
-                        LAST_GUEST_RIP.load(Ordering::Acquire),
-                        frame.exit_reason,
-                        frame.next_pc,
-                        frame.gpr[gpr::RSP],
-                    );
-                    #[cfg(all(windows, target_arch = "arm64ec"))]
-                    {
-                        let retained = rdi_history_count.min(rdi_history.len());
-                        let first = rdi_history_count.saturating_sub(retained);
-                        for sequence in first..rdi_history_count {
-                            let (writer, before, after) = rdi_history[sequence % rdi_history.len()];
-                            std::eprintln!(
-                                "prisma-rdi-history: sequence={sequence} writer={writer:#x} before={before:#x} after={after:#x}"
-                            );
-                        }
-                        let retained = rax_history_count.min(rax_history.len());
-                        let first = rax_history_count.saturating_sub(retained);
-                        for sequence in first..rax_history_count {
-                            let (writer, before, after) = rax_history[sequence % rax_history.len()];
-                            std::eprintln!(
-                                "prisma-rax-history: sequence={sequence} writer={writer:#x} before={before:#x} after={after:#x}"
-                            );
-                        }
-                    }
-                    #[cfg(all(windows, target_arch = "arm64ec"))]
-                    eprintln!(
-                        "prisma: unreadable next rip={rip:#x} last_block={:#x} rsp={:#x} rax={:#x} rcx={:#x} rdx={:#x} rbx={:#x} rsi={:#x} rdi={:#x} r8={:#x} r9={:#x} r10={:#x} r11={:#x}",
-                        LAST_GUEST_RIP.load(Ordering::Acquire),
-                        frame.gpr[gpr::RSP],
-                        frame.gpr[gpr::RAX],
-                        frame.gpr[gpr::RCX],
-                        frame.gpr[gpr::RDX],
-                        frame.gpr[gpr::RBX],
-                        frame.gpr[gpr::RSI],
-                        frame.gpr[gpr::RDI],
-                        frame.gpr[gpr::R8],
-                        frame.gpr[gpr::R9],
-                        frame.gpr[gpr::R10],
-                        frame.gpr[gpr::R11],
-                    );
-                    return Err(DispatchError::MemoryRead { rip, detail });
-                }
-            };
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            eprintln!(
-                "prisma: read {} bytes head={:02x?}",
-                bytes.len(),
-                &bytes[..bytes.len().min(32)]
-            );
+            let bytes = memory
+                .read_code(rip, limits.max_fetch_bytes)
+                .map_err(|detail| DispatchError::MemoryRead { rip, detail })?;
             if bytes.is_empty() {
                 return Err(DispatchError::MemoryRead {
                     rip,
@@ -1774,598 +1140,11 @@ impl ThreadRuntime {
                     limits.max_instructions_per_block,
                 )
                 .map_err(|source| DispatchError::Translation { rip, source })?;
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            eprintln!(
-                "prisma: translated instructions={} guest_bytes={}",
-                block.instruction_count, block.guest_bytes
-            );
             frame.exit_reason = EXIT_NORMAL;
             frame.next_pc = 0;
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4005_6E49 {
-                eprintln!(
-                    "prisma-56e49-guest: instructions={} guest_bytes={} ended={} head={:02x?}",
-                    block.instruction_count,
-                    block.guest_bytes,
-                    block.ended_at_terminator,
-                    &bytes[..bytes.len().min(40)],
-                );
-                frame.next_pc = 0xD1A6_005E_6E49_0001;
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_B545 {
-                let read_u64 = |address| {
-                    memory
-                        .read_data(address, 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                let m_g0 = read_u64(frame.gpr[gpr::R8]);
-                let direct_g_m = read_u64(frame.gpr[gpr::RDI].wrapping_add(0x30));
-                eprintln!(
-                    "prisma-g0-select-before: r8_m={:#x} direct_g_m={direct_g_m:x?} m_g0={m_g0:x?} rdi_g={:#x} rsi={:#x} r14={:#x} rsp={:#x}",
-                    frame.gpr[gpr::R8],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::R14],
-                    frame.gpr[gpr::RSP],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_B583 {
-                let read_u64 = |address| {
-                    memory
-                        .read_data(address, 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                let tls_offset = read_u64(0x1_40df_f650);
-                let g = tls_offset.and_then(|offset| read_u64(frame.gs_base.wrapping_add(offset)));
-                let rdi_stack = read_u64(frame.gpr[gpr::RDI].wrapping_add(8));
-                let stack_delta = read_u64(frame.gpr[gpr::RSP]);
-                let restore_rsp = rdi_stack
-                    .zip(stack_delta)
-                    .map(|(stack_high, delta)| stack_high.wrapping_sub(delta));
-                let restore_frame =
-                    restore_rsp.and_then(|address| memory.read_data(address, 32).ok());
-                let g0_frame = memory.read_data(frame.gpr[gpr::RSP], 32).ok();
-                let saved_g = read_u64(frame.gpr[gpr::RSP].wrapping_add(8));
-                let saved_stack_high = saved_g.and_then(|g| read_u64(g.wrapping_add(8)));
-                let actual_restore_rsp = saved_stack_high
-                    .zip(stack_delta)
-                    .map(|(stack_high, delta)| stack_high.wrapping_sub(delta));
-                let actual_restore_frame =
-                    actual_restore_rsp.and_then(|address| memory.read_data(address, 32).ok());
-                eprintln!(
-                    "prisma-8b583-before: insns={} bytes={} ended={} rsp={:#x} rdi={:#x} rsi={:#x} rdx={:#x} gs={:#x} mem_base={:#x} tls={tls_offset:x?} g={g:x?} rdi_stack={rdi_stack:x?} delta={stack_delta:x?} restore_rsp={restore_rsp:x?} restore_frame={restore_frame:02x?} g0_frame={g0_frame:02x?} saved_g={saved_g:x?} saved_stack_high={saved_stack_high:x?} actual_restore_rsp={actual_restore_rsp:x?} actual_restore_frame={actual_restore_frame:02x?}",
-                    block.instruction_count,
-                    block.guest_bytes,
-                    block.ended_at_terminator,
-                    frame.gpr[gpr::RSP],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::RDX],
-                    frame.gs_base,
-                    frame.mem_base,
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_B55F {
-                let stack = memory.read_data(frame.gpr[gpr::RSP], 64).ok();
-                let rdi_stack = memory
-                    .read_data(frame.gpr[gpr::RDI].wrapping_add(8), 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                let rsi_sched_sp = memory
-                    .read_data(frame.gpr[gpr::RSI].wrapping_add(0x38), 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                eprintln!(
-                    "prisma-asmcgocall-entry: rip={rip:#x} rsp={:#x} rbp={:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rdi={:#x} rsi_g0={:#x} rsi_sched_sp={rsi_sched_sp:x?} r8_m={:#x} r14={:#x} rdi_stack={rdi_stack:x?} stack={stack:02x?}",
-                    frame.gpr[gpr::RSP],
-                    frame.gpr[gpr::RBP],
-                    frame.gpr[gpr::RAX],
-                    frame.gpr[gpr::RBX],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RDX],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::R8],
-                    frame.gpr[gpr::R14],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if (0x1_4006_d900..=0x1_4006_e200).contains(&rip) {
-                let source = memory
-                    .read_data(frame.gpr[gpr::RAX], 16)
-                    .ok()
-                    .map(|bytes| bytes.into_iter().take(16).collect::<Vec<_>>());
-                eprintln!(
-                    "prisma: symtab before rip={rip:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rdi={:#x} rsi={:#x} r8={:#x} rflags={:#x} source={source:02x?}",
-                    frame.gpr[gpr::RAX],
-                    frame.gpr[gpr::RBX],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RDX],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::R8],
-                    frame.rflags,
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4004_c009 {
-                let m = frame.gpr[gpr::RDX];
-                let field_e0 = memory.read_data(m.wrapping_add(0xe0), 4).ok();
-                let field_340 = memory.read_data(m.wrapping_add(0x340), 8).ok();
-                let callback = memory.read_data(0x1_40db_5800, 8).ok();
-                eprintln!(
-                    "prisma: c009 state rdx={m:#x} rax={:#x} rcx={:#x} rbx={:#x} e0={field_e0:02x?} f340={field_340:02x?} callback={callback:02x?}",
-                    frame.gpr[gpr::RAX],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RBX],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4006_5ec0 {
-                #[link(name = "ntdll")]
-                unsafe extern "system" {
-                    fn RtlPcToFileHeader(
-                        pc: *const std::ffi::c_void,
-                        base: *mut *mut std::ffi::c_void,
-                    ) -> *mut std::ffi::c_void;
-                }
-                let record = frame.gpr[gpr::RAX];
-                let context = frame.gpr[gpr::RBX];
-                let code = memory.read_data(record, 4).ok();
-                let address = memory.read_data(record.wrapping_add(0x10), 8).ok();
-                let information = memory.read_data(record.wrapping_add(0x20), 16).ok();
-                let native_rip = memory.read_data(context.wrapping_add(0xf8), 8).ok();
-                let as_u64 = |bytes: &Option<Vec<u8>>| {
-                    bytes
-                        .as_ref()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                let native_rip_value = as_u64(&native_rip).unwrap_or_default();
-                let fault_address = information
-                    .as_ref()
-                    .and_then(|bytes| bytes.get(8..16))
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-                    .map(u64::from_le_bytes)
-                    .unwrap_or_default();
-                let mut rip_base = std::ptr::null_mut();
-                let mut fault_base = std::ptr::null_mut();
-                // SAFETY: both calls only query loader metadata for diagnostic addresses.
-                unsafe {
-                    RtlPcToFileHeader(
-                        native_rip_value as usize as *const std::ffi::c_void,
-                        &raw mut rip_base,
-                    );
-                    RtlPcToFileHeader(
-                        fault_address as usize as *const std::ffi::c_void,
-                        &raw mut fault_base,
-                    );
-                }
-                let fault_probe = memory.read_data(fault_address, 1);
-                if FIRST_CHANCE_DIAGNOSTICS.fetch_add(1, Ordering::Relaxed) < 3 {
-                    let jit_window = native_rip_value
-                        .checked_sub(0x80)
-                        .and_then(|start| memory.read_data(start, 0x100).ok());
-                    eprintln!(
-                        "prisma: first-chance last_guest={:#x} record={record:#x} context={context:#x} code={code:02x?} address={address:02x?} info={information:02x?} rip={native_rip:02x?} rip_base={rip_base:p} fault={fault_address:#x} fault_base={fault_base:p} probe={fault_probe:?} jit_window={jit_window:02x?}",
-                        LAST_GUEST_RIP.load(Ordering::Acquire),
-                    );
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4004_a867 {
-                eprintln!(
-                    "prisma: zero-loop rdx={:#x} rsi={:#x} rsp={:#x}",
-                    frame.gpr[gpr::RDX],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::RSP]
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if matches!(rip, 0x1_4008_6c58 | 0x1_4008_6c69) {
-                let count = SCAN_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-                if count < 8 || count.is_power_of_two() {
-                    eprintln!(
-                        "prisma-scan-probe: count={count} rip={rip:#x} rbx={:#x} r9={:#x} rsi={:#x} rdx={:#x} r8={:#x} rdi={:#x}",
-                        frame.gpr[gpr::RBX],
-                        frame.gpr[gpr::R9],
-                        frame.gpr[gpr::RSI],
-                        frame.gpr[gpr::RDX],
-                        frame.gpr[gpr::R8],
-                        frame.gpr[gpr::RDI],
-                    );
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_bd00 {
-                let caller = memory
-                    .read_data(frame.gpr[gpr::RSP], 8)
-                    .ok()
-                    .and_then(|bytes| {
-                        <[u8; 8]>::try_from(bytes.as_slice())
-                            .ok()
-                            .map(u64::from_le_bytes)
-                    });
-                if caller == Some(0x1_4006_e12f)
-                    && !MORESTACK_TRACE_STARTED.swap(true, Ordering::AcqRel)
-                {
-                    MORESTACK_TRACE_REMAINING.store(200, Ordering::Release);
-                    eprintln!(
-                        "prisma: tracing failed morestack entry rsp={:#x} r14={:#x} caller={caller:x?}",
-                        frame.gpr[gpr::RSP],
-                        frame.gpr[gpr::R14]
-                    );
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4004_c960 {
-                let guard_address = frame.gpr[gpr::R14].wrapping_add(0x10);
-                let guard = memory.read_data(guard_address, 8).ok().and_then(|bytes| {
-                    <[u8; 8]>::try_from(bytes.as_slice())
-                        .ok()
-                        .map(u64::from_le_bytes)
-                });
-                let return_address =
-                    memory
-                        .read_data(frame.gpr[gpr::RSP], 8)
-                        .ok()
-                        .and_then(|bytes| {
-                            <[u8; 8]>::try_from(bytes.as_slice())
-                                .ok()
-                                .map(u64::from_le_bytes)
-                        });
-                eprintln!(
-                    "prisma: morestack check rsp={:#x} r14={:#x} guard={guard:x?} return={return_address:x?}",
-                    frame.gpr[gpr::RSP],
-                    frame.gpr[gpr::R14]
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if MORESTACK_TRACE_REMAINING
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
-                eprintln!(
-                    "prisma: morestack-trace rip={rip:#x} rsp={:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} r14={:#x}",
-                    frame.gpr[gpr::RSP],
-                    frame.gpr[gpr::RAX],
-                    frame.gpr[gpr::RBX],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RDX],
-                    frame.gpr[gpr::R14],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4001_5c3e {
-                eprintln!(
-                    "prisma: rep-movsq before rcx={:#x} rsi={:#x} rdi={:#x} rsp={:#x} r14={:#x}",
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSP],
-                    frame.gpr[gpr::R14],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if matches!(
-                rip,
-                0x1_4002_0c25
-                    | 0x1_4005_c860
-                    | 0x1_4005_d3b7
-                    | 0x1_4005_d3e5
-                    | 0x1_4002_2060
-                    | 0x1_4002_20cf
-            ) {
-                let read_u64 = |address| {
-                    memory
-                        .read_data(address, 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                let m = read_u64(frame.gpr[gpr::R14].wrapping_add(0x30));
-                let mcache = m.and_then(|m| read_u64(m.wrapping_add(0xa0)));
-                let mcache_inner = mcache.and_then(|mcache| read_u64(mcache.wrapping_add(0x38)));
-                std::eprintln!(
-                    "prisma-mcache-probe-before: rip={rip:#x} rax={:#x} rsi={:#x} g={:#x} m={m:x?} mcache={mcache:x?} inner={mcache_inner:x?} global={:x?}",
-                    frame.gpr[gpr::RAX],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::R14],
-                    read_u64(0x1_40df_f500),
-                );
-                if rip == 0x1_4005_c860 {
-                    let active_p = m.and_then(|m| read_u64(m.wrapping_add(0xa0)));
-                    let return_address = read_u64(frame.gpr[gpr::RSP]);
-                    std::eprintln!(
-                        "prisma-proc-destroy-entry: candidate={:#x} active={active_p:x?} return={return_address:x?}",
-                        frame.gpr[gpr::RAX],
-                    );
-                }
-                if rip == 0x1_4005_d3b7 {
-                    let read_u32 = |address| {
-                        memory
-                            .read_data(address, 4)
-                            .ok()
-                            .and_then(|bytes| <[u8; 4]>::try_from(bytes.as_slice()).ok())
-                            .map(u32::from_le_bytes)
-                    };
-                    std::eprintln!(
-                        "prisma-procresize-loop-before: old={:x?} nprocs={:x?}",
-                        read_u32(frame.gpr[gpr::RSP].wrapping_add(0x44)),
-                        read_u32(frame.gpr[gpr::RSP].wrapping_add(0x130)),
-                    );
-                }
-                if rip == 0x1_4005_d3e5 {
-                    let read_u32 = |address| {
-                        memory
-                            .read_data(address, 4)
-                            .ok()
-                            .and_then(|bytes| <[u8; 4]>::try_from(bytes.as_slice()).ok())
-                            .map(u32::from_le_bytes)
-                    };
-                    std::eprintln!(
-                        "prisma-procresize-branch-before: old={:x?} nprocs={:#x}",
-                        read_u32(frame.gpr[gpr::RSP].wrapping_add(0x44)),
-                        frame.gpr[gpr::RAX] as u32,
-                    );
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            eprintln!("prisma: executing ARM64 block");
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            LAST_GUEST_RIP.store(rip, Ordering::Release);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            let rdi_before = frame.gpr[gpr::RDI];
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            let rax_before = frame.gpr[gpr::RAX];
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            let return_target_before = (rip == 0x1_4006_257B).then(|| {
-                memory
-                    .read_data(frame.gpr[gpr::RSP], 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes)
-            });
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4006_2360 {
-                let read_g = |offset: u64| {
-                    memory
-                        .read_data(frame.gpr[gpr::R14].wrapping_add(offset), 8)
-                        .ok()
-                        .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                        .map(u64::from_le_bytes)
-                };
-                let low = read_g(0);
-                let high = read_g(8);
-                let guard = read_g(0x10);
-                let expected = guard.is_some_and(|guard| frame.gpr[gpr::RSP] <= guard);
-                std::eprintln!(
-                    "prisma-runtime-init-probe: stack_in_bounds={} stack_below_low={} stack_has_frame_margin={}",
-                    low.zip(high).is_some_and(|(low, high)| (low..=high).contains(&frame.gpr[gpr::RSP])),
-                    low.is_some_and(|low| frame.gpr[gpr::RSP] < low),
-                    guard.is_some_and(|guard| frame.gpr[gpr::RSP] > guard)
-                );
-                EXPECTED_CHECK_GROWTH.store(expected, Ordering::Release);
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            {
-                let checkpoint = if rip == 0x1_4006_2360 {
-                    Some((1, "entry"))
-                } else if rip == 0x1_4006_257B {
-                    Some((2, "normal-return"))
-                } else if (0x1_4006_257C..0x1_4006_2697).contains(&rip) {
-                    Some((3, "failure-path"))
-                } else if (0x1_4006_2697..0x1_4006_26B0).contains(&rip) {
-                    Some((4, "stack-growth"))
-                } else {
-                    None
-                };
-                if let Some((state, label)) = checkpoint {
-                    if RUNTIME_CHECK_PATH.swap(state, Ordering::AcqRel) != state {
-                        std::eprintln!("prisma-runtime-check-path: {label}");
-                    }
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            let morestack_guard_expected = (rip == 0x1_4004_C960).then(|| {
-                memory
-                    .read_data(frame.gpr[gpr::R14].wrapping_add(0x10), 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes)
-                    .is_some_and(|guard| frame.gpr[gpr::RSP] <= guard)
-            });
             executor
                 .execute(rip, &block.code, &mut frame)
                 .map_err(|source| DispatchError::Execution { rip, source })?;
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if matches!(rip, 0x1_4002_0c25 | 0x1_4005_d3b7 | 0x1_4005_d3e5) {
-                let global = memory
-                    .read_data(0x1_40df_f500, 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                std::eprintln!(
-                    "prisma-mcache-probe-after: rip={rip:#x} rax={:#x} global={global:x?}",
-                    frame.gpr[gpr::RAX],
-                );
-                if rip == 0x1_4005_d3b7 {
-                    std::eprintln!(
-                        "prisma-procresize-loop-after: exit={} next={:#x}",
-                        frame.exit_reason,
-                        frame.next_pc,
-                    );
-                }
-                if rip == 0x1_4005_d3e5 {
-                    std::eprintln!(
-                        "prisma-procresize-branch-after: exit={} next={:#x}",
-                        frame.exit_reason,
-                        frame.next_pc,
-                    );
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if let Some(expected_taken) = morestack_guard_expected {
-                let actual_taken = frame.next_pc == 0x1_4004_CA8F;
-                std::eprintln!(
-                    "prisma-runtime-init-probe: stack_guard_branch_matches={}",
-                    expected_taken == actual_taken
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if let Some(expected) = return_target_before {
-                std::eprintln!(
-                    "prisma-runtime-init-probe: return_published_target={} return_marked_branch={}",
-                    expected == Some(frame.next_pc),
-                    frame.exit_reason == EXIT_BRANCH
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4006_2364 {
-                let actual_taken = frame.next_pc == 0x1_4006_2697;
-                std::eprintln!(
-                    "prisma-runtime-init-probe: check_guard_branch_matches={}",
-                    actual_taken == EXPECTED_CHECK_GROWTH.load(Ordering::Acquire)
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if frame.gpr[gpr::RDI] != rdi_before {
-                rdi_history[rdi_history_count % rdi_history.len()] =
-                    (rip, rdi_before, frame.gpr[gpr::RDI]);
-                rdi_history_count = rdi_history_count.saturating_add(1);
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if frame.gpr[gpr::RAX] != rax_before {
-                rax_history[rax_history_count % rax_history.len()] =
-                    (rip, rax_before, frame.gpr[gpr::RAX]);
-                rax_history_count = rax_history_count.saturating_add(1);
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4005_6E49 {
-                eprintln!(
-                    "prisma-56e49-exit: reason={} next={:#x} rsp={:#x} code={:02x?}",
-                    frame.exit_reason,
-                    frame.next_pc,
-                    frame.gpr[gpr::RSP],
-                    block.code,
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_B545 {
-                let selected_sched_sp = memory
-                    .read_data(frame.gpr[gpr::RSI].wrapping_add(0x38), 8)
-                    .ok()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                    .map(u64::from_le_bytes);
-                eprintln!(
-                    "prisma-g0-select-after: next={:#x} rsi_g0={:#x} selected_sched_sp={selected_sched_sp:x?} r8_m={:#x} rdi_g={:#x}",
-                    frame.next_pc,
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::R8],
-                    frame.gpr[gpr::RDI],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4008_B583 {
-                let stack = memory.read_data(frame.gpr[gpr::RSP], 32).ok();
-                let popped_frame = memory
-                    .read_data(frame.gpr[gpr::RSP].wrapping_sub(16), 16)
-                    .ok();
-                eprintln!(
-                    "prisma-8b583-after: reason={} next={:#x} rsp={:#x} rbp={:#x} rcx={:#x} rdi={:#x} rsi={:#x} popped_frame={popped_frame:02x?} stack={stack:02x?}",
-                    frame.exit_reason,
-                    frame.next_pc,
-                    frame.gpr[gpr::RSP],
-                    frame.gpr[gpr::RBP],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSI],
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if (0x1_4006_d900..=0x1_4006_e200).contains(&rip) {
-                eprintln!(
-                    "prisma: symtab after rip={rip:#x} next={:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rdi={:#x} rsi={:#x} r8={:#x} rflags={:#x}",
-                    frame.next_pc,
-                    frame.gpr[gpr::RAX],
-                    frame.gpr[gpr::RBX],
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RDX],
-                    frame.gpr[gpr::RDI],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::R8],
-                    frame.rflags,
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            eprintln!(
-                "prisma: block exit reason={} rsp={:#x} rax={:#x} next={:#x}",
-                frame.exit_reason,
-                frame.gpr[gpr::RSP],
-                frame.gpr[gpr::RAX],
-                frame.next_pc
-            );
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4004_c960 {
-                eprintln!(
-                    "prisma: morestack result next={:#x} rflags={:#x}",
-                    frame.next_pc, frame.rflags
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x1_4001_5c3e {
-                eprintln!(
-                    "prisma: rep-movsq after rcx={:#x} rsi={:#x} rdi={:#x} next={:#x}",
-                    frame.gpr[gpr::RCX],
-                    frame.gpr[gpr::RSI],
-                    frame.gpr[gpr::RDI],
-                    frame.next_pc,
-                );
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if let Ok(top) = memory.read_data(frame.gpr[gpr::RSP], 8) {
-                if let Ok(bytes) = <[u8; 8]>::try_from(top.as_slice()) {
-                    eprintln!("prisma: stack top={:#x}", u64::from_le_bytes(bytes));
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if (0x1_4008_74c0..=0x1_4008_75a5).contains(&rip)
-                || matches!(
-                    rip,
-                    0x1_4004_c053 | 0x1_4008_b520 | 0x1_4008_b538 | 0x1_4008_b545 | 0x1_4008_b5a7
-                )
-            {
-                if let Ok(stack) = memory.read_data(frame.gpr[gpr::RSP], 32) {
-                    let words = stack
-                        .chunks_exact(8)
-                        .map(|word| u64::from_le_bytes(word.try_into().expect("eight bytes")))
-                        .collect::<Vec<_>>();
-                    eprintln!("prisma: target stack rip={rip:#x} words={words:x?}");
-                }
-            }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if (0x1_4004_a940..=0x1_4004_a980).contains(&rip) {
-                let slot = memory.read_data(0x1_40db_5800, 8).ok().and_then(|bytes| {
-                    <[u8; 8]>::try_from(bytes.as_slice())
-                        .ok()
-                        .map(u64::from_le_bytes)
-                });
-                eprintln!(
-                    "prisma: init slot rip={rip:#x} rax={:#x} slot={slot:x?}",
-                    frame.gpr[gpr::RAX]
-                );
-            }
             instructions = instructions.saturating_add(block.instruction_count);
             let blocks = block_index + 1;
 
@@ -2408,7 +1187,6 @@ impl ThreadRuntime {
         })
     }
 }
-
 fn translate_dispatch_block(
     translator: &mut Translator,
     rip: u64,
@@ -2419,26 +1197,11 @@ fn translate_dispatch_block(
         return translator.translate_block(rip, bytes, 1);
     }
 
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    if rip == 0x1_4004_c009 {
-        eprintln!("prisma: diagnostic translate begin c009");
-    }
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    if rip == 0x1_4008_9a41 {
-        if let Ok(block) = translator.optimize_fused_block(rip, bytes, max_instructions) {
-            eprintln!("prisma: diagnostic IR {:#?}", block.func);
-        }
-    }
     // Preserve arithmetic/test NZCV through its terminating Jcc by preferring
     // one fused lowering unit. If the migration backend rejects that unit
     // (notably vector-register pressure), retry with isolated cached
     // instructions; those fallback blocks contain no cross-instruction flags.
-    let fused = translator.translate_fused_block(rip, bytes, max_instructions);
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    if rip == 0x1_4004_c009 {
-        eprintln!("prisma: diagnostic translate end c009 ok={}", fused.is_ok());
-    }
-    match fused {
+    match translator.translate_fused_block(rip, bytes, max_instructions) {
         Ok(block) => Ok(block),
         Err(TranslateError::Lower(_)) => translator.translate_block(rip, bytes, max_instructions),
         Err(error) => Err(error),
@@ -2646,14 +1409,6 @@ pub unsafe fn resume_wine_context(context: &mut Arm64EcContext) -> ! {
     // SAFETY: `context` is Wine's live AMD64-compatible context. NtContinue
     // either resumes x64 through KiUserEmulationDispatcher or restores an EC
     // target natively; success does not return.
-    eprintln!(
-        "prisma: resume native rip={:#x} rsp={:#x} lr={:#x} x9={:#x} flags={:#x}",
-        context.pc_rip,
-        context.sp_rsp,
-        context.tail.arm64_lr,
-        context.tail.arm64_x9,
-        context.context_flags
-    );
     let status = unsafe { NtContinue(context, 0) };
     // SAFETY: reaching this path means continuation failed. Terminating the
     // exact current Wine process prevents execution of KiUserEmulationDispatcher's
@@ -2970,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnoses_go_systemstack_argument_setup() {
+    fn translates_go_systemstack_argument_setup() {
         let bytes = [
             0x31, 0xc0, 0x48, 0x89, 0x54, 0x24, 0x20, 0x88, 0x44, 0x24, 0x1f, 0x48, 0x8b, 0x05,
             0x9b, 0x97, 0xd6, 0x00, 0x48, 0x89, 0x04, 0x24, 0x48, 0x8d, 0x82, 0x20, 0x05, 0x00,
@@ -2980,18 +1735,16 @@ mod tests {
         let optimized = translator
             .optimize_fused_block(0x1_4004_c053, &bytes, 64)
             .expect("Go systemstack setup must optimize");
-        eprintln!("{:#?}", optimized.func);
         assert_eq!(optimized.instruction_count, 8);
     }
 
     #[test]
-    fn diagnoses_go_morestack_guard_branch() {
+    fn translates_go_morestack_guard_branch() {
         let bytes = [0x49, 0x3b, 0x66, 0x10, 0x0f, 0x86, 0x25, 0x01, 0x00, 0x00];
         let mut translator = Translator::new();
         let optimized = translator
             .optimize_fused_block(0x1_4004_c960, &bytes, 64)
             .expect("Go stack guard must optimize");
-        eprintln!("{:#?}", optimized.func);
         assert_eq!(optimized.instruction_count, 2);
     }
 
