@@ -1,0 +1,90 @@
+{
+  "schema": "prisma-windows-targets/v1",
+  "acquired_at": "2026-08-07T17:39:00-06:00",
+  "artifact_directory": "C:\\Users\\daedg\\Downloads\\Prisma-Windows-Targets",
+  "artifacts": [
+    {
+      "id": "chatgpt-classic-windows",
+      "version": "22607.0722.04.0+d51b52927c5be7ff1d7943161faf05c493099514",
+      "architecture": "bootstrapper",
+      "filename": "ChatGPT-Classic-official-installer.exe",
+      "official_page": "https://chatgpt.com/download/",
+      "source_url": "https://get.microsoft.com/installer/download/9NT1R1C2HH7J?cid=website_cta_psi",
+      "size": 1462848,
+      "sha256": "acfdd2b7af6a0f97086a1d16630e82da2561ab3148f0f1b706c4165bdb3a0097",
+      "authenticode": "valid",
+      "signer": "Microsoft Corporation"
+    },
+    {
+      "id": "libreoffice-windows-x86-64",
+      "version": "26.2.5",
+      "architecture": "x86-64",
+      "filename": "LibreOffice_26.2.5_Win_x86-64.msi",
+      "official_page": "https://www.libreoffice.org/download/",
+      "source_url": "https://download.documentfoundation.org/libreoffice/stable/26.2.5/win/x86_64/LibreOffice_26.2.5_Win_x86-64.msi",
+      "size": 372948992,
+      "sha256": "f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9",
+      "authenticode": "valid",
+      "signer": "The Document Foundation"
+    },
+    {
+      "id": "7zip-windows-x86-64",
+      "version": "26.02",
+      "architecture": "x86-64",
+      "filename": "7z2602-x64.exe",
+      "official_page": "https://www.7-zip.org/",
+      "source_url": "https://github.com/ip7z/7zip/releases/download/26.02/7z2602-x64.exe",
+      "size": 1657896,
+      "sha256": "6745fa76dc2ea031596d8678f6f6b99c3c1b435b4164a63485adbbc7b8d82ef0",
+      "verification": "GitHub release asset digest"
+    },
+    {
+      "id": "notepad-plus-plus-windows-x86-64",
+      "version": "8.9",
+      "architecture": "x86-64",
+      "filename": "npp.8.9.portable.x64.zip",
+      "official_page": "https://notepad-plus-plus.org/downloads/v8.9/",
+      "source_url": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9/npp.8.9.portable.x64.zip",
+      "size": 8139853,
+      "sha256": "72ea3fa91e6bde264be6dfff75a30f15cb0fc43d9884ed4491b16ea4a3a37d9d",
+      "authenticode": "valid after extraction",
+      "signer": "NOTEPAD++"
+    },
+    {
+      "id": "sumatrapdf-windows-x86-64",
+      "version": "3.6.1",
+      "architecture": "x86-64",
+      "filename": "SumatraPDF-3.6.1-64.zip",
+      "official_page": "https://www.sumatrapdfreader.org/download-free-pdf-viewer",
+      "source_url": "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64.zip",
+      "size": 10031830,
+      "sha256": "98b33a518d42986856d225064b0cd2d3643ecf78cbf84ab873d26cc51877a544",
+      "authenticode": "valid after extraction",
+      "signer": "Krzysztof Kowalczyk"
+    },
+    {
+      "id": "vlc-windows-x86-64",
+      "version": "3.0.23",
+      "architecture": "x86-64",
+      "filename": "vlc-3.0.23-win64.exe",
+      "official_page": "https://www.videolan.org/vlc/download-windows.html",
+      "source_url": "https://get.videolan.org/vlc/3.0.23/win64/vlc-3.0.23-win64.exe",
+      "size": 45948080,
+      "sha256": "20ad191348684b470ddc4e05204316f3d8e39655f412b3e392a0eef97639daaf",
+      "authenticode": "valid",
+      "signer": "VideoLAN"
+    },
+    {
+      "id": "keepass-windows-portable",
+      "version": "2.61.1",
+      "architecture": "x86,x86-64,arm64",
+      "filename": "KeePass-2.61.1.zip",
+      "official_page": "https://keepass.info/download.html",
+      "source_url": "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.61.1/KeePass-2.61.1.zip/download",
+      "size": 2898806,
+      "sha256": "3952354db9b117e906f7cd4f9f5591065b95186472370da47f46f3e246fea864",
+      "authenticode": "valid after extraction",
+      "signer": "Open Source Developer, Dominik Reichl"
+    }
+  ]
+}
