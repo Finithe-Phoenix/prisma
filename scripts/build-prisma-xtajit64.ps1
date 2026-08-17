@@ -315,7 +315,7 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "Could not invalidate the cached ARM64EC provider artifacts."
   }
-  & cargo build --manifest-path $manifestPath -p prisma-xtajit64 --target $target --release --jobs 1 --target-dir $targetDirectory
+  & cargo build --manifest-path $manifestPath -p prisma-xtajit64 --target $target --release --locked --jobs 1 --target-dir $targetDirectory
   if ($LASTEXITCODE -ne 0) {
     throw "The ARM64EC xtajit64 provider build failed."
   }
@@ -406,18 +406,42 @@ $exportLines = & $dumpbin /exports $builtDll
 if ($LASTEXITCODE -ne 0) {
   throw "dumpbin could not read the generated provider's export table."
 }
-$requiredExports = $requiredProviderExports + "PRISMA_FAULT_SNAPSHOT"
+$requiredExports = $requiredProviderExports
 $actualExports = @(
   $exportLines | ForEach-Object {
     if ($_ -match '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)(?:\s+=.*)?$') {
       $Matches[1]
     }
-  } | Sort-Object -Unique
+  } | Sort-Object -CaseSensitive -Unique
 )
-$exportDelta = Compare-Object ($requiredExports | Sort-Object) $actualExports
+$exportDelta = Compare-Object ($requiredExports | Sort-Object -CaseSensitive) $actualExports -CaseSensitive
 if ($exportDelta) {
   $details = ($exportDelta | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }) -join "; "
   throw "Generated provider export table differs from the Wine 11.14 contract: $details"
+}
+
+$requiredImports = @(
+  "API-MS-WIN-CORE-SYNCH-L1-2-0.DLL",
+  "BCRYPTPRIMITIVES.DLL",
+  "KERNEL32.DLL",
+  "NTDLL.DLL",
+  "VCRUNTIME140.DLL"
+) | Sort-Object
+$dependentLines = & $dumpbin /dependents $builtDll
+if ($LASTEXITCODE -ne 0) {
+  throw "dumpbin could not read the generated provider's dependencies."
+}
+$actualImports = @(
+  $dependentLines | ForEach-Object {
+    if ($_ -match '^\s+([A-Za-z0-9][A-Za-z0-9._-]*\.dll)\s*$') {
+      $Matches[1].ToUpperInvariant()
+    }
+  } | Sort-Object -Unique
+)
+$importDelta = Compare-Object $requiredImports $actualImports
+if ($importDelta) {
+  $details = ($importDelta | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }) -join "; "
+  throw "Generated provider import table differs from the audited runtime contract: $details"
 }
 
 $stagingPath = [IO.Path]::GetFullPath((Join-Path $buildRoot "prisma-xtajit64-staging-$PID"))
