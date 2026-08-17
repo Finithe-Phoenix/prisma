@@ -1,4 +1,4 @@
-﻿// Mock integration with ONNX Runtime
+// Mock integration with ONNX Runtime
 
 pub struct NpuDelegate {
     model_path: String,
@@ -13,7 +13,10 @@ impl NpuDelegate {
     }
 
     pub fn predict_hot_block(&self, features: &[f32]) -> f32 {
-        println!("Mocking ONNX Runtime inference for model {}", self.model_path);
+        println!(
+            "Mocking ONNX Runtime inference for model {}",
+            self.model_path
+        );
         // Mock prediction based on features sum
         let sum: f32 = features.iter().sum();
         if sum > 0.0 {

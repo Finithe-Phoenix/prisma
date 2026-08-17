@@ -1,0 +1,27 @@
+[package]
+name = "prisma-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Android JNI composition root for real Prisma guest execution"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.21"
+prisma-session = { path = "../prisma-session" }
+prisma_orchestrator = { path = "../orchestrator" }
+sha2.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

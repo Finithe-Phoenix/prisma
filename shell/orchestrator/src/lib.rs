@@ -1,4 +1,4 @@
-﻿//! Prisma container orchestrator.
+//! Prisma container orchestrator.
 //!
 //! Status: scaffolding. The real container lifecycle / overlay FS /
 //! downloader / P2P cache work lands across Fase 1+ (semanas 93+).
@@ -35,12 +35,11 @@ pub mod address_space;
 pub mod backed_address_space;
 pub mod cache_proto;
 pub mod config;
-pub mod dxvk_bridge;
 pub mod console_session;
-pub mod jni_bridge;
 pub mod container;
 pub mod cpu_features;
 pub mod cpuid_leaves;
+pub mod dxvk_bridge;
 pub mod guest_layout;
 pub mod guest_mem;
 pub mod guest_memory;
@@ -49,14 +48,15 @@ pub mod iat_patch;
 pub mod import_resolver;
 pub mod init_stack;
 pub mod integrity;
+pub mod jni_bridge;
 pub mod load_pe;
 pub mod module_table;
+pub mod npu_delegate;
 pub mod pe_loader;
 pub mod registry;
+pub mod tso_classifier;
 pub mod vfs;
 pub mod win32;
-pub mod tso_classifier;
-pub mod npu_delegate;
 
 /// Crate version. Surfaces in JNI and CLI for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -70,6 +70,3 @@ mod tests {
         assert!(!VERSION.is_empty());
     }
 }
-
-
-

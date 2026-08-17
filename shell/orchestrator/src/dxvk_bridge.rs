@@ -34,7 +34,10 @@ pub fn init_dxvk(modules: &mut ModuleTable, native_window: *mut std::ffi::c_void
     );
     modules.insert(d3d11).unwrap();
 
-    println!("Prisma Orchestrator (DXVK): Bootstrap complete. Surface pointer: {:?}", native_window);
+    println!(
+        "Prisma Orchestrator (DXVK): Bootstrap complete. Surface pointer: {:?}",
+        native_window
+    );
 }
 
 pub fn dispatch_dxvk_intercept(
@@ -45,13 +48,18 @@ pub fn dispatch_dxvk_intercept(
     if syscall_number == 0x8000_0001 {
         println!("Intercepted Direct3DCreate9 call from guest.");
         use std::io::Read;
-        let mut file = vfs.open_file("C:\\windows\\system32\\d3d9.dll").map_err(|e| e.to_string())?;
+        let mut file = vfs
+            .open_file("C:\\windows\\system32\\d3d9.dll")
+            .map_err(|e| e.to_string())?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
 
         let mapped = crate::load_pe::load_pe(&buf, modules).map_err(|e| e.to_string())?;
         let window = unsafe { NATIVE_WINDOW };
-        println!("Loaded actual DXVK d3d9.dll at {:#x}. Passing ANativeWindow: {:?}", mapped.base, window);
+        println!(
+            "Loaded actual DXVK d3d9.dll at {:#x}. Passing ANativeWindow: {:?}",
+            mapped.base, window
+        );
         return Ok(mapped.entry_pc);
     }
     Err("Unknown DXVK intercept".to_string())

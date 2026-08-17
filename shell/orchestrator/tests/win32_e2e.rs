@@ -1,6 +1,6 @@
+use prisma_orchestrator::win32::gdi32;
 use prisma_orchestrator::win32::kernel32;
 use prisma_orchestrator::win32::user32;
-use prisma_orchestrator::win32::gdi32;
 
 #[test]
 fn test_win32_synthetic_modules() {

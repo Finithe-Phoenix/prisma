@@ -16,6 +16,7 @@ members = [
     "prisma-backend",
     "prisma-translator",
     "prisma-session",
+    "prisma-android",
     "prisma-xtajit64",
     "prisma-vortek",
 ]
