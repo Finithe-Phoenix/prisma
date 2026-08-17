@@ -6,7 +6,7 @@ Last updated: 2026-08-17 America/Mexico_City.
 
 - Remote: `https://github.com/Finithe-Phoenix/prisma.git`
 - Branch: `codex/real-execution`
-- Preserved content checkpoint: `7ca79fd`
+- Remote migration checkpoint: `1cf1734f383f0f4e97aee5adfb999015428f408c`
 - Active backlog claim: `F3-WN-019`
 - Wine submodule: `1012f3d99507b80d4869eabf0853567660a7ecbb`
 
@@ -39,6 +39,10 @@ calling `BeginSimulation`. Do not reintroduce raw fault dumps or broad temporary
 instrumentation; use the existing symbolic phase markers and preserve the exact
 20-export provider contract.
 
+While the new high-memory host is pending, Danny requested local serial work on
+the current machine: no subagents, no remote fan-out and no simultaneous heavy
+jobs. The 6 GiB physical-memory gate remains mandatory.
+
 ## Migration checkpoint commits
 
 The Windows worktree was separated into atomic migration commits:
@@ -50,6 +54,13 @@ The Windows worktree was separated into atomic migration commits:
 - `38cfa98` optimization and GUI fixture prototypes;
 - `0688b55` Wine and ARM64 worker build tooling;
 - `7ca79fd` verified Windows application target manifest.
+- `1cf1734` this migration handoff and the authoritative resume instructions.
+
+The complete branch was also exported and verified as:
+
+- file: `prisma-codex-real-execution-20260817-1cf1734f383f.bundle`;
+- SHA-256: `E27D7F28C6B4B05B250B94624D08CC16307CB63EFE6970DA21AF618445F8B4F2`;
+- bundle ref: `codex/real-execution` at `1cf1734f383f0f4e97aee5adfb999015428f408c`.
 
 `cargo metadata --locked` passed. Changed Rust files passed `rustfmt`; the
 workspace-wide format check still reports pre-existing whitespace in

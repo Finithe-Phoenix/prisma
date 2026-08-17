@@ -4,7 +4,26 @@ Guía para futuras sesiones de AI trabajando en este repositorio.
 
 ## Snapshot operativo actual
 
-Ultima actualizacion: 2026-06-19 America/Mexico_City.
+Ultima actualizacion: 2026-08-17 America/Mexico_City.
+
+### Override operativo temporal: migracion y trabajo local serial
+
+Hasta que Danny confirme la llegada del nuevo equipo:
+
+- usar `codex/real-execution` y el handoff
+  [docs/HANDOFF/HANDOFF-migration-2026-08-17.md](docs/HANDOFF/HANDOFF-migration-2026-08-17.md);
+- trabajar sin subagentes, fan-out ni builds simultaneos;
+- compilar solo en Ubuntu 22.04 WSL2, repo nativo `~/prisma`, nunca en Windows
+  ni `/mnt/c`;
+- no iniciar trabajo pesado con menos de 6 GiB fisicos disponibles o commit
+  superior a 85%; liberar solamente procesos Prisma con ownership probado;
+- continuar el claim `F3-WN-019`, sin abrir otra fase antes de ejecutar Oh My
+  Posh 30.6.3 con stdout/stderr, codigo 0 y tres ciclos limpios;
+- diagnosticar primero la brecha `ThreadInit` -> `BeginSimulation`: el provider
+  carga e inicializa, pero `BeginSimulation` no entra antes del execute-access
+  nulo observado;
+- mantener exactamente 20 exports del provider y no reintroducir dumps crudos
+  o instrumentacion temporal amplia.
 
 - **Estado del proyecto:** ver [docs/STATUS.md](docs/STATUS.md) (mapa con
   evidencia archivo:linea) y [docs/ROADMAP.md](docs/ROADMAP.md) (plan completo
@@ -35,6 +54,9 @@ Ultima actualizacion: 2026-06-19 America/Mexico_City.
   GitHub Actions verde.
 
 ## Trabajo con agentes en paralelo
+
+> Suspendido temporalmente por instruccion de Danny del 2026-08-17. Este
+> protocolo se conserva para cuando el trabajo paralelo sea reactivado.
 
 El trabajo de programacion se organiza con **agentes en paralelo** sobre
 fronteras de archivos cerradas (ver [docs/ROADMAP.md](docs/ROADMAP.md) §1 y
@@ -220,13 +242,15 @@ substantialmente cubiertos, ejecutando en hardware ARM64).
   design, 0006 register allocator, 0007 cache format.
 - **`fuzz/`** — AFL++ harness para el decoder (F1-TC-004).
 
-Territorios todavía vacíos: `shell/` (Rust loader), `android/` (app
-Kotlin), `server/` (Python backend P2P), `tools/benchmarks/`.
+La lista historica de territorios vacios ya no es vigente: `shell/`, `android/`
+y `tools/benchmarks/` contienen implementaciones activas. Ver
+[docs/STATUS.md](docs/STATUS.md) y el handoff de migracion para el estado real.
 
 ## Coordinación multi-agente
 
-Hay dos agentes activos sobre el repo: `Codex` y `codex`. Protocolo
-en [docs/COORDINATION.md](docs/COORDINATION.md). Reglas clave:
+No hay agentes paralelos activos durante el override temporal. Cuando Danny
+reactive este modo, el protocolo vive en
+[docs/COORDINATION.md](docs/COORDINATION.md). Reglas clave:
 
 - Antes de tocar un item del backlog, marcarlo `[~|<agente>]` y
   hacer commit del claim.
@@ -264,9 +288,8 @@ cmake -S core -B /tmp/prisma-cov \
 # Verificar proofs Lean 4
 cd ir-spec && lake build
 
-# Commands que aún no existen (subproyectos no arrancados):
-#   cargo build --workspace          (shell/)
-#   ./gradlew assembleDebug          (android/)
+# Rust y Android ya existen. Ejecutarlos solamente dentro de WSL o en CI,
+# respetando el gate de memoria del override operativo.
 ```
 
 ## Memoria persistente

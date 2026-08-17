@@ -4,7 +4,37 @@ Guía para futuras sesiones de AI trabajando en este repositorio.
 
 ## Snapshot operativo actual
 
-Ultima actualizacion: 2026-06-19 America/Mexico_City.
+Ultima actualizacion: 2026-08-17 America/Mexico_City.
+
+### Override operativo temporal: migracion y trabajo local serial
+
+Este bloque sustituye cualquier instruccion historica incompatible mas abajo
+hasta que Danny confirme que el nuevo equipo de alta memoria esta listo.
+
+- Rama autoritativa: `codex/real-execution`. Checkpoint remoto verificado al
+  iniciar este modo: `1cf1734f383f0f4e97aee5adfb999015428f408c`.
+- Handoff completo: [docs/HANDOFF/HANDOFF-migration-2026-08-17.md](docs/HANDOFF/HANDOFF-migration-2026-08-17.md).
+- Trabajar **sin agentes paralelos ni fan-out**. Un solo cambio, build y prueba
+  a la vez; no iniciar trabajo remoto en `prisma-worker` mientras llega el
+  nuevo equipo.
+- Windows es el host de orquestacion. Los builds reales viven en Ubuntu 22.04
+  bajo WSL2, en `~/prisma`; nunca compilar desde el checkout Windows ni desde
+  `/mnt/c`. Desde PowerShell usar `wsl -d Ubuntu-22.04 -- bash -lc "..."`.
+- Antes de un build pesado exigir 6 GiB de RAM fisica disponible y commit por
+  debajo de 85%. Bajo ese margen, limitarse a inspeccion, tests pequenos y
+  artefactos existentes. Nunca cerrar aplicaciones del usuario.
+- Claim activo: `F3-WN-019`. El objetivo inmediato es ejecutar el Oh My Posh
+  oficial 30.6.3 por Wine ARM64EC y Prisma con stdout/stderr exactos, codigo 0,
+  20 exports y tres ciclos sin fugas.
+- Evidencia actual: Wine bootstrap y `ProcessInit`/`ThreadInit` del provider
+  completan; `BeginSimulation` no entra; despues ocurre un execute-access nulo
+  y el fixture termina con codigo 5. El siguiente diagnostico empieza entre el
+  retorno de `ThreadInit` y la llamada de Wine a `BeginSimulation`.
+- No restaurar dumps crudos ni instrumentacion masiva. Usar marcadores
+  simbolicos acotados, commits atomicos y limpieza determinista.
+- Caches, builds, instaladores, keystore y logs locales no forman parte del
+  repositorio. Los fixtures se readquieren desde hashes bajo
+  `tools/windows-apps/`.
 
 - **Estado del proyecto:** ver [docs/STATUS.md](docs/STATUS.md) (mapa con
   evidencia archivo:linea) y [docs/ROADMAP.md](docs/ROADMAP.md) (plan completo
@@ -35,6 +65,10 @@ Ultima actualizacion: 2026-06-19 America/Mexico_City.
   GitHub Actions verde.
 
 ## Trabajo con agentes en paralelo
+
+> Suspendido temporalmente por decision de Danny el 2026-08-17. El protocolo
+> siguiente vuelve a aplicar solo cuando Danny reactive explicitamente el
+> trabajo multi-agente.
 
 El trabajo de programacion se organiza con **agentes en paralelo** sobre
 fronteras de archivos cerradas (ver [docs/ROADMAP.md](docs/ROADMAP.md) §1 y
@@ -220,13 +254,15 @@ substantialmente cubiertos, ejecutando en hardware ARM64).
   design, 0006 register allocator, 0007 cache format.
 - **`fuzz/`** — AFL++ harness para el decoder (F1-TC-004).
 
-Territorios todavía vacíos: `shell/` (Rust loader), `android/` (app
-Kotlin), `server/` (Python backend P2P), `tools/benchmarks/`.
+La lista historica de territorios vacios ya no es vigente: `shell/`, `android/`
+y `tools/benchmarks/` contienen implementaciones activas. Ver
+[docs/STATUS.md](docs/STATUS.md) y el handoff de migracion para el estado real.
 
 ## Coordinación multi-agente
 
-Hay dos agentes activos sobre el repo: `claude` y `codex`. Protocolo
-en [docs/COORDINATION.md](docs/COORDINATION.md). Reglas clave:
+No hay agentes paralelos activos durante el override temporal. Cuando Danny
+reactive este modo, el protocolo vive en
+[docs/COORDINATION.md](docs/COORDINATION.md). Reglas clave:
 
 - Antes de tocar un item del backlog, marcarlo `[~|<agente>]` y
   hacer commit del claim.
@@ -264,9 +300,8 @@ cmake -S core -B /tmp/prisma-cov \
 # Verificar proofs Lean 4
 cd ir-spec && lake build
 
-# Commands que aún no existen (subproyectos no arrancados):
-#   cargo build --workspace          (shell/)
-#   ./gradlew assembleDebug          (android/)
+# Rust y Android ya existen. Ejecutarlos solamente dentro de WSL o en CI,
+# respetando el gate de memoria del override operativo.
 ```
 
 ## Memoria persistente

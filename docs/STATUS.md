@@ -6,20 +6,31 @@ v1.0 RELEASED
 > el código fuente directamente (no de memoria ni de los docs históricos). Para
 > el plan hacia adelante ver [ROADMAP.md](ROADMAP.md).
 
-Última actualización: 2026-06-19 America/Mexico_City.
-Método: sondeo del core C++ + verificación paralela de 8 familias de
-extensiones con agentes independientes (cada `DECODED+LOWERED+TESTED` abajo
-tiene evidencia de fuente).
+Última actualización: 2026-08-17 America/Mexico_City.
+Método: sondeo del core C++ + evidencia versionada del runtime Rust, Android,
+Wine ARM64EC y workflows de ejecución real. Las tablas ISA históricas se
+mantienen; el checkpoint operativo actual está en
+[HANDOFF-migration-2026-08-17.md](HANDOFF/HANDOFF-migration-2026-08-17.md).
 
 ---
 
 ## TL;DR — "estás aquí"
 
 **Un JIT x86→ARM64 funcional para un subconjunto amplio del ISA (incluyendo
-SSE..SSE4.1, AVX-128, AVX-256, FMA3, BMI2, AES-NI, SHA-NI, CRC32, x87),
-ejecutando en ARM64 real, técnicamente a mitad de Fase 2 — con una reescritura
-paralela a Rust en marcha.** Lo que falta para "correr una `.exe` de Windows"
-es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
+SSE..SSE4.1, AVX-128, AVX-256, FMA3, BMI2, AES-NI, SHA-NI, CRC32 y x87), con
+reescritura Rust, app Android Compose y un puente experimental Wine ARM64EC.**
+El provider real ya carga e inicializa, pero todavía no ejecuta el primer `.exe`
+Windows de extremo a extremo: `F3-WN-019` permanece activo.
+
+### Checkpoint Windows real
+
+- Fixture oficial: Oh My Posh 30.6.3, x86-64, fijado por versión y SHA-256.
+- Wine 11.14 ARM64/ARM64EC y provider Prisma `xtajit64` con contrato exacto de
+  20 exports.
+- `wineboot`, `ProcessInit` y `ThreadInit` completan.
+- `BeginSimulation` no entra; después se observa execute-access nulo y código 5.
+- Gate pendiente: stdout de versión correcto, código 0 y tres ciclos limpios
+  sin procesos, handles, mappings ni temporales sobrevivientes.
 
 ---
 
@@ -135,10 +146,14 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 
 ---
 
-## 5. Lo que NO existe todavía (la brecha hacia Windows)
+## 5. Brecha actual hacia Windows utilizable
 
-- **Sin entorno de SO invitado**: sin loader PE real (solo mapeo de memoria),
-  sin resolución de imports/DLLs, sin Win32/NT, sin Wine.
+- **Wine existe como baseline experimental**, pero el handoff ARM64EC todavía
+  falla antes de `BeginSimulation`; no hay una ejecución Win32 completa que se
+  pueda declarar compatible.
+- Hay PE mapping, resolución parcial y superficies Win32 en `shell/`, pero los
+  prototipos `prisma-loader`/`prisma-wow64cpu` no sustituyen el provider
+  ARM64EC ni constituyen un entorno Windows terminado.
 - **Syscalls solo Linux x86-64** (POSIX). En Windows es stub `-ENOSYS`.
 - **Sin threads de guest** (dispatcher single-threaded), sin TLS sintético más
   allá del segment-base, sin sincronización inter-hilo modelada.
@@ -151,10 +166,11 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 - **Sin entrega de excepciones/señales al guest** (int3/invalid-opcode/SIGSEGV→
   handler del guest). Los signal handlers existen para faults del host.
 - **Sin TSO adaptativo** (Pilar 3): todo emite variantes TSO por ahora.
-- **Territorios vacíos**: `android/` (andamiaje), `server/` (solo README,
-  Fase 2.5). `tools/benchmarks/` **sí tiene harness real** (paquete Python
-  `prisma_bench` + corpus Dhrystone + CI `benchmarks-smoke`); lo que falta son
-  más corpus (CoreMark/nbench/SPEC) y los runners por baseline.
+- **Android ya no está vacío**: existe dashboard Compose, Terminal, demos,
+  localización y bridge JNI. Aún falta conectar allí una sesión Windows real y
+  validarla en hardware Android ARM64.
+- `server/` sigue fuera del camino crítico inmediato. `tools/benchmarks/` tiene
+  harness real y fixtures adicionales; aún faltan más corpus y baselines.
 
 ---
 
@@ -165,7 +181,7 @@ es el **entorno de SO invitado** (PE loader, Win32/NT, Wine): Fase 2.5→3.
 | Fase 0-1 (Fundación + decoder + IR Lean) | abr-nov 2026 | ✅ esencialmente |
 | **Fase 2 (ISA completo + Linux user-mode)** | dic 2026-may 2027 | **🟡 en curso** (ISA amplio; falta syscall layer, coreutils, benchmark) |
 | Fase 2.5 (6 pilares de investigación) | jun-nov 2027 | ⬜ no empezada |
-| **Fase 3 (Wine + Windows real)** ← *el hito* | dic 2027-jul 2028 | ⬜ no empezada |
+| **Fase 3 (Wine + Windows real)** ← *el hito* | dic 2027-jul 2028 | **🟡 bring-up experimental** (`F3-WN-019`) |
 | Fase 4-6 (Juegos, beta, v1.0) | 2028-2030 | ⬜ |
 
 Próximos pasos concretos: ver [ROADMAP.md](ROADMAP.md) §2 (Track inmediato).
