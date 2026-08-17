@@ -9,11 +9,16 @@ on:
       - ".github/ci/Dockerfile.phase1-runtime"
       - ".github/ci/run-oh-my-posh.sh"
       - ".github/workflows/phase1-oh-my-posh.yml"
+      - "docker/Dockerfile.wine-arm64"
       - "scripts/build-prisma-xtajit64.ps1"
+      - "shell/Cargo.lock"
+      - "shell/Cargo.toml"
       - "shell/prisma-backend/**"
+      - "shell/prisma-cache/**"
       - "shell/prisma-decoder/**"
       - "shell/prisma-ir/**"
       - "shell/prisma-passes/**"
+      - "shell/prisma-runtime/**"
       - "shell/prisma-translator/**"
       - "shell/prisma-xtajit64/**"
       - "third_party/wine-prisma/patches/**"
@@ -55,6 +60,8 @@ jobs:
     needs: provider
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      PRISMA_CONTAINER_NAME: prisma-phase1-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
 
@@ -125,6 +132,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm \
+            --name "$PRISMA_CONTAINER_NAME" \
             --platform linux/arm64 \
             --cpus 1 \
             --memory 512m \
@@ -138,4 +146,5 @@ jobs:
         if: always()
         shell: bash
         run: |
-          test -z "$(docker ps --quiet --filter ancestor=prisma-phase1:ci)"
+          docker rm --force "$PRISMA_CONTAINER_NAME" >/dev/null 2>&1 || true
+          test -z "$(docker ps --all --quiet --filter "name=^/${PRISMA_CONTAINER_NAME}$")"
