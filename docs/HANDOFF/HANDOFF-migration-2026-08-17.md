@@ -43,10 +43,12 @@ entrypoint itself and then calls `RtlExitUserThread`; the Wine Dockerfile reject
 the previous compiled thunk by inspecting `RtlUserThreadStart` disassembly.
 
 The patch applies cleanly to pinned Wine 11.14 and its three lightweight
-regression tests pass. A fresh Wine build plus the exact three lifecycle cycles
-remain required before closing `F3-WN-019`; they were not started below the
-6 GiB physical-memory gate. Do not reintroduce raw fault dumps or broad
-temporary instrumentation, and preserve the exact 20-export provider contract.
+regression tests pass. The local Wine manifest is now schema v3 and binds both
+the Dockerfile and patch SHA-256, so the old v2 runtime cannot be reused as a
+cache hit. A fresh Wine build plus the exact three lifecycle cycles remain
+required before closing `F3-WN-019`; they were not started below the 6 GiB
+physical-memory gate. Do not reintroduce raw fault dumps or broad temporary
+instrumentation, and preserve the exact 20-export provider contract.
 
 While the new high-memory host is pending, Danny requested local serial work on
 the current machine: no subagents, no remote fan-out and no simultaneous heavy
