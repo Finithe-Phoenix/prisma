@@ -1,0 +1,15 @@
+[package]
+name = "prisma-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# We only depend on anyhow for error handling; parsing is done natively in 0-copy.
+anyhow.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

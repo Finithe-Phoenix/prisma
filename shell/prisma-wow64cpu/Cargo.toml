@@ -1,0 +1,14 @@
+[package]
+name = "prisma-wow64cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Wait for the future when we bridge with prisma-translator.
