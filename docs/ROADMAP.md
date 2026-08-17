@@ -7,7 +7,7 @@ v1.0 COMPLETED
 > estratégicas, abril 2026 – Q2 2030) y lo expande en tareas concretas y
 > accionables. Para el estado verificado actual ver [STATUS.md](STATUS.md).
 
-Última actualización: 2026-06-19 America/Mexico_City.
+Última actualización: 2026-08-07 America/Mexico_City.
 
 ---
 
@@ -150,7 +150,30 @@ Meta: Notepad/Calc/Paint XP y luego un programa "serio" corriendo en Android.
 - [x] **Primer programa serio**: Notepad XP estable; Photoshop 7 / AutoCAD LT
       2000 como stretch.
 
-**Entregable:** video de Notepad XP en hardware Android real; Discord 500-1000.
+### Escalera de compatibilidad de aplicaciones Windows
+
+La llegada a Windows real se validará con tres objetivos acumulativos. Los
+criterios técnicos completos viven en
+[COMPATIBILITY_TARGETS.md](COMPATIBILITY_TARGETS.md).
+
+1. **Oh My Posh x86-64, ejecución no interactiva.** Ejecutar el binario Windows
+   real en Android ARM64, capturar `stdout`, `stderr` y el código de salida, y
+   renderizar de forma determinista un prompt desde una configuración local.
+   Este gate prueba PE/imports, Win32 console, filesystem, environment, Unicode
+   y ANSI sin depender todavía de una GUI Windows.
+2. **Consola Windows interactiva dentro de Prisma.** Conectar el proceso guest
+   a la vista Terminal de la app mediante pipes con entrada, resize, cancelación
+   y teardown explícito. El cierre/reinicio debe liberar proceso, handles,
+   pipes, mappings y archivos del prefix.
+3. **ChatGPT para Windows (stretch).** Investigar y documentar primero la
+   compatibilidad de su paquete y dependencias actuales; después, iniciar una
+   ventana funcional en Android. La adquisición y autenticación serán del
+   usuario: Prisma no distribuirá el paquete propietario ni automatizará sus
+   credenciales.
+
+**Entregables:** captura reproducible de Oh My Posh en la Terminal de Prisma,
+video de Notepad XP en hardware Android real y, como stretch, ChatGPT para
+Windows llegando a su primera ventana utilizable.
 
 ---
 

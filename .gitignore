@@ -31,8 +31,10 @@ Cargo.lock
 
 # Android / Gradle
 .gradle/
+/android/.kotlin/
 local.properties
 *.apk
+/android/prisma-debug.keystore
 *.aab
 *.iml
 .idea/
@@ -109,11 +111,19 @@ secrets/
 third_party/*/
 !third_party/README.md
 !third_party/wine-prisma/
-!third_party/wine-prisma/CMakeLists.txt
+!third_party/wine-prisma/**
 
 # Profiling / telemetry artifacts
 *.prof
 *.trace
+
+# Local test-run inventories and console captures
+/test_names.txt
+/test_out.txt
+/test_out_lex.txt
+/test_output.txt
+/test_results.txt
+/tests.txt
 perf.data*
 
 # Coverage runtime artefacts (NOT the tools/coverage/ scripts).

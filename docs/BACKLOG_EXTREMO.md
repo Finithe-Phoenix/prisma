@@ -280,7 +280,9 @@ Winlator".
 | EWP-F5 | Filesystem overlay (base RO + overlay RW) | `shell/orchestrator/fs*` | L | claude | F4 | solo | Cierra F3-SH-005; escrituras del guest van al overlay |
 | EWP-F6 | App Kotlin/Compose mínima: importar .exe, ejecutar, ver logs (JNI→Rust) | `android/` | XL | * | F4 | fan-out:2 | Cierra F3-ND-001..008; importa y lanza un .exe en device real |
 | EWP-F7 | Servidor X11 embebido + Vulkan surface (ANativeWindow) | `shell`, `android` | XL | * | F6 | fan-out:2 | Cierra F3-XS-*; Notepad XP renderiza en pantalla Android |
-| EWP-F8 | **Hito: Notepad XP estable end-to-end en hardware Android** + video demo | integración | XL | * | F1-F7 | solo | El entregable de Fase 3; captura de video; Discord 500-1000 |
+| EWP-F8 | **Hito CLI: Oh My Posh x86-64 en la Terminal de Prisma** | `shell`, `android`, fixture de integración | L | * | F1-F6 | pipeline | Cierra F3-WN-018..020, F3-SH-013/014 y F3-ND-014/015: `version` + prompt determinista + sesión interactiva; UTF-8/ANSI correctos y cero procesos/handles/mappings filtrados tras stop/restart |
+| EWP-F9 | **Hito GUI: Notepad XP estable end-to-end en hardware Android** + video demo | integración | XL | * | F1-F7 | solo | El entregable gráfico de Fase 3; captura de video; Discord 500-1000 |
+| EWP-F10 | **Stretch: ChatGPT para Windows** — matriz de dependencias y primer launch usable | investigación + integración | XL | * | F7,F9 | pipeline | Cierra F3-WN-021/022; paquete adquirido por el usuario, sin redistribución ni automatización de credenciales; documenta cualquier bloqueo de MSIX/WinUI/WebView/network/auth |
 
 ---
 
