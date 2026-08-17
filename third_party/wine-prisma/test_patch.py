@@ -11,6 +11,7 @@ PATCH = ROOT / "third_party" / "wine-prisma" / "patches" / (
 )
 WINE = ROOT / "third_party" / "wine"
 DOCKERFILE = ROOT / "docker" / "Dockerfile.wine-arm64"
+BUILD_SCRIPT = ROOT / "scripts" / "build-wine-arm64.ps1"
 
 
 class WineArm64EcPatchTests(unittest.TestCase):
@@ -47,6 +48,16 @@ class WineArm64EcPatchTests(unittest.TestCase):
         self.assertIn("<$iexit_thunk$cdecl$i8$i8>", dockerfile)
         self.assertIn("<RtlExitUserThread>", dockerfile)
         self.assertIn("! grep -Fq '<$iexit_thunk$cdecl$v$i8i8i8>'", dockerfile)
+
+    def test_local_cache_is_bound_to_dockerfile_and_patch(self) -> None:
+        build_script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertGreaterEqual(build_script.count('"prisma-wine-arm64/v3"'), 2)
+        for field in (
+            "dockerfile_sha256",
+            "no_preload_reserve_patch_sha256",
+        ):
+            self.assertIn(f"$manifest.{field}", build_script)
+            self.assertIn(f"{field} =", build_script)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,9 @@ through Wine's hybrid indirect-call dispatcher and terminates the thread through
 bounded preloader-reservation override needed by QEMU user mode.
 
 The Wine Dockerfile disassembles the installed `RtlUserThreadStart` and rejects
-the old thunk signature. Run the lightweight source checks with:
+the old thunk signature. The local artifact manifest also binds the Wine source,
+Dockerfile and patch hashes, so a stale runtime cannot pass as a cache hit after
+the patch changes. Run the lightweight source checks with:
 
 ```powershell
 py -3.12 -B -m unittest third_party/wine-prisma/test_patch.py -v

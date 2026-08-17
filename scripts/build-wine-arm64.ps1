@@ -13,6 +13,8 @@ $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "android\app\build"))
 $wineRoot = Join-Path $repoRoot "third_party\wine"
 $dockerfile = Join-Path $repoRoot "docker\Dockerfile.wine-arm64"
 $noPreloadReservePatch = Join-Path $repoRoot "third_party\wine-prisma\patches\0001-prisma-no-preload-reserve.patch"
+$dockerfileSha256 = (Get-FileHash -LiteralPath $dockerfile -Algorithm SHA256).Hash.ToLowerInvariant()
+$noPreloadReservePatchSha256 = (Get-FileHash -LiteralPath $noPreloadReservePatch -Algorithm SHA256).Hash.ToLowerInvariant()
 $wineVersion = (Get-Content -LiteralPath (Join-Path $wineRoot "VERSION") -Raw).Trim() -replace '^Wine version ', ''
 $wineCommit = (git -C $wineRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $wineCommit) {
@@ -154,9 +156,11 @@ function Assert-WineArtifact {
             throw "Missing Prisma Wine artifact manifest."
         }
         $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-        if ($manifest.schema -ne "prisma-wine-arm64/v2" -or
+        if ($manifest.schema -ne "prisma-wine-arm64/v3" -or
             $manifest.wine_version -ne $wineVersion -or
             $manifest.wine_commit -ne $wineCommit -or
+            $manifest.dockerfile_sha256 -ne $dockerfileSha256 -or
+            $manifest.no_preload_reserve_patch_sha256 -ne $noPreloadReservePatchSha256 -or
             $manifest.platform -ne "linux/arm64" -or
             $manifest.provider_kind -ne "wine-baseline-unsupported-simulation" -or
             $manifest.xtajit64_machine -ne $peMachineLabel -or
@@ -309,9 +313,11 @@ try {
 
     $artifact = Assert-WineArtifact -Root $stagingPath
     $manifest = [ordered]@{
-        schema = "prisma-wine-arm64/v2"
+        schema = "prisma-wine-arm64/v3"
         wine_version = $wineVersion
         wine_commit = $wineCommit
+        dockerfile_sha256 = $dockerfileSha256
+        no_preload_reserve_patch_sha256 = $noPreloadReservePatchSha256
         platform = "linux/arm64"
         wine_sha256 = (Get-FileHash -LiteralPath $artifact.Wine -Algorithm SHA256).Hash.ToLowerInvariant()
         xtajit64_sha256 = (Get-FileHash -LiteralPath $artifact.XtaJit -Algorithm SHA256).Hash.ToLowerInvariant()
