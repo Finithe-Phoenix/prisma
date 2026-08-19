@@ -1301,6 +1301,8 @@ impl ThreadRuntime {
             // Dispatch owns the executable cache. Keep the pass pipeline
             // block-local so no translator heap state survives guest JIT.
             let mut translator = Translator::new();
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_marker(b"prisma-phase: translator-created\n");
             let block = self
                 .translate_block_cached(
                     &mut translator,

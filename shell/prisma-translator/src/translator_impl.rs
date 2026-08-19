@@ -1,3 +1,38 @@
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn arm64ec_phase_marker(message: &'static [u8]) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(kind: u32) -> *mut std::ffi::c_void;
+        fn WriteFile(
+            file: *mut std::ffi::c_void,
+            buffer: *const std::ffi::c_void,
+            bytes_to_write: u32,
+            bytes_written: *mut u32,
+            overlapped: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    const STD_ERROR_HANDLE: u32 = (-12_i32) as u32;
+    let Ok(bytes_to_write) = u32::try_from(message.len()) else {
+        return;
+    };
+    // SAFETY: diagnostics borrow a static message and never own the handle.
+    let file = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if file.is_null() || file.addr() == usize::MAX {
+        return;
+    }
+    let mut bytes_written = 0_u32;
+    let _ = unsafe {
+        WriteFile(
+            file,
+            message.as_ptr().cast(),
+            bytes_to_write,
+            &raw mut bytes_written,
+            std::ptr::null_mut(),
+        )
+    };
+}
+
 impl Translator {
     pub fn new() -> Self {
         Self::default()
@@ -31,7 +66,11 @@ impl Translator {
         guest_addr: u64,
         bytes: &[u8],
     ) -> Result<(Translation, bool), TranslateError> {
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-decode-enter\n");
         let decoded = decode_one_at(bytes, 0, guest_addr).map_err(TranslateError::Decode)?;
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-decode-ready\n");
         let Some(_) = bytes.get(..decoded.bytes_consumed) else {
             return Err(TranslateError::Truncated {
                 offset: 0,
@@ -40,6 +79,8 @@ impl Translator {
             });
         };
         let ended_at_terminator = decoded.stmts.iter().any(|stmt| is_terminator(&stmt.op));
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-lower-enter\n");
         let translation = self.translate_decoded_uncached(&decoded)?;
         Ok((translation, ended_at_terminator))
     }
@@ -362,6 +403,8 @@ impl Translator {
     }
 
     fn lower_decoded(&self, decoded: &Decoded) -> Result<Vec<u8>, TranslateError> {
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-ir-enter\n");
         let func = Function {
             entry: 0,
             blocks: vec![BasicBlock {
@@ -369,7 +412,11 @@ impl Translator {
                 stmts: decoded.stmts.clone(),
             }],
         };
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-ir-ready\n");
         let optimized = self.pipeline.run(func);
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-pipeline-ready\n");
 
         // The runtime executes every translated block via execute_block, which
         // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
@@ -382,7 +429,11 @@ impl Translator {
             .with_branch_exits()
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-lowerer-ready\n");
         let code = encode_words(&words);
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-encode-ready\n");
         Ok(code)
     }
 
