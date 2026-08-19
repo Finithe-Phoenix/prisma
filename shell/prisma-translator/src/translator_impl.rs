@@ -36,6 +36,32 @@ impl Translator {
         bytes: &[u8],
         max_insns: usize,
     ) -> Result<BlockTranslation, TranslateError> {
+        if max_insns == 1 && !bytes.is_empty() {
+            let decoded = decode_one_at(bytes, 0, guest_addr).map_err(TranslateError::Decode)?;
+            let Some(insn) = bytes.get(..decoded.bytes_consumed) else {
+                return Err(TranslateError::Truncated {
+                    offset: 0,
+                    consumed: decoded.bytes_consumed,
+                    remaining: bytes.len(),
+                });
+            };
+            let terminator = decoded.stmts.iter().find(|stmt| is_terminator(&stmt.op));
+            let ended_at_terminator = terminator.is_some();
+            let successors = terminator.map_or_else(Vec::new, |stmt| static_successors(&stmt.op));
+            let translation = self.translate_decoded(guest_addr, insn, &decoded)?;
+            return Ok(BlockTranslation {
+                code: translation.code,
+                instruction_count: 1,
+                guest_bytes: decoded.bytes_consumed,
+                ended_at_terminator,
+                successors: if ended_at_terminator {
+                    successors
+                } else {
+                    vec![guest_addr.wrapping_add(decoded.bytes_consumed as u64)]
+                },
+            });
+        }
+
         let mut code = Vec::new();
         let mut offset = 0usize;
         let mut pc = guest_addr;

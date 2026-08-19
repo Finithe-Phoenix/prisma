@@ -141,6 +141,24 @@ fn translate_block_honours_instruction_cap() {
 }
 
 #[test]
+fn single_instruction_block_moves_the_exact_translation() {
+    let bytes = [0x48, 0x83, 0xec, 0x28]; // sub rsp, 0x28
+    let guest_addr = 0x1_4008_99e6;
+    let mut single = Translator::new();
+    let expected = single.translate(guest_addr, &bytes).unwrap();
+
+    let mut blocked = Translator::new();
+    let block = blocked.translate_block(guest_addr, &bytes, 1).unwrap();
+
+    assert_eq!(block.code, expected.code);
+    assert_eq!(block.instruction_count, 1);
+    assert_eq!(block.guest_bytes, bytes.len());
+    assert!(!block.ended_at_terminator);
+    assert_eq!(block.successors, vec![guest_addr + bytes.len() as u64]);
+    assert_eq!(blocked.cached_count(), 1);
+}
+
+#[test]
 fn translate_block_runs_to_end_without_terminator() {
     let mut prog = Vec::new();
     prog.extend_from_slice(MOV_RAX_RCX);
