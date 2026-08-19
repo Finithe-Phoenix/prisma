@@ -220,9 +220,14 @@ impl std::fmt::Display for ExecError {
             Self::Alloc(error) => write!(formatter, "cannot allocate executable memory: {error}"),
             Self::Write => formatter.write_str("translated block does not fit executable memory"),
             Self::Protect(error) => {
-                write!(formatter, "cannot make translated block executable: {error}")
+                write!(
+                    formatter,
+                    "cannot make translated block executable: {error}"
+                )
             }
-            Self::WrongArch => formatter.write_str("translated ARM64 block cannot run on this host"),
+            Self::WrongArch => {
+                formatter.write_str("translated ARM64 block cannot run on this host")
+            }
             Self::HostStateCorruption { register_mask } => {
                 formatter.write_str("generated code corrupted host registers")?;
                 for bit in 0_u8..12 {

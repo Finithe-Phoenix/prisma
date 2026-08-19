@@ -812,6 +812,82 @@ pub struct PrismaExecutor {
     cache: Mutex<JitCache>,
 }
 
+#[cfg(target_arch = "arm64ec")]
+unsafe fn execute_arm64_jit(entry: *const u8, frame: *mut CpuStateFrame) -> usize {
+    let register_mask: usize;
+    // SAFETY: the caller owns an executable ARM64 block and a live state
+    // frame. The outer save area contains any backend ABI defect before it can
+    // escape into Rust; x0 returns the x18..x29 corruption mask after every
+    // original nonvolatile value has been restored.
+    unsafe {
+        core::arch::asm!(
+            "sub sp, sp, #96",
+            "stp x18, x19, [sp, #0]",
+            "stp x20, x21, [sp, #16]",
+            "stp x22, x23, [sp, #32]",
+            "stp x24, x25, [sp, #48]",
+            "stp x26, x27, [sp, #64]",
+            "stp x28, x29, [sp, #80]",
+            "blr {entry}",
+            "mov x9, xzr",
+            "ldp x10, x11, [sp, #0]",
+            "cmp x18, x10",
+            "cset x12, ne",
+            "orr x9, x9, x12",
+            "cmp x19, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #1",
+            "ldp x10, x11, [sp, #16]",
+            "cmp x20, x10",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #2",
+            "cmp x21, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #3",
+            "ldp x10, x11, [sp, #32]",
+            "cmp x22, x10",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #4",
+            "cmp x23, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #5",
+            "ldp x10, x11, [sp, #48]",
+            "cmp x24, x10",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #6",
+            "cmp x25, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #7",
+            "ldp x10, x11, [sp, #64]",
+            "cmp x26, x10",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #8",
+            "cmp x27, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #9",
+            "ldp x10, x11, [sp, #80]",
+            "cmp x28, x10",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #10",
+            "cmp x29, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #11",
+            "ldp x18, x19, [sp, #0]",
+            "ldp x20, x21, [sp, #16]",
+            "ldp x22, x23, [sp, #32]",
+            "ldp x24, x25, [sp, #48]",
+            "ldp x26, x27, [sp, #64]",
+            "ldp x28, x29, [sp, #80]",
+            "add sp, sp, #96",
+            "mov x0, x9",
+            entry = in(reg) entry,
+            inlateout("x0") frame => register_mask,
+            clobber_abi("C"),
+        );
+    }
+    register_mask
+}
+
 impl BlockExecutor for PrismaExecutor {
     // Keep allocation, publication, execution and cache ownership in one
     // boundary: splitting it would make non-local Wine recovery unsound.
@@ -875,73 +951,8 @@ impl BlockExecutor for PrismaExecutor {
             // code must preserve x18..x29, but a backend defect must not be
             // allowed to corrupt the Rust caller before it can be diagnosed.
             let _active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
-            let register_mask: usize;
-            unsafe {
-                core::arch::asm!(
-                    "sub sp, sp, #96",
-                    "stp x18, x19, [sp, #0]",
-                    "stp x20, x21, [sp, #16]",
-                    "stp x22, x23, [sp, #32]",
-                    "stp x24, x25, [sp, #48]",
-                    "stp x26, x27, [sp, #64]",
-                    "stp x28, x29, [sp, #80]",
-                    "blr {entry}",
-                    "mov x9, xzr",
-                    "ldp x10, x11, [sp, #0]",
-                    "cmp x18, x10",
-                    "cset x12, ne",
-                    "orr x9, x9, x12",
-                    "cmp x19, x11",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #1",
-                    "ldp x10, x11, [sp, #16]",
-                    "cmp x20, x10",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #2",
-                    "cmp x21, x11",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #3",
-                    "ldp x10, x11, [sp, #32]",
-                    "cmp x22, x10",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #4",
-                    "cmp x23, x11",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #5",
-                    "ldp x10, x11, [sp, #48]",
-                    "cmp x24, x10",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #6",
-                    "cmp x25, x11",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #7",
-                    "ldp x10, x11, [sp, #64]",
-                    "cmp x26, x10",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #8",
-                    "cmp x27, x11",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #9",
-                    "ldp x10, x11, [sp, #80]",
-                    "cmp x28, x10",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #10",
-                    "cmp x29, x11",
-                    "cset x12, ne",
-                    "orr x9, x9, x12, lsl #11",
-                    "ldp x18, x19, [sp, #0]",
-                    "ldp x20, x21, [sp, #16]",
-                    "ldp x22, x23, [sp, #32]",
-                    "ldp x24, x25, [sp, #48]",
-                    "ldp x26, x27, [sp, #64]",
-                    "ldp x28, x29, [sp, #80]",
-                    "add sp, sp, #96",
-                    "mov x0, x9",
-                    entry = in(reg) entry,
-                    inlateout("x0") frame as *mut CpuStateFrame => register_mask,
-                    clobber_abi("C"),
-                );
-            }
+            // SAFETY: `entry` and `frame` stay live for this exact invocation.
+            let register_mask = unsafe { execute_arm64_jit(entry, frame as *mut CpuStateFrame) };
             if register_mask != 0 {
                 return Err(ExecError::HostStateCorruption {
                     register_mask: u16::try_from(register_mask)
