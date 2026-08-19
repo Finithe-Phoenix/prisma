@@ -1001,6 +1001,14 @@ pub struct ThreadRuntime {
 const MAX_DISPATCH_CACHE_ENTRIES: usize = 65_536;
 const MAX_DISPATCH_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
+const fn persistent_dispatch_cache_enabled() -> bool {
+    // Wine resumes ARM64EC execution with NtContinue, abandoning the native
+    // Rust stack between x64 and EC regions. Until the persistent translation
+    // owner is proven across that non-local boundary, correctness requires
+    // translating from the current process bytes on every re-entry.
+    !cfg!(target_arch = "arm64ec")
+}
+
 #[derive(Debug)]
 struct CachedDispatchTranslation {
     source: Vec<u8>,
@@ -1110,6 +1118,26 @@ impl ThreadRuntime {
         bytes: &[u8],
         max_instructions: usize,
     ) -> Result<BlockTranslation, TranslateError> {
+        self.translate_block_with_cache_policy(
+            translator,
+            rip,
+            bytes,
+            max_instructions,
+            persistent_dispatch_cache_enabled(),
+        )
+    }
+
+    fn translate_block_with_cache_policy(
+        &self,
+        translator: &mut Translator,
+        rip: u64,
+        bytes: &[u8],
+        max_instructions: usize,
+        persistent_cache: bool,
+    ) -> Result<BlockTranslation, TranslateError> {
+        if !persistent_cache {
+            return translate_dispatch_block(translator, rip, bytes, max_instructions);
+        }
         if max_instructions == 1 {
             let cached = self
                 .translation_cache
@@ -1694,6 +1722,30 @@ mod tests {
             .unwrap();
         assert_eq!(third, first);
         assert_eq!(second_translator.stats().cache_misses, 1);
+    }
+
+    #[test]
+    fn non_persistent_policy_retranslates_without_retaining_dispatch_entries() {
+        let runtime = ThreadRuntime::new();
+        let rip = 0x1_4000_2500;
+        let bytes = [0xb8, 0x2a, 0, 0, 0];
+        let mut first_translator = Translator::new();
+        let first = runtime
+            .translate_block_with_cache_policy(&mut first_translator, rip, &bytes, 1, false)
+            .unwrap();
+        assert_eq!(first_translator.stats().cache_misses, 1);
+
+        let mut second_translator = Translator::new();
+        let second = runtime
+            .translate_block_with_cache_policy(&mut second_translator, rip, &bytes, 1, false)
+            .unwrap();
+        assert_eq!(second, first);
+        assert_eq!(second_translator.stats().cache_misses, 1);
+        let cache = runtime
+            .translation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(cache.entries.keys().next(), None);
     }
 
     #[test]
