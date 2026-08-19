@@ -893,15 +893,15 @@ fn run_simulation(context: &mut Arm64EcContext) -> ! {
                 restore_dispatch_stack_bounds_or_terminate();
                 unsafe { dispatch::resume_wine_context(context) }
             }
-            Ok(report) => {
-                std::eprintln!("prisma: dispatch stopped unexpectedly: {report:?}");
+            Ok(_) => {
+                phase_marker(b"prisma-error: unexpected-dispatch-stop\n");
                 record_failed_dispatch();
                 // SAFETY: a cancelled context cannot safely cross back through
                 // KiUserEmulationDispatcher.
                 unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
             Err(error) => {
-                std::eprintln!("prisma: dispatch error: {error}");
+                phase_marker(error.diagnostic_marker());
                 record_failed_dispatch();
                 // SAFETY: a failed context cannot safely cross back through
                 // KiUserEmulationDispatcher.

@@ -417,6 +417,34 @@ impl fmt::Display for DispatchError {
 
 impl std::error::Error for DispatchError {}
 
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+impl DispatchError {
+    pub(super) const fn diagnostic_marker(&self) -> &'static [u8] {
+        match self {
+            Self::InvalidLimits => b"prisma-error: invalid-limits\n",
+            Self::MemoryRead { .. } => b"prisma-error: memory-read\n",
+            Self::Translation { source, .. } => match source {
+                TranslateError::Decode(_) => b"prisma-error: translation-decode\n",
+                TranslateError::Lower(_) => b"prisma-error: translation-lower\n",
+                TranslateError::Truncated { .. } => b"prisma-error: translation-truncated\n",
+            },
+            Self::Execution { source, .. } => match source {
+                ExecError::Alloc(_) => b"prisma-error: execution-alloc\n",
+                ExecError::Write => b"prisma-error: execution-write\n",
+                ExecError::Protect(_) => b"prisma-error: execution-protect\n",
+                ExecError::WrongArch => b"prisma-error: execution-wrong-arch\n",
+                ExecError::HostStateCorruption { .. } => b"prisma-error: execution-host-state\n",
+            },
+            Self::UnsupportedSyscall { .. } => b"prisma-error: unsupported-syscall\n",
+            Self::UnknownSyscall { .. } => b"prisma-error: unknown-syscall\n",
+            Self::SyscallArguments { .. } => b"prisma-error: syscall-arguments\n",
+            Self::SyscallResolution { .. } => b"prisma-error: syscall-resolution\n",
+            Self::UnknownExitReason { .. } => b"prisma-error: unknown-exit-reason\n",
+            Self::ContextUnavailable => b"prisma-error: context-unavailable\n",
+        }
+    }
+}
+
 /// Safe source of already-mapped Wine guest code.
 pub trait GuestMemory {
     /// Return at most `max_len` bytes starting at `rip`.
@@ -1580,6 +1608,34 @@ pub unsafe fn terminate_current_process(status: i32) -> ! {
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn dispatch_diagnostics_are_static_and_classify_nested_failures() {
+        assert_eq!(
+            DispatchError::Execution {
+                rip: 0x1000,
+                source: ExecError::HostStateCorruption { register_mask: 1 },
+            }
+            .diagnostic_marker(),
+            b"prisma-error: execution-host-state\n"
+        );
+        assert_eq!(
+            DispatchError::Translation {
+                rip: 0x2000,
+                source: TranslateError::Truncated {
+                    offset: 1,
+                    consumed: 2,
+                    remaining: 1,
+                },
+            }
+            .diagnostic_marker(),
+            b"prisma-error: translation-truncated\n"
+        );
+        assert_eq!(
+            DispatchError::UnknownSyscall { rip: 0x3000, id: 7 }.diagnostic_marker(),
+            b"prisma-error: unknown-syscall\n"
+        );
+    }
 
     #[test]
     fn jit_cache_keeps_linear_ownership_past_tree_split_sizes() {
