@@ -814,12 +814,9 @@ impl JitCache {
         code: &[u8],
         buffer: prisma_runtime::jit_memory::ExecBuffer,
     ) -> Result<*const u8, ExecError> {
-        let new_total = self
-            .bytes
-            .checked_add(buffer.capacity())
-            .ok_or_else(|| {
-                ExecError::Alloc(std::io::Error::other("ARM64EC JIT cache size overflow"))
-            })?;
+        let new_total = self.bytes.checked_add(buffer.capacity()).ok_or_else(|| {
+            ExecError::Alloc(std::io::Error::other("ARM64EC JIT cache size overflow"))
+        })?;
         if new_total > MAX_JIT_CACHE_BYTES {
             return Err(ExecError::Alloc(std::io::Error::other(
                 "ARM64EC JIT cache reached its 128 MiB limit",
@@ -1581,10 +1578,7 @@ mod tests {
             let mut buffer = prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
             assert!(buffer.write(&code));
             let entry = cache.publish(&code, buffer).unwrap();
-            assert_eq!(
-                cache.get(&code).map(|cached| cached.as_ptr()),
-                Some(entry)
-            );
+            assert_eq!(cache.get(&code).map(|cached| cached.as_ptr()), Some(entry));
         }
         assert_eq!(cache.buffers.len(), 32);
         assert_eq!(
