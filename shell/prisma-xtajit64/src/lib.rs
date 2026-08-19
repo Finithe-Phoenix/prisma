@@ -9,7 +9,7 @@
 #![allow(non_snake_case)]
 
 use std::cell::UnsafeCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
@@ -434,7 +434,7 @@ struct ProviderState {
     retired_threads: Vec<ThreadContext>,
     #[cfg(all(windows, target_arch = "arm64ec"))]
     executor: Option<Arc<PrismaExecutor>>,
-    mappings: BTreeSet<usize>,
+    mappings: Vec<usize>,
     simulation_requests: usize,
     cache_notifications: usize,
     last_status: NtStatus,
@@ -455,7 +455,7 @@ impl ProviderState {
             retired_threads: Vec::new(),
             #[cfg(all(windows, target_arch = "arm64ec"))]
             executor: None,
-            mappings: BTreeSet::new(),
+            mappings: Vec::new(),
             simulation_requests: 0,
             cache_notifications: 0,
             last_status: STATUS_SUCCESS,
@@ -481,7 +481,7 @@ impl ProviderState {
         {
             self.executor = None;
         }
-        self.mappings = BTreeSet::new();
+        self.mappings = Vec::new();
         self.simulation_requests = 0;
         self.cache_notifications = 0;
     }
@@ -501,6 +501,22 @@ impl ProviderState {
             context.active_dispatch_calls.load(Ordering::Acquire) != 0
                 || context.runtime.active_dispatches() != 0
         });
+    }
+
+    fn track_mapping(&mut self, address: usize) {
+        // Keep this collection linear. Wine invokes these callbacks across
+        // ARM64EC transition frames, and the Rust B-tree root-split path is
+        // not safe at that boundary. Mapping counts are small and this avoids
+        // publishing tree-node pointers while preserving exact ownership.
+        if !self.mappings.contains(&address) {
+            self.mappings.push(address);
+        }
+    }
+
+    fn untrack_mapping(&mut self, address: usize) {
+        if let Some(index) = self.mappings.iter().position(|entry| *entry == address) {
+            self.mappings.swap_remove(index);
+        }
     }
 
     fn snapshot(&self) -> ProviderSnapshot {
@@ -1180,7 +1196,7 @@ pub extern "system" fn NotifyMapViewOfSection(
         return STATUS_INVALID_DEVICE_STATE;
     }
     if !address.is_null() && size != 0 {
-        state.mappings.insert(address as usize);
+        state.track_mapping(address as usize);
     }
     STATUS_SUCCESS
 }
@@ -1196,7 +1212,7 @@ pub extern "system" fn NotifyMemoryAlloc(
 ) {
     if post_call != 0 && successful(status) && !address.is_null() && size != 0 {
         with_running_state(|state| {
-            state.mappings.insert(address as usize);
+            state.track_mapping(address as usize);
         });
     }
 }
@@ -1211,7 +1227,7 @@ pub extern "system" fn NotifyMemoryFree(
 ) {
     if post_call != 0 && successful(status) && !address.is_null() {
         with_running_state(|state| {
-            state.mappings.remove(&(address as usize));
+            state.untrack_mapping(address as usize);
         });
     }
 }
@@ -1234,7 +1250,7 @@ pub extern "system" fn NotifyUnmapViewOfSection(
 ) {
     if post_call != 0 && successful(status) && !address.is_null() {
         with_running_state(|state| {
-            state.mappings.remove(&(address as usize));
+            state.untrack_mapping(address as usize);
         });
     }
 }
@@ -1779,6 +1795,18 @@ mod tests {
         NotifyMemoryAlloc(address, 0x1000, 0, 0, 1, STATUS_SUCCESS);
         NotifyMemoryAlloc(address, 0x1000, 0, 0, 1, STATUS_SUCCESS);
         assert_eq!(provider_snapshot().tracked_mappings, 1);
+
+        for index in 1..32_usize {
+            let distinct = (0x1000 + index * 0x1000) as *mut c_void;
+            NotifyMemoryAlloc(distinct, 0x1000, 0, 0, 1, STATUS_SUCCESS);
+        }
+        assert_eq!(provider_snapshot().tracked_mappings, 32);
+
+        for index in (1..32_usize).step_by(2) {
+            let distinct = (0x1000 + index * 0x1000) as *mut c_void;
+            NotifyMemoryFree(distinct, 0x1000, 0, 1, STATUS_SUCCESS);
+        }
+        assert_eq!(provider_snapshot().tracked_mappings, 16);
 
         ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
         let pending = provider_snapshot();
