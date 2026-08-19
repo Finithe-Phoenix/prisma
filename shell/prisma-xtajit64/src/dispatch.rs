@@ -1439,7 +1439,10 @@ pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result
         )
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+        // This runs immediately after guest JIT execution. Keep the failure
+        // path allocation-simple so a rejected guest range reaches the typed
+        // dispatcher diagnostic instead of invoking Windows error formatting.
+        return Err("ReadProcessMemory rejected the guest range".to_owned());
     }
     bytes.truncate(read);
     Ok(bytes)
