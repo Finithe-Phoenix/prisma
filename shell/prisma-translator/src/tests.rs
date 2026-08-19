@@ -172,6 +172,8 @@ fn dispatch_instruction_reports_termination_without_cfg_allocation() {
         .unwrap();
     assert_eq!(jump.guest_bytes, 5);
     assert!(jump_terminates);
+    assert_eq!(translator.cached_count(), 0);
+    assert_eq!(translator.stats().total(), 0);
 }
 
 #[test]

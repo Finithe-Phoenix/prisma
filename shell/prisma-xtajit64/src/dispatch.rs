@@ -1761,7 +1761,7 @@ mod tests {
     }
 
     #[test]
-    fn thread_runtime_reuses_and_explicitly_clears_single_instruction_translations() {
+    fn thread_runtime_owns_single_instruction_cache_without_translator_duplicates() {
         let runtime = ThreadRuntime::new();
         let rip = 0x1_4000_2000;
         let bytes = [0xb8, 0x2a, 0, 0, 0];
@@ -1769,7 +1769,7 @@ mod tests {
         let first = runtime
             .translate_block_cached(&mut first_translator, rip, &bytes, 1)
             .unwrap();
-        assert_eq!(first_translator.stats().cache_misses, 1);
+        assert_eq!(first_translator.stats().total(), 0);
 
         let mut second_translator = Translator::new();
         let second = runtime
@@ -1783,7 +1783,7 @@ mod tests {
             .translate_block_cached(&mut second_translator, rip, &bytes, 1)
             .unwrap();
         assert_eq!(third, first);
-        assert_eq!(second_translator.stats().cache_misses, 1);
+        assert_eq!(second_translator.stats().total(), 0);
     }
 
     #[test]
@@ -1795,7 +1795,8 @@ mod tests {
         let first = runtime
             .translate_block_with_cache_policy(&mut first_translator, rip, &bytes, 1, false)
             .unwrap();
-        assert_eq!(first_translator.stats().cache_misses, 1);
+        assert_eq!(first_translator.stats().total(), 0);
+        assert_eq!(first_translator.cached_count(), 0);
         assert_eq!(first_translator.cached_count(), 0);
 
         let mut second_translator = Translator::new();
@@ -1803,7 +1804,8 @@ mod tests {
             .translate_block_with_cache_policy(&mut second_translator, rip, &bytes, 1, false)
             .unwrap();
         assert_eq!(second, first);
-        assert_eq!(second_translator.stats().cache_misses, 1);
+        assert_eq!(second_translator.stats().total(), 0);
+        assert_eq!(second_translator.cached_count(), 0);
         assert_eq!(second_translator.cached_count(), 0);
         for offset in 1..=32 {
             runtime

@@ -21,7 +21,8 @@ impl Translator {
     }
 
     /// Translate exactly one instruction for an execution loop that resolves
-    /// control flow dynamically and therefore does not need a successor list.
+    /// control flow dynamically and owns its executable-code cache. This path
+    /// therefore builds neither CFG successors nor a duplicate cache entry.
     ///
     /// # Errors
     /// [`TranslateError`] if the instruction cannot be decoded or lowered.
@@ -31,7 +32,7 @@ impl Translator {
         bytes: &[u8],
     ) -> Result<(Translation, bool), TranslateError> {
         let decoded = decode_one_at(bytes, 0, guest_addr).map_err(TranslateError::Decode)?;
-        let Some(insn) = bytes.get(..decoded.bytes_consumed) else {
+        let Some(_) = bytes.get(..decoded.bytes_consumed) else {
             return Err(TranslateError::Truncated {
                 offset: 0,
                 consumed: decoded.bytes_consumed,
@@ -39,7 +40,7 @@ impl Translator {
             });
         };
         let ended_at_terminator = decoded.stmts.iter().any(|stmt| is_terminator(&stmt.op));
-        let translation = self.translate_decoded(guest_addr, insn, &decoded)?;
+        let translation = self.translate_decoded_uncached(&decoded)?;
         Ok((translation, ended_at_terminator))
     }
 
@@ -330,6 +331,37 @@ impl Translator {
         }
         self.stats.cache_misses += 1;
 
+        let code = self.lower_decoded(decoded)?;
+        let entry = CacheEntry {
+            guest_addr,
+            guest_size: u32::try_from(decoded.bytes_consumed).unwrap_or(u32::MAX),
+            code_size: u32::try_from(code.len()).unwrap_or(u32::MAX),
+            code_bytes: code.clone().into_boxed_slice(),
+            hit_count: 0,
+            last_used: 0,
+        };
+        self.cache.insert((guest_addr, fnv1a_64(insn)), entry);
+
+        Ok(Translation {
+            code,
+            guest_bytes: decoded.bytes_consumed,
+            from_cache: false,
+        })
+    }
+
+    fn translate_decoded_uncached(
+        &self,
+        decoded: &Decoded,
+    ) -> Result<Translation, TranslateError> {
+        let code = self.lower_decoded(decoded)?;
+        Ok(Translation {
+            code,
+            guest_bytes: decoded.bytes_consumed,
+            from_cache: false,
+        })
+    }
+
+    fn lower_decoded(&self, decoded: &Decoded) -> Result<Vec<u8>, TranslateError> {
         let func = Function {
             entry: 0,
             blocks: vec![BasicBlock {
@@ -351,22 +383,7 @@ impl Translator {
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
         let code = encode_words(&words);
-
-        let entry = CacheEntry {
-            guest_addr,
-            guest_size: u32::try_from(decoded.bytes_consumed).unwrap_or(u32::MAX),
-            code_size: u32::try_from(code.len()).unwrap_or(u32::MAX),
-            code_bytes: code.clone().into_boxed_slice(),
-            hit_count: 0,
-            last_used: 0,
-        };
-        self.cache.insert((guest_addr, fnv1a_64(insn)), entry);
-
-        Ok(Translation {
-            code,
-            guest_bytes: decoded.bytes_consumed,
-            from_cache: false,
-        })
+        Ok(code)
     }
 
     /// Number of distinct translations currently held in the cache.
