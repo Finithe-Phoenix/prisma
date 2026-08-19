@@ -1324,7 +1324,17 @@ fn translate_dispatch_block(
     max_instructions: usize,
 ) -> Result<BlockTranslation, TranslateError> {
     if max_instructions == 1 {
-        return translator.translate_block(rip, bytes, 1);
+        let (translation, ended_at_terminator) =
+            translator.translate_dispatch_instruction(rip, bytes)?;
+        return Ok(BlockTranslation {
+            code: translation.code,
+            instruction_count: 1,
+            guest_bytes: translation.guest_bytes,
+            ended_at_terminator,
+            // The runtime resolves each exit from the live state frame. Static
+            // CFG successors are intentionally unnecessary at this boundary.
+            successors: Vec::new(),
+        });
     }
 
     // Preserve arithmetic/test NZCV through its terminating Jcc by preferring

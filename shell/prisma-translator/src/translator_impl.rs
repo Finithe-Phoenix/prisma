@@ -20,6 +20,29 @@ impl Translator {
         self.translate_decoded(guest_addr, bytes, &decoded)
     }
 
+    /// Translate exactly one instruction for an execution loop that resolves
+    /// control flow dynamically and therefore does not need a successor list.
+    ///
+    /// # Errors
+    /// [`TranslateError`] if the instruction cannot be decoded or lowered.
+    pub fn translate_dispatch_instruction(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+    ) -> Result<(Translation, bool), TranslateError> {
+        let decoded = decode_one_at(bytes, 0, guest_addr).map_err(TranslateError::Decode)?;
+        let Some(insn) = bytes.get(..decoded.bytes_consumed) else {
+            return Err(TranslateError::Truncated {
+                offset: 0,
+                consumed: decoded.bytes_consumed,
+                remaining: bytes.len(),
+            });
+        };
+        let ended_at_terminator = decoded.stmts.iter().any(|stmt| is_terminator(&stmt.op));
+        let translation = self.translate_decoded(guest_addr, insn, &decoded)?;
+        Ok((translation, ended_at_terminator))
+    }
+
     /// Translate a straight-line run of instructions starting at `guest_addr`
     /// into one concatenated ARM64 block, stopping at the first control-transfer
     /// instruction, when `bytes` is exhausted, or after `max_insns` (a guard

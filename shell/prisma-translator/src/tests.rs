@@ -159,6 +159,22 @@ fn single_instruction_block_moves_the_exact_translation() {
 }
 
 #[test]
+fn dispatch_instruction_reports_termination_without_cfg_allocation() {
+    let mut translator = Translator::new();
+    let (arithmetic, arithmetic_terminates) = translator
+        .translate_dispatch_instruction(0x1_4008_99e6, &[0x48, 0x83, 0xec, 0x28])
+        .unwrap();
+    assert_eq!(arithmetic.guest_bytes, 4);
+    assert!(!arithmetic_terminates);
+
+    let (jump, jump_terminates) = translator
+        .translate_dispatch_instruction(0x1_4008_ccc0, &[0xe9, 0xfb, 0xcc, 0xff, 0xff])
+        .unwrap();
+    assert_eq!(jump.guest_bytes, 5);
+    assert!(jump_terminates);
+}
+
+#[test]
 fn translate_block_runs_to_end_without_terminator() {
     let mut prog = Vec::new();
     prog.extend_from_slice(MOV_RAX_RCX);
