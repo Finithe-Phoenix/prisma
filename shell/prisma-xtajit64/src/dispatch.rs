@@ -951,8 +951,10 @@ impl BlockExecutor for PrismaExecutor {
             // code must preserve x18..x29, but a backend defect must not be
             // allowed to corrupt the Rust caller before it can be diagnosed.
             let _active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
+            super::phase_marker(b"prisma-phase: jit-enter\n");
             // SAFETY: `entry` and `frame` stay live for this exact invocation.
             let register_mask = unsafe { execute_arm64_jit(entry, frame as *mut CpuStateFrame) };
+            super::phase_marker(b"prisma-phase: jit-returned\n");
             if register_mask != 0 {
                 return Err(ExecError::HostStateCorruption {
                     register_mask: u16::try_from(register_mask)
