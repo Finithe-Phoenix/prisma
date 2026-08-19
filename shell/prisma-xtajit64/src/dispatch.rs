@@ -958,12 +958,12 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            let callable = wrap_block(code);
             let entry = {
                 let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
                 if let Some(buffer) = cache.get(code) {
                     buffer.as_ptr()
                 } else {
+                    let callable = wrap_block(code);
                     let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
                     if !buffer.write(&callable) {
                         return Err(ExecError::Write);
@@ -992,11 +992,16 @@ impl BlockExecutor for PrismaExecutor {
             // outer save area is an independent safety boundary: generated
             // code must preserve x18..x29, but a backend defect must not be
             // allowed to corrupt the Rust caller before it can be diagnosed.
-            let _active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
+            let active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
             super::phase_marker(b"prisma-phase: jit-enter\n");
             // SAFETY: `entry` and `frame` stay live for this exact invocation.
             let register_mask = unsafe { execute_arm64_jit(entry, frame as *mut CpuStateFrame) };
             super::phase_marker(b"prisma-phase: jit-returned\n");
+            if register_mask != 0 {
+                super::phase_marker(b"prisma-error: jit-host-state-detected\n");
+            }
+            drop(active_jit_frame);
+            super::phase_marker(b"prisma-phase: jit-frame-released\n");
             if register_mask != 0 {
                 return Err(ExecError::HostStateCorruption {
                     register_mask: u16::try_from(register_mask)
@@ -1023,6 +1028,7 @@ impl BlockExecutor for PrismaExecutor {
                 teb_before, teb_after,
                 "JIT corrupted the Windows TEB register"
             );
+            super::phase_marker(b"prisma-phase: executor-returning\n");
             Ok(())
         }
         #[cfg(not(target_arch = "arm64ec"))]
