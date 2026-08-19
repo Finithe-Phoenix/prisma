@@ -1246,6 +1246,8 @@ impl ThreadRuntime {
         let mut instructions = 0usize;
 
         for block_index in 0..limits.max_blocks {
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_marker(b"prisma-phase: dispatch-block-enter\n");
             if self.cancel.load(Ordering::Acquire) {
                 context.store_frame(&frame, rip);
                 return Ok(DispatchReport {
@@ -1293,6 +1295,8 @@ impl ThreadRuntime {
             let bytes = memory
                 .read_code(rip, limits.max_fetch_bytes)
                 .map_err(|detail| DispatchError::MemoryRead { rip, detail })?;
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_marker(b"prisma-phase: guest-code-read\n");
             if bytes.is_empty() {
                 return Err(DispatchError::MemoryRead {
                     rip,
@@ -1307,14 +1311,17 @@ impl ThreadRuntime {
                     limits.max_instructions_per_block,
                 )
                 .map_err(|source| DispatchError::Translation { rip, source })?;
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_marker(b"prisma-phase: translation-ready\n");
             let block_instruction_count = block.instruction_count;
             let block_guest_bytes = block.guest_bytes;
             let block_ended_at_terminator = block.ended_at_terminator;
             frame.exit_reason = EXIT_NORMAL;
             frame.next_pc = 0;
-            executor
-                .execute(rip, block.code, &mut frame)
-                .map_err(|source| DispatchError::Execution { rip, source })?;
+            let execution = executor.execute(rip, block.code, &mut frame);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_marker(b"prisma-phase: dispatch-executor-returned\n");
+            execution.map_err(|source| DispatchError::Execution { rip, source })?;
             instructions = instructions.saturating_add(block_instruction_count);
             let blocks = block_index + 1;
 
@@ -1347,6 +1354,8 @@ impl ThreadRuntime {
                     return Err(DispatchError::UnknownExitReason { rip, reason });
                 }
             }
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_marker(b"prisma-phase: dispatch-block-complete\n");
         }
 
         Ok(DispatchReport {
