@@ -806,7 +806,8 @@ pub trait BlockExecutor {
     ///
     /// `guest_rip` belongs to this exact invocation. Implementations must not
     /// recover it from process-global state because Wine can dispatch several
-    /// guest threads concurrently.
+    /// guest threads concurrently. The executor owns `code` so production can
+    /// release its heap descriptor before entering untrusted guest JIT code.
     ///
     /// # Errors
     ///
@@ -814,7 +815,7 @@ pub trait BlockExecutor {
     fn execute(
         &self,
         guest_rip: u64,
-        code: &[u8],
+        code: Vec<u8>,
         frame: &mut CpuStateFrame,
     ) -> Result<(), ExecError>;
 }
@@ -950,7 +951,7 @@ impl BlockExecutor for PrismaExecutor {
     fn execute(
         &self,
         guest_rip: u64,
-        code: &[u8],
+        code: Vec<u8>,
         frame: &mut CpuStateFrame,
     ) -> Result<(), ExecError> {
         #[cfg(target_arch = "arm64ec")]
@@ -960,18 +961,20 @@ impl BlockExecutor for PrismaExecutor {
 
             let entry = {
                 let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-                if let Some(buffer) = cache.get(code) {
+                if let Some(buffer) = cache.get(&code) {
                     buffer.as_ptr()
                 } else {
-                    let callable = wrap_block(code);
+                    let callable = wrap_block(&code);
                     let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
                     if !buffer.write(&callable) {
                         return Err(ExecError::Write);
                     }
                     buffer.make_executable().map_err(ExecError::Protect)?;
-                    cache.publish(code, buffer)?
+                    cache.publish(&code, buffer)?
                 }
             };
+            drop(code);
+            super::phase_marker(b"prisma-phase: translated-code-released\n");
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
@@ -1034,7 +1037,7 @@ impl BlockExecutor for PrismaExecutor {
         #[cfg(not(target_arch = "arm64ec"))]
         {
             let _ = guest_rip;
-            prisma_runtime::executor::execute_block(code, frame)
+            prisma_runtime::executor::execute_block(&code, frame)
         }
     }
 }
@@ -1304,12 +1307,15 @@ impl ThreadRuntime {
                     limits.max_instructions_per_block,
                 )
                 .map_err(|source| DispatchError::Translation { rip, source })?;
+            let block_instruction_count = block.instruction_count;
+            let block_guest_bytes = block.guest_bytes;
+            let block_ended_at_terminator = block.ended_at_terminator;
             frame.exit_reason = EXIT_NORMAL;
             frame.next_pc = 0;
             executor
-                .execute(rip, &block.code, &mut frame)
+                .execute(rip, block.code, &mut frame)
                 .map_err(|source| DispatchError::Execution { rip, source })?;
-            instructions = instructions.saturating_add(block.instruction_count);
+            instructions = instructions.saturating_add(block_instruction_count);
             let blocks = block_index + 1;
 
             match frame.exit_reason {
@@ -1317,8 +1323,8 @@ impl ThreadRuntime {
                     rip = frame.next_pc;
                     context.store_frame(&frame, rip);
                 }
-                EXIT_NORMAL if !block.ended_at_terminator => {
-                    rip = rip.wrapping_add(block.guest_bytes as u64);
+                EXIT_NORMAL if !block_ended_at_terminator => {
+                    rip = rip.wrapping_add(block_guest_bytes as u64);
                     context.store_frame(&frame, rip);
                 }
                 EXIT_NORMAL => {
@@ -1333,7 +1339,7 @@ impl ThreadRuntime {
                 EXIT_SYSCALL => {
                     let status = dispatch_win64_syscall(memory, &frame, rip)?;
                     frame.gpr[gpr::RAX] = u64::from(u32::from_ne_bytes(status.to_ne_bytes()));
-                    rip = rip.wrapping_add(block.guest_bytes as u64);
+                    rip = rip.wrapping_add(block_guest_bytes as u64);
                     context.store_frame(&frame, rip);
                 }
                 reason => {

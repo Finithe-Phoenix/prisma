@@ -37,7 +37,7 @@ impl BlockExecutor for RecordingExecutor {
     fn execute(
         &self,
         _guest_rip: u64,
-        code: &[u8],
+        code: Vec<u8>,
         frame: &mut CpuStateFrame,
     ) -> Result<(), ExecError> {
         self.saw_code.fetch_or(!code.is_empty(), Ordering::SeqCst);
@@ -137,7 +137,7 @@ impl BlockExecutor for XmmExecutor {
     fn execute(
         &self,
         guest_rip: u64,
-        _code: &[u8],
+        _code: Vec<u8>,
         frame: &mut CpuStateFrame,
     ) -> Result<(), ExecError> {
         assert_eq!(guest_rip, 0x2800);
@@ -228,7 +228,7 @@ impl BlockExecutor for CoordinatedExecutor {
     fn execute(
         &self,
         _guest_rip: u64,
-        _code: &[u8],
+        _code: Vec<u8>,
         frame: &mut CpuStateFrame,
     ) -> Result<(), ExecError> {
         if !self.first_call.swap(true, Ordering::AcqRel) {
@@ -250,7 +250,7 @@ impl BlockExecutor for ConcurrentRipExecutor {
     fn execute(
         &self,
         guest_rip: u64,
-        _code: &[u8],
+        _code: Vec<u8>,
         frame: &mut CpuStateFrame,
     ) -> Result<(), ExecError> {
         self.seen
