@@ -55,6 +55,14 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Preserve exact provider debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: prisma-xtajit64-symbols
+          path: shell/target/arm64ec-pc-windows-msvc/release/prisma_xtajit64.pdb
+          if-no-files-found: error
+          retention-days: 3
+
   execute:
     name: Execute Oh My Posh on Wine ARM64
     needs: provider
