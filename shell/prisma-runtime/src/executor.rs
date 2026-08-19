@@ -207,7 +207,36 @@ pub enum ExecError {
     /// The host is not ARM64, so the translated bytes cannot be executed. The
     /// wrap/install path still ran; this is the no-op return on x86 etc.
     WrongArch,
+    /// Generated code returned with one or more Windows ARM64 nonvolatile
+    /// registers changed. Bit zero represents x18 and bit eleven represents
+    /// x29. The ARM64EC execution boundary restores the original values before
+    /// reporting this error so corruption cannot escape into Rust.
+    HostStateCorruption { register_mask: u16 },
 }
+
+impl std::fmt::Display for ExecError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Alloc(error) => write!(formatter, "cannot allocate executable memory: {error}"),
+            Self::Write => formatter.write_str("translated block does not fit executable memory"),
+            Self::Protect(error) => {
+                write!(formatter, "cannot make translated block executable: {error}")
+            }
+            Self::WrongArch => formatter.write_str("translated ARM64 block cannot run on this host"),
+            Self::HostStateCorruption { register_mask } => {
+                formatter.write_str("generated code corrupted host registers")?;
+                for bit in 0_u8..12 {
+                    if register_mask & (1_u16 << bit) != 0 {
+                        write!(formatter, " x{}", bit + 18)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExecError {}
 
 /// Execute a translated block body against `state`.
 ///
@@ -348,6 +377,17 @@ mod tests {
         assert_eq!(&wrapped[28..32], &body_word.to_le_bytes());
         // The block ends with `ret`.
         assert_eq!(&wrapped[wrapped.len() - 4..], &0xD65F_03C0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn host_state_corruption_names_the_exact_nonvolatile_registers() {
+        let error = ExecError::HostStateCorruption {
+            register_mask: (1 << 0) | (1 << 9) | (1 << 11),
+        };
+        assert_eq!(
+            error.to_string(),
+            "generated code corrupted host registers x18 x27 x29"
+        );
     }
 
     // On the x86 dev host the wrap + W^X install path runs but execution is
