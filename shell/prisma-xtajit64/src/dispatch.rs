@@ -1236,10 +1236,6 @@ impl ThreadRuntime {
         }
 
         let _lease = DispatchLease::new(self);
-        // `Translator` contains non-Send pass objects. Wine dispatch is
-        // thread-affine, so ownership remains on this stack and is dropped
-        // before returning across the provider boundary.
-        let mut translator = Translator::new();
         let mut frame = context.load_frame();
         initialize_windows_segment_bases(&mut frame);
         let mut rip = context.pc_rip;
@@ -1258,7 +1254,6 @@ impl ThreadRuntime {
                 });
             }
             if self.invalidate_cache.swap(false, Ordering::AcqRel) {
-                translator.clear_cache();
                 self.translation_cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1303,6 +1298,9 @@ impl ThreadRuntime {
                     detail: "reader returned no bytes".to_owned(),
                 });
             }
+            // Dispatch owns the executable cache. Keep the pass pipeline
+            // block-local so no translator heap state survives guest JIT.
+            let mut translator = Translator::new();
             let block = self
                 .translate_block_cached(
                     &mut translator,
@@ -1311,6 +1309,7 @@ impl ThreadRuntime {
                     limits.max_instructions_per_block,
                 )
                 .map_err(|source| DispatchError::Translation { rip, source })?;
+            drop(translator);
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: translation-ready\n");
             let block_instruction_count = block.instruction_count;
