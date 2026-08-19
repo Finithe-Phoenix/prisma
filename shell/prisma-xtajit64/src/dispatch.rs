@@ -1744,7 +1744,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_boundary_dispatch_uses_the_non_fused_translation_path() {
+    fn exact_boundary_dispatch_skips_unused_cfg_successors() {
         let rip = 0x1_4000_1000;
         let bytes = [0x48, 0x89, 0xd8];
         let mut dispatch_translator = Translator::new();
@@ -1753,7 +1753,11 @@ mod tests {
         let actual = translate_dispatch_block(&mut dispatch_translator, rip, &bytes, 1).unwrap();
         let expected = baseline_translator.translate_block(rip, &bytes, 1).unwrap();
 
-        assert_eq!(actual, expected);
+        assert_eq!(actual.code, expected.code);
+        assert_eq!(actual.instruction_count, expected.instruction_count);
+        assert_eq!(actual.guest_bytes, expected.guest_bytes);
+        assert_eq!(actual.ended_at_terminator, expected.ended_at_terminator);
+        assert!(actual.successors.is_empty());
     }
 
     #[test]
