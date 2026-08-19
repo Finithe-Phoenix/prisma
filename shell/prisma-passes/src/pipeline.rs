@@ -9,6 +9,75 @@ use crate::{
 use prisma_ir::Function;
 use std::time::{Duration, Instant};
 
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn arm64ec_phase_marker(message: &'static [u8]) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(kind: u32) -> *mut std::ffi::c_void;
+        fn WriteFile(
+            file: *mut std::ffi::c_void,
+            buffer: *const std::ffi::c_void,
+            bytes_to_write: u32,
+            bytes_written: *mut u32,
+            overlapped: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    const STD_ERROR_HANDLE: u32 = (-12_i32) as u32;
+    let Ok(bytes_to_write) = u32::try_from(message.len()) else {
+        return;
+    };
+    // SAFETY: diagnostics borrow a static message and never own the handle.
+    let file = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if file.is_null() || file.addr() == usize::MAX {
+        return;
+    }
+    let mut bytes_written = 0_u32;
+    let _ = unsafe {
+        WriteFile(
+            file,
+            message.as_ptr().cast(),
+            bytes_to_write,
+            &raw mut bytes_written,
+            std::ptr::null_mut(),
+        )
+    };
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+const PASS_ENTER_MARKERS: [&[u8]; DEFAULT_PIPELINE_LEN] = [
+    b"prisma-phase: pass-01-enter\n",
+    b"prisma-phase: pass-02-enter\n",
+    b"prisma-phase: pass-03-enter\n",
+    b"prisma-phase: pass-04-enter\n",
+    b"prisma-phase: pass-05-enter\n",
+    b"prisma-phase: pass-06-enter\n",
+    b"prisma-phase: pass-07-enter\n",
+    b"prisma-phase: pass-08-enter\n",
+    b"prisma-phase: pass-09-enter\n",
+    b"prisma-phase: pass-10-enter\n",
+    b"prisma-phase: pass-11-enter\n",
+    b"prisma-phase: pass-12-enter\n",
+    b"prisma-phase: pass-13-enter\n",
+];
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+const PASS_READY_MARKERS: [&[u8]; DEFAULT_PIPELINE_LEN] = [
+    b"prisma-phase: pass-01-ready\n",
+    b"prisma-phase: pass-02-ready\n",
+    b"prisma-phase: pass-03-ready\n",
+    b"prisma-phase: pass-04-ready\n",
+    b"prisma-phase: pass-05-ready\n",
+    b"prisma-phase: pass-06-ready\n",
+    b"prisma-phase: pass-07-ready\n",
+    b"prisma-phase: pass-08-ready\n",
+    b"prisma-phase: pass-09-ready\n",
+    b"prisma-phase: pass-10-ready\n",
+    b"prisma-phase: pass-11-ready\n",
+    b"prisma-phase: pass-12-ready\n",
+    b"prisma-phase: pass-13-ready\n",
+];
+
 /// Per-pass timing and the total, produced by [`PassPipeline::run_with_stats`].
 /// Mirrors the C++ `PassRunStats` shape (name + elapsed per pass).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -26,8 +95,16 @@ pub struct PassPipeline {
 impl PassPipeline {
     /// Run all registered passes in order.
     pub fn run(&self, mut func: Function) -> Function {
-        for pass in &self.passes {
+        for (index, pass) in self.passes.iter().enumerate() {
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            if let Some(marker) = PASS_ENTER_MARKERS.get(index) {
+                arm64ec_phase_marker(marker);
+            }
             func = pass.run(func);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            if let Some(marker) = PASS_READY_MARKERS.get(index) {
+                arm64ec_phase_marker(marker);
+            }
         }
         func
     }
