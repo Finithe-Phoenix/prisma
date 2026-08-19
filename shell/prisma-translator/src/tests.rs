@@ -175,6 +175,13 @@ fn dispatch_instruction_reports_termination_without_cfg_allocation() {
 }
 
 #[test]
+fn encode_words_materializes_exact_little_endian_buffer() {
+    let encoded = encode_words(&[0x1122_3344, 0xaabb_ccdd]);
+
+    assert_eq!(encoded, [0x44, 0x33, 0x22, 0x11, 0xdd, 0xcc, 0xbb, 0xaa]);
+}
+
+#[test]
 fn translate_block_runs_to_end_without_terminator() {
     let mut prog = Vec::new();
     prog.extend_from_slice(MOV_RAX_RCX);

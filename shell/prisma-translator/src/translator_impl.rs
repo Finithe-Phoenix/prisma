@@ -178,10 +178,7 @@ impl Translator {
             .with_branch_exits()
             .lower_function(&opt.func)
             .map_err(TranslateError::Lower)?;
-        let mut code = Vec::with_capacity(words.len() * 4);
-        for word in &words {
-            code.extend_from_slice(&word.to_le_bytes());
-        }
+        let code = encode_words(&words);
 
         Ok(BlockTranslation {
             code,
@@ -353,10 +350,7 @@ impl Translator {
             .with_branch_exits()
             .lower_function(&optimized)
             .map_err(TranslateError::Lower)?;
-        let mut code = Vec::with_capacity(words.len() * 4);
-        for word in &words {
-            code.extend_from_slice(&word.to_le_bytes());
-        }
+        let code = encode_words(&words);
 
         let entry = CacheEntry {
             guest_addr,
@@ -409,4 +403,14 @@ impl Translator {
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
+}
+
+fn encode_words(words: &[u32]) -> Vec<u8> {
+    let mut code = vec![0; std::mem::size_of_val(words)];
+    let (chunks, remainder) = code.as_chunks_mut::<4>();
+    debug_assert_eq!(remainder, []);
+    for (bytes, word) in chunks.iter_mut().zip(words) {
+        bytes.copy_from_slice(&word.to_le_bytes());
+    }
+    code
 }
