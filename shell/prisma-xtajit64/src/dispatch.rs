@@ -1746,6 +1746,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(cache.entries.keys().next(), None);
+        drop(cache);
     }
 
     #[test]
