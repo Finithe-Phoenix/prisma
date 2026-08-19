@@ -791,14 +791,45 @@ pub trait BlockExecutor {
     ) -> Result<(), ExecError>;
 }
 
-#[cfg(target_arch = "arm64ec")]
+#[cfg(any(test, target_arch = "arm64ec"))]
 const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
-#[cfg(target_arch = "arm64ec")]
+#[cfg(any(test, target_arch = "arm64ec"))]
 #[derive(Debug, Default)]
 struct JitCache {
-    buffers: BTreeMap<Vec<u8>, prisma_runtime::jit_memory::ExecBuffer>,
+    buffers: Vec<(Vec<u8>, prisma_runtime::jit_memory::ExecBuffer)>,
     bytes: usize,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl JitCache {
+    fn get(&self, code: &[u8]) -> Option<&prisma_runtime::jit_memory::ExecBuffer> {
+        self.buffers
+            .iter()
+            .find_map(|(cached, buffer)| (cached.as_slice() == code).then_some(buffer))
+    }
+
+    fn publish(
+        &mut self,
+        code: &[u8],
+        buffer: prisma_runtime::jit_memory::ExecBuffer,
+    ) -> Result<*const u8, ExecError> {
+        let new_total = self
+            .bytes
+            .checked_add(buffer.capacity())
+            .ok_or_else(|| {
+                ExecError::Alloc(std::io::Error::other("ARM64EC JIT cache size overflow"))
+            })?;
+        if new_total > MAX_JIT_CACHE_BYTES {
+            return Err(ExecError::Alloc(std::io::Error::other(
+                "ARM64EC JIT cache reached its 128 MiB limit",
+            )));
+        }
+        let entry = buffer.as_ptr();
+        self.bytes = new_total;
+        self.buffers.push((code.to_vec(), buffer));
+        Ok(entry)
+    }
 }
 
 /// Per-thread owner of executable translations.
@@ -905,7 +936,7 @@ impl BlockExecutor for PrismaExecutor {
             let callable = wrap_block(code);
             let entry = {
                 let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-                if let Some(buffer) = cache.buffers.get(code) {
+                if let Some(buffer) = cache.get(code) {
                     buffer.as_ptr()
                 } else {
                     let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
@@ -913,21 +944,7 @@ impl BlockExecutor for PrismaExecutor {
                         return Err(ExecError::Write);
                     }
                     buffer.make_executable().map_err(ExecError::Protect)?;
-                    let new_total =
-                        cache.bytes.checked_add(buffer.capacity()).ok_or_else(|| {
-                            ExecError::Alloc(std::io::Error::other(
-                                "ARM64EC JIT cache size overflow",
-                            ))
-                        })?;
-                    if new_total > MAX_JIT_CACHE_BYTES {
-                        return Err(ExecError::Alloc(std::io::Error::other(
-                            "ARM64EC JIT cache reached its 128 MiB limit",
-                        )));
-                    }
-                    let entry = buffer.as_ptr();
-                    cache.bytes = new_total;
-                    cache.buffers.insert(code.to_vec(), buffer);
-                    entry
+                    cache.publish(code, buffer)?
                 }
             };
             let sp_before: usize;
@@ -1550,6 +1567,35 @@ pub unsafe fn terminate_current_process(status: i32) -> ! {
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn jit_cache_keeps_linear_ownership_past_tree_split_sizes() {
+        let mut cache = JitCache::default();
+        for value in 0_u8..32 {
+            let code = [
+                value,
+                value.wrapping_add(1),
+                value.wrapping_add(2),
+                value.wrapping_add(3),
+            ];
+            let mut buffer = prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
+            assert!(buffer.write(&code));
+            let entry = cache.publish(&code, buffer).unwrap();
+            assert_eq!(
+                cache.get(&code).map(|cached| cached.as_ptr()),
+                Some(entry)
+            );
+        }
+        assert_eq!(cache.buffers.len(), 32);
+        assert_eq!(
+            cache.bytes,
+            cache
+                .buffers
+                .iter()
+                .map(|(_, buffer)| buffer.capacity())
+                .sum()
+        );
+    }
 
     struct StackMemory {
         address: u64,
