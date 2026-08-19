@@ -1152,7 +1152,13 @@ impl ThreadRuntime {
         persistent_cache: bool,
     ) -> Result<BlockTranslation, TranslateError> {
         if !persistent_cache {
-            return translate_dispatch_block(translator, rip, bytes, max_instructions);
+            // Wine resumes each ARM64EC block through a non-local NtContinue
+            // transition. Do not retain allocator-backed translator state across
+            // that boundary until its preservation contract is proven.
+            translator.clear_cache();
+            let result = translate_dispatch_block(translator, rip, bytes, max_instructions);
+            translator.clear_cache();
+            return result;
         }
         if max_instructions == 1 {
             let cached = self
@@ -1776,6 +1782,7 @@ mod tests {
             .translate_block_with_cache_policy(&mut first_translator, rip, &bytes, 1, false)
             .unwrap();
         assert_eq!(first_translator.stats().cache_misses, 1);
+        assert_eq!(first_translator.cached_count(), 0);
 
         let mut second_translator = Translator::new();
         let second = runtime
@@ -1783,6 +1790,19 @@ mod tests {
             .unwrap();
         assert_eq!(second, first);
         assert_eq!(second_translator.stats().cache_misses, 1);
+        assert_eq!(second_translator.cached_count(), 0);
+        for offset in 1..=32 {
+            runtime
+                .translate_block_with_cache_policy(
+                    &mut second_translator,
+                    rip + offset * 0x10,
+                    &bytes,
+                    1,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(second_translator.cached_count(), 0);
+        }
         let cache = runtime
             .translation_cache
             .lock()
