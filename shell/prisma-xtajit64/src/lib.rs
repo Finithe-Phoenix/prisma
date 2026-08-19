@@ -16,8 +16,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-#[cfg(all(windows, target_arch = "arm64ec"))]
-mod allocator;
 mod dispatch;
 
 // Wine loads xtajit64 before the initial thread owns a PE TLS block. The
