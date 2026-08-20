@@ -838,12 +838,8 @@ impl JitCache {
             .find_map(|(cached, buffer)| (cached.as_slice() == code).then_some(buffer))
     }
 
-    fn publish(
-        &mut self,
-        code: &[u8],
-        buffer: prisma_runtime::jit_memory::ExecBuffer,
-    ) -> Result<*const u8, ExecError> {
-        let new_total = self.bytes.checked_add(buffer.capacity()).ok_or_else(|| {
+    fn checked_total(&self, capacity: usize) -> Result<usize, ExecError> {
+        let new_total = self.bytes.checked_add(capacity).ok_or_else(|| {
             ExecError::Alloc(std::io::Error::other("ARM64EC JIT cache size overflow"))
         })?;
         if new_total > MAX_JIT_CACHE_BYTES {
@@ -851,10 +847,7 @@ impl JitCache {
                 "ARM64EC JIT cache reached its 128 MiB limit",
             )));
         }
-        let entry = buffer.as_ptr();
-        self.bytes = new_total;
-        self.buffers.push((code.to_vec(), buffer));
-        Ok(entry)
+        Ok(new_total)
     }
 }
 
@@ -865,8 +858,53 @@ impl JitCache {
 /// The enclosing thread context drops the whole bounded cache at `ThreadTerm`.
 #[derive(Debug, Default)]
 pub struct PrismaExecutor {
-    #[cfg(target_arch = "arm64ec")]
+    #[cfg(any(test, target_arch = "arm64ec"))]
     cache: Mutex<JitCache>,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl PrismaExecutor {
+    fn cached_entry(&self, code: &[u8]) -> Option<*const u8> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(code)
+            .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
+    }
+
+    fn publish_entry(
+        &self,
+        code: Vec<u8>,
+        buffer: prisma_runtime::jit_memory::ExecBuffer,
+    ) -> Result<*const u8, ExecError> {
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache
+            .get(&code)
+            .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
+        {
+            drop(cache);
+            drop(buffer);
+            drop(code);
+            return Ok(entry);
+        }
+        let new_total = match cache.checked_total(buffer.capacity()) {
+            Ok(new_total) => new_total,
+            Err(error) => {
+                drop(cache);
+                drop(buffer);
+                drop(code);
+                return Err(error);
+            }
+        };
+        let entry = buffer.as_ptr();
+        cache.bytes = new_total;
+        cache.buffers.push((code, buffer));
+        drop(cache);
+        Ok(entry)
+    }
 }
 
 #[cfg(target_arch = "arm64ec")]
@@ -959,22 +997,19 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            let entry = {
-                let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-                if let Some(buffer) = cache.get(&code) {
-                    buffer.as_ptr()
-                } else {
-                    let callable = wrap_block(&code);
-                    let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
-                    if !buffer.write(&callable) {
-                        return Err(ExecError::Write);
-                    }
-                    buffer.make_executable().map_err(ExecError::Protect)?;
-                    cache.publish(&code, buffer)?
+            let entry = if let Some(entry) = self.cached_entry(&code) {
+                drop(code);
+                entry
+            } else {
+                let callable = wrap_block(&code);
+                let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
+                if !buffer.write(&callable) {
+                    return Err(ExecError::Write);
                 }
+                buffer.make_executable().map_err(ExecError::Protect)?;
+                self.publish_entry(code, buffer)?
             };
-            drop(code);
-            super::phase_marker(b"prisma-phase: translated-code-released\n");
+            super::phase_marker(b"prisma-phase: jit-cache-ready\n");
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
@@ -995,22 +1030,15 @@ impl BlockExecutor for PrismaExecutor {
             // outer save area is an independent safety boundary: generated
             // code must preserve x18..x29, but a backend defect must not be
             // allowed to corrupt the Rust caller before it can be diagnosed.
-            let active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
             super::phase_marker(b"prisma-phase: jit-enter\n");
-            // SAFETY: `entry` and `frame` stay live for this exact invocation.
-            let register_mask = unsafe { execute_arm64_jit(entry, frame as *mut CpuStateFrame) };
-            super::phase_marker(b"prisma-phase: jit-returned\n");
-            if register_mask != 0 {
-                super::phase_marker(b"prisma-error: jit-host-state-detected\n");
-            }
-            drop(active_jit_frame);
-            super::phase_marker(b"prisma-phase: jit-frame-released\n");
-            if register_mask != 0 {
-                return Err(ExecError::HostStateCorruption {
-                    register_mask: u16::try_from(register_mask)
-                        .expect("ARM64 nonvolatile mask fits u16"),
-                });
-            }
+            let register_mask = {
+                let active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
+                // SAFETY: `entry` and `frame` stay live for this exact invocation.
+                let register_mask =
+                    unsafe { execute_arm64_jit(entry, frame as *mut CpuStateFrame) };
+                drop(active_jit_frame);
+                register_mask
+            };
             let sp_after: usize;
             let teb_after: usize;
             // SAFETY: these register reads complete the host-state invariant checks.
@@ -1023,6 +1051,14 @@ impl BlockExecutor for PrismaExecutor {
                     options(nomem, nostack, preserves_flags),
                 );
             }
+            super::phase_marker(b"prisma-phase: jit-returned\n");
+            if register_mask != 0 {
+                super::phase_marker(b"prisma-error: jit-host-state-detected\n");
+                return Err(ExecError::HostStateCorruption {
+                    register_mask: u16::try_from(register_mask)
+                        .expect("ARM64 nonvolatile mask fits u16"),
+                });
+            }
             assert_eq!(
                 sp_before, sp_after,
                 "JIT corrupted the native stack pointer"
@@ -1031,7 +1067,6 @@ impl BlockExecutor for PrismaExecutor {
                 teb_before, teb_after,
                 "JIT corrupted the Windows TEB register"
             );
-            super::phase_marker(b"prisma-phase: executor-returning\n");
             Ok(())
         }
         #[cfg(not(target_arch = "arm64ec"))]
@@ -1669,9 +1704,9 @@ mod tests {
 
     #[test]
     fn jit_cache_keeps_linear_ownership_past_tree_split_sizes() {
-        let mut cache = JitCache::default();
+        let executor = PrismaExecutor::default();
         for value in 0_u8..32 {
-            let code = [
+            let code = vec![
                 value,
                 value.wrapping_add(1),
                 value.wrapping_add(2),
@@ -1679,23 +1714,68 @@ mod tests {
             ];
             let mut buffer = prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
             assert!(buffer.write(&code));
-            let entry = cache.publish(&code, buffer).unwrap();
-            assert_eq!(
-                cache
-                    .get(&code)
-                    .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr),
-                Some(entry)
-            );
+            let entry = executor.publish_entry(code.clone(), buffer).unwrap();
+            assert_eq!(executor.cached_entry(&code), Some(entry));
         }
-        assert_eq!(cache.buffers.len(), 32);
+        let cache = executor.cache.lock().unwrap();
+        let entry_count = cache.buffers.len();
+        let bytes = cache.bytes;
+        let summed_capacity = cache
+            .buffers
+            .iter()
+            .map(|(_, buffer)| buffer.capacity())
+            .sum();
+        drop(cache);
+        assert_eq!(entry_count, 32);
+        assert_eq!(bytes, summed_capacity);
+    }
+
+    #[test]
+    fn executor_publish_deduplicates_concurrent_unlocked_misses() {
+        let executor = std::sync::Arc::new(PrismaExecutor::default());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let code = vec![0x11, 0x22, 0x33, 0x44];
+        let workers: [_; 4] = std::array::from_fn(|_| {
+            let executor = std::sync::Arc::clone(&executor);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let code = code.clone();
+            std::thread::spawn(move || {
+                let mut candidate =
+                    prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
+                assert!(candidate.write(&code));
+                barrier.wait();
+                executor.publish_entry(code, candidate).unwrap() as usize
+            })
+        });
+        let entries: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+
+        assert!(entries.iter().all(|entry| *entry == entries[0]));
         assert_eq!(
-            cache.bytes,
-            cache
-                .buffers
-                .iter()
-                .map(|(_, buffer)| buffer.capacity())
-                .sum()
+            executor.cached_entry(&code).map(|entry| entry as usize),
+            Some(entries[0])
         );
+        let cache = executor.cache.lock().unwrap();
+        let entry_count = cache.buffers.len();
+        let bytes = cache.bytes;
+        let capacity = cache.buffers[0].1.capacity();
+        drop(cache);
+        assert_eq!(entry_count, 1);
+        assert_eq!(bytes, capacity);
+    }
+
+    #[test]
+    fn jit_cache_rejects_capacity_overflow_and_budget_exhaustion() {
+        let cache = JitCache::default();
+        assert!(cache.checked_total(MAX_JIT_CACHE_BYTES + 1).is_err());
+
+        let overflowed = JitCache {
+            bytes: usize::MAX,
+            ..JitCache::default()
+        };
+        assert!(overflowed.checked_total(1).is_err());
     }
 
     struct StackMemory {
