@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly expected_wineprefix=/tmp/prisma-prefix
+test "${WINEPREFIX:?WINEPREFIX must be set}" = "$expected_wineprefix"
+
 cleanup_prefix() {
   /opt/prisma-wine/bin/wineserver -k >/dev/null 2>&1 || true
   /opt/prisma-wine/bin/wineserver -w >/dev/null 2>&1 || true
-  rm -rf -- "$WINEPREFIX"
+  rm -rf -- "$expected_wineprefix"
 }
 
 runtime_dir="$(mktemp -d /tmp/prisma-phase1.XXXXXX)"
@@ -16,6 +19,8 @@ cleanup_runtime() {
 trap cleanup_runtime EXIT
 
 expected_version=30.6.3
+expected_stdout="$runtime_dir/expected.stdout"
+printf '%s\n' "$expected_version" >"$expected_stdout"
 for cycle in 1 2 3; do
   system32="$WINEPREFIX/drive_c/windows/system32"
   mkdir -p "$system32"
@@ -46,7 +51,8 @@ for cycle in 1 2 3; do
   cat "$stderr_file"
   printf 'cycle=%s stderr-end\n' "$cycle"
   test "$status" -eq 0
-  grep -Fxq "$expected_version" "$stdout_file"
+  cmp "$expected_stdout" "$stdout_file"
+  ! grep -Fq 'prisma-error:' "$stderr_file"
 
   cleanup_prefix
 done
