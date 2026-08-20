@@ -1173,6 +1173,10 @@ pub fn fdiv_d(dst: u8, lhs: u8, rhs: u8) -> u32 {
 }
 
 /// Encodes `FCMP Dn, Dm`.
+///
+/// # Panics
+///
+/// Panics if either register is outside `0..32`.
 #[must_use]
 pub fn fcmp_d(lhs: u8, rhs: u8) -> u32 {
     assert!(lhs < 32, "left register out of range");
