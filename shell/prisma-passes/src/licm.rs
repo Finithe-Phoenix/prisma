@@ -134,9 +134,7 @@ pub fn loop_invariant_motion(mut func: Function) -> Function {
         let mut body_refs: HashSet<Ref> = HashSet::new();
         for &bid in &loop_.body {
             for st in &func.blocks[idx[&bid]].stmts {
-                if let Some(r) = st.result {
-                    body_refs.insert(r);
-                }
+                body_refs.extend(st.defined_refs());
             }
         }
 
@@ -157,7 +155,7 @@ pub fn loop_invariant_motion(mut func: Function) -> Function {
                     let mut hoist_at: Option<usize> = None;
                     for i in 0..term_pos {
                         let stmt = &func.blocks[bpos].stmts[i];
-                        if stmt.result.is_none() || !stmt_is_pure(&stmt.op) {
+                        if stmt.defined_refs().next().is_none() || !stmt_is_pure(&stmt.op) {
                             continue;
                         }
                         let mut ops = Vec::new();
@@ -171,13 +169,12 @@ pub fn loop_invariant_motion(mut func: Function) -> Function {
 
                     // Remove from body, insert before the preheader terminator.
                     let hoisted = func.blocks[bpos].stmts.remove(i);
-                    let hoisted_result = hoisted.result;
+                    for defined in hoisted.defined_refs() {
+                        body_refs.remove(&defined);
+                    }
                     let ph = &mut func.blocks[preheader_pos].stmts;
                     let insert_pos = ph.len() - 1;
                     ph.insert(insert_pos, hoisted);
-                    if let Some(r) = hoisted_result {
-                        body_refs.remove(&r);
-                    }
                     changed = true;
                 }
             }
@@ -190,7 +187,10 @@ pub fn loop_invariant_motion(mut func: Function) -> Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prisma_ir::{BasicBlock, BinOp, BinOpKind, CondJump, Constant, Jump, OpSize, Return, Stmt};
+    use prisma_ir::{
+        AtomicCmpxchgPair, BasicBlock, BinOp, BinOpKind, CondJump, Constant, Jump, OpSize, Return,
+        Stmt,
+    };
 
     #[test]
     fn no_loops_is_noop() {
@@ -315,5 +315,70 @@ mod tests {
         };
         let out = loop_invariant_motion(f.clone());
         assert_eq!(out, f, "loop-carried value must not be hoisted");
+    }
+
+    #[test]
+    fn atomic_pair_secondary_result_keeps_consumer_in_loop() {
+        let f = Function {
+            entry: 0,
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    stmts: vec![
+                        Stmt::new(
+                            Some(0),
+                            Op::Constant(Constant {
+                                value: 1,
+                                size: OpSize::I64,
+                            }),
+                        ),
+                        Stmt::new(None, Op::Jump(Jump { target_block: 1 })),
+                    ],
+                },
+                BasicBlock {
+                    id: 1,
+                    stmts: vec![
+                        Stmt::new(
+                            Some(5),
+                            Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
+                                addr: 10,
+                                expected_low: 11,
+                                expected_high: 12,
+                                new_low: 13,
+                                new_high: 14,
+                                old_high: 6,
+                            }),
+                        ),
+                        Stmt::new(
+                            Some(7),
+                            Op::BinOp(BinOp {
+                                op: BinOpKind::Add,
+                                lhs: 6,
+                                rhs: 0,
+                                size: OpSize::I64,
+                            }),
+                        ),
+                        Stmt::new(
+                            None,
+                            Op::CondJump(CondJump {
+                                cond: 7,
+                                if_true: 1,
+                                if_false: 2,
+                            }),
+                        ),
+                    ],
+                },
+                BasicBlock {
+                    id: 2,
+                    stmts: vec![Stmt::new(None, Op::Return(Return))],
+                },
+            ],
+        };
+
+        let out = loop_invariant_motion(f.clone());
+        assert_eq!(
+            out, f,
+            "consumer of old_high must remain after its pair CAS"
+        );
     }
 }

@@ -1480,14 +1480,16 @@ fn decode_pshufd(
         src
     };
     let shuffled = alloc_ref(stmts);
-    let op = match shuffle_high_halfwords {
-        Some(is_high) => Op::VecShuffleH4(VecShuffleH4 {
-            is_high,
-            src,
-            control,
-        }),
-        None => Op::VecShuffle32x4(VecShuffle32x4 { src, control }),
-    };
+    let op = shuffle_high_halfwords.map_or(
+        Op::VecShuffle32x4(VecShuffle32x4 { src, control }),
+        |is_high| {
+            Op::VecShuffleH4(VecShuffleH4 {
+                is_high,
+                src,
+                control,
+            })
+        },
+    );
     stmts.push(Stmt::new(Some(shuffled), op));
     stmts.push(Stmt::new(
         None,
@@ -5973,7 +5975,9 @@ fn decode_cmpxchg8b16b(
         ));
 
         let old_low = alloc_ref(stmts);
-        let old_high = alloc_ref(stmts);
+        let old_high = old_low
+            .checked_add(1)
+            .expect("one decoded instruction cannot exhaust IR references");
         stmts.push(Stmt::new(
             Some(old_low),
             Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
@@ -9523,7 +9527,15 @@ fn emit_add_disp(stmts: &mut Vec<Stmt>, base_ref: Ref, disp: i64) -> Ref {
 }
 
 fn alloc_ref(stmts: &mut Vec<Stmt>) -> Ref {
-    stmts.len() as Ref
+    let sequential =
+        Ref::try_from(stmts.len()).expect("one decoded instruction cannot exhaust IR references");
+    stmts
+        .iter()
+        .flat_map(Stmt::defined_refs)
+        .try_fold(sequential, |next, defined| {
+            defined.checked_add(1).map(|candidate| next.max(candidate))
+        })
+        .expect("one decoded instruction cannot exhaust IR references")
 }
 
 fn read_imm(bytes: &[u8], offset: usize, n: usize) -> Result<u64, crate::DecodeError> {
@@ -9675,15 +9687,25 @@ mod tests {
                 refs.insert(old, idx as Ref);
             }
         }
+        let mut next_secondary = Ref::try_from(stmts.len()).expect("test IR fits in Ref");
+        for stmt in &stmts {
+            for defined in stmt.defined_refs() {
+                if Some(defined) != stmt.result {
+                    refs.insert(defined, next_secondary);
+                    next_secondary += 1;
+                }
+            }
+        }
 
         stmts
             .into_iter()
             .enumerate()
             .map(|(idx, mut stmt)| {
-                if stmt.result.is_some() {
+                let has_primary_result = stmt.result.is_some();
+                stmt.map_refs(|r| refs.get(&r).copied().unwrap_or(r));
+                if has_primary_result {
                     stmt.result = Some(idx as Ref);
                 }
-                stmt.map_refs(|r| refs.get(&r).copied().unwrap_or(r));
                 stmt
             })
             .collect()
@@ -16470,9 +16492,30 @@ mod tests {
         assert_rflags_publish(&d.stmts, RflagsCarryMode::Preserve);
         let stmts = without_rflags_publish(&d.stmts);
 
-        assert!(stmts
+        let pair_stmt = stmts
             .iter()
-            .any(|s| matches!(s.op, Op::AtomicCmpxchgPair(AtomicCmpxchgPair { .. }))));
+            .find(|stmt| matches!(stmt.op, Op::AtomicCmpxchgPair(_)))
+            .expect("pair CAS IR");
+        let old_low = pair_stmt.result.expect("pair CAS low result");
+        let old_high = match &pair_stmt.op {
+            Op::AtomicCmpxchgPair(pair) => pair.old_high,
+            _ => unreachable!(),
+        };
+        assert_ne!(old_low, old_high, "pair CAS results need distinct refs");
+
+        let mut defined_refs = stmts
+            .iter()
+            .filter_map(|stmt| stmt.result)
+            .chain([old_high])
+            .collect::<Vec<_>>();
+        let definition_count = defined_refs.len();
+        defined_refs.sort_unstable();
+        defined_refs.dedup();
+        assert_eq!(
+            defined_refs.len(),
+            definition_count,
+            "every decoded output needs a unique IR ref"
+        );
         assert!(!stmts.iter().any(|s| matches!(
             s.op,
             Op::LoadMem(_) | Op::StoreMem(_) | Op::LoadMemTSO(_) | Op::StoreMemTSO(_)

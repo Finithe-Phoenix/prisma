@@ -49,7 +49,7 @@ pub fn strength_reduce(func: Function) -> Function {
         .blocks
         .iter()
         .flat_map(|b| b.stmts.iter())
-        .filter_map(|s| s.result)
+        .flat_map(Stmt::defined_refs)
         .map(|r| r + 1)
         .max()
         .unwrap_or(0);
@@ -121,7 +121,7 @@ pub fn strength_reduce(func: Function) -> Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prisma_ir::OpSize;
+    use prisma_ir::{AtomicCmpxchgPair, OpSize};
 
     #[test]
     fn mul_by_pow2_becomes_shift() {
@@ -227,5 +227,52 @@ mod tests {
         let once = strength_reduce(func);
         let twice = strength_reduce(once.clone());
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn minted_ref_does_not_collide_with_atomic_pair_secondary_result() {
+        let func = Function {
+            entry: 0,
+            blocks: vec![BasicBlock {
+                id: 0,
+                stmts: vec![
+                    Stmt::new(
+                        Some(10),
+                        Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
+                            addr: 20,
+                            expected_low: 21,
+                            expected_high: 22,
+                            new_low: 23,
+                            new_high: 24,
+                            old_high: 11,
+                        }),
+                    ),
+                    Stmt::new(
+                        Some(0),
+                        Op::Constant(Constant {
+                            value: 8,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                    Stmt::new(
+                        Some(1),
+                        Op::BinOp(BinOp {
+                            op: BinOpKind::Mul,
+                            lhs: 9,
+                            rhs: 0,
+                            size: OpSize::I64,
+                        }),
+                    ),
+                ],
+            }],
+        };
+
+        let out = strength_reduce(func);
+        assert_eq!(out.blocks[0].stmts[2].result, Some(12));
+        assert_eq!(out.blocks[0].stmts[3].result, Some(1));
+        match &out.blocks[0].stmts[3].op {
+            Op::BinOp(binop) => assert_eq!(binop.rhs, 12),
+            other => panic!("expected reduced shift, got {other:?}"),
+        }
     }
 }

@@ -1137,6 +1137,18 @@ impl Stmt {
         Self { result, op }
     }
 
+    /// Return every SSA ref defined by this statement.
+    ///
+    /// Most operations define at most `result`; pair compare-exchange also
+    /// defines the observed high half stored in `old_high`.
+    pub fn defined_refs(&self) -> impl Iterator<Item = Ref> {
+        let secondary = match &self.op {
+            Op::AtomicCmpxchgPair(pair) => Some(pair.old_high),
+            _ => None,
+        };
+        self.result.into_iter().chain(secondary)
+    }
+
     /// Apply `f` to every SSA value reference in this statement — its result
     /// (if any) and every operand ref inside the op. Block ids, guest
     /// addresses, register indices, and immediates are left untouched.
@@ -1149,10 +1161,10 @@ impl Stmt {
 }
 
 impl Op {
-    /// Apply `f` to every SSA value reference (operand) this op reads. Used to
-    /// renumber SSA refs when concatenating independently-decoded instructions
-    /// into one basic block. The match is exhaustive so a new `Op` variant
-    /// forces this to be updated rather than silently dropping its refs.
+    /// Apply `f` to every SSA value reference stored in this op, including
+    /// operands and secondary results. Used to renumber SSA refs when
+    /// concatenating independently-decoded instructions into one basic block.
+    /// The match is exhaustive so a new `Op` variant forces this to be updated.
     #[allow(clippy::too_many_lines)]
     pub fn map_refs(&mut self, mut f: impl FnMut(Ref) -> Ref) {
         match self {
@@ -1547,6 +1559,29 @@ mod tests {
             }
             _ => panic!("op changed"),
         }
+    }
+
+    #[test]
+    fn defined_refs_include_atomic_pair_secondary_result() {
+        let stmt = Stmt::new(
+            Some(6),
+            Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
+                addr: 0,
+                expected_low: 1,
+                expected_high: 2,
+                new_low: 3,
+                new_high: 4,
+                old_high: 7,
+            }),
+        );
+
+        assert_eq!(stmt.defined_refs().collect::<Vec<_>>(), vec![6, 7]);
+        assert_eq!(
+            Stmt::new(None, Op::Return(Return))
+                .defined_refs()
+                .collect::<Vec<_>>(),
+            Vec::<Ref>::new()
+        );
     }
 
     #[test]

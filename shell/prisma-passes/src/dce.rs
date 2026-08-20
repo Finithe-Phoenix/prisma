@@ -475,8 +475,8 @@ pub fn dead_code_eliminate(func: Function) -> Function {
     for block in func.blocks.iter().rev() {
         for stmt in block.stmts.iter().rev() {
             let impure = !is_pure_for_dce(&stmt.op);
-            let result_is_live = stmt.result.is_some_and(|r| live.contains(&r));
-            if impure || result_is_live {
+            let definition_is_live = stmt.defined_refs().any(|r| live.contains(&r));
+            if impure || definition_is_live {
                 collect_operand_refs(&stmt.op, &mut live);
             }
         }
@@ -492,8 +492,8 @@ pub fn dead_code_eliminate(func: Function) -> Function {
                 .into_iter()
                 .filter(|stmt| {
                     let impure = !is_pure_for_dce(&stmt.op);
-                    let result_is_live = stmt.result.is_some_and(|r| live.contains(&r));
-                    impure || result_is_live
+                    let definition_is_live = stmt.defined_refs().any(|r| live.contains(&r));
+                    impure || definition_is_live
                 })
                 .collect();
             BasicBlock {
