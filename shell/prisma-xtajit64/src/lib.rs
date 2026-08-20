@@ -16,7 +16,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-#[cfg(all(windows, target_arch = "arm64ec"))]
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
 mod allocator;
 mod dispatch;
 
