@@ -1870,9 +1870,19 @@ mod tests {
         assert!(pop_native_return().is_err());
 
         push_native_return(first).unwrap();
+        let runtime = {
+            let state = lock_provider();
+            Arc::downgrade(
+                &state
+                    .threads
+                    .get(&current_thread_key())
+                    .expect("current thread must own a runtime")
+                    .runtime,
+            )
+        };
         ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
         assert_eq!(provider_snapshot().active_threads, 0);
-        assert_eq!(provider_snapshot().live_runtimes, 0);
+        assert!(runtime.upgrade().is_none());
         ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
     }
 
