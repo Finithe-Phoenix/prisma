@@ -30,6 +30,11 @@ jobs:
   provider:
     name: Build ARM64EC provider
     runs-on: windows-2022
+    env:
+      # Rust 1.98 emits an invalid hybrid pairing for the three naked
+      # transition exports (LNK1413). Keep the last validated ARM64EC compiler
+      # explicit until that linker contract is requalified.
+      RUSTUP_TOOLCHAIN: "1.97.1"
     steps:
       - uses: actions/checkout@v7
 
@@ -38,8 +43,8 @@ jobs:
 
       - name: Install Rust ARM64EC target
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add arm64ec-pc-windows-msvc
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          rustup target add arm64ec-pc-windows-msvc --toolchain $env:RUSTUP_TOOLCHAIN
 
       - name: Build and audit provider
         shell: pwsh
