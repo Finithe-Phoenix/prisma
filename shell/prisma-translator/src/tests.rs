@@ -575,8 +575,10 @@ fn fused_oh_my_posh_test_after_rip_load_has_one_memory_read() {
         .expect("lower exact Oh My Posh load/test/branch block");
     let words: Vec<u32> = lowered
         .code
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte ARM64 word")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect();
     println!("lowered Oh My Posh words: {words:08x?}");
 }
@@ -623,8 +625,10 @@ fn fused_oh_my_posh_direct_call_keeps_target_and_return_pc() {
         .expect("lower exact Oh My Posh direct-call block");
     let words: Vec<u32> = lowered
         .code
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte ARM64 word")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect();
     println!("Oh My Posh direct-call ARM64: {words:08x?}");
 }
@@ -665,8 +669,10 @@ fn fused_oh_my_posh_procresize_uses_signed_greater_equal_exit() {
         .expect("lower exact procresize loop guard");
     let words: Vec<u32> = lowered
         .code
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte ARM64 word")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect();
     assert!(
         words
