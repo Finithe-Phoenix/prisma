@@ -1298,9 +1298,14 @@ impl ThreadRuntime {
                     detail: "reader returned no bytes".to_owned(),
                 });
             }
-            // Dispatch owns the executable cache. Keep the pass pipeline
-            // block-local so no translator heap state survives guest JIT.
-            let mut translator = Translator::new();
+            // Dispatch owns the executable cache. Keep translator state
+            // block-local, and avoid constructing an optimization pipeline for
+            // the production one-instruction boundary.
+            let mut translator = if limits.max_instructions_per_block == 1 {
+                Translator::for_dispatch()
+            } else {
+                Translator::new()
+            };
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: translator-created\n");
             let block = self

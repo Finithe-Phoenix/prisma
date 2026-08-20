@@ -38,6 +38,20 @@ impl Translator {
         Self::default()
     }
 
+    /// Construct a translator for the single-instruction runtime dispatcher.
+    ///
+    /// The dispatcher owns executable-code caching and deliberately lowers raw
+    /// decoded IR, so constructing the optimization pipeline here would only
+    /// create short-lived heap state at every Wine transition.
+    #[must_use]
+    pub fn for_dispatch() -> Self {
+        Self {
+            cache: TranslationCache::new(),
+            pipeline: PassPipeline::default(),
+            stats: TranslatorStats::default(),
+        }
+    }
+
     /// Translate the guest instruction at `bytes[0..]` (decoded at `guest_addr`)
     /// into ARM64 machine code, running the full optimization pipeline and
     /// memoizing the result in the translation cache.
@@ -81,7 +95,7 @@ impl Translator {
         let ended_at_terminator = decoded.stmts.iter().any(|stmt| is_terminator(&stmt.op));
         #[cfg(all(windows, target_arch = "arm64ec"))]
         arm64ec_phase_marker(b"prisma-phase: translator-lower-enter\n");
-        let translation = self.translate_decoded_uncached(&decoded)?;
+        let translation = Self::translate_decoded_uncached_for_dispatch(&decoded)?;
         Ok((translation, ended_at_terminator))
     }
 
@@ -390,11 +404,10 @@ impl Translator {
         })
     }
 
-    fn translate_decoded_uncached(
-        &self,
+    fn translate_decoded_uncached_for_dispatch(
         decoded: &Decoded,
     ) -> Result<Translation, TranslateError> {
-        let code = self.lower_decoded(decoded)?;
+        let code = Self::lower_decoded_unoptimized(decoded)?;
         Ok(Translation {
             code,
             guest_bytes: decoded.bytes_consumed,
@@ -405,19 +418,37 @@ impl Translator {
     fn lower_decoded(&self, decoded: &Decoded) -> Result<Vec<u8>, TranslateError> {
         #[cfg(all(windows, target_arch = "arm64ec"))]
         arm64ec_phase_marker(b"prisma-phase: translator-ir-enter\n");
-        let func = Function {
-            entry: 0,
-            blocks: vec![BasicBlock {
-                id: 0,
-                stmts: decoded.stmts.clone(),
-            }],
-        };
+        let func = Self::function_from_decoded(decoded);
         #[cfg(all(windows, target_arch = "arm64ec"))]
         arm64ec_phase_marker(b"prisma-phase: translator-ir-ready\n");
         let optimized = self.pipeline.run(func);
         #[cfg(all(windows, target_arch = "arm64ec"))]
         arm64ec_phase_marker(b"prisma-phase: translator-pipeline-ready\n");
 
+        Self::lower_function(&optimized)
+    }
+
+    fn lower_decoded_unoptimized(decoded: &Decoded) -> Result<Vec<u8>, TranslateError> {
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-ir-enter\n");
+        let func = Self::function_from_decoded(decoded);
+        #[cfg(all(windows, target_arch = "arm64ec"))]
+        arm64ec_phase_marker(b"prisma-phase: translator-pipeline-bypassed\n");
+
+        Self::lower_function(&func)
+    }
+
+    fn function_from_decoded(decoded: &Decoded) -> Function {
+        Function {
+            entry: 0,
+            blocks: vec![BasicBlock {
+                id: 0,
+                stmts: decoded.stmts.clone(),
+            }],
+        }
+    }
+
+    fn lower_function(function: &Function) -> Result<Vec<u8>, TranslateError> {
         // The runtime executes every translated block via execute_block, which
         // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
         // ret, SYSCALL) must route through the full epilogue — a bare ret would
@@ -427,7 +458,7 @@ impl Translator {
         // to) so the run loop can chain to the taken target.
         let words = Lowerer::new()
             .with_branch_exits()
-            .lower_function(&optimized)
+            .lower_function(function)
             .map_err(TranslateError::Lower)?;
         #[cfg(all(windows, target_arch = "arm64ec"))]
         arm64ec_phase_marker(b"prisma-phase: translator-lowerer-ready\n");

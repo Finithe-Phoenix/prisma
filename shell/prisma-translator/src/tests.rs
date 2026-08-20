@@ -160,17 +160,27 @@ fn single_instruction_block_moves_the_exact_translation() {
 
 #[test]
 fn dispatch_instruction_reports_termination_without_cfg_allocation() {
-    let mut translator = Translator::new();
+    let mut translator = Translator::for_dispatch();
+    assert_eq!(translator.pipeline.size(), 0);
     let (arithmetic, arithmetic_terminates) = translator
         .translate_dispatch_instruction(0x1_4008_99e6, &[0x48, 0x83, 0xec, 0x28])
         .unwrap();
+    let optimized_arithmetic = Translator::new()
+        .translate(0x1_4008_99e6, &[0x48, 0x83, 0xec, 0x28])
+        .unwrap();
     assert_eq!(arithmetic.guest_bytes, 4);
+    assert!(!arithmetic.code.is_empty());
+    assert_eq!(arithmetic.code, optimized_arithmetic.code);
     assert!(!arithmetic_terminates);
 
     let (jump, jump_terminates) = translator
         .translate_dispatch_instruction(0x1_4008_ccc0, &[0xe9, 0xfb, 0xcc, 0xff, 0xff])
         .unwrap();
+    let optimized_jump = Translator::new()
+        .translate(0x1_4008_ccc0, &[0xe9, 0xfb, 0xcc, 0xff, 0xff])
+        .unwrap();
     assert_eq!(jump.guest_bytes, 5);
+    assert_eq!(jump.code, optimized_jump.code);
     assert!(jump_terminates);
     assert_eq!(translator.cached_count(), 0);
     assert_eq!(translator.stats().total(), 0);
