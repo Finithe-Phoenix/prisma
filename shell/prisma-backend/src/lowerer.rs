@@ -9,22 +9,20 @@ use crate::{
 use prisma_ir::{BinOpKind, Function, Gpr, Op, OpSize, Ref, RflagsCarryMode, Stmt};
 use thiserror::Error;
 
-/// First temporary register used by the migration lowerer.
-const FIRST_VALUE_REG: u8 = 9;
-
-/// Number of temporary integer registers managed by this migration slice.
-const VALUE_REG_COUNT: u8 = 8;
+/// ARM64EC-compatible volatile registers used for scalar SSA values.
+///
+/// The hybrid ABI does not expose x13, x14, x23, x24 or x28 to x64 contexts,
+/// and x18 is the Windows platform register. Keep the allocation policy
+/// explicit so a contiguous range cannot silently reintroduce those registers.
+const VALUE_REGS: [u8; 8] = [9, 10, 11, 12, 15, 16, 17, 8];
 
 /// Volatile scratch used to publish exact x64 instruction boundaries. It is
-/// outside the x9..x16 value pool and never aliases the ARM64EC TEB in x18.
-const GUEST_PC_SCRATCH_REG: u8 = 17;
+/// outside the explicit scalar value pool and never aliases the ARM64EC TEB.
+const GUEST_PC_SCRATCH_REG: u8 = 3;
 
 /// Scratch registers used for transient flag-alignment lowering.
-const FLAG_ALIGN_LHS_REG: u8 = 17;
-// Windows ARM64 and ARM64EC reserve x18 for the current TEB. JIT blocks must
-// preserve it across their entire lifetime, including helper calls and return
-// dispatch, so use the otherwise available callee-saved x28 instead.
-const FLAG_ALIGN_RHS_REG: u8 = 28;
+const FLAG_ALIGN_LHS_REG: u8 = 3;
+const FLAG_ALIGN_RHS_REG: u8 = 7;
 const FLAG_ALIGN_SHIFT_REG: u8 = 19;
 
 /// Scratch register used for quotient materialization in modulo lowering.
@@ -34,7 +32,7 @@ const RSP_ADJUST_TMP_REG: u8 = 21;
 /// Scratch register used for large RSP immediate materialization.
 const RSP_ADJUST_IMM_REG: u8 = 22;
 /// Scratch register used for flag-writing ALU side-effect operations.
-const ALU_FLAGS_TMP_REG: u8 = 23;
+const ALU_FLAGS_TMP_REG: u8 = 25;
 /// Scratch aliases used while rewriting NZCV after flag-setting operations.
 const NZCV_TMP_REG: u8 = MOD_QUOTIENT_REG;
 const NZCV_MASK_REG: u8 = RSP_ADJUST_TMP_REG;
@@ -46,16 +44,21 @@ const WIDE_BIT_REG: u8 = MOD_QUOTIENT_REG;
 const WIDE_ONE_REG: u8 = RSP_ADJUST_TMP_REG;
 const WIDE_MASK_REG: u8 = RSP_ADJUST_IMM_REG;
 const WIDE_TMP_REG: u8 = ALU_FLAGS_TMP_REG;
-const WIDE_QUOT_SIGN_REG: u8 = MEM_ADDR_SCRATCH;
+const WIDE_QUOT_SIGN_REG: u8 = 5;
 const WIDE_REM_SIGN_REG: u8 = CAS_STATUS_REG;
 const WIDE_SHIFT_REG: u8 = 26;
 // Atomic read-modify-write ops keep their input live across the exclusive loop.
-// Preserve it outside the cyclic x9..x16 SSA pool so LDAXR cannot overwrite it
+// Preserve it outside the cyclic SSA pool so LDAXR cannot overwrite it
 // when result/input slots alias.
 const ATOMIC_RMW_SOURCE_REG: u8 = WIDE_SHIFT_REG;
 const ATOMIC_CMPXCHG_EXPECTED_REG: u8 = WIDE_SHIFT_REG;
 const ATOMIC_CMPXCHG_NEW_REG: u8 = ALU_FLAGS_TMP_REG;
+const ATOMIC_PAIR_EXPECTED_LOW_REG: u8 = 19;
+const ATOMIC_PAIR_EXPECTED_HIGH_REG: u8 = 20;
+const ATOMIC_PAIR_NEW_LOW_REG: u8 = 21;
+const ATOMIC_PAIR_NEW_HIGH_REG: u8 = 22;
 const PCMP_HELPER_TARGET_REG: u8 = 16;
+const HELPER_SAVED_PAIRS: [(u8, u8); 4] = [(8, 9), (10, 11), (12, 15), (16, 17)];
 
 /// Scalar register pairs used for the current XMM lowering frontier. The Rust
 /// backend does not have NEON/vector-register emission yet, so 128-bit vector
@@ -1535,14 +1538,12 @@ const EXIT_BRANCH_MARK: u16 = 2;
 /// a contiguous host arena that is not identity-mapped to the guest VAs (RFC
 /// 0020). A `mem_base` of 0 reproduces the legacy `host == guest` behaviour.
 const MEM_BASE_OFFSET: u16 = 840;
-/// Scratch register holding the rebased host address inside a memory op. Outside
-/// the value-register pool (x9..x16) so it never aliases the `addr`/`value`/`dst`
-/// operands, and inside the prologue's callee-saved set so the body may clobber
-/// it. The block body otherwise touches x9..x17, x19..x26, x27 (state) and
-/// x28; Windows' platform register x18 is never allocated.
-const MEM_ADDR_SCRATCH: u8 = 24;
+/// Volatile scratch holding the rebased host address inside a memory op. It is
+/// disjoint from the scalar value pool and from every atomic source/destination
+/// register, so an exclusive pair never aliases its base register.
+const MEM_ADDR_SCRATCH: u8 = 4;
 /// Scratch register receiving `STLXR*` status in atomic compare-exchange loops.
-const CAS_STATUS_REG: u8 = 25;
+const CAS_STATUS_REG: u8 = 6;
 const KSTATE_CPUID_MAX_LEAF: u64 = 7;
 const KSTATE_CPUID_VENDOR_EBX: u64 = 0x756E_6547;
 const KSTATE_CPUID_VENDOR_EDX: u64 = 0x4965_6E69;
@@ -2722,21 +2723,20 @@ fn lower_cond_jump_rel(
 const BRANCH_EXIT_TARGET_REG: u8 = 9;
 const BRANCH_EXIT_FALL_REG: u8 = 10;
 // A return target is loaded from guest memory after every ordinary SSA value
-// is dead. Keep it out of the cyclic x9..x16 value pool all the way through the
+// is dead. Keep it out of the cyclic value pool all the way through the
 // frame write: long fused blocks can otherwise leave x9 participating in the
 // final guest-memory sequence, which is needlessly fragile on ARM64EC.
 const RETURN_EXIT_TARGET_REG: u8 = WIDE_SHIFT_REG;
 
 // REP string operations are terminators, so all transient SSA values are dead
-// when this bounded native loop starts. These callee-saved scratch registers
-// are preserved by the block wrapper and deliberately avoid x18 (Windows TEB),
-// x24 (memory rebasing), and x27 (the CpuStateFrame pointer).
+// when this bounded native loop starts. These ARM64EC-visible callee-saved
+// scratch registers are preserved by the block wrapper.
 const REP_RCX_REG: u8 = 19;
 const REP_RDI_REG: u8 = 20;
 const REP_RSI_REG: u8 = 21;
 const REP_MAX_REG: u8 = 22;
-const REP_ITER_REG: u8 = 23;
-const REP_VALUE_REG: u8 = 25;
+const REP_ITER_REG: u8 = 25;
+const REP_VALUE_REG: u8 = 26;
 
 #[allow(clippy::too_many_arguments)]
 fn lower_rep_string(
@@ -3028,8 +3028,8 @@ fn block_label(labels: &HashMap<u32, Label>, guest_pc: u64) -> Result<Label, Low
 }
 
 fn value_reg(reference: Ref) -> u8 {
-    let slot = reference % u32::from(VALUE_REG_COUNT);
-    FIRST_VALUE_REG + u8::try_from(slot).expect("slot is bounded by VALUE_REG_COUNT")
+    let slot = reference % u32::try_from(VALUE_REGS.len()).expect("value pool length fits u32");
+    VALUE_REGS[usize::try_from(slot).expect("slot is bounded by the value pool")]
 }
 
 fn alloc_vec_pair(
@@ -3066,7 +3066,9 @@ fn lower_vec_shuffle32x4(
         .ok_or(LowerError::MissingResult("VecShuffle32x4"))?;
     let src = vec_pair(vec_values, shuffle.src)?;
     let dst = alloc_vec_pair(vec_values, result)?;
-    debug_assert!(dst.0 != src.0 && dst.0 != src.1 && dst.1 != src.0 && dst.1 != src.1);
+    let dst_regs: [u8; 2] = dst.into();
+    let src_regs: [u8; 2] = src.into();
+    debug_assert!(!dst_regs.iter().any(|reg| src_regs.contains(reg)));
 
     emit_vec_u32_lane(asm, dst.0, src, shuffle.control & 0x03);
     emit_vec_u32_lane(asm, CAS_STATUS_REG, src, (shuffle.control >> 2) & 0x03);
@@ -3324,7 +3326,7 @@ fn lower_fp_to_int_scalar(
         if convert.int_size == OpSize::I32 {
             u64::from(0x8000_0000_u32)
         } else {
-            i64::MIN as u64
+            i64::MIN.cast_unsigned()
         },
     );
     asm.bind_label(done);
@@ -3368,10 +3370,10 @@ fn lower_vec_clmul(
     vec_values: &mut HashMap<Ref, (u8, u8)>,
     op: &prisma_ir::VecClMul,
 ) -> Result<(), LowerError> {
-    const CLMUL_WORK_LO: u8 = FLAG_ALIGN_LHS_REG; // X17
-    const CLMUL_WORK_HI: u8 = FLAG_ALIGN_RHS_REG; // X28
-    const CLMUL_RHS: u8 = MEM_ADDR_SCRATCH; // X24
-    const CLMUL_TMP: u8 = CAS_STATUS_REG; // X25
+    const CLMUL_WORK_LO: u8 = FLAG_ALIGN_LHS_REG;
+    const CLMUL_WORK_HI: u8 = FLAG_ALIGN_RHS_REG;
+    const CLMUL_RHS: u8 = MEM_ADDR_SCRATCH;
+    const CLMUL_TMP: u8 = CAS_STATUS_REG;
     const CLMUL_COUNT: u8 = 30;
 
     let result = stmt.result.ok_or(LowerError::MissingResult("VecClMul"))?;
@@ -3612,14 +3614,14 @@ fn emit_pcmpstr_helper_call(
 }
 
 fn emit_save_for_helper_call(asm: &mut Arm64Assembler) {
-    for (left, right) in [(9, 10), (11, 12), (13, 14), (15, 16), (17, 18), (29, 30)] {
+    for (left, right) in HELPER_SAVED_PAIRS {
         asm.stp_x_pre_sp(left, right, -16);
     }
 }
 
 fn emit_restore_after_helper_call(asm: &mut Arm64Assembler) {
-    for (left, right) in [(29, 30), (17, 18), (15, 16), (13, 14), (11, 12), (9, 10)] {
-        asm.ldp_x_post_sp(left, right, 16);
+    for (left, right) in HELPER_SAVED_PAIRS.iter().rev() {
+        asm.ldp_x_post_sp(*left, *right, 16);
     }
 }
 
@@ -3805,6 +3807,18 @@ fn lower_atomic_cmpxchg_pair(
     let old_low = value_reg(old_low_ref);
     let old_high = value_reg(cas.old_high);
 
+    // LDAXP writes both result registers before the comparisons. Preserve all
+    // four live inputs outside the cyclic scalar pool so allocator wrap cannot
+    // replace an expected or replacement operand with the observed value.
+    asm.mov_x(ATOMIC_PAIR_EXPECTED_LOW_REG, expected_low);
+    asm.mov_x(ATOMIC_PAIR_EXPECTED_HIGH_REG, expected_high);
+    asm.mov_x(ATOMIC_PAIR_NEW_LOW_REG, new_low);
+    asm.mov_x(ATOMIC_PAIR_NEW_HIGH_REG, new_high);
+    values.insert(cas.expected_low, ATOMIC_PAIR_EXPECTED_LOW_REG);
+    values.insert(cas.expected_high, ATOMIC_PAIR_EXPECTED_HIGH_REG);
+    values.insert(cas.new_low, ATOMIC_PAIR_NEW_LOW_REG);
+    values.insert(cas.new_high, ATOMIC_PAIR_NEW_HIGH_REG);
+
     emit_rebase_addr(asm, addr);
     let retry = asm.create_label();
     let fail = asm.create_label();
@@ -3812,11 +3826,16 @@ fn lower_atomic_cmpxchg_pair(
 
     asm.bind_label(retry);
     asm.ldaxp_x(old_low, old_high, MEM_ADDR_SCRATCH);
-    asm.cmp_x(old_low, expected_low);
+    asm.cmp_x(old_low, ATOMIC_PAIR_EXPECTED_LOW_REG);
     asm.b_cond_label(prisma_ir::CondCode::Ne, fail);
-    asm.cmp_x(old_high, expected_high);
+    asm.cmp_x(old_high, ATOMIC_PAIR_EXPECTED_HIGH_REG);
     asm.b_cond_label(prisma_ir::CondCode::Ne, fail);
-    asm.stlxp_x(CAS_STATUS_REG, new_low, new_high, MEM_ADDR_SCRATCH);
+    asm.stlxp_x(
+        CAS_STATUS_REG,
+        ATOMIC_PAIR_NEW_LOW_REG,
+        ATOMIC_PAIR_NEW_HIGH_REG,
+        MEM_ADDR_SCRATCH,
+    );
     asm.cbnz_x_label(CAS_STATUS_REG, retry);
     asm.b_label(done);
     asm.bind_label(fail);
@@ -3970,21 +3989,121 @@ mod tests {
     }
 
     #[test]
-    fn windows_platform_register_x18_is_not_allocated() {
-        let scalar_pool = FIRST_VALUE_REG..FIRST_VALUE_REG + VALUE_REG_COUNT;
-        assert!(!scalar_pool.contains(&18));
-        assert_ne!(FLAG_ALIGN_LHS_REG, 18);
-        assert_ne!(FLAG_ALIGN_RHS_REG, 18);
-        assert_ne!(FLAG_ALIGN_SHIFT_REG, 18);
-        assert_ne!(MOD_QUOTIENT_REG, 18);
-        assert_ne!(RSP_ADJUST_TMP_REG, 18);
-        assert_ne!(RSP_ADJUST_IMM_REG, 18);
-        assert_ne!(ALU_FLAGS_TMP_REG, 18);
-        assert_ne!(MEM_ADDR_SCRATCH, 18);
-        assert_ne!(CAS_STATUS_REG, 18);
-        assert_ne!(WIDE_SHIFT_REG, 18);
-        assert_ne!(PCMP_HELPER_TARGET_REG, 18);
-        assert!(VEC_REG_PAIRS.iter().all(|(lo, hi)| *lo != 18 && *hi != 18));
+    #[allow(clippy::too_many_lines)]
+    fn arm64ec_register_plan_avoids_unavailable_and_platform_registers() {
+        let scalar_and_scratch = VALUE_REGS
+            .into_iter()
+            .chain([
+                GUEST_PC_SCRATCH_REG,
+                FLAG_ALIGN_LHS_REG,
+                FLAG_ALIGN_RHS_REG,
+                FLAG_ALIGN_SHIFT_REG,
+                MOD_QUOTIENT_REG,
+                RSP_ADJUST_TMP_REG,
+                RSP_ADJUST_IMM_REG,
+                ALU_FLAGS_TMP_REG,
+                WIDE_QUOT_SIGN_REG,
+                WIDE_REM_SIGN_REG,
+                WIDE_SHIFT_REG,
+                MEM_ADDR_SCRATCH,
+                CAS_STATUS_REG,
+                ATOMIC_PAIR_EXPECTED_LOW_REG,
+                ATOMIC_PAIR_EXPECTED_HIGH_REG,
+                ATOMIC_PAIR_NEW_LOW_REG,
+                ATOMIC_PAIR_NEW_HIGH_REG,
+                PCMP_HELPER_TARGET_REG,
+                REP_RCX_REG,
+                REP_RDI_REG,
+                REP_RSI_REG,
+                REP_MAX_REG,
+                REP_ITER_REG,
+                REP_VALUE_REG,
+                BRANCH_EXIT_TARGET_REG,
+                BRANCH_EXIT_FALL_REG,
+                RETURN_EXIT_TARGET_REG,
+                abi::K_STATE_PTR_REG,
+            ])
+            .chain(VEC_REG_PAIRS.into_iter().flat_map(<[u8; 2]>::from))
+            .chain(HELPER_SAVED_PAIRS.into_iter().flat_map(<[u8; 2]>::from));
+
+        for register in scalar_and_scratch {
+            assert!(
+                ![13, 14, 18, 23, 24, 28].contains(&register),
+                "x{register} is not available to generated ARM64EC code"
+            );
+            assert_ne!(register, 29, "x29 is reserved for native frame-pointer use");
+        }
+
+        let helper_preserved = HELPER_SAVED_PAIRS
+            .into_iter()
+            .flat_map(<[u8; 2]>::from)
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            helper_preserved,
+            VALUE_REGS.into_iter().collect::<HashSet<_>>()
+        );
+
+        let vector_registers = VEC_REG_PAIRS
+            .into_iter()
+            .flat_map(<[u8; 2]>::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            vector_registers
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len(),
+            vector_registers.len(),
+            "vector pairs must not alias each other"
+        );
+        assert!(
+            vector_registers
+                .iter()
+                .all(|register| [19, 20, 21, 22, 25, 26].contains(register)),
+            "vector values must survive helper calls"
+        );
+
+        let wide_scratch = [
+            WIDE_REM_REG,
+            WIDE_DIVISOR_REG,
+            WIDE_LOW_REG,
+            WIDE_BIT_REG,
+            WIDE_ONE_REG,
+            WIDE_MASK_REG,
+            WIDE_TMP_REG,
+            WIDE_QUOT_SIGN_REG,
+            WIDE_REM_SIGN_REG,
+            WIDE_SHIFT_REG,
+        ];
+        assert_eq!(
+            wide_scratch.iter().copied().collect::<HashSet<_>>().len(),
+            wide_scratch.len(),
+            "wide arithmetic scratch registers must be unique"
+        );
+
+        let clmul_scratch = [
+            FLAG_ALIGN_LHS_REG,
+            FLAG_ALIGN_RHS_REG,
+            MEM_ADDR_SCRATCH,
+            CAS_STATUS_REG,
+            30,
+        ];
+        assert_eq!(
+            clmul_scratch.iter().copied().collect::<HashSet<_>>().len(),
+            clmul_scratch.len(),
+            "carry-less multiply scratch registers must be unique"
+        );
+        assert!(clmul_scratch
+            .iter()
+            .all(|register| !vector_registers.contains(register)));
+        assert_ne!(MEM_ADDR_SCRATCH, FLAG_ALIGN_LHS_REG);
+        assert_ne!(MEM_ADDR_SCRATCH, FLAG_ALIGN_RHS_REG);
+        assert_ne!(MEM_ADDR_SCRATCH, CAS_STATUS_REG);
+        assert!(!VALUE_REGS.contains(&MEM_ADDR_SCRATCH));
+
+        // Floating-point lowering is deliberately limited to d0/d1. ARM64EC
+        // does not permit generated hybrid code to depend on v16-v31.
+        assert!([0_u8, 1].into_iter().all(|register| register < 16));
     }
 
     #[test]
@@ -4528,7 +4647,7 @@ mod tests {
                 0xD280_01EA,
                 0x8A0A_012B,
                 0xAA0A_012C,
-                0xCA0A_012D,
+                0xCA0A_012F,
             ]
         );
     }
@@ -4595,8 +4714,8 @@ mod tests {
                 0xD280_006A,
                 0x9ACA_212B,
                 0x9ACA_252C,
-                0x9ACA_292D,
-                0x9ACA_2D2E,
+                0x9ACA_292F,
+                0x9ACA_2D30,
             ]
         );
     }
@@ -4672,15 +4791,15 @@ mod tests {
                 0xD280_006A,
                 0x9B0A_7D2B,
                 0x9BCA_7D2C,
-                0x9B4A_7D2D,
+                0x9B4A_7D2F,
                 0xB500_006A,
                 0xD280_0000,
                 0xD65F_03C0,
-                0x9ACA_092E,
+                0x9ACA_0930,
                 0xB500_006A,
                 0xD280_0000,
                 0xD65F_03C0,
-                0x9ACA_0D2F,
+                0x9ACA_0D31,
             ]
         );
     }
@@ -5186,8 +5305,8 @@ mod tests {
             ),
         ]);
 
-        // Each memory op rebases the guest VA: ldr x24,[x27,#MEM_BASE_OFFSET];
-        // add x24, addr, x24; then the load/store off x24.
+        // Each memory op rebases the guest VA through MEM_ADDR_SCRATCH before
+        // issuing the load or store.
         assert_eq!(
             Lowerer::new().lower_function(&func).unwrap(),
             vec![
@@ -5522,10 +5641,10 @@ mod tests {
                 .count(),
             4
         );
-        assert!(code.contains(&stp_x_pre_sp(9, 10, -16)));
-        assert!(code.contains(&stp_x_pre_sp(29, 30, -16)));
-        assert!(code.contains(&ldp_x_post_sp(29, 30, 16)));
-        assert!(code.contains(&ldp_x_post_sp(9, 10, 16)));
+        assert!(code.contains(&stp_x_pre_sp(8, 9, -16)));
+        assert!(code.contains(&stp_x_pre_sp(16, 17, -16)));
+        assert!(code.contains(&ldp_x_post_sp(16, 17, 16)));
+        assert!(code.contains(&ldp_x_post_sp(8, 9, 16)));
         assert!(code.contains(&mov_x(value_reg(2), 0)));
         assert!(code.contains(&mov_x(ALU_FLAGS_TMP_REG, 0)));
         assert!(code.contains(&mov_x(WIDE_SHIFT_REG, 0)));
@@ -6327,14 +6446,23 @@ mod tests {
                 movz_x(value_reg(2), 0x22, 0),
                 movz_x(value_reg(3), 0x33, 0),
                 movz_x(value_reg(4), 0x44, 0),
+                mov_x(ATOMIC_PAIR_EXPECTED_LOW_REG, value_reg(1)),
+                mov_x(ATOMIC_PAIR_EXPECTED_HIGH_REG, value_reg(2)),
+                mov_x(ATOMIC_PAIR_NEW_LOW_REG, value_reg(3)),
+                mov_x(ATOMIC_PAIR_NEW_HIGH_REG, value_reg(4)),
                 ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
                 add_x(MEM_ADDR_SCRATCH, value_reg(0), MEM_ADDR_SCRATCH),
                 ldaxp_x(value_reg(5), value_reg(6), MEM_ADDR_SCRATCH),
-                cmp_x(value_reg(5), value_reg(1)),
+                cmp_x(value_reg(5), ATOMIC_PAIR_EXPECTED_LOW_REG),
                 b_cond(CondCode::Ne, 24),
-                cmp_x(value_reg(6), value_reg(2)),
+                cmp_x(value_reg(6), ATOMIC_PAIR_EXPECTED_HIGH_REG),
                 b_cond(CondCode::Ne, 16),
-                stlxp_x(CAS_STATUS_REG, value_reg(3), value_reg(4), MEM_ADDR_SCRATCH),
+                stlxp_x(
+                    CAS_STATUS_REG,
+                    ATOMIC_PAIR_NEW_LOW_REG,
+                    ATOMIC_PAIR_NEW_HIGH_REG,
+                    MEM_ADDR_SCRATCH
+                ),
                 crate::assembler::cbnz_x(CAS_STATUS_REG, -24),
                 b(8),
                 clrex(),
@@ -6345,6 +6473,106 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn atomic_cmpxchg_pair_preserves_inputs_when_result_registers_wrap() {
+        let mut stmts = vec![
+            Stmt::new(
+                Some(0),
+                Op::Constant(Constant {
+                    value: 0x1000,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(1),
+                Op::Constant(Constant {
+                    value: 0x33,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(2),
+                Op::Constant(Constant {
+                    value: 0x11,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(3),
+                Op::Constant(Constant {
+                    value: 0x22,
+                    size: OpSize::I64,
+                }),
+            ),
+            Stmt::new(
+                Some(4),
+                Op::Constant(Constant {
+                    value: 0x44,
+                    size: OpSize::I64,
+                }),
+            ),
+        ];
+        for reference in 5..8 {
+            stmts.push(Stmt::new(
+                Some(reference),
+                Op::Constant(Constant {
+                    value: u64::from(reference),
+                    size: OpSize::I64,
+                }),
+            ));
+        }
+        stmts.extend([
+            Stmt::new(
+                Some(8),
+                Op::AtomicCmpxchgPair(AtomicCmpxchgPair {
+                    addr: 0,
+                    expected_low: 2,
+                    expected_high: 3,
+                    new_low: 1,
+                    new_high: 4,
+                    old_high: 9,
+                }),
+            ),
+            Stmt::new(
+                None,
+                Op::StoreReg(StoreReg {
+                    reg: Gpr::Rbx,
+                    value: 1,
+                    size: OpSize::I64,
+                }),
+            ),
+        ]);
+
+        assert_eq!(value_reg(1), value_reg(9), "test requires allocator wrap");
+        let code = Lowerer::new().lower_function(&function(stmts)).unwrap();
+        let load_index = code
+            .iter()
+            .position(|word| *word == ldaxp_x(value_reg(8), value_reg(9), MEM_ADDR_SCRATCH))
+            .unwrap();
+        for preserve in [
+            mov_x(ATOMIC_PAIR_EXPECTED_LOW_REG, value_reg(2)),
+            mov_x(ATOMIC_PAIR_EXPECTED_HIGH_REG, value_reg(3)),
+            mov_x(ATOMIC_PAIR_NEW_LOW_REG, value_reg(1)),
+            mov_x(ATOMIC_PAIR_NEW_HIGH_REG, value_reg(4)),
+        ] {
+            assert!(
+                code.iter().position(|word| *word == preserve).unwrap() < load_index,
+                "pair input must be preserved before LDAXP"
+            );
+        }
+        assert!(code.contains(&stlxp_x(
+            CAS_STATUS_REG,
+            ATOMIC_PAIR_NEW_LOW_REG,
+            ATOMIC_PAIR_NEW_HIGH_REG,
+            MEM_ADDR_SCRATCH,
+        )));
+        assert!(code.contains(&str_x_unsigned(
+            ATOMIC_PAIR_NEW_LOW_REG,
+            abi::K_STATE_PTR_REG,
+            gpr_offset_bytes(Gpr::Rbx),
+        )));
     }
 
     #[test]
@@ -6411,7 +6639,7 @@ mod tests {
             ),
         ]);
 
-        // Every access rebases via x24 first (ldr base; add x24, addr, base).
+        // Every access rebases through MEM_ADDR_SCRATCH first.
         let rebase = |addr: u8| {
             [
                 ldr_x_unsigned(MEM_ADDR_SCRATCH, abi::K_STATE_PTR_REG, MEM_BASE_OFFSET),
@@ -6732,13 +6960,13 @@ mod tests {
             Lowerer::new().lower_function(&func).unwrap(),
             vec![0xD65F_03C0]
         );
-        // With the flag: the full epilogue (6 callee-saved ldp pairs + ret).
+        // With the flag: the full epilogue (4 callee-saved ldp pairs + ret).
         let with_epi = Lowerer::new()
             .with_returns_via_epilogue()
             .lower_function(&func)
             .unwrap();
         assert_eq!(*with_epi.last().unwrap(), 0xD65F_03C0, "ends in ret");
-        assert_eq!(with_epi.len(), 7, "6 ldp restores + ret");
+        assert_eq!(with_epi.len(), 5, "4 ldp restores + ret");
     }
 
     #[test]
@@ -8122,9 +8350,9 @@ mod tests {
                 0xD280_1FE9,
                 0xD280_002A,
                 0xD280_0713,
-                0x9AD3_2131,
-                0x9AD3_215C,
-                0xEB1C_023F,
+                0x9AD3_2123,
+                0x9AD3_2147,
+                0xEB07_007F,
                 0x5400_0043,
                 0x1400_0002,
                 0xD65F_03C0,
@@ -8192,9 +8420,9 @@ mod tests {
                 0xF2B0_0009,
                 0xD280_002A,
                 0xD280_0413,
-                0x9AD3_2131,
-                0x9AD3_215C,
-                0xEB1C_023F,
+                0x9AD3_2123,
+                0x9AD3_2147,
+                0xEB07_007F,
                 0x5400_004B,
                 0x1400_0002,
                 0xD65F_03C0,

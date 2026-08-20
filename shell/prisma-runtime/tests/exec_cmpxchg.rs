@@ -118,3 +118,62 @@ fn cmpxchg_rcx_rdx_failure_writes_accumulator() {
         assert!(matches!(r, Err(ExecError::WrongArch)));
     }
 }
+
+#[repr(align(16))]
+struct AlignedPair([u64; 2]);
+
+#[test]
+fn cmpxchg16b_success_replaces_the_aligned_memory_pair() {
+    // cmpxchg16b [rsi]: compare RDX:RAX with memory and replace it with
+    // RCX:RBX. RSI is a guest offset rebased through CpuStateFrame::mem_base.
+    let code = translate(0x3000, &[0x48, 0x0F, 0xC7, 0x0E]);
+    let mut memory = AlignedPair([5, 6]);
+    let mut state = CpuStateFrame::default();
+    state.mem_base = memory.0.as_mut_ptr() as u64;
+    state.gpr[gpr::RSI] = 0;
+    state.gpr[gpr::RAX] = 5;
+    state.gpr[gpr::RDX] = 6;
+    state.gpr[gpr::RBX] = 9;
+    state.gpr[gpr::RCX] = 10;
+    let r = execute_block(&code, &mut state);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        r.expect("execute pair compare-exchange on the ARM64 host");
+        assert_eq!(memory.0, [9, 10]);
+        assert_eq!(state.gpr[gpr::RAX], 5);
+        assert_eq!(state.gpr[gpr::RDX], 6);
+        assert_ne!(state.rflags & (1 << 6), 0, "successful pair CAS sets ZF");
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        assert!(matches!(r, Err(ExecError::WrongArch)));
+    }
+}
+
+#[test]
+fn cmpxchg16b_failure_loads_the_observed_pair_and_clears_zf() {
+    let code = translate(0x3100, &[0x48, 0x0F, 0xC7, 0x0E]);
+    let mut memory = AlignedPair([7, 8]);
+    let mut state = CpuStateFrame::default();
+    state.mem_base = memory.0.as_mut_ptr() as u64;
+    state.gpr[gpr::RSI] = 0;
+    state.gpr[gpr::RAX] = 5;
+    state.gpr[gpr::RDX] = 6;
+    state.gpr[gpr::RBX] = 9;
+    state.gpr[gpr::RCX] = 10;
+    let r = execute_block(&code, &mut state);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        r.expect("execute pair compare-exchange on the ARM64 host");
+        assert_eq!(memory.0, [7, 8], "failed pair CAS leaves memory intact");
+        assert_eq!(state.gpr[gpr::RAX], 7);
+        assert_eq!(state.gpr[gpr::RDX], 8);
+        assert_eq!(state.rflags & (1 << 6), 0, "failed pair CAS clears ZF");
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        assert!(matches!(r, Err(ExecError::WrongArch)));
+    }
+}

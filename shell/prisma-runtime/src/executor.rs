@@ -2,10 +2,10 @@
 //!
 //! `prisma-backend`'s lowerer emits a block *body* with no calling-convention
 //! prologue/epilogue: it reads and writes guest GPRs relative to the
-//! `CpuStateFrame*` held in x27 ([`abi::K_STATE_PTR_REG`]), using scratch
-//! registers x9..x23. To make a body callable we wrap it with the AAPCS64 block
-//! prologue (save callee-saved pairs, `mov x27, x0`) and epilogue (restore +
-//! `ret`); the result is an `extern "C" fn(*mut CpuStateFrame)`.
+//! `CpuStateFrame*` held in x27 ([`abi::K_STATE_PTR_REG`]). To make a body
+//! callable we wrap it with the ARM64EC-admitted callee-saved plan from
+//! `prisma_backend::abi`, then restore those registers before returning; the
+//! result is an `extern "C" fn(*mut CpuStateFrame)`.
 //!
 //! Execution is gated to `aarch64` — the bytes are ARM64 machine code, so they
 //! can only run on an ARM64 host. On other hosts only [`wrap_block`] (pure byte
@@ -207,9 +207,9 @@ pub enum ExecError {
     /// The host is not ARM64, so the translated bytes cannot be executed. The
     /// wrap/install path still ran; this is the no-op return on x86 etc.
     WrongArch,
-    /// Generated code returned with one or more Windows ARM64 nonvolatile
-    /// registers changed. Bit zero represents x18 and bit eleven represents
-    /// x29. The ARM64EC execution boundary restores the original values before
+    /// Generated code returned with one or more ARM64EC-visible nonvolatile
+    /// registers changed. Bits map, in order, to x19, x20, x21, x22, x25, x26
+    /// and x27. The execution boundary restores the original values before
     /// reporting this error so corruption cannot escape into Rust.
     HostStateCorruption { register_mask: u16 },
 }
@@ -230,9 +230,9 @@ impl std::fmt::Display for ExecError {
             }
             Self::HostStateCorruption { register_mask } => {
                 formatter.write_str("generated code corrupted host registers")?;
-                for bit in 0_u8..12 {
+                for (bit, register) in [19_u8, 20, 21, 22, 25, 26, 27].into_iter().enumerate() {
                     if register_mask & (1_u16 << bit) != 0 {
-                        write!(formatter, " x{}", bit + 18)?;
+                        write!(formatter, " x{register}")?;
                     }
                 }
                 Ok(())
@@ -374,12 +374,12 @@ mod tests {
         let body = body_word.to_le_bytes().to_vec();
         let wrapped = wrap_block(&body);
 
-        // 7 prologue words + 1 body word + 7 epilogue words = 15 words.
-        assert_eq!(wrapped.len(), 15 * 4);
+        // 5 prologue words + 1 body word + 5 epilogue words = 11 words.
+        assert_eq!(wrapped.len(), 11 * 4);
         // Prologue starts with the first callee-saved STP (x19,x20 pre-index).
         assert_eq!(&wrapped[0..4], &0xA9BF_53F3u32.to_le_bytes());
-        // The body word sits right after the 7-word prologue.
-        assert_eq!(&wrapped[28..32], &body_word.to_le_bytes());
+        // The body word sits right after the 5-word prologue.
+        assert_eq!(&wrapped[20..24], &body_word.to_le_bytes());
         // The block ends with `ret`.
         assert_eq!(&wrapped[wrapped.len() - 4..], &0xD65F_03C0u32.to_le_bytes());
     }
@@ -387,11 +387,11 @@ mod tests {
     #[test]
     fn host_state_corruption_names_the_exact_nonvolatile_registers() {
         let error = ExecError::HostStateCorruption {
-            register_mask: (1 << 0) | (1 << 9) | (1 << 11),
+            register_mask: (1 << 0) | (1 << 4) | (1 << 6),
         };
         assert_eq!(
             error.to_string(),
-            "generated code corrupted host registers x18 x27 x29"
+            "generated code corrupted host registers x19 x25 x27"
         );
     }
 

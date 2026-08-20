@@ -912,68 +912,48 @@ unsafe fn execute_arm64_jit(entry: *const u8, frame: *mut CpuStateFrame) -> usiz
     let register_mask: usize;
     // SAFETY: the caller owns an executable ARM64 block and a live state
     // frame. The outer save area contains any backend ABI defect before it can
-    // escape into Rust; x0 returns the x18..x29 corruption mask after every
-    // original nonvolatile value has been restored.
+    // escape into Rust; x0 returns a mask for the ARM64EC-visible nonvolatile
+    // register set after every original value has been restored. x18 remains
+    // the read-only Windows TEB and x29 is never used as generated-code state.
     unsafe {
         core::arch::asm!(
-            "sub sp, sp, #96",
-            "stp x18, x19, [sp, #0]",
-            "stp x20, x21, [sp, #16]",
-            "stp x22, x23, [sp, #32]",
-            "stp x24, x25, [sp, #48]",
-            "stp x26, x27, [sp, #64]",
-            "stp x28, x29, [sp, #80]",
+            "sub sp, sp, #64",
+            "stp x19, x20, [sp, #0]",
+            "stp x21, x22, [sp, #16]",
+            "stp x25, x26, [sp, #32]",
+            "str x27, [sp, #48]",
             "blr {entry}",
             "mov x9, xzr",
             "ldp x10, x11, [sp, #0]",
-            "cmp x18, x10",
+            "cmp x19, x10",
             "cset x12, ne",
             "orr x9, x9, x12",
-            "cmp x19, x11",
+            "cmp x20, x11",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #1",
             "ldp x10, x11, [sp, #16]",
-            "cmp x20, x10",
+            "cmp x21, x10",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #2",
-            "cmp x21, x11",
+            "cmp x22, x11",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #3",
             "ldp x10, x11, [sp, #32]",
-            "cmp x22, x10",
+            "cmp x25, x10",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #4",
-            "cmp x23, x11",
+            "cmp x26, x11",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #5",
-            "ldp x10, x11, [sp, #48]",
-            "cmp x24, x10",
+            "ldr x10, [sp, #48]",
+            "cmp x27, x10",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #6",
-            "cmp x25, x11",
-            "cset x12, ne",
-            "orr x9, x9, x12, lsl #7",
-            "ldp x10, x11, [sp, #64]",
-            "cmp x26, x10",
-            "cset x12, ne",
-            "orr x9, x9, x12, lsl #8",
-            "cmp x27, x11",
-            "cset x12, ne",
-            "orr x9, x9, x12, lsl #9",
-            "ldp x10, x11, [sp, #80]",
-            "cmp x28, x10",
-            "cset x12, ne",
-            "orr x9, x9, x12, lsl #10",
-            "cmp x29, x11",
-            "cset x12, ne",
-            "orr x9, x9, x12, lsl #11",
-            "ldp x18, x19, [sp, #0]",
-            "ldp x20, x21, [sp, #16]",
-            "ldp x22, x23, [sp, #32]",
-            "ldp x24, x25, [sp, #48]",
-            "ldp x26, x27, [sp, #64]",
-            "ldp x28, x29, [sp, #80]",
-            "add sp, sp, #96",
+            "ldp x19, x20, [sp, #0]",
+            "ldp x21, x22, [sp, #16]",
+            "ldp x25, x26, [sp, #32]",
+            "ldr x27, [sp, #48]",
+            "add sp, sp, #64",
             "mov x0, x9",
             entry = in(reg) entry,
             inlateout("x0") frame => register_mask,
@@ -1028,8 +1008,8 @@ impl BlockExecutor for PrismaExecutor {
             // would route this anonymous JIT page through the x64 dispatcher;
             // issue the native branch directly and pass the frame in x0. The
             // outer save area is an independent safety boundary: generated
-            // code must preserve x18..x29, but a backend defect must not be
-            // allowed to corrupt the Rust caller before it can be diagnosed.
+            // code must preserve the ARM64EC-visible nonvolatile set, while
+            // x18 remains the TEB and unavailable registers are never touched.
             super::phase_marker(b"prisma-phase: jit-enter\n");
             let register_mask = {
                 let active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);

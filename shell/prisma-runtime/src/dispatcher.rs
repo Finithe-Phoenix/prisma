@@ -375,7 +375,7 @@ pub fn install_translation(
 mod tests {
     use super::*;
     use prisma_backend::assembler::{
-        add_x, add_x_imm, and_x, ands_x, b, b_cond, clz_x, cmp_x, crc32cx, cset_x, ldr_w_unsigned,
+        add_x, add_x_imm, and_x, b, b_cond, clz_x, cmp_x, crc32cx, cset_x, ldr_w_unsigned,
         ldr_x_unsigned, ldrb_unsigned, lsl_x, lsr_x, mov_x, movk_x, movz_x, msr_nzcv, mul_x, orr_x,
         rbit_x, rev_w, rev_x, str_w_unsigned, str_x_unsigned, strb_unsigned, sub_x, sxtw_x,
     };
@@ -797,8 +797,8 @@ mod tests {
                 .expect("add_rax_rcx");
             let prefix = words_to_le_bytes(&[0xF940_0769, 0xF940_036A, 0x8B09_014B, 0xF900_036B]);
             assert!(translated.starts_with(&prefix), "add_rax_rcx prefix");
-            // adds x23, x10, x9 — implicit ALU flag write still present.
-            assert!(contains_word(&translated, 0xAB09_0157), "add_rax_rcx adds");
+            // adds x25, x10, x9 — implicit ALU flag write still present.
+            assert!(contains_word(&translated, 0xAB09_0159), "add_rax_rcx adds");
         }
         {
             let translated = translator
@@ -807,8 +807,9 @@ mod tests {
             let prefix = words_to_le_bytes(&[ldr_x_unsigned(9, 27, 8), ldr_x_unsigned(10, 27, 0)]);
             assert!(translated.starts_with(&prefix), "test_rax_rcx prefix");
             assert!(
-                contains_word(&translated, ands_x(23, 10, 9)),
-                "test_rax_rcx ands"
+                contains_word(&translated, and_x(25, 10, 9))
+                    && contains_word(&translated, cmp_x(25, 31)),
+                "test_rax_rcx logical flags"
             );
         }
         assert!(translator
@@ -930,15 +931,15 @@ mod tests {
                 clz_x(10, 9),
                 str_x_unsigned(10, 27, 0),
                 cmp_x(10, 31),
-                cset_x(17, prisma_ir::CondCode::Eq),
+                cset_x(3, prisma_ir::CondCode::Eq),
                 cmp_x(9, 31),
-                cset_x(18, prisma_ir::CondCode::Eq),
+                cset_x(7, prisma_ir::CondCode::Eq),
                 movz_x(19, 30, 0),
-                lsl_x(17, 17, 19),
+                lsl_x(3, 3, 19),
                 movz_x(19, 29, 0),
-                lsl_x(18, 18, 19),
-                orr_x(17, 17, 18),
-                msr_nzcv(17),
+                lsl_x(7, 7, 19),
+                orr_x(3, 3, 7),
+                msr_nzcv(3),
             ],
             "lzcnt_rax_rcx",
         );
@@ -950,15 +951,15 @@ mod tests {
                 clz_x(10, 10),
                 str_x_unsigned(10, 27, 0),
                 cmp_x(10, 31),
-                cset_x(17, prisma_ir::CondCode::Eq),
+                cset_x(3, prisma_ir::CondCode::Eq),
                 cmp_x(9, 31),
-                cset_x(18, prisma_ir::CondCode::Eq),
+                cset_x(7, prisma_ir::CondCode::Eq),
                 movz_x(19, 30, 0),
-                lsl_x(17, 17, 19),
+                lsl_x(3, 3, 19),
                 movz_x(19, 29, 0),
-                lsl_x(18, 18, 19),
-                orr_x(17, 17, 18),
-                msr_nzcv(17),
+                lsl_x(7, 7, 19),
+                orr_x(3, 3, 7),
+                msr_nzcv(3),
             ],
             "tzcnt_rax_rcx",
         );
@@ -968,30 +969,30 @@ mod tests {
                 ldr_x_unsigned(9, 27, 8),
                 mov_x(10, 9),
                 movz_x(19, 1, 0),
-                lsr_x(17, 10, 19),
-                movz_x(18, 0x5555, 0),
-                movk_x(18, 0x5555, 16),
-                movk_x(18, 0x5555, 32),
-                movk_x(18, 0x5555, 48),
-                and_x(17, 17, 18),
-                sub_x(10, 10, 17),
+                lsr_x(3, 10, 19),
+                movz_x(7, 0x5555, 0),
+                movk_x(7, 0x5555, 16),
+                movk_x(7, 0x5555, 32),
+                movk_x(7, 0x5555, 48),
+                and_x(3, 3, 7),
+                sub_x(10, 10, 3),
                 movz_x(19, 2, 0),
-                lsr_x(17, 10, 19),
-                movz_x(18, 0x3333, 0),
-                movk_x(18, 0x3333, 16),
-                movk_x(18, 0x3333, 32),
-                movk_x(18, 0x3333, 48),
-                and_x(10, 10, 18),
-                and_x(17, 17, 18),
-                add_x(10, 10, 17),
+                lsr_x(3, 10, 19),
+                movz_x(7, 0x3333, 0),
+                movk_x(7, 0x3333, 16),
+                movk_x(7, 0x3333, 32),
+                movk_x(7, 0x3333, 48),
+                and_x(10, 10, 7),
+                and_x(3, 3, 7),
+                add_x(10, 10, 3),
                 movz_x(19, 4, 0),
-                lsr_x(17, 10, 19),
-                add_x(10, 10, 17),
-                movz_x(18, 0x0f0f, 0),
-                movk_x(18, 0x0f0f, 16),
-                movk_x(18, 0x0f0f, 32),
-                movk_x(18, 0x0f0f, 48),
-                and_x(10, 10, 18),
+                lsr_x(3, 10, 19),
+                add_x(10, 10, 3),
+                movz_x(7, 0x0f0f, 0),
+                movk_x(7, 0x0f0f, 16),
+                movk_x(7, 0x0f0f, 32),
+                movk_x(7, 0x0f0f, 48),
+                and_x(10, 10, 7),
                 movz_x(21, 0x0101, 0),
                 movk_x(21, 0x0101, 16),
                 movk_x(21, 0x0101, 32),
@@ -1001,10 +1002,10 @@ mod tests {
                 lsr_x(10, 10, 19),
                 str_x_unsigned(10, 27, 0),
                 cmp_x(9, 31),
-                cset_x(17, prisma_ir::CondCode::Eq),
+                cset_x(3, prisma_ir::CondCode::Eq),
                 movz_x(19, 30, 0),
-                lsl_x(17, 17, 19),
-                msr_nzcv(17),
+                lsl_x(3, 3, 19),
+                msr_nzcv(3),
             ],
             "popcnt_rax_rcx",
         );
@@ -1039,10 +1040,10 @@ mod tests {
             translator.translate(0xB000, &[0x0F, 0x38, 0xF0, 0x08]),
             Some(words_to_le_bytes(&[
                 ldr_x_unsigned(9, 27, 0),
-                // guest VA rebased to host: ldr mem_base; add x24, addr, mem_base.
-                ldr_x_unsigned(24, 27, 840),
-                add_x(24, 9, 24),
-                ldr_w_unsigned(10, 24, 0),
+                // guest VA rebased to host through the backend address scratch.
+                ldr_x_unsigned(4, 27, 840),
+                add_x(4, 9, 4),
+                ldr_w_unsigned(10, 4, 0),
                 rev_w(11, 10),
                 str_w_unsigned(11, 27, 8),
                 // 32-bit write zero-extends: clear the upper word of rcx's slot.
@@ -1055,9 +1056,9 @@ mod tests {
                 ldr_x_unsigned(9, 27, 0),
                 ldr_w_unsigned(10, 27, 8),
                 rev_w(11, 10),
-                ldr_x_unsigned(24, 27, 840),
-                add_x(24, 9, 24),
-                str_w_unsigned(11, 24, 0),
+                ldr_x_unsigned(4, 27, 840),
+                add_x(4, 9, 4),
+                str_w_unsigned(11, 4, 0),
             ]))
         );
         // Narrow CMP now also publishes persistent RFLAGS; pin the operand
@@ -1079,25 +1080,45 @@ mod tests {
         assert_narrow_cmp(
             translator.translate(0xB000, &[0x83, 0xF8, 0x10]),
             &[0xD280_0209, 0xB940_036A],
-            &[0xD280_0413, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            &[
+                movz_x(19, 32, 0),
+                lsl_x(3, 10, 19),
+                lsl_x(7, 9, 19),
+                cmp_x(3, 7),
+            ],
             "cmp_eax_imm8",
         );
         assert_narrow_cmp(
             translator.translate(0xB000, &[0x66, 0x83, 0xF8, 0x10]),
             &[0xD280_0209, 0x7940_036A],
-            &[0xD280_0613, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            &[
+                movz_x(19, 48, 0),
+                lsl_x(3, 10, 19),
+                lsl_x(7, 9, 19),
+                cmp_x(3, 7),
+            ],
             "cmp_ax_imm8",
         );
         assert_narrow_cmp(
             translator.translate(0xB000, &[0x83, 0xFB, 0x10]),
             &[0xD280_0209, 0xB940_1B6A],
-            &[0xD280_0413, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            &[
+                movz_x(19, 32, 0),
+                lsl_x(3, 10, 19),
+                lsl_x(7, 9, 19),
+                cmp_x(3, 7),
+            ],
             "cmp_ebx_imm8",
         );
         assert_narrow_cmp(
             translator.translate(0xB000, &[0x66, 0x83, 0xFB, 0x10]),
             &[0xD280_0209, 0x7940_336A],
-            &[0xD280_0613, 0x9AD3_2151, 0x9AD3_2132, 0xEB12_023F],
+            &[
+                movz_x(19, 48, 0),
+                lsl_x(3, 10, 19),
+                lsl_x(7, 9, 19),
+                cmp_x(3, 7),
+            ],
             "cmp_bx_imm8",
         );
         assert_eq!(

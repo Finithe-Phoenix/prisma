@@ -10,17 +10,15 @@ use crate::assembler::Arm64Assembler;
 /// Register used to carry the `CpuStateFrame*` across block bodies (AAPCS64 x27).
 pub const K_STATE_PTR_REG: u8 = 27;
 
-/// Number of callee-saved register pairs preserved by the block prologue.
-pub const K_CALLEE_SAVED_PAIR_COUNT: usize = 6;
+/// Number of ARM64EC-visible callee-saved register pairs preserved by the block
+/// prologue.
+///
+/// x30 shares the final slot with the state pointer; x29 remains untouched so
+/// generated code never depends on a native-only frame chain.
+pub const K_CALLEE_SAVED_PAIR_COUNT: usize = 4;
 
-const CALLEE_SAVED_PAIRS: [(u8, u8); K_CALLEE_SAVED_PAIR_COUNT] = [
-    (19, 20),
-    (21, 22),
-    (23, 24),
-    (25, 26),
-    (K_STATE_PTR_REG, 28),
-    (29, 30),
-];
+const CALLEE_SAVED_PAIRS: [(u8, u8); K_CALLEE_SAVED_PAIR_COUNT] =
+    [(19, 20), (21, 22), (25, 26), (K_STATE_PTR_REG, 30)];
 
 /// Patchable epilogue metadata for direct chaining tails.
 #[derive(Debug, Clone, Default)]
@@ -74,10 +72,8 @@ mod tests {
             vec![
                 0xA9BF_53F3,
                 0xA9BF_5BF5,
-                0xA9BF_63F7,
                 0xA9BF_6BF9,
-                0xA9BF_73FB,
-                0xA9BF_7BFD,
+                0xA9BF_7BFB,
                 0xAA00_03FB,
             ]
         );
@@ -91,15 +87,27 @@ mod tests {
         assert_eq!(
             asm.finish(),
             vec![
-                0xA8C1_7BFD,
-                0xA8C1_73FB,
+                0xA8C1_7BFB,
                 0xA8C1_6BF9,
-                0xA8C1_63F7,
                 0xA8C1_5BF5,
                 0xA8C1_53F3,
                 0xD65F_03C0,
             ]
         );
+    }
+
+    #[test]
+    fn arm64ec_wrapper_uses_only_admitted_registers() {
+        for pair in CALLEE_SAVED_PAIRS {
+            for register in <[u8; 2]>::from(pair) {
+                assert!(
+                    ![13, 14, 18, 23, 24, 28].contains(&register),
+                    "x{register} is unavailable to generated ARM64EC code"
+                );
+                assert_ne!(register, 29, "x29 is reserved for native frame-pointer use");
+            }
+        }
+        assert_eq!(CALLEE_SAVED_PAIRS.last(), Some(&(K_STATE_PTR_REG, 30)));
     }
 
     #[test]
