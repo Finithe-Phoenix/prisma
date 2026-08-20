@@ -1675,7 +1675,12 @@ mod tests {
             let mut buffer = prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
             assert!(buffer.write(&code));
             let entry = cache.publish(&code, buffer).unwrap();
-            assert_eq!(cache.get(&code).map(|cached| cached.as_ptr()), Some(entry));
+            assert_eq!(
+                cache
+                    .get(&code)
+                    .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr),
+                Some(entry)
+            );
         }
         assert_eq!(cache.buffers.len(), 32);
         assert_eq!(
