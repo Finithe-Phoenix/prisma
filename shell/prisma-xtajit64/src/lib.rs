@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 static DIAGNOSTIC_JIT_ALLOCATION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -37,11 +37,11 @@ core::arch::global_asm!(
     "ret",
 );
 
+use dispatch::{live_runtime_count, ThreadRuntime};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
     GuestMemory, PrismaExecutor, XmmRegister,
 };
-use dispatch::{ThreadRuntime, live_runtime_count};
 
 pub type NtStatus = i32;
 pub type WinBoolean = u8;

@@ -2,11 +2,11 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use prisma_runtime::executor::{
-    CpuStateFrame, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL, ExecError, XMM_REGISTER_COUNT, gpr,
+    gpr, CpuStateFrame, ExecError, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL, XMM_REGISTER_COUNT,
 };
 use prisma_translator::{BlockTranslation, TranslateError, Translator};
 
