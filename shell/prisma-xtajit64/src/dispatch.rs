@@ -993,20 +993,20 @@ impl BlockExecutor for PrismaExecutor {
             if !buffer.write(&callable) {
                 return Err(ExecError::Write);
             }
-            buffer.make_executable().map_err(ExecError::Protect)?;
             if guest_rip == 0x0000_0001_4008_9a0e {
-                super::phase_marker(b"prisma-phase: diagnostic-unpublished-store-enter\n");
+                super::phase_marker(b"prisma-phase: diagnostic-unprotected-store-enter\n");
                 let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
                 // SAFETY: this temporary diagnostic preserves wrap, mapping,
-                // copy, W^X and I-cache flush, but skips publication/retention
+                // and copy, but skips protection, I-cache flush, and publication
                 // before substituting the exact decoded guest store.
                 unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
-                super::phase_marker(b"prisma-phase: diagnostic-unpublished-store-returned\n");
+                super::phase_marker(b"prisma-phase: diagnostic-unprotected-store-returned\n");
                 // Keep this one diagnostic mapping alive so address reuse or
                 // VirtualFree cannot affect the following comparison block.
                 std::mem::forget(buffer);
                 return Ok(());
             }
+            buffer.make_executable().map_err(ExecError::Protect)?;
             let entry = self.publish_entry(code, buffer)?;
             super::phase_marker(b"prisma-phase: jit-cache-ready\n");
             let sp_before: usize;
