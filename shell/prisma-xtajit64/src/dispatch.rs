@@ -994,18 +994,21 @@ impl BlockExecutor for PrismaExecutor {
                 return Err(ExecError::Write);
             }
             buffer.make_executable().map_err(ExecError::Protect)?;
-            let entry = self.publish_entry(code, buffer)?;
-            super::phase_marker(b"prisma-phase: jit-cache-ready\n");
             if guest_rip == 0x0000_0001_4008_9a0e {
-                super::phase_marker(b"prisma-phase: diagnostic-published-store-enter\n");
+                super::phase_marker(b"prisma-phase: diagnostic-unpublished-store-enter\n");
                 let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
-                // SAFETY: this temporary diagnostic preserves the complete
-                // JIT publication/cache path, then substitutes only the exact
-                // decoded `mov [rdi+0x10],rbx` native invocation.
+                // SAFETY: this temporary diagnostic preserves wrap, mapping,
+                // copy, W^X and I-cache flush, but skips publication/retention
+                // before substituting the exact decoded guest store.
                 unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
-                super::phase_marker(b"prisma-phase: diagnostic-published-store-returned\n");
+                super::phase_marker(b"prisma-phase: diagnostic-unpublished-store-returned\n");
+                // Keep this one diagnostic mapping alive so address reuse or
+                // VirtualFree cannot affect the following comparison block.
+                std::mem::forget(buffer);
                 return Ok(());
             }
+            let entry = self.publish_entry(code, buffer)?;
+            super::phase_marker(b"prisma-phase: jit-cache-ready\n");
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
