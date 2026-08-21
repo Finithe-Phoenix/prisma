@@ -1044,6 +1044,10 @@ impl BlockExecutor for PrismaExecutor {
                 );
             }
             super::phase_marker(b"prisma-phase: jit-returned\n");
+            super::phase_value(
+                b"prisma-value: heap-valid=",
+                u64::from(crate::allocator::private_heap_is_valid()),
+            );
             if register_mask != 0 {
                 super::phase_marker(b"prisma-error: jit-host-state-detected\n");
                 return Err(ExecError::HostStateCorruption {

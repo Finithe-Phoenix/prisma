@@ -33,6 +33,7 @@ mod arm64ec {
         fn HeapDestroy(heap: *mut c_void) -> i32;
         fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
         fn HeapFree(heap: *mut c_void, flags: u32, memory: *mut c_void) -> i32;
+        fn HeapValidate(heap: *mut c_void, flags: u32, memory: *const c_void) -> i32;
     }
 
     /// Provider-private heap isolated behind an ARM64EC preservation boundary.
@@ -271,6 +272,29 @@ mod arm64ec {
         }
         replacement
     }
+
+    #[inline(never)]
+    unsafe extern "C" fn private_validate(heap: *mut c_void) -> usize {
+        // SAFETY: a null block asks Windows to validate the complete private heap.
+        unsafe { HeapValidate(heap, 0, std::ptr::null()) as usize }
+    }
+
+    pub(super) fn private_heap_is_valid() -> bool {
+        let heap = PRIVATE_HEAP.load(Ordering::Acquire);
+        if heap.is_null() {
+            return true;
+        }
+        let valid: usize;
+        preserve_arm64ec_nonvolatiles!(private_validate;
+            inlateout("x0") heap => valid,
+        );
+        valid != 0
+    }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub(crate) fn private_heap_is_valid() -> bool {
+    arm64ec::private_heap_is_valid()
 }
 
 #[cfg(test)]
