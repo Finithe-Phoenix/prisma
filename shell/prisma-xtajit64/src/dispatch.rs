@@ -864,6 +864,7 @@ pub struct PrismaExecutor {
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 impl PrismaExecutor {
+    #[cfg(test)]
     fn cached_entry(&self, code: &[u8]) -> Option<*const u8> {
         self.cache
             .lock()
@@ -881,14 +882,20 @@ impl PrismaExecutor {
             .cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = cache
-            .get(&code)
-            .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
+        // Each ARM64EC executor belongs to one Wine thread, so publication
+        // cannot race another producer. Avoid crossing the hybrid CRT memcmp
+        // boundary here; it is unnecessary under the non-persistent policy.
+        #[cfg(not(target_arch = "arm64ec"))]
         {
-            drop(cache);
-            drop(buffer);
-            drop(code);
-            return Ok(entry);
+            if let Some(entry) = cache
+                .get(&code)
+                .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
+            {
+                drop(cache);
+                drop(buffer);
+                drop(code);
+                return Ok(entry);
+            }
         }
         let new_total = match cache.checked_total(buffer.capacity()) {
             Ok(new_total) => new_total,
@@ -981,18 +988,13 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            let entry = if let Some(entry) = self.cached_entry(&code) {
-                drop(code);
-                entry
-            } else {
-                let callable = wrap_block(&code);
-                let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
-                if !buffer.write(&callable) {
-                    return Err(ExecError::Write);
-                }
-                buffer.make_executable().map_err(ExecError::Protect)?;
-                self.publish_entry(code, buffer)?
-            };
+            let callable = wrap_block(&code);
+            let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
+            if !buffer.write(&callable) {
+                return Err(ExecError::Write);
+            }
+            buffer.make_executable().map_err(ExecError::Protect)?;
+            let entry = self.publish_entry(code, buffer)?;
             super::phase_marker(b"prisma-phase: jit-cache-ready\n");
             let sp_before: usize;
             let teb_before: usize;
