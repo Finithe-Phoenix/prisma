@@ -49,7 +49,7 @@ mod arm64ec {
     static GLOBAL_ALLOCATOR: Arm64EcPrivateHeapAllocator = Arm64EcPrivateHeapAllocator;
 
     static PRIVATE_HEAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-    static TRACE_DEALLOC: AtomicBool = AtomicBool::new(false);
+    static TRACE_ALLOCATOR: AtomicBool = AtomicBool::new(false);
 
     unsafe impl GlobalAlloc for Arm64EcPrivateHeapAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -101,17 +101,36 @@ mod arm64ec {
     }
 
     unsafe fn heap_alloc(size: usize, align: usize, flags: u32) -> *mut u8 {
+        let trace = TRACE_ALLOCATOR.load(Ordering::Acquire);
+        if trace {
+            crate::phase_marker(b"prisma-phase: allocator-alloc-enter\n");
+            crate::phase_value(b"prisma-value: allocator-request-size=", size as u64);
+            crate::phase_value(b"prisma-value: allocator-request-align=", align as u64);
+        }
         let Some(span) = allocation_span(size, align) else {
             return std::ptr::null_mut();
         };
+        if trace {
+            crate::phase_value(b"prisma-value: allocator-span=", span as u64);
+        }
         // SAFETY: initialization is allocation-free and publishes one process-
         // lifetime private heap handle.
         let heap = unsafe { private_heap() };
         if heap.is_null() {
             return std::ptr::null_mut();
         }
+        if trace {
+            crate::phase_value(b"prisma-value: allocator-heap=", heap.addr() as u64);
+            crate::phase_marker(b"prisma-phase: allocator-heap-alloc-enter\n");
+        }
         // SAFETY: `span` is nonzero and overflow-checked.
         let raw = unsafe { HeapAlloc(heap, flags, span) }.cast::<u8>();
+        if trace {
+            crate::phase_value(
+                b"prisma-value: allocator-heap-alloc-result=",
+                raw.addr() as u64,
+            );
+        }
         if raw.is_null() {
             return std::ptr::null_mut();
         }
@@ -128,11 +147,15 @@ mod arm64ec {
                 .cast::<*mut u8>()
                 .write(raw);
         }
+        if trace {
+            crate::phase_value(b"prisma-value: allocator-user=", user.addr() as u64);
+            crate::phase_marker(b"prisma-phase: allocator-alloc-returned\n");
+        }
         user
     }
 
     unsafe fn heap_dealloc(pointer: *mut u8) -> i32 {
-        let trace = TRACE_DEALLOC.load(Ordering::Acquire);
+        let trace = TRACE_ALLOCATOR.load(Ordering::Acquire);
         if trace {
             crate::phase_marker(b"prisma-phase: allocator-dealloc-enter\n");
             crate::phase_value(b"prisma-value: allocator-user=", pointer.addr() as u64);
@@ -315,8 +338,8 @@ mod arm64ec {
         valid != 0
     }
 
-    pub(super) fn set_dealloc_trace(enabled: bool) {
-        TRACE_DEALLOC.store(enabled, Ordering::Release);
+    pub(super) fn set_allocator_trace(enabled: bool) {
+        TRACE_ALLOCATOR.store(enabled, Ordering::Release);
     }
 }
 
@@ -326,8 +349,8 @@ pub(crate) fn private_heap_is_valid() -> bool {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub(crate) fn set_dealloc_trace(enabled: bool) {
-    arm64ec::set_dealloc_trace(enabled);
+pub(crate) fn set_allocator_trace(enabled: bool) {
+    arm64ec::set_allocator_trace(enabled);
 }
 
 #[cfg(test)]
