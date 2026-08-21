@@ -31,9 +31,13 @@ mod arm64ec {
     unsafe extern "system" {
         fn HeapCreate(options: u32, initial_size: usize, maximum_size: usize) -> *mut c_void;
         fn HeapDestroy(heap: *mut c_void) -> i32;
-        fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
         fn HeapFree(heap: *mut c_void, flags: u32, memory: *mut c_void) -> i32;
         fn HeapValidate(heap: *mut c_void, flags: u32, memory: *const c_void) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlAllocateHeap(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
     }
 
     /// Provider-private heap isolated behind an ARM64EC preservation boundary.
@@ -42,7 +46,7 @@ mod arm64ec {
     /// runtime. A mixed-architecture failure can therefore poison the same
     /// free-list metadata that the next translator allocation must traverse.
     /// This serialized private heap keeps Prisma's allocation metadata separate
-    /// while preserving normal `HeapAlloc` performance and deallocation.
+    /// while preserving normal `RtlAllocateHeap` performance and deallocation.
     pub struct Arm64EcPrivateHeapAllocator;
 
     #[global_allocator]
@@ -124,7 +128,7 @@ mod arm64ec {
             crate::phase_marker(b"prisma-phase: allocator-heap-alloc-enter\n");
         }
         // SAFETY: `span` is nonzero and overflow-checked.
-        let raw = unsafe { HeapAlloc(heap, flags, span) }.cast::<u8>();
+        let raw = unsafe { RtlAllocateHeap(heap, flags, span) }.cast::<u8>();
         if trace {
             crate::phase_value(
                 b"prisma-value: allocator-heap-alloc-result=",
@@ -141,7 +145,7 @@ mod arm64ec {
         };
         let user = user_address as *mut u8;
         // SAFETY: the checked span reserves one pointer-sized header before the
-        // aligned user region; HeapAlloc is at least pointer-aligned on Win64.
+        // aligned user region; RtlAllocateHeap is at least pointer-aligned on Win64.
         unsafe {
             user.sub(ALLOCATION_HEADER_BYTES)
                 .cast::<*mut u8>()
@@ -185,7 +189,7 @@ mod arm64ec {
             crate::phase_value(b"prisma-value: allocator-block-valid=", valid as u64);
             crate::phase_marker(b"prisma-phase: allocator-heap-free-enter\n");
         }
-        // SAFETY: `raw` is the exact HeapAlloc base from this private heap.
+        // SAFETY: `raw` is the exact RtlAllocateHeap base from this private heap.
         let freed = unsafe { HeapFree(heap, 0, raw.cast()) };
         if trace {
             crate::phase_value(b"prisma-value: allocator-heap-free-result=", freed as u64);
