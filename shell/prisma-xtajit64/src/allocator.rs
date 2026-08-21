@@ -21,7 +21,7 @@ fn aligned_user_address(raw_address: usize, align: usize) -> Option<usize> {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 mod arm64ec {
-    use super::{aligned_user_address, allocation_span, ALLOCATION_HEADER_BYTES};
+    use super::{ALLOCATION_HEADER_BYTES, aligned_user_address, allocation_span};
     use std::alloc::{GlobalAlloc, Layout};
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicPtr, Ordering};
@@ -170,7 +170,13 @@ mod arm64ec {
                     "stp x30, xzr, [sp, #0x80]",
                     "mrs x15, fpcr",
                     "str x15, [sp, #0x90]",
+                    // Keep an ABI-nonvolatile anchor to the save area. Wine's
+                    // hybrid heap return can leave `sp` adjusted, so restoring
+                    // directly through the returned value would read from the
+                    // wrong frame before any saved register can be recovered.
+                    "mov x29, sp",
                     "bl {helper}",
+                    "mov sp, x29",
                     "ldr x15, [sp, #0x90]",
                     "msr fpcr, x15",
                     "ldp x30, xzr, [sp, #0x80]",
@@ -299,7 +305,7 @@ pub(crate) fn private_heap_is_valid() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{aligned_user_address, allocation_span, ALLOCATION_HEADER_BYTES};
+    use super::{ALLOCATION_HEADER_BYTES, aligned_user_address, allocation_span};
 
     #[test]
     fn private_heap_span_covers_header_alignment_and_zero_size() {
