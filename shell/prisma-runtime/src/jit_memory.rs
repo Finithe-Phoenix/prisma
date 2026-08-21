@@ -48,6 +48,7 @@ pub(crate) mod platform {
         w_processor_revision: u16,
     }
 
+    #[cfg_attr(target_arch = "arm64ec", link(name = "onecore"))]
     unsafe extern "system" {
         #[cfg(not(target_arch = "arm64ec"))]
         fn VirtualAlloc(addr: *mut c_void, size: usize, typ: u32, protect: u32) -> *mut c_void;
