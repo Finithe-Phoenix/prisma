@@ -1265,6 +1265,8 @@ impl ThreadRuntime {
         for block_index in 0..limits.max_blocks {
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: dispatch-block-enter\n");
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_value(b"prisma-value: guest-rip=", rip);
             if self.cancel.load(Ordering::Acquire) {
                 context.store_frame(&frame, rip);
                 return Ok(DispatchReport {
@@ -1348,6 +1350,10 @@ impl ThreadRuntime {
             let execution = executor.execute(rip, block.code, &mut frame);
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: dispatch-executor-returned\n");
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_value(b"prisma-value: exit-reason=", frame.exit_reason);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_value(b"prisma-value: next-pc=", frame.next_pc);
             execution.map_err(|source| DispatchError::Execution { rip, source })?;
             instructions = instructions.saturating_add(block_instruction_count);
             let blocks = block_index + 1;

@@ -46,7 +46,7 @@ pub type WinBool = i32;
 pub type Handle = *mut c_void;
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-fn phase_marker(message: &'static [u8]) {
+fn write_diagnostic(message: &[u8]) {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetStdHandle(kind: u32) -> Handle;
@@ -79,6 +79,34 @@ fn phase_marker(message: &'static [u8]) {
             std::ptr::null_mut(),
         )
     };
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn phase_marker(message: &'static [u8]) {
+    write_diagnostic(message);
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn phase_value(prefix: &'static [u8], value: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut line = [0_u8; 64];
+    let Some(hex_start) = prefix.len().checked_add(2) else {
+        return;
+    };
+    let Some(line_len) = hex_start.checked_add(17) else {
+        return;
+    };
+    if line_len > line.len() {
+        return;
+    }
+    line[..prefix.len()].copy_from_slice(prefix);
+    line[prefix.len()..hex_start].copy_from_slice(b"0x");
+    for index in 0..16 {
+        let shift = (15 - index) * 4;
+        line[hex_start + index] = HEX[((value >> shift) & 0xf) as usize];
+    }
+    line[line_len - 1] = b'\n';
+    write_diagnostic(&line[..line_len]);
 }
 
 #[repr(C)]
