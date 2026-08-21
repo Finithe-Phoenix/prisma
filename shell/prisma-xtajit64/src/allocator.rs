@@ -21,7 +21,8 @@ fn aligned_user_address(raw_address: usize, align: usize) -> Option<usize> {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 mod arm64ec {
-    use super::{ALLOCATION_HEADER_BYTES, aligned_user_address, allocation_span};
+    use super::ALLOCATION_HEADER_BYTES;
+    use super::{aligned_user_address, allocation_span};
     use std::alloc::{GlobalAlloc, Layout};
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -359,7 +360,8 @@ pub(crate) fn set_allocator_trace(enabled: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALLOCATION_HEADER_BYTES, aligned_user_address, allocation_span};
+    use super::ALLOCATION_HEADER_BYTES;
+    use super::{aligned_user_address, allocation_span};
 
     #[test]
     fn private_heap_span_covers_header_alignment_and_zero_size() {
