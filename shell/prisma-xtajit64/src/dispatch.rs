@@ -1013,19 +1013,6 @@ impl BlockExecutor for PrismaExecutor {
             let diagnostic_allocation = DiagnosticJitAllocationGuard::enter();
             let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
             drop(diagnostic_allocation);
-            if guest_rip == 0x0000_0001_4008_9a0e {
-                super::phase_marker(b"prisma-phase: diagnostic-ec-mapped-store-enter\n");
-                let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
-                // SAFETY: this temporary diagnostic preserves `wrap_block` and
-                // EC-code buffer allocation, but skips copy, protection, flush,
-                // and publication before the exact decoded guest store.
-                unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
-                super::phase_marker(b"prisma-phase: diagnostic-ec-mapped-store-returned\n");
-                // Keep the diagnostic EC mapping alive so VirtualFree or address
-                // reuse cannot affect the comparison block that follows.
-                std::mem::forget(buffer);
-                return Ok(());
-            }
             if !buffer.write(&callable) {
                 return Err(ExecError::Write);
             }
