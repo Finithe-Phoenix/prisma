@@ -989,17 +989,20 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::jit_memory::ExecBuffer;
 
             let callable = wrap_block(&code);
+            let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
             if guest_rip == 0x0000_0001_4008_9a0e {
-                super::phase_marker(b"prisma-phase: diagnostic-wrapped-store-enter\n");
+                super::phase_marker(b"prisma-phase: diagnostic-mapped-store-enter\n");
                 let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
-                // SAFETY: this temporary diagnostic preserves `wrap_block`, but
-                // skips executable-buffer allocation, copy, protection, I-cache
-                // flush, and publication before the exact decoded guest store.
+                // SAFETY: this temporary diagnostic preserves `wrap_block` and
+                // executable-buffer allocation, but skips copy, protection,
+                // I-cache flush, and publication before the exact guest store.
                 unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
-                super::phase_marker(b"prisma-phase: diagnostic-wrapped-store-returned\n");
+                super::phase_marker(b"prisma-phase: diagnostic-mapped-store-returned\n");
+                // Keep this diagnostic RW mapping alive so VirtualFree or address
+                // reuse cannot affect the comparison block that follows.
+                std::mem::forget(buffer);
                 return Ok(());
             }
-            let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
             if !buffer.write(&callable) {
                 return Err(ExecError::Write);
             }
