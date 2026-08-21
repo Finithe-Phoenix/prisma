@@ -21,6 +21,17 @@ pub(crate) mod platform {
     const MEM_RELEASE: u32 = 0x0000_8000;
     const PAGE_READWRITE: u32 = 0x04;
     const PAGE_EXECUTE_READ: u32 = 0x20;
+    #[cfg(target_arch = "arm64ec")]
+    const MEM_EXTENDED_PARAMETER_ATTRIBUTE_FLAGS: u64 = 5;
+    #[cfg(target_arch = "arm64ec")]
+    const MEM_EXTENDED_PARAMETER_EC_CODE: u64 = 0x0000_0040;
+
+    #[cfg(target_arch = "arm64ec")]
+    #[repr(C, align(8))]
+    struct MemExtendedParameter {
+        parameter_type: u64,
+        value: u64,
+    }
 
     #[repr(C)]
     struct SystemInfo {
@@ -38,7 +49,18 @@ pub(crate) mod platform {
     }
 
     unsafe extern "system" {
+        #[cfg(not(target_arch = "arm64ec"))]
         fn VirtualAlloc(addr: *mut c_void, size: usize, typ: u32, protect: u32) -> *mut c_void;
+        #[cfg(target_arch = "arm64ec")]
+        fn VirtualAlloc2(
+            process: *mut c_void,
+            addr: *mut c_void,
+            size: usize,
+            typ: u32,
+            protect: u32,
+            parameters: *const MemExtendedParameter,
+            parameter_count: u32,
+        ) -> *mut c_void;
         fn VirtualProtect(addr: *mut c_void, size: usize, new: u32, old: *mut u32) -> i32;
         fn VirtualFree(addr: *mut c_void, size: usize, typ: u32) -> i32;
         fn FlushInstructionCache(process: *mut c_void, addr: *const c_void, size: usize) -> i32;
@@ -55,16 +77,37 @@ pub(crate) mod platform {
 
     /// Reserve+commit `size` bytes as read/write. Returns null on failure.
     pub fn alloc_rw(size: usize) -> *mut u8 {
+        #[cfg(target_arch = "arm64ec")]
+        let allocation = {
+            let parameter = MemExtendedParameter {
+                parameter_type: MEM_EXTENDED_PARAMETER_ATTRIBUTE_FLAGS,
+                value: MEM_EXTENDED_PARAMETER_EC_CODE,
+            };
+            // SAFETY: the current-process pseudo-handle is valid and the one
+            // extended parameter has the exact Windows ARM64EC layout.
+            unsafe {
+                VirtualAlloc2(
+                    GetCurrentProcess(),
+                    core::ptr::null_mut(),
+                    size,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE,
+                    &raw const parameter,
+                    1,
+                )
+            }
+        };
+        #[cfg(not(target_arch = "arm64ec"))]
         // SAFETY: standard VirtualAlloc; null addr lets the OS choose.
-        unsafe {
+        let allocation = unsafe {
             VirtualAlloc(
                 core::ptr::null_mut(),
                 size,
                 MEM_COMMIT | MEM_RESERVE,
                 PAGE_READWRITE,
             )
-        }
-        .cast::<u8>()
+        };
+        allocation.cast::<u8>()
     }
 
     /// Flip `[ptr, ptr+size)` to read/execute. Returns false on failure.
@@ -209,16 +252,6 @@ pub struct ExecBuffer {
 }
 
 impl ExecBuffer {
-    /// Return the host page size without reserving executable memory.
-    ///
-    /// This is temporarily public for the ARM64EC allocation-boundary
-    /// diagnostic in `prisma-xtajit64`.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn diagnostic_page_size() -> usize {
-        platform::page_size()
-    }
-
     /// Allocate at least `min_bytes` of read/write memory (page-rounded).
     ///
     /// # Errors
