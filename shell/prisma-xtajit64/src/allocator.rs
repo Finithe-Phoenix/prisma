@@ -32,13 +32,9 @@ mod arm64ec {
     unsafe extern "system" {
         fn HeapCreate(options: u32, initial_size: usize, maximum_size: usize) -> *mut c_void;
         fn HeapDestroy(heap: *mut c_void) -> i32;
+        fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
         fn HeapFree(heap: *mut c_void, flags: u32, memory: *mut c_void) -> i32;
         fn HeapValidate(heap: *mut c_void, flags: u32, memory: *const c_void) -> i32;
-    }
-
-    #[link(name = "ntdll")]
-    unsafe extern "system" {
-        fn RtlAllocateHeap(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
     }
 
     /// Provider-private heap isolated behind an ARM64EC preservation boundary.
@@ -47,7 +43,7 @@ mod arm64ec {
     /// runtime. A mixed-architecture failure can therefore poison the same
     /// free-list metadata that the next translator allocation must traverse.
     /// This serialized private heap keeps Prisma's allocation metadata separate
-    /// while preserving normal `RtlAllocateHeap` performance and deallocation.
+    /// while preserving normal `HeapAlloc` performance and deallocation.
     pub struct Arm64EcPrivateHeapAllocator;
 
     #[global_allocator]
@@ -73,9 +69,20 @@ mod arm64ec {
         }
 
         unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            // SAFETY: pointer/layout came from this allocator and `new_size`
-            // is the replacement size requested by `GlobalAlloc`.
-            unsafe { preserving_realloc(pointer, layout.size(), layout.align(), new_size) }
+            // Each Wine heap call owns an independent preservation frame. In
+            // particular, do not nest allocation and deallocation beneath one
+            // ARM64EC transition while Rust still owns the old allocation.
+            // SAFETY: `layout` came from GlobalAlloc and the returned regions
+            // are live, distinct allocations of their corresponding sizes.
+            let replacement = unsafe { preserving_alloc(new_size, layout.align()) };
+            if replacement.is_null() {
+                return std::ptr::null_mut();
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(pointer, replacement, layout.size().min(new_size));
+                preserving_dealloc(pointer, layout.size(), layout.align());
+            }
+            replacement
         }
     }
 
@@ -129,7 +136,7 @@ mod arm64ec {
             crate::phase_marker(b"prisma-phase: allocator-heap-alloc-enter\n");
         }
         // SAFETY: `span` is nonzero and overflow-checked.
-        let raw = unsafe { RtlAllocateHeap(heap, flags, span) }.cast::<u8>();
+        let raw = unsafe { HeapAlloc(heap, flags, span) }.cast::<u8>();
         if trace {
             crate::phase_value(
                 b"prisma-value: allocator-heap-alloc-result=",
@@ -146,7 +153,7 @@ mod arm64ec {
         };
         let user = user_address as *mut u8;
         // SAFETY: the checked span reserves one pointer-sized header before the
-        // aligned user region; RtlAllocateHeap is at least pointer-aligned on Win64.
+        // aligned user region; HeapAlloc is at least pointer-aligned on Win64.
         unsafe {
             user.sub(ALLOCATION_HEADER_BYTES)
                 .cast::<*mut u8>()
@@ -190,7 +197,7 @@ mod arm64ec {
             crate::phase_value(b"prisma-value: allocator-block-valid=", valid as u64);
             crate::phase_marker(b"prisma-phase: allocator-heap-free-enter\n");
         }
-        // SAFETY: `raw` is the exact RtlAllocateHeap base from this private heap.
+        // SAFETY: `raw` is the exact HeapAlloc base from this private heap.
         let freed = unsafe { HeapFree(heap, 0, raw.cast()) };
         if trace {
             crate::phase_value(b"prisma-value: allocator-heap-free-result=", freed as u64);
@@ -269,23 +276,6 @@ mod arm64ec {
         result
     }
 
-    #[inline(never)]
-    unsafe extern "C" fn preserving_realloc(
-        pointer: *mut u8,
-        size: usize,
-        align: usize,
-        new_size: usize,
-    ) -> *mut u8 {
-        let result: *mut u8;
-        preserve_arm64ec_nonvolatiles!(private_realloc;
-            inlateout("x0") pointer => result,
-            in("x1") size,
-            in("x2") align,
-            in("x3") new_size,
-        );
-        result
-    }
-
     unsafe extern "C" fn private_alloc(size: usize, align: usize) -> *mut u8 {
         // SAFETY: GlobalAlloc supplies a valid size/alignment pair.
         unsafe { heap_alloc(size, align, 0) }
@@ -303,26 +293,6 @@ mod arm64ec {
         // SAFETY: GlobalAlloc supplies a valid size/alignment pair and the
         // platform zeroes the complete raw allocation before the header write.
         unsafe { heap_alloc(size, align, HEAP_ZERO_MEMORY) }
-    }
-
-    unsafe extern "C" fn private_realloc(
-        pointer: *mut u8,
-        size: usize,
-        align: usize,
-        new_size: usize,
-    ) -> *mut u8 {
-        // SAFETY: GlobalAlloc supplies the original pointer/layout pair.
-        let replacement = unsafe { heap_alloc(new_size, align, 0) };
-        if replacement.is_null() {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: both regions are live, distinct allocations and each has at
-        // least the corresponding requested user size.
-        unsafe {
-            std::ptr::copy_nonoverlapping(pointer, replacement, size.min(new_size));
-            heap_dealloc(pointer);
-        }
-        replacement
     }
 
     #[inline(never)]
