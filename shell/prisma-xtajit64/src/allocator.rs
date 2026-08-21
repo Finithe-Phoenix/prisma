@@ -69,20 +69,9 @@ mod arm64ec {
         }
 
         unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            // Each Wine heap call owns an independent preservation frame. In
-            // particular, do not nest allocation and deallocation beneath one
-            // ARM64EC transition while Rust still owns the old allocation.
-            // SAFETY: `layout` came from GlobalAlloc and the returned regions
-            // are live, distinct allocations of their corresponding sizes.
-            let replacement = unsafe { preserving_alloc(new_size, layout.align()) };
-            if replacement.is_null() {
-                return std::ptr::null_mut();
-            }
-            unsafe {
-                std::ptr::copy_nonoverlapping(pointer, replacement, layout.size().min(new_size));
-                preserving_dealloc(pointer, layout.size(), layout.align());
-            }
-            replacement
+            // SAFETY: pointer/layout came from this allocator and `new_size`
+            // is the replacement size requested by `GlobalAlloc`.
+            unsafe { preserving_realloc(pointer, layout.size(), layout.align(), new_size) }
         }
     }
 
@@ -276,6 +265,23 @@ mod arm64ec {
         result
     }
 
+    #[inline(never)]
+    unsafe extern "C" fn preserving_realloc(
+        pointer: *mut u8,
+        size: usize,
+        align: usize,
+        new_size: usize,
+    ) -> *mut u8 {
+        let result: *mut u8;
+        preserve_arm64ec_nonvolatiles!(private_realloc;
+            inlateout("x0") pointer => result,
+            in("x1") size,
+            in("x2") align,
+            in("x3") new_size,
+        );
+        result
+    }
+
     unsafe extern "C" fn private_alloc(size: usize, align: usize) -> *mut u8 {
         // SAFETY: GlobalAlloc supplies a valid size/alignment pair.
         unsafe { heap_alloc(size, align, 0) }
@@ -293,6 +299,26 @@ mod arm64ec {
         // SAFETY: GlobalAlloc supplies a valid size/alignment pair and the
         // platform zeroes the complete raw allocation before the header write.
         unsafe { heap_alloc(size, align, HEAP_ZERO_MEMORY) }
+    }
+
+    unsafe extern "C" fn private_realloc(
+        pointer: *mut u8,
+        size: usize,
+        align: usize,
+        new_size: usize,
+    ) -> *mut u8 {
+        // SAFETY: GlobalAlloc supplies the original pointer/layout pair.
+        let replacement = unsafe { heap_alloc(new_size, align, 0) };
+        if replacement.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: both regions are live, distinct allocations and each has at
+        // least the corresponding requested user size.
+        unsafe {
+            std::ptr::copy_nonoverlapping(pointer, replacement, size.min(new_size));
+            heap_dealloc(pointer);
+        }
+        replacement
     }
 
     #[inline(never)]

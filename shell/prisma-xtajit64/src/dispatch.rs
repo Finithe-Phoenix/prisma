@@ -1342,9 +1342,11 @@ impl ThreadRuntime {
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: translator-created\n");
             #[cfg(all(windows, target_arch = "arm64ec"))]
-            crate::allocator::set_allocator_trace(rip == 0x0000_0001_4008_9a12);
+            let trace_allocator = matches!(rip, 0x0000_0001_4008_9a0e | 0x0000_0001_4008_9a12);
             #[cfg(all(windows, target_arch = "arm64ec"))]
-            if rip == 0x0000_0001_4008_9a12 {
+            crate::allocator::set_allocator_trace(trace_allocator);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            if trace_allocator {
                 super::phase_marker(b"prisma-phase: allocator-trace-enabled\n");
             }
             let block = self.translate_block_cached(
