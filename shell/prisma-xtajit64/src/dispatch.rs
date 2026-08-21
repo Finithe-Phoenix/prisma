@@ -1010,8 +1010,7 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::jit_memory::ExecBuffer;
 
             let callable = wrap_block(&code);
-            let diagnostic_allocation =
-                (guest_rip == 0x0000_0001_4008_9a0e).then(DiagnosticJitAllocationGuard::enter);
+            let diagnostic_allocation = DiagnosticJitAllocationGuard::enter();
             let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
             drop(diagnostic_allocation);
             if guest_rip == 0x0000_0001_4008_9a0e {
