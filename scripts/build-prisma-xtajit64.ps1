@@ -421,6 +421,7 @@ if ($exportDelta) {
 }
 
 $requiredImports = @(
+  "API-MS-WIN-CORE-MEMORY-L1-1-6.DLL",
   "API-MS-WIN-CORE-SYNCH-L1-2-0.DLL",
   "BCRYPTPRIMITIVES.DLL",
   "KERNEL32.DLL",
