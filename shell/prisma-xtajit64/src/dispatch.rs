@@ -1341,14 +1341,17 @@ impl ThreadRuntime {
             };
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: translator-created\n");
-            let block = self
-                .translate_block_cached(
-                    &mut translator,
-                    rip,
-                    &bytes,
-                    limits.max_instructions_per_block,
-                )
-                .map_err(|source| DispatchError::Translation { rip, source })?;
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            crate::allocator::set_dealloc_trace(rip == 0x0000_0001_4008_9a12);
+            let block = self.translate_block_cached(
+                &mut translator,
+                rip,
+                &bytes,
+                limits.max_instructions_per_block,
+            );
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            crate::allocator::set_dealloc_trace(false);
+            let block = block.map_err(|source| DispatchError::Translation { rip, source })?;
             drop(translator);
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: translation-ready\n");
