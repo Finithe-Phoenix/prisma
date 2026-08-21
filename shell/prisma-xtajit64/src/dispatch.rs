@@ -993,6 +993,7 @@ impl BlockExecutor for PrismaExecutor {
             if !buffer.write(&callable) {
                 return Err(ExecError::Write);
             }
+            drop(callable);
             buffer.make_executable().map_err(ExecError::Protect)?;
             let entry = self.publish_entry(code, buffer)?;
             super::phase_marker(b"prisma-phase: jit-cache-ready\n");
