@@ -130,13 +130,13 @@ mod arm64ec {
         user
     }
 
-    unsafe fn heap_dealloc(pointer: *mut u8) {
+    unsafe fn heap_dealloc(pointer: *mut u8) -> i32 {
         if pointer.is_null() {
-            return;
+            return 1;
         }
         let heap = PRIVATE_HEAP.load(Ordering::Acquire);
         if heap.is_null() {
-            return;
+            return 1;
         }
         // SAFETY: every non-null pointer returned by `heap_alloc` owns this
         // initialized header immediately before its user region.
@@ -147,7 +147,7 @@ mod arm64ec {
                 .read()
         };
         // SAFETY: `raw` is the exact HeapAlloc base from this private heap.
-        let _ = unsafe { HeapFree(heap, 0, raw.cast()) };
+        unsafe { HeapFree(heap, 0, raw.cast()) }
     }
 
     macro_rules! preserve_arm64ec_nonvolatiles {
@@ -170,13 +170,7 @@ mod arm64ec {
                     "stp x30, xzr, [sp, #0x80]",
                     "mrs x15, fpcr",
                     "str x15, [sp, #0x90]",
-                    // Keep an ABI-nonvolatile anchor to the save area. Wine's
-                    // hybrid heap return can leave `sp` adjusted, so restoring
-                    // directly through the returned value would read from the
-                    // wrong frame before any saved register can be recovered.
-                    "mov x29, sp",
                     "bl {helper}",
-                    "mov sp, x29",
                     "ldr x15, [sp, #0x90]",
                     "msr fpcr, x15",
                     "ldp x30, xzr, [sp, #0x80]",
@@ -248,9 +242,12 @@ mod arm64ec {
         unsafe { heap_alloc(size, align, 0) }
     }
 
-    unsafe extern "C" fn private_dealloc(pointer: *mut u8, _size: usize, _align: usize) {
+    unsafe extern "C" fn private_dealloc(pointer: *mut u8, _size: usize, _align: usize) -> usize {
+        // Keep a real ARM64EC return boundary after HeapFree. Returning the
+        // i32 status as usize requires a post-call extension, which prevents
+        // LLVM from tail-branching directly across Wine's hybrid heap thunk.
         // SAFETY: pointer came from this allocator.
-        unsafe { heap_dealloc(pointer) }
+        unsafe { heap_dealloc(pointer) as usize }
     }
 
     unsafe extern "C" fn private_alloc_zeroed(size: usize, align: usize) -> *mut u8 {
