@@ -1412,7 +1412,10 @@ impl ThreadRuntime {
             #[cfg(all(windows, target_arch = "arm64ec"))]
             let trace_allocator = matches!(
                 rip,
-                0x0000_0001_4008_9a0e | 0x0000_0001_4008_9a12 | 0x0000_0001_4008_9a4d
+                0x0000_0001_4008_9a0e
+                    | 0x0000_0001_4008_9a12
+                    | 0x0000_0001_4008_9a4d
+                    | 0x0000_0001_4008_9a4f
             );
             #[cfg(all(windows, target_arch = "arm64ec"))]
             crate::allocator::set_allocator_trace(trace_allocator);
