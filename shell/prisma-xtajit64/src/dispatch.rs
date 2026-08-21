@@ -1009,6 +1009,12 @@ impl BlockExecutor for PrismaExecutor {
                     options(nomem, nostack, preserves_flags),
                 );
             }
+            super::phase_value(b"prisma-value: native-sp=", sp_before as u64);
+            super::phase_value(
+                b"prisma-value: state-frame=",
+                (frame as *mut CpuStateFrame).addr() as u64,
+            );
+            super::phase_value(b"prisma-value: mem-base=", frame.mem_base);
             // SAFETY: `wrap_block` emits native ARM64 with the Prisma
             // state-frame prologue and epilogue. A Rust ARM64EC indirect call
             // would route this anonymous JIT page through the x64 dispatcher;
