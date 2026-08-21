@@ -209,6 +209,16 @@ pub struct ExecBuffer {
 }
 
 impl ExecBuffer {
+    /// Return the host page size without reserving executable memory.
+    ///
+    /// This is temporarily public for the ARM64EC allocation-boundary
+    /// diagnostic in `prisma-xtajit64`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn diagnostic_page_size() -> usize {
+        platform::page_size()
+    }
+
     /// Allocate at least `min_bytes` of read/write memory (page-rounded).
     ///
     /// # Errors
