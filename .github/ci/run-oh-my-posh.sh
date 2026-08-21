@@ -36,7 +36,7 @@ for cycle in 1 2 3; do
   stderr_file="$runtime_dir/cycle-$cycle.stderr"
 
   set +e
-  timeout --kill-after=10s 60s \
+  WINEDEBUG=+seh,+unwind timeout --kill-after=10s 60s \
     /opt/prisma-wine/bin/wine \
     /opt/prisma-fixtures/oh-my-posh.exe version \
     >"$stdout_file" 2>"$stderr_file"
