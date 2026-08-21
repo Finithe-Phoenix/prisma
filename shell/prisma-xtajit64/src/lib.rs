@@ -13,8 +13,11 @@ use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+static DIAGNOSTIC_JIT_ALLOCATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
 mod allocator;
@@ -34,11 +37,11 @@ core::arch::global_asm!(
     "ret",
 );
 
-use dispatch::{live_runtime_count, ThreadRuntime};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
     GuestMemory, PrismaExecutor, XmmRegister,
 };
+use dispatch::{ThreadRuntime, live_runtime_count};
 
 pub type NtStatus = i32;
 pub type WinBoolean = u8;
@@ -1240,6 +1243,22 @@ pub extern "system" fn NotifyMemoryAlloc(
     post_call: WinBool,
     status: NtStatus,
 ) {
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    if DIAGNOSTIC_JIT_ALLOCATION_ACTIVE.load(Ordering::Acquire) {
+        phase_marker(b"prisma-phase: diagnostic-notify-memory-alloc-enter\n");
+        phase_value(
+            b"prisma-value: diagnostic-notify-address=",
+            address as usize as u64,
+        );
+        phase_value(b"prisma-value: diagnostic-notify-size=", size as u64);
+        phase_value(b"prisma-value: diagnostic-notify-post=", post_call as u64);
+        phase_value(
+            b"prisma-value: diagnostic-notify-status=",
+            status as u32 as u64,
+        );
+        phase_marker(b"prisma-phase: diagnostic-notify-memory-alloc-returned\n");
+        return;
+    }
     if post_call != 0 && successful(status) && !address.is_null() && size != 0 {
         with_running_state(|state| {
             state.track_mapping(address as usize);

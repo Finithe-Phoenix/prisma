@@ -2,13 +2,34 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use prisma_runtime::executor::{
-    gpr, CpuStateFrame, ExecError, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL, XMM_REGISTER_COUNT,
+    CpuStateFrame, EXIT_BRANCH, EXIT_NORMAL, EXIT_SYSCALL, ExecError, XMM_REGISTER_COUNT, gpr,
 };
 use prisma_translator::{BlockTranslation, TranslateError, Translator};
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+struct DiagnosticJitAllocationGuard {
+    previous: bool,
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+impl DiagnosticJitAllocationGuard {
+    fn enter() -> Self {
+        Self {
+            previous: super::DIAGNOSTIC_JIT_ALLOCATION_ACTIVE.swap(true, Ordering::AcqRel),
+        }
+    }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+impl Drop for DiagnosticJitAllocationGuard {
+    fn drop(&mut self) {
+        super::DIAGNOSTIC_JIT_ALLOCATION_ACTIVE.store(self.previous, Ordering::Release);
+    }
+}
 
 #[cfg(not(all(windows, target_arch = "arm64ec")))]
 thread_local! {
@@ -989,7 +1010,10 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::jit_memory::ExecBuffer;
 
             let callable = wrap_block(&code);
+            let diagnostic_allocation =
+                (guest_rip == 0x0000_0001_4008_9a0e).then(DiagnosticJitAllocationGuard::enter);
             let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
+            drop(diagnostic_allocation);
             if guest_rip == 0x0000_0001_4008_9a0e {
                 super::phase_marker(b"prisma-phase: diagnostic-ec-mapped-store-enter\n");
                 let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
