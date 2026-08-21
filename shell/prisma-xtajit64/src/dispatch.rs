@@ -1351,6 +1351,12 @@ impl ThreadRuntime {
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: dispatch-executor-returned\n");
             #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_value(b"prisma-value: rdi=", frame.gpr[gpr::RDI]);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_value(b"prisma-value: rbx=", frame.gpr[gpr::RBX]);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            super::phase_value(b"prisma-value: rsp=", frame.gpr[gpr::RSP]);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_value(b"prisma-value: exit-reason=", frame.exit_reason);
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_value(b"prisma-value: next-pc=", frame.next_pc);
