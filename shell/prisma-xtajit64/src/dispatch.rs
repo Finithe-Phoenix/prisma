@@ -10,24 +10,69 @@ use prisma_runtime::executor::{
 };
 use prisma_translator::{BlockTranslation, TranslateError, Translator};
 
-#[cfg(all(windows, target_arch = "arm64ec"))]
-struct DiagnosticJitAllocationGuard {
-    previous: bool,
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+const PROVIDER_JIT_ALLOCATION_SLOT: usize = 2;
+
+// Wine exposes EmulatorData to the emulator provider. Slots 0 and 1 bind the
+// active JIT frame; slot 2 identifies this provider's scoped JIT allocation.
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+static PROVIDER_JIT_ALLOCATION_SENTINEL: u8 = 0;
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+fn provider_jit_allocation_sentinel() -> *mut std::ffi::c_void {
+    std::ptr::addr_of!(PROVIDER_JIT_ALLOCATION_SENTINEL) as *mut std::ffi::c_void
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+fn provider_jit_allocation_active_in_area(area: &ChpeV2CpuAreaInfo) -> bool {
+    area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT] == provider_jit_allocation_sentinel()
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-impl DiagnosticJitAllocationGuard {
-    fn enter() -> Self {
+pub(crate) fn provider_jit_allocation_active() -> bool {
+    // SAFETY: Wine invokes the callback on the current simulation thread. A
+    // missing CHPE area cannot belong to the provider allocation window.
+    unsafe { current_wine_cpu_area() }
+        .map(|area| provider_jit_allocation_active_in_area(area))
+        .unwrap_or(false)
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+struct ProviderJitAllocationGuard {
+    slot: *mut *mut std::ffi::c_void,
+    previous: *mut std::ffi::c_void,
+}
+
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+impl ProviderJitAllocationGuard {
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    fn enter() -> Result<Self, ExecError> {
+        // SAFETY: JIT allocation runs synchronously on Wine's current
+        // simulation thread, whose CHPE area outlives this scoped guard.
+        let area = unsafe { current_wine_cpu_area() }.map_err(|_| {
+            ExecError::Alloc(std::io::Error::other(
+                "Wine CHPE CPU area unavailable during provider JIT allocation",
+            ))
+        })?;
+        Ok(Self::enter_for_area(area))
+    }
+
+    fn enter_for_area(area: &mut ChpeV2CpuAreaInfo) -> Self {
+        let previous = area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT];
+        area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT] = provider_jit_allocation_sentinel();
         Self {
-            previous: super::DIAGNOSTIC_JIT_ALLOCATION_ACTIVE.swap(true, Ordering::AcqRel),
+            slot: &raw mut area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT],
+            previous,
         }
     }
 }
 
-#[cfg(all(windows, target_arch = "arm64ec"))]
-impl Drop for DiagnosticJitAllocationGuard {
+#[cfg(any(test, all(windows, target_arch = "arm64ec")))]
+impl Drop for ProviderJitAllocationGuard {
     fn drop(&mut self) {
-        super::DIAGNOSTIC_JIT_ALLOCATION_ACTIVE.store(self.previous, Ordering::Release);
+        // SAFETY: the CHPE area remains live for the synchronous allocation
+        // window and nested guards restore the pointer they observed.
+        unsafe { self.slot.write(self.previous) };
     }
 }
 
@@ -1010,9 +1055,9 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::jit_memory::ExecBuffer;
 
             let callable = wrap_block(&code);
-            let diagnostic_allocation = DiagnosticJitAllocationGuard::enter();
+            let provider_allocation = ProviderJitAllocationGuard::enter()?;
             let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
-            drop(diagnostic_allocation);
+            drop(provider_allocation);
             if !buffer.write(&callable) {
                 return Err(ExecError::Write);
             }
@@ -2229,5 +2274,56 @@ mod tests {
         let bound = unsafe { context_from_cpu_area(&raw mut area) }.unwrap();
         bound.pc_rip = 0x5678;
         assert_eq!(context.pc_rip, 0x5678);
+    }
+
+    #[test]
+    fn provider_jit_allocation_guard_is_per_area_nested_and_restoring() {
+        let mut first = ChpeV2CpuAreaInfo {
+            in_simulation: 1,
+            in_syscall_callback: 0,
+            padding: [0; 6],
+            emulator_stack_base: 0,
+            emulator_stack_limit: 0,
+            context_amd64: std::ptr::null_mut(),
+            suspend_doorbell: std::ptr::null_mut(),
+            loading_module_modflag: 0,
+            emulator_data: [std::ptr::null_mut(); 4],
+            emulator_data_inline: 0,
+        };
+        let mut second = ChpeV2CpuAreaInfo {
+            in_simulation: 1,
+            in_syscall_callback: 0,
+            padding: [0; 6],
+            emulator_stack_base: 0,
+            emulator_stack_limit: 0,
+            context_amd64: std::ptr::null_mut(),
+            suspend_doorbell: std::ptr::null_mut(),
+            loading_module_modflag: 0,
+            emulator_data: [std::ptr::null_mut(); 4],
+            emulator_data_inline: 0,
+        };
+        let original = 0x1234usize as *mut std::ffi::c_void;
+        first.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT] = original;
+
+        assert!(!provider_jit_allocation_active_in_area(&first));
+        assert!(!provider_jit_allocation_active_in_area(&second));
+        let outer = ProviderJitAllocationGuard::enter_for_area(&mut first);
+        assert!(provider_jit_allocation_active_in_area(&first));
+        assert!(!provider_jit_allocation_active_in_area(&second));
+
+        let nested = ProviderJitAllocationGuard::enter_for_area(&mut first);
+        assert!(provider_jit_allocation_active_in_area(&first));
+        drop(nested);
+        assert!(provider_jit_allocation_active_in_area(&first));
+
+        let other_thread = ProviderJitAllocationGuard::enter_for_area(&mut second);
+        assert!(provider_jit_allocation_active_in_area(&first));
+        assert!(provider_jit_allocation_active_in_area(&second));
+        drop(other_thread);
+        assert!(!provider_jit_allocation_active_in_area(&second));
+
+        drop(outer);
+        assert!(!provider_jit_allocation_active_in_area(&first));
+        assert_eq!(first.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT], original);
     }
 }

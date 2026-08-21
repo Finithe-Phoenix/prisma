@@ -16,9 +16,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-#[cfg(all(windows, target_arch = "arm64ec"))]
-static DIAGNOSTIC_JIT_ALLOCATION_ACTIVE: AtomicBool = AtomicBool::new(false);
-
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
 mod allocator;
 mod dispatch;
@@ -1244,19 +1241,9 @@ pub extern "system" fn NotifyMemoryAlloc(
     status: NtStatus,
 ) {
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    if DIAGNOSTIC_JIT_ALLOCATION_ACTIVE.load(Ordering::Acquire) {
-        phase_marker(b"prisma-phase: diagnostic-notify-memory-alloc-enter\n");
-        phase_value(
-            b"prisma-value: diagnostic-notify-address=",
-            address as usize as u64,
-        );
-        phase_value(b"prisma-value: diagnostic-notify-size=", size as u64);
-        phase_value(b"prisma-value: diagnostic-notify-post=", post_call as u64);
-        phase_value(
-            b"prisma-value: diagnostic-notify-status=",
-            status as u32 as u64,
-        );
-        phase_marker(b"prisma-phase: diagnostic-notify-memory-alloc-returned\n");
+    // Provider-owned JIT pages are cache entries, not guest mappings. Tracking
+    // them here recursively invalidates the heap that is allocating the page.
+    if dispatch::provider_jit_allocation_active() {
         return;
     }
     if post_call != 0 && successful(status) && !address.is_null() && size != 0 {
