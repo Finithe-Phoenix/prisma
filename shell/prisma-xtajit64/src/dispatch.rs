@@ -989,22 +989,19 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::jit_memory::ExecBuffer;
 
             let callable = wrap_block(&code);
+            if guest_rip == 0x0000_0001_4008_9a0e {
+                super::phase_marker(b"prisma-phase: diagnostic-wrapped-store-enter\n");
+                let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
+                // SAFETY: this temporary diagnostic preserves `wrap_block`, but
+                // skips executable-buffer allocation, copy, protection, I-cache
+                // flush, and publication before the exact decoded guest store.
+                unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
+                super::phase_marker(b"prisma-phase: diagnostic-wrapped-store-returned\n");
+                return Ok(());
+            }
             let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
             if !buffer.write(&callable) {
                 return Err(ExecError::Write);
-            }
-            if guest_rip == 0x0000_0001_4008_9a0e {
-                super::phase_marker(b"prisma-phase: diagnostic-unprotected-store-enter\n");
-                let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
-                // SAFETY: this temporary diagnostic preserves wrap, mapping,
-                // and copy, but skips protection, I-cache flush, and publication
-                // before substituting the exact decoded guest store.
-                unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
-                super::phase_marker(b"prisma-phase: diagnostic-unprotected-store-returned\n");
-                // Keep this one diagnostic mapping alive so address reuse or
-                // VirtualFree cannot affect the following comparison block.
-                std::mem::forget(buffer);
-                return Ok(());
             }
             buffer.make_executable().map_err(ExecError::Protect)?;
             let entry = self.publish_entry(code, buffer)?;
