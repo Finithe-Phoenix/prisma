@@ -27,6 +27,26 @@ permissions:
   contents: read
 
 jobs:
+  regression-arm64:
+    name: Oh My Posh bootstrap regression (ARM64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: "1.97.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - name: Run exact bootstrap regression
+        run: >-
+          cargo test
+          --manifest-path shell/Cargo.toml
+          -p prisma-xtajit64
+          --test oh_my_posh_bootstrap
+          --locked
+
   provider:
     name: Build ARM64EC provider
     runs-on: windows-2022
