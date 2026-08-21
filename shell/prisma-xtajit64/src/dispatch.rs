@@ -996,6 +996,16 @@ impl BlockExecutor for PrismaExecutor {
             buffer.make_executable().map_err(ExecError::Protect)?;
             let entry = self.publish_entry(code, buffer)?;
             super::phase_marker(b"prisma-phase: jit-cache-ready\n");
+            if guest_rip == 0x0000_0001_4008_9a0e {
+                super::phase_marker(b"prisma-phase: diagnostic-published-store-enter\n");
+                let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
+                // SAFETY: this temporary diagnostic preserves the complete
+                // JIT publication/cache path, then substitutes only the exact
+                // decoded `mov [rdi+0x10],rbx` native invocation.
+                unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
+                super::phase_marker(b"prisma-phase: diagnostic-published-store-returned\n");
+                return Ok(());
+            }
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
@@ -1371,21 +1381,6 @@ impl ThreadRuntime {
             let block_ended_at_terminator = block.ended_at_terminator;
             frame.exit_reason = EXIT_NORMAL;
             frame.next_pc = 0;
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            let execution = if rip == 0x0000_0001_4008_9a0e {
-                drop(block.code);
-                super::phase_marker(b"prisma-phase: diagnostic-direct-store-enter\n");
-                let address = frame.gpr[gpr::RDI].wrapping_add(0x10) as *mut u64;
-                // SAFETY: this temporary diagnostic substitutes the exact
-                // decoded `mov [rdi+0x10],rbx` after the guest range was read
-                // and validated by the same live Wine process.
-                unsafe { address.write_unaligned(frame.gpr[gpr::RBX]) };
-                super::phase_marker(b"prisma-phase: diagnostic-direct-store-returned\n");
-                Ok(())
-            } else {
-                executor.execute(rip, block.code, &mut frame)
-            };
-            #[cfg(not(all(windows, target_arch = "arm64ec")))]
             let execution = executor.execute(rip, block.code, &mut frame);
             #[cfg(all(windows, target_arch = "arm64ec"))]
             crate::allocator::set_allocator_trace(false);
