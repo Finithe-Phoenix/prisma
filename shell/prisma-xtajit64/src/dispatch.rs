@@ -1356,7 +1356,9 @@ impl ThreadRuntime {
                 limits.max_instructions_per_block,
             );
             #[cfg(all(windows, target_arch = "arm64ec"))]
-            crate::allocator::set_allocator_trace(false);
+            if block.is_err() {
+                crate::allocator::set_allocator_trace(false);
+            }
             let block = block.map_err(|source| DispatchError::Translation { rip, source })?;
             drop(translator);
             #[cfg(all(windows, target_arch = "arm64ec"))]
@@ -1367,6 +1369,8 @@ impl ThreadRuntime {
             frame.exit_reason = EXIT_NORMAL;
             frame.next_pc = 0;
             let execution = executor.execute(rip, block.code, &mut frame);
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            crate::allocator::set_allocator_trace(false);
             #[cfg(all(windows, target_arch = "arm64ec"))]
             super::phase_marker(b"prisma-phase: dispatch-executor-returned\n");
             #[cfg(all(windows, target_arch = "arm64ec"))]
