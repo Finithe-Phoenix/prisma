@@ -914,14 +914,15 @@ unsafe fn execute_arm64_jit(entry: *const u8, frame: *mut CpuStateFrame) -> usiz
     // frame. The outer save area contains any backend ABI defect before it can
     // escape into Rust; x0 returns a mask for the ARM64EC-visible nonvolatile
     // register set after every original value has been restored. x18 remains
-    // the read-only Windows TEB and x29 is never used as generated-code state.
+    // the read-only Windows TEB. Preserve x29 independently as the native
+    // frame pointer even though generated code must never use it as state.
     unsafe {
         core::arch::asm!(
             "sub sp, sp, #64",
             "stp x19, x20, [sp, #0]",
             "stp x21, x22, [sp, #16]",
             "stp x25, x26, [sp, #32]",
-            "str x27, [sp, #48]",
+            "stp x27, x29, [sp, #48]",
             "blr {entry}",
             "mov x9, xzr",
             "ldp x10, x11, [sp, #0]",
@@ -945,14 +946,17 @@ unsafe fn execute_arm64_jit(entry: *const u8, frame: *mut CpuStateFrame) -> usiz
             "cmp x26, x11",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #5",
-            "ldr x10, [sp, #48]",
+            "ldp x10, x11, [sp, #48]",
             "cmp x27, x10",
             "cset x12, ne",
             "orr x9, x9, x12, lsl #6",
+            "cmp x29, x11",
+            "cset x12, ne",
+            "orr x9, x9, x12, lsl #7",
             "ldp x19, x20, [sp, #0]",
             "ldp x21, x22, [sp, #16]",
             "ldp x25, x26, [sp, #32]",
-            "ldr x27, [sp, #48]",
+            "ldp x27, x29, [sp, #48]",
             "add sp, sp, #64",
             "mov x0, x9",
             entry = in(reg) entry,
