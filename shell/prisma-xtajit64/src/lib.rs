@@ -81,6 +81,37 @@ fn write_diagnostic(message: &[u8]) {
     };
 }
 
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn write_hex_diagnostic(prefix: &[u8], value: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut message = [0_u8; 96];
+    let Some(digit_start) = prefix.len().checked_add(2) else {
+        return;
+    };
+    let Some(message_len) = digit_start.checked_add(17) else {
+        return;
+    };
+    if message_len > message.len() {
+        return;
+    }
+    message[..prefix.len()].copy_from_slice(prefix);
+    message[prefix.len()..digit_start].copy_from_slice(b"0x");
+    for index in 0..16 {
+        let shift = (15 - index) * 4;
+        message[digit_start + index] = HEX[((value >> shift) & 0xf) as usize];
+    }
+    message[message_len - 1] = b'\n';
+    write_diagnostic(&message[..message_len]);
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn write_recent_jit_rips(recent: ([u64; 16], usize)) {
+    let (rips, count) = recent;
+    for rip in rips.into_iter().take(count) {
+        write_hex_diagnostic(b"prisma-trace: recent-rip=", rip);
+    }
+}
+
 #[repr(C)]
 pub struct ExceptionRecord {
     _private: [u8; 0],
@@ -1059,6 +1090,19 @@ fn phase_error(phase: ProviderPhase) -> LifecycleError {
 }
 
 fn process_term(post_call: bool, status: NtStatus) {
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    if !post_call {
+        let recent = {
+            let state = lock_provider();
+            state
+                .threads
+                .get(&current_thread_key())
+                .map(|thread| thread.executor.recent_guest_rips())
+        };
+        if let Some(recent) = recent {
+            write_recent_jit_rips(recent);
+        }
+    }
     let mut state = lock_provider();
     if !post_call {
         if state.phase != ProviderPhase::Cold {
@@ -1084,11 +1128,22 @@ fn thread_term(handle: Handle) {
     if !state.is_running() {
         return;
     }
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    let mut recent = None;
     if let Some(key) = thread_key_from_handle(handle) {
         if let Some(context) = state.threads.remove(&key) {
+            #[cfg(all(windows, target_arch = "arm64ec"))]
+            {
+                recent = Some(context.executor.recent_guest_rips());
+            }
             context.runtime.cancel();
             state.retire_thread(context);
         }
+    }
+    drop(state);
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    if let Some(recent) = recent {
+        write_recent_jit_rips(recent);
     }
 }
 

@@ -897,16 +897,45 @@ pub trait BlockExecutor {
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const RECENT_JIT_RIP_COUNT: usize = 16;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[derive(Debug, Default)]
 struct JitCache {
     buffers: Vec<(u64, Vec<u8>, prisma_runtime::jit_memory::ExecBuffer)>,
     bytes: usize,
+    recent_rips: [u64; RECENT_JIT_RIP_COUNT],
+    recent_rip_cursor: usize,
+    recent_rips_full: bool,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 impl JitCache {
+    fn record_rip(&mut self, guest_rip: u64) {
+        self.recent_rips[self.recent_rip_cursor] = guest_rip;
+        self.recent_rip_cursor = (self.recent_rip_cursor + 1) % RECENT_JIT_RIP_COUNT;
+        self.recent_rips_full |= self.recent_rip_cursor == 0;
+    }
+
+    fn recent_rips(&self) -> ([u64; RECENT_JIT_RIP_COUNT], usize) {
+        let count = if self.recent_rips_full {
+            RECENT_JIT_RIP_COUNT
+        } else {
+            self.recent_rip_cursor
+        };
+        let start = if self.recent_rips_full {
+            self.recent_rip_cursor
+        } else {
+            0
+        };
+        let mut ordered = [0_u64; RECENT_JIT_RIP_COUNT];
+        for (offset, value) in ordered.iter_mut().take(count).enumerate() {
+            *value = self.recent_rips[(start + offset) % RECENT_JIT_RIP_COUNT];
+        }
+        (ordered, count)
+    }
+
     fn get(&self, guest_rip: u64, code: &[u8]) -> Option<&prisma_runtime::jit_memory::ExecBuffer> {
         self.buffers.iter().find_map(|(rip, cached, buffer)| {
             (*rip == guest_rip && exact_jit_code_match(cached, code)).then_some(buffer)
@@ -1009,6 +1038,14 @@ impl PrismaExecutor {
         drop(stale);
         Ok(entry)
     }
+
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    pub(super) fn recent_guest_rips(&self) -> ([u64; RECENT_JIT_RIP_COUNT], usize) {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recent_rips()
+    }
 }
 
 #[cfg(target_arch = "arm64ec")]
@@ -1085,12 +1122,14 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            let cached_entry = self
-                .cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(guest_rip, &code)
-                .map(ExecBuffer::as_ptr);
+            let cached_entry = {
+                let mut cache = self
+                    .cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                cache.record_rip(guest_rip);
+                cache.get(guest_rip, &code).map(ExecBuffer::as_ptr)
+            };
             let entry = if let Some(entry) = cached_entry {
                 drop(code);
                 entry
@@ -1892,6 +1931,18 @@ mod tests {
         let cache = executor.cache.lock().unwrap();
         assert_eq!(cache.buffers.len(), 1);
         assert_eq!(cache.bytes, cache.buffers[0].2.capacity());
+    }
+
+    #[test]
+    fn jit_cache_retains_only_the_most_recent_guest_rips_in_order() {
+        let mut cache = JitCache::default();
+        for rip in 0_u64..20 {
+            cache.record_rip(rip);
+        }
+        let (rips, count) = cache.recent_rips();
+        assert_eq!(count, RECENT_JIT_RIP_COUNT);
+        let expected: [u64; RECENT_JIT_RIP_COUNT] = std::array::from_fn(|index| 4 + index as u64);
+        assert_eq!(rips, expected);
     }
 
     #[test]
