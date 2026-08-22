@@ -900,7 +900,7 @@ const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const RECENT_JIT_RIP_COUNT: usize = 32;
 #[cfg(any(test, target_arch = "arm64ec"))]
-pub const RECENT_SCAVENGE_EVENT_COUNT: usize = 256;
+pub const RECENT_SCAVENGE_EVENT_COUNT: usize = 64;
 
 // Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. The entry probes
 // capture chunk/page arguments; the state probes run immediately after the
@@ -915,18 +915,20 @@ const SCAVENGE_ALLOC_STATE_RIP: u64 = 0x0001_4003_9635;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const SCAVENGE_FREE_STATE_RIP: u64 = 0x0001_4003_9735;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const SCAVENGE_EVENT_ALLOC: u64 = 1;
+const SCAVENGE_EVENT_ALLOC: u8 = 1;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const SCAVENGE_EVENT_FREE: u64 = 2;
+const SCAVENGE_EVENT_FREE: u8 = 2;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ScavengeEvent {
-    pub kind: u64,
     pub chunk: u64,
-    pub page: u64,
-    pub npages: u64,
-    pub in_use: u64,
+    pub page: u16,
+    pub npages: u16,
+    pub in_use: u16,
+    pub kind: u8,
+    reserved: u8,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1006,30 +1008,34 @@ impl JitCache {
     fn record_scavenge_event(&mut self, guest_rip: u64, frame: &CpuStateFrame) {
         match guest_rip {
             SCAVENGE_ALLOC_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
-                kind: SCAVENGE_EVENT_ALLOC,
                 chunk: frame.gpr[gpr::RBX],
                 page: 0,
-                npages: frame.gpr[gpr::RCX],
+                npages: u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX),
                 in_use: 0,
+                kind: SCAVENGE_EVENT_ALLOC,
+                reserved: 0,
             }),
             SCAVENGE_FREE_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
-                kind: SCAVENGE_EVENT_FREE,
                 chunk: frame.gpr[gpr::RBX],
-                page: frame.gpr[gpr::RCX],
-                npages: frame.gpr[gpr::RDI],
+                page: u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX),
+                npages: u16::try_from(frame.gpr[gpr::RDI]).unwrap_or(u16::MAX),
                 in_use: 0,
+                kind: SCAVENGE_EVENT_FREE,
+                reserved: 0,
             }),
             SCAVENGE_ALLOC_STATE_RIP => {
                 if let Some(event) = self.most_recent_scavenge_event_mut() {
                     if event.kind == SCAVENGE_EVENT_ALLOC {
-                        event.in_use = frame.gpr[gpr::RDX] & u64::from(u16::MAX);
+                        event.in_use = u16::try_from(frame.gpr[gpr::RDX] & u64::from(u16::MAX))
+                            .unwrap_or_default();
                     }
                 }
             }
             SCAVENGE_FREE_STATE_RIP => {
                 if let Some(event) = self.most_recent_scavenge_event_mut() {
                     if event.kind == SCAVENGE_EVENT_FREE {
-                        event.in_use = frame.gpr[gpr::RDX] & u64::from(u16::MAX);
+                        event.in_use = u16::try_from(frame.gpr[gpr::RDX] & u64::from(u16::MAX))
+                            .unwrap_or_default();
                     }
                 }
             }
@@ -2077,6 +2083,7 @@ mod tests {
 
     #[test]
     fn jit_cache_records_scavenge_alloc_and_free_state() {
+        assert_eq!(std::mem::size_of::<ScavengeEvent>(), 16);
         let mut cache = JitCache::default();
         let mut frame = CpuStateFrame::default();
 
@@ -2103,6 +2110,7 @@ mod tests {
                 page: 0,
                 npages: 41,
                 in_use: 484,
+                reserved: 0,
             }
         );
         assert_eq!(
@@ -2113,6 +2121,7 @@ mod tests {
                 page: 7,
                 npages: 9,
                 in_use: 100,
+                reserved: 0,
             }
         );
     }

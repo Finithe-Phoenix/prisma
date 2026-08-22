@@ -116,15 +116,15 @@ fn write_recent_jit_rips(recent: ([u64; 32], usize)) {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn write_recent_scavenge_events(recent: ([ScavengeEvent; RECENT_SCAVENGE_EVENT_COUNT], usize)) {
-    const SCAVENGE_EVENT_ALLOC: u64 = 1;
-    const SCAVENGE_EVENT_FREE: u64 = 2;
+    const SCAVENGE_EVENT_ALLOC: u8 = 1;
+    const SCAVENGE_EVENT_FREE: u8 = 2;
     const PALLOC_CHUNK_PAGES: u64 = 512;
 
     let (events, count) = recent;
     let events = &events[..count];
     let target_chunk = events.iter().rev().find_map(|event| {
         (event.kind == SCAVENGE_EVENT_ALLOC
-            && event.in_use.saturating_add(event.npages) > PALLOC_CHUNK_PAGES)
+            && u64::from(event.in_use).saturating_add(u64::from(event.npages)) > PALLOC_CHUNK_PAGES)
             .then_some(event.chunk)
     });
     let Some(target_chunk) = target_chunk else {
@@ -135,13 +135,13 @@ fn write_recent_scavenge_events(recent: ([ScavengeEvent; RECENT_SCAVENGE_EVENT_C
     for event in events.iter().filter(|event| event.chunk == target_chunk) {
         match event.kind {
             SCAVENGE_EVENT_ALLOC => {
-                write_hex_diagnostic(b"prisma-trace: scav-alloc-in-use=", event.in_use);
-                write_hex_diagnostic(b"prisma-trace: scav-alloc-npages=", event.npages);
+                write_hex_diagnostic(b"prisma-trace: scav-alloc-in-use=", u64::from(event.in_use));
+                write_hex_diagnostic(b"prisma-trace: scav-alloc-npages=", u64::from(event.npages));
             }
             SCAVENGE_EVENT_FREE => {
-                write_hex_diagnostic(b"prisma-trace: scav-free-in-use=", event.in_use);
-                write_hex_diagnostic(b"prisma-trace: scav-free-page=", event.page);
-                write_hex_diagnostic(b"prisma-trace: scav-free-npages=", event.npages);
+                write_hex_diagnostic(b"prisma-trace: scav-free-in-use=", u64::from(event.in_use));
+                write_hex_diagnostic(b"prisma-trace: scav-free-page=", u64::from(event.page));
+                write_hex_diagnostic(b"prisma-trace: scav-free-npages=", u64::from(event.npages));
             }
             _ => {}
         }
