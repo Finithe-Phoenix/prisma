@@ -902,177 +902,226 @@ const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const RECENT_JIT_RIP_COUNT: usize = 32;
 #[cfg(any(test, target_arch = "arm64ec"))]
-pub const RECENT_PALLOC_RANGE_EVENT_COUNT: usize = 64;
+pub const RECENT_MORESTACK_EVENT_COUNT: usize = 8;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const PALLOC_CHUNK_PAGES: usize = 512;
+const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. Both functions use
-// RAX for the pageBits address, RBX for the first page, and RCX for the page
-// count. pallocData.allocRange marks allocated pages; pageBits.clearRange
-// observes frees too. The latter also clears the distinct scavenged bitmap at
-// pallocData + 0x40, so the bitmap address remains part of every event.
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. These four
+// boundaries capture the current g before TLS decoding, the TLS-loaded g,
+// m.g0 immediately before it replaces TLS, and the call boundary into
+// runtime.newstack. The trace replaces the now-resolved palloc probe and stays
+// below its prior 1,552-byte static footprint.
 #[cfg(any(test, target_arch = "arm64ec"))]
-const PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP: u64 = 0x0001_4004_51e0;
+const MORESTACK_ENTRY_RIP: u64 = 0x0001_4008_9d20;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const PAGE_BITS_CLEAR_RANGE_ENTRY_RIP: u64 = 0x0001_4004_4a00;
+const MORESTACK_G_LOADED_RIP: u64 = 0x0001_4008_9d2e;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const PALLOC_RANGE_EVENT_ALLOC: u8 = 1;
+const MORESTACK_G0_LOADED_RIP: u64 = 0x0001_4008_9d89;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const PALLOC_RANGE_EVENT_FREE: u8 = 2;
+const MORESTACK_NEWSTACK_CALL_RIP: u64 = 0x0001_4008_9d97;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PallocRangeEvent {
-    pub address: u64,
-    pub page: u16,
-    pub npages: u16,
-    pub kind: u8,
-    pub reserved: [u8; 3],
+pub struct MorestackEvent {
+    pub rip: u64,
+    pub r14: u64,
+    pub rdi: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rsp: u64,
+    pub tls_g: u64,
+    pub r14_stack_lo: u64,
+    pub r14_stack_hi: u64,
+    pub rdi_stack_lo: u64,
+    pub rdi_stack_hi: u64,
+    pub rbx_stack_lo: u64,
+    pub rbx_stack_hi: u64,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
-struct PallocRangeTrace {
+impl MorestackEvent {
+    fn fields(self) -> [u64; MORESTACK_EVENT_FIELD_COUNT] {
+        [
+            self.rip,
+            self.r14,
+            self.rdi,
+            self.rbx,
+            self.rcx,
+            self.rsp,
+            self.tls_g,
+            self.r14_stack_lo,
+            self.r14_stack_hi,
+            self.rdi_stack_lo,
+            self.rdi_stack_hi,
+            self.rbx_stack_lo,
+            self.rbx_stack_hi,
+        ]
+    }
+
+    fn from_fields(fields: [u64; MORESTACK_EVENT_FIELD_COUNT]) -> Self {
+        Self {
+            rip: fields[0],
+            r14: fields[1],
+            rdi: fields[2],
+            rbx: fields[3],
+            rcx: fields[4],
+            rsp: fields[5],
+            tls_g: fields[6],
+            r14_stack_lo: fields[7],
+            r14_stack_hi: fields[8],
+            rdi_stack_lo: fields[9],
+            rdi_stack_hi: fields[10],
+            rbx_stack_lo: fields[11],
+            rbx_stack_hi: fields[12],
+        }
+    }
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+struct MorestackTrace {
     cursor: AtomicUsize,
-    sequences: [AtomicUsize; RECENT_PALLOC_RANGE_EVENT_COUNT],
-    addresses: [AtomicU64; RECENT_PALLOC_RANGE_EVENT_COUNT],
-    ranges: [AtomicU64; RECENT_PALLOC_RANGE_EVENT_COUNT],
+    sequences: [AtomicUsize; RECENT_MORESTACK_EVENT_COUNT],
+    values: [[AtomicU64; MORESTACK_EVENT_FIELD_COUNT]; RECENT_MORESTACK_EVENT_COUNT],
     reported: AtomicBool,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
-impl PallocRangeTrace {
+impl MorestackTrace {
     const fn new() -> Self {
         Self {
             cursor: AtomicUsize::new(0),
-            sequences: [const { AtomicUsize::new(usize::MAX) }; RECENT_PALLOC_RANGE_EVENT_COUNT],
-            addresses: [const { AtomicU64::new(0) }; RECENT_PALLOC_RANGE_EVENT_COUNT],
-            ranges: [const { AtomicU64::new(0) }; RECENT_PALLOC_RANGE_EVENT_COUNT],
+            sequences: [const { AtomicUsize::new(usize::MAX) }; RECENT_MORESTACK_EVENT_COUNT],
+            values: [const { [const { AtomicU64::new(0) }; MORESTACK_EVENT_FIELD_COUNT] };
+                RECENT_MORESTACK_EVENT_COUNT],
             reported: AtomicBool::new(false),
         }
     }
 
-    fn record(&self, event: PallocRangeEvent) {
+    fn record(&self, event: MorestackEvent) {
         let sequence = self.cursor.fetch_add(1, Ordering::SeqCst);
-        let index = sequence % RECENT_PALLOC_RANGE_EVENT_COUNT;
-        let packed =
-            u64::from(event.page) | (u64::from(event.npages) << 16) | (u64::from(event.kind) << 32);
+        let index = sequence % RECENT_MORESTACK_EVENT_COUNT;
         self.sequences[index].store(usize::MAX, Ordering::SeqCst);
-        self.addresses[index].store(event.address, Ordering::SeqCst);
-        self.ranges[index].store(packed, Ordering::SeqCst);
+        for (destination, value) in self.values[index].iter().zip(event.fields()) {
+            destination.store(value, Ordering::SeqCst);
+        }
         self.sequences[index].store(sequence, Ordering::SeqCst);
     }
 
-    fn recent(&self) -> ([PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT], usize) {
+    fn recent(&self) -> ([MorestackEvent; RECENT_MORESTACK_EVENT_COUNT], usize) {
         let end = self.cursor.load(Ordering::SeqCst);
-        let retained = end.min(RECENT_PALLOC_RANGE_EVENT_COUNT);
+        let retained = end.min(RECENT_MORESTACK_EVENT_COUNT);
         let start = end.saturating_sub(retained);
-        let mut ordered = [PallocRangeEvent::default(); RECENT_PALLOC_RANGE_EVENT_COUNT];
+        let mut ordered = [MorestackEvent::default(); RECENT_MORESTACK_EVENT_COUNT];
         let mut count = 0;
         for sequence in start..end {
-            let index = sequence % RECENT_PALLOC_RANGE_EVENT_COUNT;
+            let index = sequence % RECENT_MORESTACK_EVENT_COUNT;
             if self.sequences[index].load(Ordering::SeqCst) != sequence {
                 continue;
             }
-            let address = self.addresses[index].load(Ordering::SeqCst);
-            let packed = self.ranges[index].load(Ordering::SeqCst);
+            let fields =
+                std::array::from_fn(|field| self.values[index][field].load(Ordering::SeqCst));
             if self.sequences[index].load(Ordering::SeqCst) != sequence {
                 continue;
             }
-            ordered[count] = PallocRangeEvent {
-                address,
-                page: u16::try_from(packed & u64::from(u16::MAX)).unwrap_or(u16::MAX),
-                npages: u16::try_from((packed >> 16) & u64::from(u16::MAX)).unwrap_or(u16::MAX),
-                kind: u8::try_from((packed >> 32) & u64::from(u8::MAX)).unwrap_or(u8::MAX),
-                reserved: [0; 3],
-            };
+            ordered[count] = MorestackEvent::from_fields(fields);
             count += 1;
         }
         (ordered, count)
     }
 
-    fn take_overlap(
-        &self,
-    ) -> Option<(
-        [PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT],
-        usize,
-        u64,
-    )> {
+    fn take_recent(&self) -> Option<([MorestackEvent; RECENT_MORESTACK_EVENT_COUNT], usize)> {
         let (events, count) = self.recent();
-        let target = first_overlapping_palloc_address(&events[..count])?;
-        if self.reported.swap(true, Ordering::SeqCst) {
+        if count == 0 || self.reported.swap(true, Ordering::SeqCst) {
             return None;
         }
-        Some((events, count, target))
+        Some((events, count))
     }
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
-fn first_overlapping_palloc_address(events: &[PallocRangeEvent]) -> Option<u64> {
-    for candidate in events
-        .iter()
-        .filter(|event| event.kind == PALLOC_RANGE_EVENT_ALLOC)
-        .map(|event| event.address)
-    {
-        let mut allocated = [0_u64; PALLOC_CHUNK_PAGES / 64];
-        for event in events.iter().filter(|event| event.address == candidate) {
-            let start = usize::from(event.page);
-            let Some(end) = start.checked_add(usize::from(event.npages)) else {
-                return Some(candidate);
-            };
-            if start >= end || end > PALLOC_CHUNK_PAGES {
-                return Some(candidate);
-            }
-            for page in start..end {
-                let word = page / 64;
-                let bit = 1_u64 << (page % 64);
-                if event.kind == PALLOC_RANGE_EVENT_ALLOC {
-                    if allocated[word] & bit != 0 {
-                        return Some(candidate);
-                    }
-                    allocated[word] |= bit;
-                } else if event.kind == PALLOC_RANGE_EVENT_FREE {
-                    allocated[word] &= !bit;
-                }
-            }
-        }
-    }
-    None
+fn read_morestack_stack<F>(base: u64, read_u64: &mut F) -> (u64, u64)
+where
+    F: FnMut(u64) -> Option<u64>,
+{
+    let Some(hi_address) = base.checked_add(8) else {
+        return (INVALID_MORESTACK_MEMORY, INVALID_MORESTACK_MEMORY);
+    };
+    (
+        read_u64(base).unwrap_or(INVALID_MORESTACK_MEMORY),
+        read_u64(hi_address).unwrap_or(INVALID_MORESTACK_MEMORY),
+    )
 }
 
-#[cfg(target_arch = "arm64ec")]
-static PALLOC_RANGE_TRACE: PallocRangeTrace = PallocRangeTrace::new();
-
 #[cfg(any(test, target_arch = "arm64ec"))]
-fn palloc_range_event(guest_rip: u64, frame: &CpuStateFrame) -> Option<PallocRangeEvent> {
-    let kind = match guest_rip {
-        PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP => PALLOC_RANGE_EVENT_ALLOC,
-        PAGE_BITS_CLEAR_RANGE_ENTRY_RIP => PALLOC_RANGE_EVENT_FREE,
+fn morestack_event_with_reader<F>(
+    guest_rip: u64,
+    frame: &CpuStateFrame,
+    mut read_u64: F,
+) -> Option<MorestackEvent>
+where
+    F: FnMut(u64) -> Option<u64>,
+{
+    let stage = match guest_rip {
+        MORESTACK_ENTRY_RIP => 0,
+        MORESTACK_G_LOADED_RIP => 1,
+        MORESTACK_G0_LOADED_RIP => 2,
+        MORESTACK_NEWSTACK_CALL_RIP => 3,
         _ => return None,
     };
-    Some(PallocRangeEvent {
-        address: frame.gpr[gpr::RAX],
-        page: u16::try_from(frame.gpr[gpr::RBX]).unwrap_or(u16::MAX),
-        npages: u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX),
-        kind,
-        reserved: [0; 3],
+    let r14 = frame.gpr[gpr::R14];
+    let rdi = frame.gpr[gpr::RDI];
+    let rbx = frame.gpr[gpr::RBX];
+    let rcx = frame.gpr[gpr::RCX];
+    let (r14_stack_lo, r14_stack_hi) = read_morestack_stack(r14, &mut read_u64);
+    let (rdi_stack_lo, rdi_stack_hi) = if stage >= 1 {
+        read_morestack_stack(rdi, &mut read_u64)
+    } else {
+        (INVALID_MORESTACK_MEMORY, INVALID_MORESTACK_MEMORY)
+    };
+    let (rbx_stack_lo, rbx_stack_hi) = if stage >= 2 {
+        read_morestack_stack(rbx, &mut read_u64)
+    } else {
+        (INVALID_MORESTACK_MEMORY, INVALID_MORESTACK_MEMORY)
+    };
+    let tls_g = if stage >= 1 {
+        read_u64(rcx).unwrap_or(INVALID_MORESTACK_MEMORY)
+    } else {
+        INVALID_MORESTACK_MEMORY
+    };
+    Some(MorestackEvent {
+        rip: guest_rip,
+        r14,
+        rdi,
+        rbx,
+        rcx,
+        rsp: frame.gpr[gpr::RSP],
+        tls_g,
+        r14_stack_lo,
+        r14_stack_hi,
+        rdi_stack_lo,
+        rdi_stack_hi,
+        rbx_stack_lo,
+        rbx_stack_hi,
     })
 }
 
 #[cfg(target_arch = "arm64ec")]
-fn record_palloc_range_event(guest_rip: u64, frame: &CpuStateFrame) {
-    if let Some(event) = palloc_range_event(guest_rip, frame) {
-        PALLOC_RANGE_TRACE.record(event);
+static MORESTACK_TRACE: MorestackTrace = MorestackTrace::new();
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn record_morestack_event(guest_rip: u64, frame: &CpuStateFrame) {
+    if let Some(event) = morestack_event_with_reader(guest_rip, frame, read_current_process_u64) {
+        MORESTACK_TRACE.record(event);
     }
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub(super) fn take_overlapping_palloc_events() -> Option<(
-    [PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT],
-    usize,
-    u64,
-)> {
-    PALLOC_RANGE_TRACE.take_overlap()
+pub(super) fn take_morestack_events(
+) -> Option<([MorestackEvent; RECENT_MORESTACK_EVENT_COUNT], usize)> {
+    MORESTACK_TRACE.take_recent()
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1310,7 +1359,7 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            record_palloc_range_event(guest_rip, frame);
+            record_morestack_event(guest_rip, frame);
             let cached_entry = {
                 let mut cache = self
                     .cache
@@ -1788,7 +1837,7 @@ pub fn live_runtime_count() -> usize {
 pub struct ProcessMemory;
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result<Vec<u8>, String> {
+fn read_current_process_memory_into(address: u64, bytes: &mut [u8]) -> Result<usize, ()> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentProcess() -> *mut std::ffi::c_void;
@@ -1801,25 +1850,40 @@ pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result
         ) -> i32;
     }
 
-    let mut bytes = vec![0_u8; length];
     let mut read = 0usize;
-    // SAFETY: the vector is a valid writable destination;
+    // SAFETY: the slice is a valid writable destination;
     // ReadProcessMemory validates the source range in the current process.
     let ok = unsafe {
         ReadProcessMemory(
             GetCurrentProcess(),
             address as *const std::ffi::c_void,
             bytes.as_mut_ptr().cast(),
-            length,
+            bytes.len(),
             &raw mut read,
         )
     };
     if ok == 0 {
+        return Err(());
+    }
+    Ok(read)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn read_current_process_u64(address: u64) -> Option<u64> {
+    let mut bytes = [0_u8; std::mem::size_of::<u64>()];
+    (read_current_process_memory_into(address, &mut bytes).ok()? == bytes.len())
+        .then(|| u64::from_ne_bytes(bytes))
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0_u8; length];
+    let read = read_current_process_memory_into(address, &mut bytes).map_err(|()| {
         // This runs immediately after guest JIT execution. Keep the failure
         // path allocation-simple so a rejected guest range reaches the typed
         // dispatcher diagnostic instead of invoking Windows error formatting.
-        return Err("ReadProcessMemory rejected the guest range".to_owned());
-    }
+        "ReadProcessMemory rejected the guest range".to_owned()
+    })?;
     bytes.truncate(read);
     Ok(bytes)
 }
@@ -2135,45 +2199,57 @@ mod tests {
     }
 
     #[test]
-    fn static_trace_reports_overlapping_palloc_ranges_once() {
-        assert_eq!(std::mem::size_of::<PallocRangeEvent>(), 16);
-        assert_eq!(std::mem::size_of::<PallocRangeTrace>(), 1_552);
-        let trace = PallocRangeTrace::new();
+    fn morestack_event_captures_tls_g_and_stack_bounds() {
         let mut frame = CpuStateFrame::default();
-        let address = 0x1234_0000;
-        frame.gpr[gpr::RAX] = address;
-        frame.gpr[gpr::RBX] = 0;
-        frame.gpr[gpr::RCX] = 10;
+        frame.gpr[gpr::R14] = 0x1000;
+        frame.gpr[gpr::RDI] = 0x2000;
+        frame.gpr[gpr::RBX] = 0x3000;
+        frame.gpr[gpr::RCX] = 0x4000;
+        frame.gpr[gpr::RSP] = 0x5000;
+        let memory = BTreeMap::from([
+            (0x1000, 0x1100),
+            (0x1008, 0x1800),
+            (0x2000, 0x2100),
+            (0x2008, 0x2800),
+            (0x3000, 0x3100),
+            (0x3008, 0x3800),
+            (0x4000, 0x2000),
+        ]);
         assert_eq!(
-            palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP - 1, &frame),
+            morestack_event_with_reader(MORESTACK_ENTRY_RIP - 1, &frame, |_| None),
             None
         );
-        trace.record(palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP, &frame).unwrap());
+        let event = morestack_event_with_reader(MORESTACK_G0_LOADED_RIP, &frame, |address| {
+            memory.get(&address).copied()
+        })
+        .unwrap();
+        assert_eq!(event.rip, MORESTACK_G0_LOADED_RIP);
+        assert_eq!(event.r14, 0x1000);
+        assert_eq!(event.rdi, 0x2000);
+        assert_eq!(event.rbx, 0x3000);
+        assert_eq!(event.rcx, 0x4000);
+        assert_eq!(event.rsp, 0x5000);
+        assert_eq!(event.tls_g, 0x2000);
+        assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
+        assert_eq!((event.rdi_stack_lo, event.rdi_stack_hi), (0x2100, 0x2800));
+        assert_eq!((event.rbx_stack_lo, event.rbx_stack_hi), (0x3100, 0x3800));
+    }
 
-        frame.gpr[gpr::RBX] = 4;
-        frame.gpr[gpr::RCX] = 2;
-        trace.record(palloc_range_event(PAGE_BITS_CLEAR_RANGE_ENTRY_RIP, &frame).unwrap());
-        trace.record(palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP, &frame).unwrap());
-
-        frame.gpr[gpr::RAX] = address + 0x40;
-        trace.record(palloc_range_event(PAGE_BITS_CLEAR_RANGE_ENTRY_RIP, &frame).unwrap());
-
-        frame.gpr[gpr::RAX] = address;
-        frame.gpr[gpr::RBX] = 5;
-        trace.record(palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP, &frame).unwrap());
-
+    #[test]
+    fn morestack_trace_retains_recent_events_and_reports_once() {
+        assert_eq!(std::mem::size_of::<MorestackTrace>(), 912);
+        let trace = MorestackTrace::new();
+        for rip in 0_u64..10 {
+            trace.record(MorestackEvent {
+                rip,
+                ..MorestackEvent::default()
+            });
+        }
         let (events, count) = trace.recent();
-        assert_eq!(count, 5);
-        assert_eq!(events[0].address, address);
-        assert_eq!(events[0].page, 0);
-        assert_eq!(events[0].npages, 10);
-        assert_eq!(events[0].kind, PALLOC_RANGE_EVENT_ALLOC);
-        assert_eq!(
-            first_overlapping_palloc_address(&events[..count]),
-            Some(address)
-        );
-        assert_eq!(trace.take_overlap(), Some((events, count, address)));
-        assert_eq!(trace.take_overlap(), None);
+        assert_eq!(count, RECENT_MORESTACK_EVENT_COUNT);
+        assert_eq!(events.map(|event| event.rip), [2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(trace.take_recent(), Some((events, count)));
+        assert_eq!(trace.take_recent(), None);
     }
 
     #[test]

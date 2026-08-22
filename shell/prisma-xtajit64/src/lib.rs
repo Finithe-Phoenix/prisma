@@ -36,7 +36,7 @@ core::arch::global_asm!(
 
 use dispatch::{live_runtime_count, ThreadRuntime};
 #[cfg(all(windows, target_arch = "arm64ec"))]
-use dispatch::{take_overlapping_palloc_events, PallocRangeEvent, RECENT_PALLOC_RANGE_EVENT_COUNT};
+use dispatch::{take_morestack_events, MorestackEvent, RECENT_MORESTACK_EVENT_COUNT};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
     GuestMemory, PrismaExecutor, XmmRegister,
@@ -115,39 +115,22 @@ fn write_recent_jit_rips(recent: ([u64; 32], usize)) {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-fn write_overlapping_palloc_events(
-    recent: (
-        [PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT],
-        usize,
-        u64,
-    ),
-) {
-    const PALLOC_RANGE_EVENT_ALLOC: u8 = 1;
-    const PALLOC_RANGE_EVENT_FREE: u8 = 2;
-
-    let (events, count, target) = recent;
-    write_hex_diagnostic(b"prisma-trace: palloc-target-address=", target);
-    for event in events[..count]
-        .iter()
-        .filter(|event| event.address == target)
-    {
-        match event.kind {
-            PALLOC_RANGE_EVENT_ALLOC => {
-                write_hex_diagnostic(b"prisma-trace: palloc-alloc-page=", u64::from(event.page));
-                write_hex_diagnostic(
-                    b"prisma-trace: palloc-alloc-npages=",
-                    u64::from(event.npages),
-                );
-            }
-            PALLOC_RANGE_EVENT_FREE => {
-                write_hex_diagnostic(b"prisma-trace: palloc-free-page=", u64::from(event.page));
-                write_hex_diagnostic(
-                    b"prisma-trace: palloc-free-npages=",
-                    u64::from(event.npages),
-                );
-            }
-            _ => {}
-        }
+fn write_morestack_events(recent: ([MorestackEvent; RECENT_MORESTACK_EVENT_COUNT], usize)) {
+    let (events, count) = recent;
+    for event in events.into_iter().take(count) {
+        write_hex_diagnostic(b"prisma-trace: morestack-rip=", event.rip);
+        write_hex_diagnostic(b"prisma-trace: morestack-r14=", event.r14);
+        write_hex_diagnostic(b"prisma-trace: morestack-rdi=", event.rdi);
+        write_hex_diagnostic(b"prisma-trace: morestack-rbx=", event.rbx);
+        write_hex_diagnostic(b"prisma-trace: morestack-rcx=", event.rcx);
+        write_hex_diagnostic(b"prisma-trace: morestack-rsp=", event.rsp);
+        write_hex_diagnostic(b"prisma-trace: morestack-tls-g=", event.tls_g);
+        write_hex_diagnostic(b"prisma-trace: morestack-r14-stack-lo=", event.r14_stack_lo);
+        write_hex_diagnostic(b"prisma-trace: morestack-r14-stack-hi=", event.r14_stack_hi);
+        write_hex_diagnostic(b"prisma-trace: morestack-rdi-stack-lo=", event.rdi_stack_lo);
+        write_hex_diagnostic(b"prisma-trace: morestack-rdi-stack-hi=", event.rdi_stack_hi);
+        write_hex_diagnostic(b"prisma-trace: morestack-rbx-stack-lo=", event.rbx_stack_lo);
+        write_hex_diagnostic(b"prisma-trace: morestack-rbx-stack-hi=", event.rbx_stack_hi);
     }
 }
 
@@ -1141,8 +1124,8 @@ fn process_term(post_call: bool, status: NtStatus) {
         if let Some(recent_rips) = recent_rips {
             write_recent_jit_rips(recent_rips);
         }
-        if let Some(overlapping_palloc_events) = take_overlapping_palloc_events() {
-            write_overlapping_palloc_events(overlapping_palloc_events);
+        if let Some(morestack_events) = take_morestack_events() {
+            write_morestack_events(morestack_events);
         }
     }
     let mut state = lock_provider();
@@ -1188,8 +1171,8 @@ fn thread_term(handle: Handle) {
         write_recent_jit_rips(recent_rips);
     }
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    if let Some(overlapping_palloc_events) = take_overlapping_palloc_events() {
-        write_overlapping_palloc_events(overlapping_palloc_events);
+    if let Some(morestack_events) = take_morestack_events() {
+        write_morestack_events(morestack_events);
     }
 }
 
