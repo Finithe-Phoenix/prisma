@@ -908,26 +908,26 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #112 proved
-// that newproc1 returns a new g whose stack overlaps the original g object.
-// The eight retained boundaries distinguish a reused g from the fresh malg
-// path without increasing the trace's 912-byte static footprint.
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #113 proved
+// that gfget returns nil and malg returns a fresh g with an overlapping stack.
+// The eight retained boundaries now bracket stackalloc and both writes of its
+// returned bounds without increasing the trace's 912-byte static footprint.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_GCENABLE_SECOND_NEWPROC_CALL_RIP: u64 = 0x0001_4002_b5e0;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP: u64 = 0x0001_4002_b5e5;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_NEWPROC1_GFGET_CALL_RIP: u64 = 0x0001_4005_b785;
+const GO_MALG_NEWG_RETURN_RIP: u64 = 0x0001_4005_b525;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_NEWPROC1_GFGET_RETURN_RIP: u64 = 0x0001_4005_b78a;
+const GO_MALG_AFTER_G_RELOAD_RIP: u64 = 0x0001_4005_b592;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_NEWPROC1_MALG_CALL_RIP: u64 = 0x0001_4005_b794;
+const GO_MALG_STACKALLOC_CALL_RIP: u64 = 0x0001_4005_b5fa;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_NEWPROC1_MALG_RETURN_RIP: u64 = 0x0001_4005_b799;
+const GO_MALG_STACKALLOC_RETURN_RIP: u64 = 0x0001_4005_b604;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_NEWPROC1_STACK_CHECK_RIP: u64 = 0x0001_4005_b7b9;
+const GO_MALG_AFTER_STACK_LO_STORE_RIP: u64 = 0x0001_4005_b607;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_NEWPROC1_RETURN_RIP: u64 = 0x0001_4005_b6c5;
+const GO_MALG_AFTER_STACK_HI_STORE_RIP: u64 = 0x0001_4005_b60b;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -944,8 +944,8 @@ pub struct MorestackEvent {
     pub r14_stack_hi: u64,
     pub rax_stack_lo: u64,
     pub rax_stack_hi: u64,
-    pub rbx_stack_lo: u64,
-    pub rbx_stack_hi: u64,
+    pub rcx_stack_lo: u64,
+    pub rcx_stack_hi: u64,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -963,8 +963,8 @@ impl MorestackEvent {
             self.r14_stack_hi,
             self.rax_stack_lo,
             self.rax_stack_hi,
-            self.rbx_stack_lo,
-            self.rbx_stack_hi,
+            self.rcx_stack_lo,
+            self.rcx_stack_hi,
         ]
     }
 
@@ -981,8 +981,8 @@ impl MorestackEvent {
             r14_stack_hi: fields[8],
             rax_stack_lo: fields[9],
             rax_stack_hi: fields[10],
-            rbx_stack_lo: fields[11],
-            rbx_stack_hi: fields[12],
+            rcx_stack_lo: fields[11],
+            rcx_stack_hi: fields[12],
         }
     }
 }
@@ -1074,12 +1074,12 @@ where
     match guest_rip {
         GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
         | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
-        | GO_NEWPROC1_GFGET_CALL_RIP
-        | GO_NEWPROC1_GFGET_RETURN_RIP
-        | GO_NEWPROC1_MALG_CALL_RIP
-        | GO_NEWPROC1_MALG_RETURN_RIP
-        | GO_NEWPROC1_STACK_CHECK_RIP
-        | GO_NEWPROC1_RETURN_RIP => {}
+        | GO_MALG_NEWG_RETURN_RIP
+        | GO_MALG_AFTER_G_RELOAD_RIP
+        | GO_MALG_STACKALLOC_CALL_RIP
+        | GO_MALG_STACKALLOC_RETURN_RIP
+        | GO_MALG_AFTER_STACK_LO_STORE_RIP
+        | GO_MALG_AFTER_STACK_HI_STORE_RIP => {}
         _ => return None,
     }
     let r14 = frame.gpr[gpr::R14];
@@ -1089,7 +1089,7 @@ where
     let rdx = frame.gpr[gpr::RDX];
     let current_stack_bounds = read_morestack_stack(r14, &mut read_u64);
     let result_stack_bounds = read_morestack_stack(rax, &mut read_u64);
-    let argument_stack_bounds = read_morestack_stack(rbx, &mut read_u64);
+    let newg_stack_bounds = read_morestack_stack(rcx, &mut read_u64);
     Some(MorestackEvent {
         rip: guest_rip,
         r14,
@@ -1102,8 +1102,8 @@ where
         r14_stack_hi: current_stack_bounds.1,
         rax_stack_lo: result_stack_bounds.0,
         rax_stack_hi: result_stack_bounds.1,
-        rbx_stack_lo: argument_stack_bounds.0,
-        rbx_stack_hi: argument_stack_bounds.1,
+        rcx_stack_lo: newg_stack_bounds.0,
+        rcx_stack_hi: newg_stack_bounds.1,
     })
 }
 
@@ -1113,12 +1113,12 @@ const fn should_record_stack_event(event: MorestackEvent) -> bool {
         event.rip,
         GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
             | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
-            | GO_NEWPROC1_GFGET_CALL_RIP
-            | GO_NEWPROC1_GFGET_RETURN_RIP
-            | GO_NEWPROC1_MALG_CALL_RIP
-            | GO_NEWPROC1_MALG_RETURN_RIP
-            | GO_NEWPROC1_STACK_CHECK_RIP
-            | GO_NEWPROC1_RETURN_RIP
+            | GO_MALG_NEWG_RETURN_RIP
+            | GO_MALG_AFTER_G_RELOAD_RIP
+            | GO_MALG_STACKALLOC_CALL_RIP
+            | GO_MALG_STACKALLOC_RETURN_RIP
+            | GO_MALG_AFTER_STACK_LO_STORE_RIP
+            | GO_MALG_AFTER_STACK_HI_STORE_RIP
     )
 }
 
@@ -2230,9 +2230,11 @@ mod tests {
             (0x2008, 0x2800),
             (0x3000, 0x3100),
             (0x3008, 0x3800),
+            (0x4000, 0x4100),
+            (0x4008, 0x4800),
         ]);
         assert_eq!(
-            morestack_event_with_reader(GO_NEWPROC1_GFGET_CALL_RIP - 1, &frame, |_| None),
+            morestack_event_with_reader(GO_MALG_NEWG_RETURN_RIP - 1, &frame, |_| None),
             None
         );
         let event =
@@ -2249,10 +2251,10 @@ mod tests {
         assert_eq!(event.rdx, 0x6000);
         assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
         assert_eq!((event.rax_stack_lo, event.rax_stack_hi), (0x2100, 0x2800));
-        assert_eq!((event.rbx_stack_lo, event.rbx_stack_hi), (0x3100, 0x3800));
+        assert_eq!((event.rcx_stack_lo, event.rcx_stack_hi), (0x4100, 0x4800));
         assert!(should_record_stack_event(event));
         assert!(!should_record_stack_event(MorestackEvent {
-            rip: GO_NEWPROC1_GFGET_CALL_RIP - 1,
+            rip: GO_MALG_NEWG_RETURN_RIP - 1,
             ..event
         }));
     }
