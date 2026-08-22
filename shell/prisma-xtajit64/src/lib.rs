@@ -105,7 +105,7 @@ fn write_hex_diagnostic(prefix: &[u8], value: u64) {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-fn write_recent_jit_rips(recent: ([u64; 16], usize)) {
+fn write_recent_jit_rips(recent: ([u64; 32], usize)) {
     let (rips, count) = recent;
     for rip in rips.into_iter().take(count) {
         write_hex_diagnostic(b"prisma-trace: recent-rip=", rip);

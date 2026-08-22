@@ -898,7 +898,7 @@ pub trait BlockExecutor {
 #[cfg(any(test, target_arch = "arm64ec"))]
 const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const RECENT_JIT_RIP_COUNT: usize = 16;
+const RECENT_JIT_RIP_COUNT: usize = 32;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[derive(Debug, Default)]
@@ -1936,7 +1936,7 @@ mod tests {
     #[test]
     fn jit_cache_retains_only_the_most_recent_guest_rips_in_order() {
         let mut cache = JitCache::default();
-        for rip in 0_u64..20 {
+        for rip in 0_u64..36 {
             cache.record_rip(rip);
         }
         let (rips, count) = cache.recent_rips();
