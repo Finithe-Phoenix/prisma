@@ -82,7 +82,9 @@ mod arm64ec {
         }
 
         // SAFETY: zero sizes create a growable, serialized private heap.
+        let provider_mapping = crate::dispatch::ProviderOwnedMappingGuard::enter_if_available();
         let candidate = unsafe { HeapCreate(0, 0, 0) };
+        drop(provider_mapping);
         if candidate.is_null() {
             return std::ptr::null_mut();
         }
@@ -125,7 +127,9 @@ mod arm64ec {
             crate::phase_marker(b"prisma-phase: allocator-heap-alloc-enter\n");
         }
         // SAFETY: `span` is nonzero and overflow-checked.
+        let provider_mapping = crate::dispatch::ProviderOwnedMappingGuard::enter_if_available();
         let raw = unsafe { HeapAlloc(heap, flags, span) }.cast::<u8>();
+        drop(provider_mapping);
         if trace {
             crate::phase_value(
                 b"prisma-value: allocator-heap-alloc-result=",

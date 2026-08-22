@@ -1241,9 +1241,9 @@ pub extern "system" fn NotifyMemoryAlloc(
     status: NtStatus,
 ) {
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    // Provider-owned JIT pages are cache entries, not guest mappings. Tracking
-    // them here recursively invalidates the heap that is allocating the page.
-    if dispatch::provider_jit_allocation_active() {
+    // Provider-owned JIT and private-heap pages are not guest mappings.
+    // Tracking them here recursively reenters the allocator creating the page.
+    if dispatch::provider_owned_mapping_active() {
         return;
     }
     if post_call != 0 && successful(status) && !address.is_null() && size != 0 {

@@ -11,40 +11,40 @@ use prisma_runtime::executor::{
 use prisma_translator::{BlockTranslation, TranslateError, Translator};
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-const PROVIDER_JIT_ALLOCATION_SLOT: usize = 2;
+const PROVIDER_OWNED_MAPPING_SLOT: usize = 2;
 
 // Wine exposes EmulatorData to the emulator provider. Slots 0 and 1 bind the
-// active JIT frame; slot 2 identifies this provider's scoped JIT allocation.
+// active JIT frame; slot 2 identifies a scoped provider-owned mapping.
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-static PROVIDER_JIT_ALLOCATION_SENTINEL: u8 = 0;
+static PROVIDER_OWNED_MAPPING_SENTINEL: u8 = 0;
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-fn provider_jit_allocation_sentinel() -> *mut std::ffi::c_void {
-    std::ptr::addr_of!(PROVIDER_JIT_ALLOCATION_SENTINEL) as *mut std::ffi::c_void
+fn provider_owned_mapping_sentinel() -> *mut std::ffi::c_void {
+    std::ptr::addr_of!(PROVIDER_OWNED_MAPPING_SENTINEL) as *mut std::ffi::c_void
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-fn provider_jit_allocation_active_in_area(area: &ChpeV2CpuAreaInfo) -> bool {
-    area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT] == provider_jit_allocation_sentinel()
+fn provider_owned_mapping_active_in_area(area: &ChpeV2CpuAreaInfo) -> bool {
+    area.emulator_data[PROVIDER_OWNED_MAPPING_SLOT] == provider_owned_mapping_sentinel()
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub(crate) fn provider_jit_allocation_active() -> bool {
+pub(crate) fn provider_owned_mapping_active() -> bool {
     // SAFETY: Wine invokes the callback on the current simulation thread. A
     // missing CHPE area cannot belong to the provider allocation window.
     unsafe { current_wine_cpu_area() }
-        .map(|area| provider_jit_allocation_active_in_area(area))
+        .map(|area| provider_owned_mapping_active_in_area(area))
         .unwrap_or(false)
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-struct ProviderJitAllocationGuard {
+pub(crate) struct ProviderOwnedMappingGuard {
     slot: *mut *mut std::ffi::c_void,
     previous: *mut std::ffi::c_void,
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-impl ProviderJitAllocationGuard {
+impl ProviderOwnedMappingGuard {
     #[cfg(all(windows, target_arch = "arm64ec"))]
     fn enter() -> Result<Self, ExecError> {
         // SAFETY: JIT allocation runs synchronously on Wine's current
@@ -57,18 +57,27 @@ impl ProviderJitAllocationGuard {
         Ok(Self::enter_for_area(area))
     }
 
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    pub(crate) fn enter_if_available() -> Option<Self> {
+        // SAFETY: this is an allocation-free probe of the current TEB. Provider
+        // allocations outside Wine simulation simply have no callback window.
+        unsafe { current_wine_cpu_area() }
+            .ok()
+            .map(Self::enter_for_area)
+    }
+
     fn enter_for_area(area: &mut ChpeV2CpuAreaInfo) -> Self {
-        let previous = area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT];
-        area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT] = provider_jit_allocation_sentinel();
+        let previous = area.emulator_data[PROVIDER_OWNED_MAPPING_SLOT];
+        area.emulator_data[PROVIDER_OWNED_MAPPING_SLOT] = provider_owned_mapping_sentinel();
         Self {
-            slot: &raw mut area.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT],
+            slot: &raw mut area.emulator_data[PROVIDER_OWNED_MAPPING_SLOT],
             previous,
         }
     }
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-impl Drop for ProviderJitAllocationGuard {
+impl Drop for ProviderOwnedMappingGuard {
     fn drop(&mut self) {
         // SAFETY: the CHPE area remains live for the synchronous allocation
         // window and nested guards restore the pointer they observed.
@@ -1055,7 +1064,7 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::jit_memory::ExecBuffer;
 
             let callable = wrap_block(&code);
-            let provider_allocation = ProviderJitAllocationGuard::enter()?;
+            let provider_allocation = ProviderOwnedMappingGuard::enter()?;
             let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
             drop(provider_allocation);
             if !buffer.write(&callable) {
@@ -2280,7 +2289,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_jit_allocation_guard_is_per_area_nested_and_restoring() {
+    fn provider_owned_mapping_guard_is_per_area_nested_and_restoring() {
         let mut first = ChpeV2CpuAreaInfo {
             in_simulation: 1,
             in_syscall_callback: 0,
@@ -2306,27 +2315,27 @@ mod tests {
             emulator_data_inline: 0,
         };
         let original = 0x1234usize as *mut std::ffi::c_void;
-        first.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT] = original;
+        first.emulator_data[PROVIDER_OWNED_MAPPING_SLOT] = original;
 
-        assert!(!provider_jit_allocation_active_in_area(&first));
-        assert!(!provider_jit_allocation_active_in_area(&second));
-        let outer = ProviderJitAllocationGuard::enter_for_area(&mut first);
-        assert!(provider_jit_allocation_active_in_area(&first));
-        assert!(!provider_jit_allocation_active_in_area(&second));
+        assert!(!provider_owned_mapping_active_in_area(&first));
+        assert!(!provider_owned_mapping_active_in_area(&second));
+        let outer = ProviderOwnedMappingGuard::enter_for_area(&mut first);
+        assert!(provider_owned_mapping_active_in_area(&first));
+        assert!(!provider_owned_mapping_active_in_area(&second));
 
-        let nested = ProviderJitAllocationGuard::enter_for_area(&mut first);
-        assert!(provider_jit_allocation_active_in_area(&first));
+        let nested = ProviderOwnedMappingGuard::enter_for_area(&mut first);
+        assert!(provider_owned_mapping_active_in_area(&first));
         drop(nested);
-        assert!(provider_jit_allocation_active_in_area(&first));
+        assert!(provider_owned_mapping_active_in_area(&first));
 
-        let other_thread = ProviderJitAllocationGuard::enter_for_area(&mut second);
-        assert!(provider_jit_allocation_active_in_area(&first));
-        assert!(provider_jit_allocation_active_in_area(&second));
+        let other_thread = ProviderOwnedMappingGuard::enter_for_area(&mut second);
+        assert!(provider_owned_mapping_active_in_area(&first));
+        assert!(provider_owned_mapping_active_in_area(&second));
         drop(other_thread);
-        assert!(!provider_jit_allocation_active_in_area(&second));
+        assert!(!provider_owned_mapping_active_in_area(&second));
 
         drop(outer);
-        assert!(!provider_jit_allocation_active_in_area(&first));
-        assert_eq!(first.emulator_data[PROVIDER_JIT_ALLOCATION_SLOT], original);
+        assert!(!provider_owned_mapping_active_in_area(&first));
+        assert_eq!(first.emulator_data[PROVIDER_OWNED_MAPPING_SLOT], original);
     }
 }
