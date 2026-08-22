@@ -908,12 +908,13 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #122 proved
-// that the last stackcacherefill first builds a two-node chain correctly, but
-// its tail links to the active g by the time it is popped. Retain the loop
-// states and later pops while also following the new head's link once, so the
-// eight fixed slots distinguish mutation during the second refill allocation
-// from mutation after the refill without increasing the 912-byte footprint.
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #123 proved
+// that the last stackcacherefill first builds a two-node chain whose tail is
+// still zero after the second pool allocation, but that tail links to the
+// active g by the time it is popped. Retain the loop states and later pops,
+// and arm a block-boundary watch on that zero tail after the second loop state
+// so the first translated block after the mutation is captured without
+// increasing the fixed eight-event/912-byte trace.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKCACHE_REFILL_LOOP_STATE_RIP: u64 = 0x0001_4006_7dfa;
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -983,6 +984,75 @@ struct MorestackTrace {
     sequences: [AtomicUsize; RECENT_MORESTACK_EVENT_COUNT],
     values: [[AtomicU64; MORESTACK_EVENT_FIELD_COUNT]; RECENT_MORESTACK_EVENT_COUNT],
     reported: AtomicBool,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+struct StackcacheLinkWatch {
+    address: AtomicU64,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl StackcacheLinkWatch {
+    const fn new() -> Self {
+        Self {
+            address: AtomicU64::new(0),
+        }
+    }
+
+    fn arm_from_refill(&self, event: MorestackEvent) {
+        if event.rip == GO_STACKCACHE_REFILL_LOOP_STATE_RIP
+            && event.rax == 0x4000
+            && event.rcx_stack_lo != 0
+            && event.rcx_stack_lo != INVALID_MORESTACK_MEMORY
+            && event.rax_stack_lo == 0
+        {
+            self.address.store(event.rcx_stack_lo, Ordering::SeqCst);
+        }
+    }
+
+    fn mutation_event_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        mut read_u64: F,
+    ) -> Option<MorestackEvent>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        let address = self.address.load(Ordering::SeqCst);
+        if address == 0 {
+            return None;
+        }
+        let watched_stack_bounds = read_morestack_stack(address, &mut read_u64);
+        if matches!(watched_stack_bounds.0, 0 | INVALID_MORESTACK_MEMORY) {
+            return None;
+        }
+        if self
+            .address
+            .compare_exchange(address, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return None;
+        }
+        let r14 = frame.gpr[gpr::R14];
+        let linked_stack_bounds = read_morestack_stack(watched_stack_bounds.0, &mut read_u64);
+        let current_stack_bounds = read_morestack_stack(r14, &mut read_u64);
+        Some(MorestackEvent {
+            rip: guest_rip,
+            r14,
+            rax: address,
+            rbx: 0,
+            rcx: watched_stack_bounds.0,
+            rsp: frame.gpr[gpr::RSP],
+            r8: frame.gpr[gpr::R8],
+            r14_stack_lo: current_stack_bounds.0,
+            r14_stack_hi: current_stack_bounds.1,
+            rax_stack_lo: watched_stack_bounds.0,
+            rax_stack_hi: watched_stack_bounds.1,
+            rcx_stack_lo: linked_stack_bounds.0,
+            rcx_stack_hi: linked_stack_bounds.1,
+        })
+    }
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1116,11 +1186,24 @@ const fn should_record_stack_event(event: MorestackEvent) -> bool {
 #[cfg(target_arch = "arm64ec")]
 static MORESTACK_TRACE: MorestackTrace = MorestackTrace::new();
 
+#[cfg(target_arch = "arm64ec")]
+static STACKCACHE_LINK_WATCH: StackcacheLinkWatch = StackcacheLinkWatch::new();
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
+    if let Some(event) =
+        STACKCACHE_LINK_WATCH.mutation_event_with_reader(guest_rip, frame, read_current_process_u64)
+    {
+        MORESTACK_TRACE.record(event);
+    }
+}
+
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_morestack_event(guest_rip: u64, frame: &CpuStateFrame) {
     if let Some(event) = morestack_event_with_reader(guest_rip, frame, read_current_process_u64) {
         if should_record_stack_event(event) {
             MORESTACK_TRACE.record(event);
+            STACKCACHE_LINK_WATCH.arm_from_refill(event);
         }
     }
 }
@@ -1366,6 +1449,7 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
+            record_stackcache_watch_mutation(guest_rip, frame);
             record_morestack_event(guest_rip, frame);
             let cached_entry = {
                 let mut cache = self
@@ -2265,6 +2349,54 @@ mod tests {
             rip: GO_STACKALLOC_CACHE_POP_RIP - 1,
             ..event
         }));
+    }
+
+    #[test]
+    fn stackcache_link_watch_reports_first_nonzero_tail_at_block_boundary() {
+        let watch = StackcacheLinkWatch::new();
+        watch.arm_from_refill(MorestackEvent {
+            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
+            rax: 0x4000,
+            rax_stack_lo: 0,
+            rcx_stack_lo: 0x4100,
+            ..MorestackEvent::default()
+        });
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x1000;
+        frame.gpr[gpr::RSP] = 0x5000;
+        frame.gpr[gpr::R8] = 0x8000;
+        let mut memory = BTreeMap::from([
+            (0x1000, 0x1100),
+            (0x1008, 0x1800),
+            (0x4100, 0),
+            (0x4108, 0x4800),
+            (0x6000, 0x6100),
+            (0x6008, 0x6800),
+        ]);
+        assert_eq!(
+            watch.mutation_event_with_reader(0x7000, &frame, |address| {
+                memory.get(&address).copied()
+            }),
+            None
+        );
+        memory.insert(0x4100, 0x6000);
+        let event = watch
+            .mutation_event_with_reader(0x7008, &frame, |address| memory.get(&address).copied())
+            .unwrap();
+        assert_eq!(event.rip, 0x7008);
+        assert_eq!(event.rax, 0x4100);
+        assert_eq!(event.rcx, 0x6000);
+        assert_eq!(event.rsp, 0x5000);
+        assert_eq!(event.r8, 0x8000);
+        assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
+        assert_eq!((event.rax_stack_lo, event.rax_stack_hi), (0x6000, 0x4800));
+        assert_eq!((event.rcx_stack_lo, event.rcx_stack_hi), (0x6100, 0x6800));
+        assert_eq!(
+            watch.mutation_event_with_reader(0x7010, &frame, |address| {
+                memory.get(&address).copied()
+            }),
+            None
+        );
     }
 
     #[test]
