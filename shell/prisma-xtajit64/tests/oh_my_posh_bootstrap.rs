@@ -472,6 +472,52 @@ fn go_page_bits_multiword_full_dispatch_sets_initial_389_pages() {
             0x440
         ]
     );
+
+    for page in 389_u64..=395 {
+        context = Arm64EcContext {
+            x8_rax: guest_bitmap,
+            x0_rcx: 1,
+            x27_rbx: page,
+            sp_rsp: initial_rsp,
+            fp_rbp: SAVED_RBP,
+            pc_rip: PAGE_BITS_SET_RANGE_PC,
+            ..Arm64EcContext::default()
+        };
+        let report = dispatch_context(
+            &mut context,
+            &PageBitsSetRangeMemory,
+            &executor,
+            DispatchLimits {
+                max_blocks: 15,
+                max_fetch_bytes: 16,
+                max_instructions_per_block: 1,
+            },
+        )
+        .expect("reuse cached pageBits.setRange single-page route");
+
+        let expected_tail = (1_u64 << (page - 384 + 1)) - 1;
+        assert_eq!(report.stop, DispatchStop::BlockLimit);
+        assert_eq!(report.blocks, 15);
+        assert_eq!(report.instructions, 15);
+        assert_eq!(report.rip, RETURN_PC);
+        assert_eq!(context.pc_rip, RETURN_PC);
+        assert_eq!(context.x8_rax, guest_bitmap);
+        assert_eq!(context.x0_rcx, expected_tail);
+        assert_eq!(context.x1_rdx, page);
+        assert_eq!(context.x27_rbx, 6);
+        assert_eq!(context.sp_rsp, initial_rsp + size_of::<u64>() as u64);
+        assert_eq!(context.fp_rbp, SAVED_RBP);
+
+        for (index, word) in actual_bitmap.iter_mut().enumerate() {
+            let offset = BITMAP_OFFSET + index * size_of::<u64>();
+            *word =
+                u64::from_le_bytes(arena[offset..offset + size_of::<u64>()].try_into().unwrap());
+        }
+        assert_eq!(actual_bitmap[..6], [u64::MAX; 6]);
+        assert_eq!(actual_bitmap[6], expected_tail);
+        assert_eq!(actual_bitmap[7], 0x440);
+    }
+
     assert_eq!(
         &arena[STACK_OFFSET - size_of::<u64>()..STACK_OFFSET],
         &SAVED_RBP.to_le_bytes()
