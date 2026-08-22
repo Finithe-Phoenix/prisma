@@ -908,12 +908,12 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #121 retained
-// five cache pops and no stackfree push: a valid two-node chain was followed by
-// another chain whose tail linked to the active g object. Retain the two loop
-// states of the last stackcacherefill plus the later pops so the eight fixed
-// slots distinguish an invalid refill from a later link mutation without
-// increasing the trace's 912-byte footprint.
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #122 proved
+// that the last stackcacherefill first builds a two-node chain correctly, but
+// its tail links to the active g by the time it is popped. Retain the loop
+// states and later pops while also following the new head's link once, so the
+// eight fixed slots distinguish mutation during the second refill allocation
+// from mutation after the refill without increasing the 912-byte footprint.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKCACHE_REFILL_LOOP_STATE_RIP: u64 = 0x0001_4006_7dfa;
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1071,11 +1071,16 @@ where
     let rcx = frame.gpr[gpr::RCX];
     let r8 = frame.gpr[gpr::R8];
     let current_stack_bounds = read_morestack_stack(r14, &mut read_u64);
-    // At the refill loop state, RCX is the newly linked head. At stackalloc's
-    // cache pop, R8 is the head whose link is about to be loaded. Reusing the
-    // existing memory-probe pair keeps the diagnostic ABI and footprint fixed
-    // while exposing the link at construction and again at extraction.
-    let result_probe_base = rax;
+    // At the refill loop state, RCX is the newly linked head and [RCX] is its
+    // tail. Follow that link once with the existing result probe so the second
+    // loop event observes the tail after the refill's second allocation. At
+    // stackalloc's cache pop, R8 is the head whose link is about to be loaded.
+    // The fixed event ABI and footprint remain unchanged.
+    let result_probe_base = if guest_rip == GO_STACKCACHE_REFILL_LOOP_STATE_RIP {
+        read_u64(rcx).unwrap_or(INVALID_MORESTACK_MEMORY)
+    } else {
+        rax
+    };
     let newg_probe_base = if guest_rip == GO_STACKALLOC_CACHE_POP_RIP {
         r8
     } else {
@@ -2218,6 +2223,8 @@ mod tests {
             (0x3008, 0x3800),
             (0x4000, 0x4100),
             (0x4008, 0x4800),
+            (0x4100, 0x4110),
+            (0x4108, 0x4180),
             (0x6000, 0x6100),
             (0x6008, 0x6800),
         ]);
@@ -2247,7 +2254,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (refill_event.rax_stack_lo, refill_event.rax_stack_hi),
-            (0x2100, 0x2800)
+            (0x4110, 0x4180)
         );
         assert_eq!(
             (refill_event.rcx_stack_lo, refill_event.rcx_stack_hi),
