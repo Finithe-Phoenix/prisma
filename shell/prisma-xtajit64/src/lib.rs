@@ -124,7 +124,8 @@ fn write_recent_scavenge_events(recent: ([ScavengeEvent; RECENT_SCAVENGE_EVENT_C
     let events = &events[..count];
     let target_chunk = events.iter().rev().find_map(|event| {
         (event.kind == SCAVENGE_EVENT_ALLOC
-            && u64::from(event.in_use).saturating_add(u64::from(event.npages)) > PALLOC_CHUNK_PAGES)
+            && u64::from(event.in_use).saturating_add(u64::from(event.scavenge_npages))
+                > PALLOC_CHUNK_PAGES)
             .then_some(event.chunk)
     });
     let Some(target_chunk) = target_chunk else {
@@ -136,7 +137,23 @@ fn write_recent_scavenge_events(recent: ([ScavengeEvent; RECENT_SCAVENGE_EVENT_C
         match event.kind {
             SCAVENGE_EVENT_ALLOC => {
                 write_hex_diagnostic(b"prisma-trace: scav-alloc-in-use=", u64::from(event.in_use));
-                write_hex_diagnostic(b"prisma-trace: scav-alloc-npages=", u64::from(event.npages));
+                write_hex_diagnostic(b"prisma-trace: scav-alloc-page=", u64::from(event.page));
+                write_hex_diagnostic(
+                    b"prisma-trace: scav-alloc-palloc-npages=",
+                    u64::from(event.npages),
+                );
+                write_hex_diagnostic(
+                    b"prisma-trace: scav-alloc-npages=",
+                    u64::from(event.scavenge_npages),
+                );
+                write_hex_diagnostic(
+                    b"prisma-trace: scav-alloc-bitmap-before=",
+                    u64::from(event.bitmap_before),
+                );
+                write_hex_diagnostic(
+                    b"prisma-trace: scav-alloc-bitmap-after=",
+                    u64::from(event.bitmap_after),
+                );
             }
             SCAVENGE_EVENT_FREE => {
                 write_hex_diagnostic(b"prisma-trace: scav-free-in-use=", u64::from(event.in_use));

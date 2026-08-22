@@ -902,10 +902,16 @@ const RECENT_JIT_RIP_COUNT: usize = 32;
 #[cfg(any(test, target_arch = "arm64ec"))]
 pub const RECENT_SCAVENGE_EVENT_COUNT: usize = 64;
 
-// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. The entry probes
-// capture chunk/page arguments; the state probes run immediately after the
-// guest loads scavChunkData.inUse. This diagnostic is removed with the RIP
-// ring after the first inconsistent transition is isolated.
+// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. The bitmap probes
+// bracket pageBits.setRange, while the scavenge probes associate that bitmap
+// transition with its chunk and inUse counter. This diagnostic is removed
+// with the RIP ring after the first inconsistent transition is isolated.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP: u64 = 0x0001_4004_51e0;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PAGE_BITS_SET_RANGE_RETURN_RIP: u64 = 0x0001_4004_5208;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PALLOC_BITMAP_BYTES: usize = 64;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const SCAVENGE_ALLOC_ENTRY_RIP: u64 = 0x0001_4003_92a0;
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -918,6 +924,10 @@ const SCAVENGE_FREE_STATE_RIP: u64 = 0x0001_4003_9735;
 const SCAVENGE_EVENT_ALLOC: u8 = 1;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const SCAVENGE_EVENT_FREE: u8 = 2;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_CHUNK_PENDING: u64 = u64::MAX;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const TRACE_U16_UNAVAILABLE: u16 = u16::MAX;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -927,6 +937,9 @@ pub struct ScavengeEvent {
     pub page: u16,
     pub npages: u16,
     pub in_use: u16,
+    pub bitmap_before: u16,
+    pub bitmap_after: u16,
+    pub scavenge_npages: u16,
     pub kind: u8,
     reserved: u8,
 }
@@ -1005,21 +1018,61 @@ impl JitCache {
         self.recent_scavenge_events.get_mut(index)
     }
 
-    fn record_scavenge_event(&mut self, guest_rip: u64, frame: &CpuStateFrame) {
+    fn record_allocator_event(
+        &mut self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        bitmap: Option<&[u8]>,
+    ) {
         match guest_rip {
-            SCAVENGE_ALLOC_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
-                chunk: frame.gpr[gpr::RBX],
-                page: 0,
+            PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
+                chunk: SCAVENGE_CHUNK_PENDING,
+                page: u16::try_from(frame.gpr[gpr::RBX]).unwrap_or(u16::MAX),
                 npages: u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX),
                 in_use: 0,
+                bitmap_before: bitmap_popcount(bitmap),
+                bitmap_after: TRACE_U16_UNAVAILABLE,
+                scavenge_npages: TRACE_U16_UNAVAILABLE,
                 kind: SCAVENGE_EVENT_ALLOC,
                 reserved: 0,
             }),
+            PAGE_BITS_SET_RANGE_RETURN_RIP => {
+                if let Some(event) = self.most_recent_scavenge_event_mut() {
+                    if event.kind == SCAVENGE_EVENT_ALLOC && event.chunk == SCAVENGE_CHUNK_PENDING {
+                        event.bitmap_after = bitmap_popcount(bitmap);
+                    }
+                }
+            }
+            SCAVENGE_ALLOC_ENTRY_RIP => {
+                let chunk = frame.gpr[gpr::RBX];
+                let npages = u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX);
+                if let Some(event) = self.most_recent_scavenge_event_mut() {
+                    if event.kind == SCAVENGE_EVENT_ALLOC && event.chunk == SCAVENGE_CHUNK_PENDING {
+                        event.chunk = chunk;
+                        event.scavenge_npages = npages;
+                        return;
+                    }
+                }
+                self.push_scavenge_event(ScavengeEvent {
+                    chunk,
+                    page: 0,
+                    npages,
+                    in_use: 0,
+                    bitmap_before: TRACE_U16_UNAVAILABLE,
+                    bitmap_after: TRACE_U16_UNAVAILABLE,
+                    scavenge_npages: npages,
+                    kind: SCAVENGE_EVENT_ALLOC,
+                    reserved: 0,
+                });
+            }
             SCAVENGE_FREE_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
                 chunk: frame.gpr[gpr::RBX],
                 page: u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX),
                 npages: u16::try_from(frame.gpr[gpr::RDI]).unwrap_or(u16::MAX),
                 in_use: 0,
+                bitmap_before: TRACE_U16_UNAVAILABLE,
+                bitmap_after: TRACE_U16_UNAVAILABLE,
+                scavenge_npages: u16::try_from(frame.gpr[gpr::RDI]).unwrap_or(u16::MAX),
                 kind: SCAVENGE_EVENT_FREE,
                 reserved: 0,
             }),
@@ -1078,6 +1131,35 @@ impl JitCache {
         }
         Ok(new_total)
     }
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+fn bitmap_popcount(bitmap: Option<&[u8]>) -> u16 {
+    let Some(bitmap) = bitmap.filter(|bytes| bytes.len() == PALLOC_BITMAP_BYTES) else {
+        return TRACE_U16_UNAVAILABLE;
+    };
+    u16::try_from(bitmap.iter().map(|byte| byte.count_ones()).sum::<u32>())
+        .unwrap_or(TRACE_U16_UNAVAILABLE)
+}
+
+#[cfg(target_arch = "arm64ec")]
+fn allocator_bitmap_address(guest_rip: u64, frame: &CpuStateFrame) -> Option<u64> {
+    match guest_rip {
+        PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP => Some(frame.gpr[gpr::RAX]),
+        PAGE_BITS_SET_RANGE_RETURN_RIP => frame.gpr[gpr::RAX].checked_sub(64),
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "arm64ec")]
+fn read_allocator_bitmap(
+    guest_rip: u64,
+    frame: &CpuStateFrame,
+) -> Option<[u8; PALLOC_BITMAP_BYTES]> {
+    let address = allocator_bitmap_address(guest_rip, frame)?;
+    let mut bitmap = [0_u8; PALLOC_BITMAP_BYTES];
+    let read = read_current_process_memory_into(address, &mut bitmap).ok()?;
+    (read == PALLOC_BITMAP_BYTES).then_some(bitmap)
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1257,13 +1339,18 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
+            let allocator_bitmap = read_allocator_bitmap(guest_rip, frame);
             let cached_entry = {
                 let mut cache = self
                     .cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.record_rip(guest_rip);
-                cache.record_scavenge_event(guest_rip, frame);
+                cache.record_allocator_event(
+                    guest_rip,
+                    frame,
+                    allocator_bitmap.as_ref().map(|bytes| bytes.as_slice()),
+                );
                 cache.get(guest_rip, &code).map(ExecBuffer::as_ptr)
             };
             let entry = if let Some(entry) = cached_entry {
@@ -1736,6 +1823,14 @@ pub struct ProcessMemory;
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0_u8; length];
+    let read = read_current_process_memory_into(address, &mut bytes)?;
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn read_current_process_memory_into(address: u64, destination: &mut [u8]) -> Result<usize, String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentProcess() -> *mut std::ffi::c_void;
@@ -1748,16 +1843,15 @@ pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result
         ) -> i32;
     }
 
-    let mut bytes = vec![0_u8; length];
     let mut read = 0usize;
-    // SAFETY: the destination is a valid allocation of `max_len` bytes;
+    // SAFETY: the destination is a valid writable slice;
     // ReadProcessMemory validates the source range in the current process.
     let ok = unsafe {
         ReadProcessMemory(
             GetCurrentProcess(),
             address as *const std::ffi::c_void,
-            bytes.as_mut_ptr().cast(),
-            length,
+            destination.as_mut_ptr().cast(),
+            destination.len(),
             &raw mut read,
         )
     };
@@ -1767,8 +1861,7 @@ pub(super) fn read_current_process_memory(address: u64, length: usize) -> Result
         // dispatcher diagnostic instead of invoking Windows error formatting.
         return Err("ReadProcessMemory rejected the guest range".to_owned());
     }
-    bytes.truncate(read);
-    Ok(bytes)
+    Ok(read)
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
@@ -2083,22 +2176,35 @@ mod tests {
 
     #[test]
     fn jit_cache_records_scavenge_alloc_and_free_state() {
-        assert_eq!(std::mem::size_of::<ScavengeEvent>(), 16);
+        assert_eq!(std::mem::size_of::<ScavengeEvent>(), 24);
         let mut cache = JitCache::default();
         let mut frame = CpuStateFrame::default();
+        let mut bitmap_before = [0_u8; PALLOC_BITMAP_BYTES];
+        bitmap_before[0] = u8::MAX;
+        bitmap_before[1] = 0b11;
+        let mut bitmap_after = bitmap_before;
+        bitmap_after[2] = u8::MAX;
+        bitmap_after[3] = 1;
 
+        frame.gpr[gpr::RBX] = 7;
+        frame.gpr[gpr::RCX] = 9;
+        cache.record_allocator_event(
+            PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP,
+            &frame,
+            Some(&bitmap_before),
+        );
+        cache.record_allocator_event(PAGE_BITS_SET_RANGE_RETURN_RIP, &frame, Some(&bitmap_after));
         frame.gpr[gpr::RBX] = 0x1234;
-        frame.gpr[gpr::RCX] = 41;
-        cache.record_scavenge_event(SCAVENGE_ALLOC_ENTRY_RIP, &frame);
+        cache.record_allocator_event(SCAVENGE_ALLOC_ENTRY_RIP, &frame, None);
         frame.gpr[gpr::RDX] = 484;
-        cache.record_scavenge_event(SCAVENGE_ALLOC_STATE_RIP, &frame);
+        cache.record_allocator_event(SCAVENGE_ALLOC_STATE_RIP, &frame, None);
 
         frame.gpr[gpr::RBX] = 0x1234;
         frame.gpr[gpr::RCX] = 7;
         frame.gpr[gpr::RDI] = 9;
-        cache.record_scavenge_event(SCAVENGE_FREE_ENTRY_RIP, &frame);
+        cache.record_allocator_event(SCAVENGE_FREE_ENTRY_RIP, &frame, None);
         frame.gpr[gpr::RDX] = 100;
-        cache.record_scavenge_event(SCAVENGE_FREE_STATE_RIP, &frame);
+        cache.record_allocator_event(SCAVENGE_FREE_STATE_RIP, &frame, None);
 
         let (events, count) = cache.recent_scavenge_events();
         assert_eq!(count, 2);
@@ -2107,9 +2213,12 @@ mod tests {
             ScavengeEvent {
                 kind: SCAVENGE_EVENT_ALLOC,
                 chunk: 0x1234,
-                page: 0,
-                npages: 41,
+                page: 7,
+                npages: 9,
                 in_use: 484,
+                bitmap_before: 10,
+                bitmap_after: 19,
+                scavenge_npages: 9,
                 reserved: 0,
             }
         );
@@ -2121,6 +2230,9 @@ mod tests {
                 page: 7,
                 npages: 9,
                 in_use: 100,
+                bitmap_before: TRACE_U16_UNAVAILABLE,
+                bitmap_after: TRACE_U16_UNAVAILABLE,
+                scavenge_npages: 9,
                 reserved: 0,
             }
         );
