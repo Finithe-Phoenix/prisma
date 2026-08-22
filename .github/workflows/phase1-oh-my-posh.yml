@@ -149,6 +149,10 @@ jobs:
             https://github.com/JanDeDobbeleer/oh-my-posh/releases/download/v30.6.3/posh-windows-amd64.exe
           echo '770c11d133ce635f2412aeb0c1cdd6dd679021eda68beb51213848d8a5c863f6  .ci/oh-my-posh.exe' | sha256sum --check --strict
           test "$(stat --format=%s .ci/oh-my-posh.exe)" -eq 14691080
+          objdump -d -M intel \
+            --start-address=0x14005b500 \
+            --stop-address=0x14005b620 \
+            .ci/oh-my-posh.exe
 
       - name: Assemble bounded ARM64 execution image
         shell: bash
