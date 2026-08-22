@@ -901,16 +901,16 @@ const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[derive(Debug, Default)]
 struct JitCache {
-    buffers: Vec<(Vec<u8>, prisma_runtime::jit_memory::ExecBuffer)>,
+    buffers: Vec<(u64, Vec<u8>, prisma_runtime::jit_memory::ExecBuffer)>,
     bytes: usize,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 impl JitCache {
-    fn get(&self, code: &[u8]) -> Option<&prisma_runtime::jit_memory::ExecBuffer> {
-        self.buffers
-            .iter()
-            .find_map(|(cached, buffer)| (cached.as_slice() == code).then_some(buffer))
+    fn get(&self, guest_rip: u64, code: &[u8]) -> Option<&prisma_runtime::jit_memory::ExecBuffer> {
+        self.buffers.iter().find_map(|(rip, cached, buffer)| {
+            (*rip == guest_rip && exact_jit_code_match(cached, code)).then_some(buffer)
+        })
     }
 
     fn checked_total(&self, capacity: usize) -> Result<usize, ExecError> {
@@ -924,6 +924,24 @@ impl JitCache {
         }
         Ok(new_total)
     }
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+#[inline(never)]
+fn exact_jit_code_match(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    for index in 0..left.len() {
+        // SAFETY: both pointers remain within their live slices. Volatile reads
+        // keep this native provider comparison from becoming a hybrid memcmp.
+        let left_byte = unsafe { left.as_ptr().add(index).read_volatile() };
+        let right_byte = unsafe { right.as_ptr().add(index).read_volatile() };
+        if left_byte != right_byte {
+            return false;
+        }
+    }
+    true
 }
 
 /// Per-thread owner of executable translations.
@@ -940,16 +958,17 @@ pub struct PrismaExecutor {
 #[cfg(any(test, target_arch = "arm64ec"))]
 impl PrismaExecutor {
     #[cfg(test)]
-    fn cached_entry(&self, code: &[u8]) -> Option<*const u8> {
+    fn cached_entry(&self, guest_rip: u64, code: &[u8]) -> Option<*const u8> {
         self.cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(code)
+            .get(guest_rip, code)
             .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
     }
 
     fn publish_entry(
         &self,
+        guest_rip: u64,
         code: Vec<u8>,
         buffer: prisma_runtime::jit_memory::ExecBuffer,
     ) -> Result<*const u8, ExecError> {
@@ -957,20 +976,22 @@ impl PrismaExecutor {
             .cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Each ARM64EC executor belongs to one Wine thread, so publication
-        // cannot race another producer. Avoid crossing the hybrid CRT memcmp
-        // boundary here; it is unnecessary under the non-persistent policy.
-        #[cfg(not(target_arch = "arm64ec"))]
+        if let Some(entry) = cache
+            .get(guest_rip, &code)
+            .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
         {
-            if let Some(entry) = cache
-                .get(&code)
-                .map(prisma_runtime::jit_memory::ExecBuffer::as_ptr)
-            {
-                drop(cache);
-                drop(buffer);
-                drop(code);
-                return Ok(entry);
-            }
+            drop(cache);
+            drop(buffer);
+            drop(code);
+            return Ok(entry);
+        }
+        let stale = cache
+            .buffers
+            .iter()
+            .position(|(rip, _, _)| *rip == guest_rip)
+            .map(|index| cache.buffers.swap_remove(index));
+        if let Some((_, _, stale_buffer)) = &stale {
+            cache.bytes = cache.bytes.saturating_sub(stale_buffer.capacity());
         }
         let new_total = match cache.checked_total(buffer.capacity()) {
             Ok(new_total) => new_total,
@@ -983,8 +1004,9 @@ impl PrismaExecutor {
         };
         let entry = buffer.as_ptr();
         cache.bytes = new_total;
-        cache.buffers.push((code, buffer));
+        cache.buffers.push((guest_rip, code, buffer));
         drop(cache);
+        drop(stale);
         Ok(entry)
     }
 }
@@ -1071,7 +1093,7 @@ impl BlockExecutor for PrismaExecutor {
                 return Err(ExecError::Write);
             }
             buffer.make_executable().map_err(ExecError::Protect)?;
-            let entry = self.publish_entry(code, buffer)?;
+            let entry = self.publish_entry(guest_rip, code, buffer)?;
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
@@ -1753,6 +1775,7 @@ mod tests {
     fn jit_cache_keeps_linear_ownership_past_tree_split_sizes() {
         let executor = PrismaExecutor::default();
         for value in 0_u8..32 {
+            let guest_rip = 0x1000 + u64::from(value);
             let code = vec![
                 value,
                 value.wrapping_add(1),
@@ -1761,8 +1784,10 @@ mod tests {
             ];
             let mut buffer = prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
             assert!(buffer.write(&code));
-            let entry = executor.publish_entry(code.clone(), buffer).unwrap();
-            assert_eq!(executor.cached_entry(&code), Some(entry));
+            let entry = executor
+                .publish_entry(guest_rip, code.clone(), buffer)
+                .unwrap();
+            assert_eq!(executor.cached_entry(guest_rip, &code), Some(entry));
         }
         let cache = executor.cache.lock().unwrap();
         let entry_count = cache.buffers.len();
@@ -1770,7 +1795,7 @@ mod tests {
         let summed_capacity = cache
             .buffers
             .iter()
-            .map(|(_, buffer)| buffer.capacity())
+            .map(|(_, _, buffer)| buffer.capacity())
             .sum();
         drop(cache);
         assert_eq!(entry_count, 32);
@@ -1781,6 +1806,7 @@ mod tests {
     fn executor_publish_deduplicates_concurrent_unlocked_misses() {
         let executor = std::sync::Arc::new(PrismaExecutor::default());
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let guest_rip = 0x2000;
         let code = vec![0x11, 0x22, 0x33, 0x44];
         let workers: [_; 4] = std::array::from_fn(|_| {
             let executor = std::sync::Arc::clone(&executor);
@@ -1791,7 +1817,7 @@ mod tests {
                     prisma_runtime::jit_memory::ExecBuffer::alloc(code.len()).unwrap();
                 assert!(candidate.write(&code));
                 barrier.wait();
-                executor.publish_entry(code, candidate).unwrap() as usize
+                executor.publish_entry(guest_rip, code, candidate).unwrap() as usize
             })
         });
         let entries: Vec<_> = workers
@@ -1801,16 +1827,48 @@ mod tests {
 
         assert!(entries.iter().all(|entry| *entry == entries[0]));
         assert_eq!(
-            executor.cached_entry(&code).map(|entry| entry as usize),
+            executor
+                .cached_entry(guest_rip, &code)
+                .map(|entry| entry as usize),
             Some(entries[0])
         );
         let cache = executor.cache.lock().unwrap();
         let entry_count = cache.buffers.len();
         let bytes = cache.bytes;
-        let capacity = cache.buffers[0].1.capacity();
+        let capacity = cache.buffers[0].2.capacity();
         drop(cache);
         assert_eq!(entry_count, 1);
         assert_eq!(bytes, capacity);
+    }
+
+    #[test]
+    fn jit_cache_replaces_stale_code_at_the_same_guest_rip() {
+        let executor = PrismaExecutor::default();
+        let guest_rip = 0x3000;
+        let first_code = vec![0x11, 0x22, 0x33, 0x44];
+        let mut first_buffer =
+            prisma_runtime::jit_memory::ExecBuffer::alloc(first_code.len()).unwrap();
+        assert!(first_buffer.write(&first_code));
+        executor
+            .publish_entry(guest_rip, first_code.clone(), first_buffer)
+            .unwrap();
+
+        let second_code = vec![0xaa, 0xbb, 0xcc, 0xdd];
+        let mut second_buffer =
+            prisma_runtime::jit_memory::ExecBuffer::alloc(second_code.len()).unwrap();
+        assert!(second_buffer.write(&second_code));
+        let second_entry = executor
+            .publish_entry(guest_rip, second_code.clone(), second_buffer)
+            .unwrap();
+
+        assert_eq!(executor.cached_entry(guest_rip, &first_code), None);
+        assert_eq!(
+            executor.cached_entry(guest_rip, &second_code),
+            Some(second_entry)
+        );
+        let cache = executor.cache.lock().unwrap();
+        assert_eq!(cache.buffers.len(), 1);
+        assert_eq!(cache.bytes, cache.buffers[0].2.capacity());
     }
 
     #[test]
