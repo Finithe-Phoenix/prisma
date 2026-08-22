@@ -1085,15 +1085,25 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            let callable = wrap_block(&code);
-            let provider_allocation = ProviderOwnedMappingGuard::enter()?;
-            let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
-            drop(provider_allocation);
-            if !buffer.write(&callable) {
-                return Err(ExecError::Write);
-            }
-            buffer.make_executable().map_err(ExecError::Protect)?;
-            let entry = self.publish_entry(guest_rip, code, buffer)?;
+            let cached_entry = self
+                .cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(guest_rip, &code)
+                .map(ExecBuffer::as_ptr);
+            let entry = if let Some(entry) = cached_entry {
+                entry
+            } else {
+                let callable = wrap_block(&code);
+                let provider_allocation = ProviderOwnedMappingGuard::enter()?;
+                let mut buffer = ExecBuffer::alloc(callable.len()).map_err(ExecError::Alloc)?;
+                drop(provider_allocation);
+                if !buffer.write(&callable) {
+                    return Err(ExecError::Write);
+                }
+                buffer.make_executable().map_err(ExecError::Protect)?;
+                self.publish_entry(guest_rip, code, buffer)?
+            };
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
