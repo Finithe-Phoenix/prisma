@@ -124,7 +124,7 @@ fn write_morestack_events(recent: ([MorestackEvent; RECENT_MORESTACK_EVENT_COUNT
         write_hex_diagnostic(b"prisma-trace: morestack-rbx=", event.rbx);
         write_hex_diagnostic(b"prisma-trace: morestack-rcx=", event.rcx);
         write_hex_diagnostic(b"prisma-trace: morestack-rsp=", event.rsp);
-        write_hex_diagnostic(b"prisma-trace: morestack-rdx=", event.rdx);
+        write_hex_diagnostic(b"prisma-trace: morestack-r8=", event.r8);
         write_hex_diagnostic(b"prisma-trace: morestack-r14-stack-lo=", event.r14_stack_lo);
         write_hex_diagnostic(b"prisma-trace: morestack-r14-stack-hi=", event.r14_stack_hi);
         write_hex_diagnostic(b"prisma-trace: morestack-rax-stack-lo=", event.rax_stack_lo);
