@@ -902,7 +902,7 @@ const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const RECENT_JIT_RIP_COUNT: usize = 32;
 #[cfg(any(test, target_arch = "arm64ec"))]
-pub const RECENT_PALLOC_RANGE_EVENT_COUNT: usize = 256;
+pub const RECENT_PALLOC_RANGE_EVENT_COUNT: usize = 64;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const PALLOC_CHUNK_PAGES: usize = 512;
 
@@ -2137,6 +2137,7 @@ mod tests {
     #[test]
     fn static_trace_reports_overlapping_palloc_ranges_once() {
         assert_eq!(std::mem::size_of::<PallocRangeEvent>(), 16);
+        assert_eq!(std::mem::size_of::<PallocRangeTrace>(), 1_552);
         let trace = PallocRangeTrace::new();
         let mut frame = CpuStateFrame::default();
         let address = 0x1234_0000;
