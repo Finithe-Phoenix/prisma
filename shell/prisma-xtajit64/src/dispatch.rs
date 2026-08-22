@@ -1183,11 +1183,25 @@ const MAX_DISPATCH_CACHE_ENTRIES: usize = 65_536;
 const MAX_DISPATCH_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 const fn persistent_dispatch_cache_enabled() -> bool {
-    // Wine resumes ARM64EC execution with NtContinue, abandoning the native
-    // Rust stack between x64 and EC regions. Until the persistent translation
-    // owner is proven across that non-local boundary, correctness requires
-    // translating from the current process bytes on every re-entry.
-    !cfg!(target_arch = "arm64ec")
+    // The cache belongs to ThreadRuntime, all locks and temporary descriptors
+    // are released before JIT entry, and provider-owned heap mappings are
+    // excluded from Wine callbacks. Its ownership is therefore independent of
+    // the native Rust stack that an ARM64EC NtContinue transition can abandon.
+    true
+}
+
+fn dispatch_source_matches(source: &[u8], bytes: &[u8]) -> bool {
+    let Some(candidate) = bytes.get(..source.len()) else {
+        return false;
+    };
+    #[cfg(target_arch = "arm64ec")]
+    {
+        exact_jit_code_match(source, candidate)
+    }
+    #[cfg(not(target_arch = "arm64ec"))]
+    {
+        source == candidate
+    }
 }
 
 #[derive(Debug)]
@@ -1209,9 +1223,7 @@ struct DispatchTranslationCache {
 impl DispatchTranslationCache {
     fn get(&self, rip: u64, bytes: &[u8]) -> Option<BlockTranslation> {
         let entry = self.entries.get(&rip)?;
-        bytes
-            .starts_with(&entry.source)
-            .then(|| entry.block.clone())
+        dispatch_source_matches(&entry.source, bytes).then(|| entry.block.clone())
     }
 
     fn insert(&mut self, rip: u64, bytes: &[u8], block: &BlockTranslation) {
@@ -2045,6 +2057,19 @@ mod tests {
         assert_eq!(actual.guest_bytes, expected.guest_bytes);
         assert_eq!(actual.ended_at_terminator, expected.ended_at_terminator);
         assert!(actual.successors.is_empty());
+    }
+
+    #[test]
+    fn dispatch_source_match_requires_the_exact_cached_prefix() {
+        assert!(dispatch_source_matches(
+            &[0x48, 0x89, 0xd8],
+            &[0x48, 0x89, 0xd8, 0x90]
+        ));
+        assert!(!dispatch_source_matches(&[0x48, 0x89, 0xd8], &[0x48, 0x89]));
+        assert!(!dispatch_source_matches(
+            &[0x48, 0x89, 0xd8],
+            &[0x48, 0x89, 0xd9]
+        ));
     }
 
     #[test]
