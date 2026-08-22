@@ -49,26 +49,55 @@ impl GuestMemory for FixtureMemory {
     }
 }
 
-struct PageBitsSinglePageMemory;
+struct PageBitsSetRangeMemory;
 
-impl GuestMemory for PageBitsSinglePageMemory {
+impl GuestMemory for PageBitsSetRangeMemory {
     fn read_code(&self, rip: u64, max_len: usize) -> Result<Vec<u8>, String> {
         let instruction: &[u8] = match rip {
-            0x1_4004_4940 => &[0x55],                              // push rbp
-            0x1_4004_4941 => &[0x48, 0x89, 0xe5],                  // mov rbp,rsp
-            0x1_4004_4944 => &[0x84, 0x00],                        // test [rax],al
-            0x1_4004_4946 => &[0x48, 0x89, 0xda],                  // mov rdx,rbx
-            0x1_4004_4949 => &[0x48, 0xc1, 0xeb, 0x06],            // shr rbx,6
-            0x1_4004_494d => &[0x48, 0x83, 0xfb, 0x08],            // cmp rbx,8
-            0x1_4004_4951 => &[0x0f, 0x83, 0x9f, 0, 0, 0],         // jae 0x1400449f6
-            0x1_4004_4957 => &[0x48, 0x83, 0xf9, 0x01],            // cmp rcx,1
-            0x1_4004_495b => &[0x74, 0x53],                        // je 0x1400449b0
-            PAGE_BITS_SINGLE_PAGE_PC => &[0x48, 0x8b, 0x0c, 0xd8], // mov rcx,[rax+rbx*8]
-            0x1_4004_49b4 => &[0x48, 0x0f, 0xab, 0xd1],            // bts rcx,rdx
-            0x1_4004_49b8 => &[0x90],                              // nop
-            0x1_4004_49b9 => &[0x48, 0x89, 0x0c, 0xd8],            // mov [rax+rbx*8],rcx
-            0x1_4004_49bd => &[0x5d],                              // pop rbp
-            0x1_4004_49be => &[0xc3],                              // ret
+            0x1_4004_4940 => &[0x55],                                     // push rbp
+            0x1_4004_4941 => &[0x48, 0x89, 0xe5],                         // mov rbp,rsp
+            0x1_4004_4944 => &[0x84, 0x00],                               // test [rax],al
+            0x1_4004_4946 => &[0x48, 0x89, 0xda],                         // mov rdx,rbx
+            0x1_4004_4949 => &[0x48, 0xc1, 0xeb, 0x06],                   // shr rbx,6
+            0x1_4004_494d => &[0x48, 0x83, 0xfb, 0x08],                   // cmp rbx,8
+            0x1_4004_4951 => &[0x0f, 0x83, 0x9f, 0, 0, 0],                // jae 0x1400449f6
+            0x1_4004_4957 => &[0x48, 0x83, 0xf9, 0x01],                   // cmp rcx,1
+            0x1_4004_495b => &[0x74, 0x53],                               // je 0x1400449b0
+            0x1_4004_495d => &[0x48, 0x8d, 0x34, 0x11],                   // lea rsi,[rcx+rdx]
+            0x1_4004_4961 => &[0x48, 0x8d, 0x76, 0xff],                   // lea rsi,[rsi-1]
+            0x1_4004_4965 => &[0x48, 0x89, 0xf7],                         // mov rdi,rsi
+            0x1_4004_4968 => &[0x48, 0xc1, 0xee, 0x06],                   // shr rsi,6
+            0x1_4004_496c => &[0x48, 0x39, 0xde],                         // cmp rsi,rbx
+            0x1_4004_496f => &[0x74, 0x1d],                               // je 0x14004498e
+            0x1_4004_4971 => &[0x48, 0x83, 0xfe, 0x08],                   // cmp rsi,8
+            0x1_4004_4975 => &[0x73, 0x7a],                               // jae 0x1400449f1
+            0x1_4004_4977 => &[0x48, 0x89, 0xd1],                         // mov rcx,rdx
+            0x1_4004_497a => &[0x48, 0xc7, 0xc2, 0xff, 0xff, 0xff, 0xff], // mov rdx,-1
+            0x1_4004_4981 => &[0x48, 0xd3, 0xe2],                         // shl rdx,cl
+            0x1_4004_4984 => &[0x48, 0x09, 0x14, 0xd8],                   // or [rax+rbx*8],rdx
+            0x1_4004_4988 => &[0x48, 0x8d, 0x53, 0x01],                   // lea rdx,[rbx+1]
+            0x1_4004_498c => &[0xeb, 0x3c],                               // jmp 0x1400449ca
+            PAGE_BITS_SINGLE_PAGE_PC => &[0x48, 0x8b, 0x0c, 0xd8],        // mov rcx,[rax+rbx*8]
+            0x1_4004_49b4 => &[0x48, 0x0f, 0xab, 0xd1],                   // bts rcx,rdx
+            0x1_4004_49b8 => &[0x90],                                     // nop
+            0x1_4004_49b9 => &[0x48, 0x89, 0x0c, 0xd8],                   // mov [rax+rbx*8],rcx
+            0x1_4004_49bd => &[0x5d],                                     // pop rbp
+            0x1_4004_49be => &[0xc3],                                     // ret
+            0x1_4004_49bf => &[0x48, 0xc7, 0x04, 0xd0, 0xff, 0xff, 0xff, 0xff], // mov [rax+rdx*8],-1
+            0x1_4004_49c7 => &[0x48, 0xff, 0xc2],                               // inc rdx
+            0x1_4004_49ca => &[0x48, 0x39, 0xf2],                               // cmp rdx,rsi
+            0x1_4004_49cd => &[0x72, 0xf0],                                     // jb 0x1400449bf
+            0x1_4004_49cf => &[0x83, 0xe7, 0x3f],                               // and edi,0x3f
+            0x1_4004_49d2 => &[0x48, 0x8d, 0x4f, 0x01],                         // lea rcx,[rdi+1]
+            0x1_4004_49d6 => &[0xba, 0x01, 0, 0, 0],                            // mov edx,1
+            0x1_4004_49db => &[0x48, 0xd3, 0xe2],                               // shl rdx,cl
+            0x1_4004_49de => &[0x48, 0x83, 0xf9, 0x40],                         // cmp rcx,64
+            0x1_4004_49e2 => &[0x48, 0x19, 0xdb],                               // sbb rbx,rbx
+            0x1_4004_49e5 => &[0x48, 0x21, 0xda],                               // and rdx,rbx
+            0x1_4004_49e8 => &[0x48, 0xff, 0xca],                               // dec rdx
+            0x1_4004_49eb => &[0x48, 0x09, 0x14, 0xf0], // or [rax+rsi*8],rdx
+            0x1_4004_49ef => &[0x5d],                   // pop rbp
+            0x1_4004_49f0 => &[0xc3],                   // ret
             _ => return Err(format!("unexpected pageBits.setRange RIP {rip:#x}")),
         };
         Ok(instruction[..instruction.len().min(max_len)].to_vec())
@@ -306,7 +335,7 @@ fn go_page_bits_single_page_full_dispatch_updates_fourth_word() {
 
     let report = dispatch_context(
         &mut context,
-        &PageBitsSinglePageMemory,
+        &PageBitsSetRangeMemory,
         &executor,
         DispatchLimits {
             max_blocks: 15,
@@ -336,6 +365,113 @@ fn go_page_bits_single_page_full_dispatch_updates_fourth_word() {
     let mut expected_bitmap = initial_bitmap;
     expected_bitmap[3] = 1;
     assert_eq!(actual_bitmap, expected_bitmap);
+    assert_eq!(
+        &arena[STACK_OFFSET - size_of::<u64>()..STACK_OFFSET],
+        &SAVED_RBP.to_le_bytes()
+    );
+    assert_eq!(
+        &arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()],
+        &RETURN_PC.to_le_bytes()
+    );
+    assert!(guarded[..GUARD_BYTES].iter().all(|byte| *byte == CANARY));
+    assert!(guarded[GUARD_BYTES + ARENA_BYTES..]
+        .iter()
+        .all(|byte| *byte == CANARY));
+
+    ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    let snapshot = provider_snapshot();
+    assert_eq!(snapshot.active_threads, 0);
+    assert_eq!(snapshot.tracked_mappings, 0);
+    assert_eq!(snapshot.active_dispatches, 0);
+    assert_eq!(snapshot.live_runtimes, 0);
+    assert_eq!(snapshot.live_dispatch_stacks, 0);
+}
+
+#[test]
+fn go_page_bits_multiword_full_dispatch_sets_initial_389_pages() {
+    let _guard = DISPATCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    assert_eq!(ProcessInit(), STATUS_SUCCESS);
+    assert_eq!(ThreadInit(), STATUS_SUCCESS);
+
+    const GUEST_BASE: u64 = 0x2_0000;
+    const ARENA_BYTES: usize = 0x400;
+    const BITMAP_OFFSET: usize = 0x80;
+    const STACK_OFFSET: usize = 0x300;
+    const RETURN_PC: u64 = 0x1_4004_4ffe;
+    const SAVED_RBP: u64 = 0xfedc_ba98_7654_3210;
+    let initial_bitmap = [0_u64, 0, 0, 0, 0, 0, 0, 0x440];
+    let mut guarded = [CANARY; GUARD_BYTES + ARENA_BYTES + GUARD_BYTES];
+    let arena = &mut guarded[GUARD_BYTES..GUARD_BYTES + ARENA_BYTES];
+    for (index, word) in initial_bitmap.iter().enumerate() {
+        let offset = BITMAP_OFFSET + index * size_of::<u64>();
+        arena[offset..offset + size_of::<u64>()].copy_from_slice(&word.to_le_bytes());
+    }
+    arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()].copy_from_slice(&RETURN_PC.to_le_bytes());
+
+    let executor = RebasedExecutor {
+        mem_base: (arena.as_ptr().addr() as u64).wrapping_sub(GUEST_BASE),
+    };
+    let guest_bitmap = GUEST_BASE + BITMAP_OFFSET as u64;
+    let initial_rsp = GUEST_BASE + STACK_OFFSET as u64;
+    let mut context = Arm64EcContext {
+        x8_rax: guest_bitmap,
+        x0_rcx: 389,
+        x27_rbx: 0,
+        sp_rsp: initial_rsp,
+        fp_rbp: SAVED_RBP,
+        pc_rip: PAGE_BITS_SET_RANGE_PC,
+        ..Arm64EcContext::default()
+    };
+
+    let report = dispatch_context(
+        &mut context,
+        &PageBitsSetRangeMemory,
+        &executor,
+        DispatchLimits {
+            max_blocks: 56,
+            max_fetch_bytes: 16,
+            max_instructions_per_block: 1,
+        },
+    )
+    .expect("execute complete pageBits.setRange 389-page route");
+
+    assert_eq!(report.stop, DispatchStop::BlockLimit);
+    assert_eq!(report.blocks, 56);
+    assert_eq!(report.instructions, 56);
+    assert_eq!(report.rip, RETURN_PC);
+    assert_eq!(context.pc_rip, RETURN_PC);
+    assert_eq!(context.x8_rax, guest_bitmap);
+    assert_eq!(context.x0_rcx, 5);
+    assert_eq!(context.x1_rdx, 0x1f);
+    assert_eq!(context.x27_rbx, u64::MAX);
+    assert_eq!(context.x25_rsi, 6);
+    assert_eq!(context.x26_rdi, 4);
+    assert_eq!(context.sp_rsp, initial_rsp + size_of::<u64>() as u64);
+    assert_eq!(context.fp_rbp, SAVED_RBP);
+
+    let mut actual_bitmap = [0_u64; 8];
+    for (index, word) in actual_bitmap.iter_mut().enumerate() {
+        let offset = BITMAP_OFFSET + index * size_of::<u64>();
+        *word = u64::from_le_bytes(arena[offset..offset + size_of::<u64>()].try_into().unwrap());
+    }
+    assert_eq!(
+        actual_bitmap,
+        [
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            0x1f,
+            0x440
+        ]
+    );
     assert_eq!(
         &arena[STACK_OFFSET - size_of::<u64>()..STACK_OFFSET],
         &SAVED_RBP.to_le_bytes()
