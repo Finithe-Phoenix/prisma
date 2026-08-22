@@ -1072,7 +1072,6 @@ impl BlockExecutor for PrismaExecutor {
             }
             buffer.make_executable().map_err(ExecError::Protect)?;
             let entry = self.publish_entry(code, buffer)?;
-            super::phase_marker(b"prisma-phase: jit-cache-ready\n");
             let sp_before: usize;
             let teb_before: usize;
             // SAFETY: these register reads establish the host-state invariants
@@ -1086,12 +1085,6 @@ impl BlockExecutor for PrismaExecutor {
                     options(nomem, nostack, preserves_flags),
                 );
             }
-            super::phase_value(b"prisma-value: native-sp=", sp_before as u64);
-            super::phase_value(
-                b"prisma-value: state-frame=",
-                (frame as *mut CpuStateFrame).addr() as u64,
-            );
-            super::phase_value(b"prisma-value: mem-base=", frame.mem_base);
             // SAFETY: `wrap_block` emits native ARM64 with the Prisma
             // state-frame prologue and epilogue. A Rust ARM64EC indirect call
             // would route this anonymous JIT page through the x64 dispatcher;
@@ -1099,7 +1092,6 @@ impl BlockExecutor for PrismaExecutor {
             // outer save area is an independent safety boundary: generated
             // code must preserve the ARM64EC-visible nonvolatile set, while
             // x18 remains the TEB and unavailable registers are never touched.
-            super::phase_marker(b"prisma-phase: jit-enter\n");
             let register_mask = {
                 let active_jit_frame = ActiveJitFrameGuard::enter(frame, guest_rip);
                 // SAFETY: `entry` and `frame` stay live for this exact invocation.
@@ -1120,13 +1112,8 @@ impl BlockExecutor for PrismaExecutor {
                     options(nomem, nostack, preserves_flags),
                 );
             }
-            super::phase_marker(b"prisma-phase: jit-returned\n");
-            super::phase_value(
-                b"prisma-value: heap-valid=",
-                u64::from(crate::allocator::private_heap_is_valid()),
-            );
             if register_mask != 0 {
-                super::phase_marker(b"prisma-error: jit-host-state-detected\n");
+                super::write_diagnostic(b"prisma-error: jit-host-state-detected\n");
                 return Err(ExecError::HostStateCorruption {
                     register_mask: u16::try_from(register_mask)
                         .expect("ARM64 nonvolatile mask fits u16"),
@@ -1350,10 +1337,6 @@ impl ThreadRuntime {
         let mut instructions = 0usize;
 
         for block_index in 0..limits.max_blocks {
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_marker(b"prisma-phase: dispatch-block-enter\n");
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_value(b"prisma-value: guest-rip=", rip);
             if self.cancel.load(Ordering::Acquire) {
                 context.store_frame(&frame, rip);
                 return Ok(DispatchReport {
@@ -1400,8 +1383,6 @@ impl ThreadRuntime {
             let bytes = memory
                 .read_code(rip, limits.max_fetch_bytes)
                 .map_err(|detail| DispatchError::MemoryRead { rip, detail })?;
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_marker(b"prisma-phase: guest-code-read\n");
             if bytes.is_empty() {
                 return Err(DispatchError::MemoryRead {
                     rip,
@@ -1416,56 +1397,20 @@ impl ThreadRuntime {
             } else {
                 Translator::new()
             };
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_marker(b"prisma-phase: translator-created\n");
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            let trace_allocator = matches!(
-                rip,
-                0x0000_0001_4008_9a0e
-                    | 0x0000_0001_4008_9a12
-                    | 0x0000_0001_4008_9a4d
-                    | 0x0000_0001_4008_9a4f
-            );
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            crate::allocator::set_allocator_trace(trace_allocator);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if trace_allocator {
-                super::phase_marker(b"prisma-phase: allocator-trace-enabled\n");
-            }
             let block = self.translate_block_cached(
                 &mut translator,
                 rip,
                 &bytes,
                 limits.max_instructions_per_block,
             );
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            if block.is_err() {
-                crate::allocator::set_allocator_trace(false);
-            }
             let block = block.map_err(|source| DispatchError::Translation { rip, source })?;
             drop(translator);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_marker(b"prisma-phase: translation-ready\n");
             let block_instruction_count = block.instruction_count;
             let block_guest_bytes = block.guest_bytes;
             let block_ended_at_terminator = block.ended_at_terminator;
             frame.exit_reason = EXIT_NORMAL;
             frame.next_pc = 0;
             let execution = executor.execute(rip, block.code, &mut frame);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            crate::allocator::set_allocator_trace(false);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_marker(b"prisma-phase: dispatch-executor-returned\n");
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_value(b"prisma-value: rdi=", frame.gpr[gpr::RDI]);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_value(b"prisma-value: rbx=", frame.gpr[gpr::RBX]);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_value(b"prisma-value: rsp=", frame.gpr[gpr::RSP]);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_value(b"prisma-value: exit-reason=", frame.exit_reason);
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_value(b"prisma-value: next-pc=", frame.next_pc);
             execution.map_err(|source| DispatchError::Execution { rip, source })?;
             instructions = instructions.saturating_add(block_instruction_count);
             let blocks = block_index + 1;
@@ -1499,8 +1444,6 @@ impl ThreadRuntime {
                     return Err(DispatchError::UnknownExitReason { rip, reason });
                 }
             }
-            #[cfg(all(windows, target_arch = "arm64ec"))]
-            super::phase_marker(b"prisma-phase: dispatch-block-complete\n");
         }
 
         Ok(DispatchReport {

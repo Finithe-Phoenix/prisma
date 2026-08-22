@@ -81,34 +81,6 @@ fn write_diagnostic(message: &[u8]) {
     };
 }
 
-#[cfg(all(windows, target_arch = "arm64ec"))]
-fn phase_marker(message: &'static [u8]) {
-    write_diagnostic(message);
-}
-
-#[cfg(all(windows, target_arch = "arm64ec"))]
-fn phase_value(prefix: &'static [u8], value: u64) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut line = [0_u8; 64];
-    let Some(hex_start) = prefix.len().checked_add(2) else {
-        return;
-    };
-    let Some(line_len) = hex_start.checked_add(17) else {
-        return;
-    };
-    if line_len > line.len() {
-        return;
-    }
-    line[..prefix.len()].copy_from_slice(prefix);
-    line[prefix.len()..hex_start].copy_from_slice(b"0x");
-    for index in 0..16 {
-        let shift = (15 - index) * 4;
-        line[hex_start + index] = HEX[((value >> shift) & 0xf) as usize];
-    }
-    line[line_len - 1] = b'\n';
-    write_diagnostic(&line[..line_len]);
-}
-
 #[repr(C)]
 pub struct ExceptionRecord {
     _private: [u8; 0],
@@ -868,8 +840,6 @@ fn is_native_return_continuation(rip: u64) -> bool {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn run_simulation(context: &mut Arm64EcContext) -> ! {
-    phase_marker(b"prisma-phase: dispatch-loop-enter\n");
-    let mut first_dispatch = true;
     loop {
         let executor = {
             let state = lock_provider();
@@ -887,10 +857,6 @@ fn run_simulation(context: &mut Arm64EcContext) -> ! {
             executor.as_ref(),
             DispatchLimits::default(),
         );
-        if first_dispatch {
-            phase_marker(b"prisma-phase: first-dispatch-returned\n");
-            first_dispatch = false;
-        }
         // `resume_wine_context` abandons this Rust stack. Release the temporary
         // strong reference first; ThreadContext remains the cache owner.
         drop(executor);
@@ -922,14 +888,14 @@ fn run_simulation(context: &mut Arm64EcContext) -> ! {
                 unsafe { dispatch::resume_wine_context(context) }
             }
             Ok(_) => {
-                phase_marker(b"prisma-error: unexpected-dispatch-stop\n");
+                write_diagnostic(b"prisma-error: unexpected-dispatch-stop\n");
                 record_failed_dispatch();
                 // SAFETY: a cancelled context cannot safely cross back through
                 // KiUserEmulationDispatcher.
                 unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
             Err(error) => {
-                phase_marker(error.diagnostic_marker());
+                write_diagnostic(error.diagnostic_marker());
                 record_failed_dispatch();
                 // SAFETY: a failed context cannot safely cross back through
                 // KiUserEmulationDispatcher.
@@ -1033,7 +999,6 @@ fn restore_dispatch_stack_bounds_or_terminate() {
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 unsafe extern "system" fn dispatch_stack_entry(context: *mut Arm64EcContext) -> ! {
-    phase_marker(b"prisma-phase: dispatch-stack-enter\n");
     // SAFETY: the stack-switch thunk receives Wine's live, thread-owned context.
     let Some(context) = (unsafe { context.as_mut() }) else {
         record_failed_dispatch();
@@ -1054,7 +1019,6 @@ fn run_simulation_on_dispatch_stack(context: &mut Arm64EcContext) -> ! {
             unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
         }
     };
-    phase_marker(b"prisma-phase: dispatch-stack-ready\n");
     let entry = dispatch_stack_entry as *const () as usize;
     // SAFETY: stack zero owns the initial simulation. Each nested native-to-x64
     // callback increments `native_returns` and therefore receives a distinct
@@ -1187,7 +1151,6 @@ pub extern "system" fn BTCpu64NotifyReadFile(
 pub extern "system" fn BeginSimulation() {
     #[cfg(all(windows, target_arch = "arm64ec"))]
     {
-        phase_marker(b"prisma-phase: begin-simulation-enter\n");
         // SAFETY: Wine invokes this callback after installing the current
         // thread's CHPE v2 CPU area and owns the context for the call duration.
         let context = unsafe { dispatch::current_wine_context() };
@@ -1199,7 +1162,6 @@ pub extern "system" fn BeginSimulation() {
                 unsafe { dispatch::terminate_current_process(STATUS_NOT_SUPPORTED) }
             }
         };
-        phase_marker(b"prisma-phase: begin-simulation-context-ready\n");
         run_simulation_on_dispatch_stack(context)
     }
     #[cfg(not(all(windows, target_arch = "arm64ec")))]
@@ -1294,12 +1256,7 @@ pub extern "system" fn NotifyUnmapViewOfSection(
 /// Wine 11.14 `xtajit64.spec`: `NTSTATUS ProcessInit(void)`.
 #[unsafe(no_mangle)]
 pub extern "system" fn ProcessInit() -> NtStatus {
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    phase_marker(b"prisma-phase: process-init-enter\n");
-    let status = initialize_process().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS);
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    phase_marker(b"prisma-phase: process-init-exit\n");
-    status
+    initialize_process().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS)
 }
 
 /// Wine calls this before and after `NtTerminateProcess` for the current process.
@@ -1358,15 +1315,15 @@ pub extern "system" fn ResetToConsistentState(
 #[unsafe(no_mangle)]
 pub extern "system" fn ThreadInit() -> NtStatus {
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    phase_marker(b"prisma-phase: thread-init-enter\n");
-    let status = initialize_thread().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS);
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    if successful(status) {
-        THREAD_INIT_COUNT.fetch_add(1, Ordering::AcqRel);
+    {
+        let status = initialize_thread().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS);
+        if successful(status) {
+            THREAD_INIT_COUNT.fetch_add(1, Ordering::AcqRel);
+        }
+        status
     }
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    phase_marker(b"prisma-phase: thread-init-exit\n");
-    status
+    #[cfg(not(all(windows, target_arch = "arm64ec")))]
+    initialize_thread().map_or_else(LifecycleError::nt_status, |_| STATUS_SUCCESS)
 }
 
 /// Releases the context for the target or current thread. Repeated calls are harmless.

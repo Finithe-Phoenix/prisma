@@ -25,7 +25,7 @@ mod arm64ec {
     use super::{aligned_user_address, allocation_span};
     use std::alloc::{GlobalAlloc, Layout};
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+    use std::sync::atomic::{AtomicPtr, Ordering};
 
     const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
 
@@ -34,7 +34,6 @@ mod arm64ec {
         fn HeapDestroy(heap: *mut c_void) -> i32;
         fn HeapAlloc(heap: *mut c_void, flags: u32, bytes: usize) -> *mut c_void;
         fn HeapFree(heap: *mut c_void, flags: u32, memory: *mut c_void) -> i32;
-        fn HeapValidate(heap: *mut c_void, flags: u32, memory: *const c_void) -> i32;
     }
 
     /// Provider-private heap isolated behind an ARM64EC preservation boundary.
@@ -50,7 +49,6 @@ mod arm64ec {
     static GLOBAL_ALLOCATOR: Arm64EcPrivateHeapAllocator = Arm64EcPrivateHeapAllocator;
 
     static PRIVATE_HEAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-    static TRACE_ALLOCATOR: AtomicBool = AtomicBool::new(false);
 
     unsafe impl GlobalAlloc for Arm64EcPrivateHeapAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -104,38 +102,19 @@ mod arm64ec {
     }
 
     unsafe fn heap_alloc(size: usize, align: usize, flags: u32) -> *mut u8 {
-        let trace = TRACE_ALLOCATOR.load(Ordering::Acquire);
-        if trace {
-            crate::phase_marker(b"prisma-phase: allocator-alloc-enter\n");
-            crate::phase_value(b"prisma-value: allocator-request-size=", size as u64);
-            crate::phase_value(b"prisma-value: allocator-request-align=", align as u64);
-        }
         let Some(span) = allocation_span(size, align) else {
             return std::ptr::null_mut();
         };
-        if trace {
-            crate::phase_value(b"prisma-value: allocator-span=", span as u64);
-        }
         // SAFETY: initialization is allocation-free and publishes one process-
         // lifetime private heap handle.
         let heap = unsafe { private_heap() };
         if heap.is_null() {
             return std::ptr::null_mut();
         }
-        if trace {
-            crate::phase_value(b"prisma-value: allocator-heap=", heap.addr() as u64);
-            crate::phase_marker(b"prisma-phase: allocator-heap-alloc-enter\n");
-        }
         // SAFETY: `span` is nonzero and overflow-checked.
         let provider_mapping = crate::dispatch::ProviderOwnedMappingGuard::enter_if_available();
         let raw = unsafe { HeapAlloc(heap, flags, span) }.cast::<u8>();
         drop(provider_mapping);
-        if trace {
-            crate::phase_value(
-                b"prisma-value: allocator-heap-alloc-result=",
-                raw.addr() as u64,
-            );
-        }
         if raw.is_null() {
             return std::ptr::null_mut();
         }
@@ -152,19 +131,10 @@ mod arm64ec {
                 .cast::<*mut u8>()
                 .write(raw);
         }
-        if trace {
-            crate::phase_value(b"prisma-value: allocator-user=", user.addr() as u64);
-            crate::phase_marker(b"prisma-phase: allocator-alloc-returned\n");
-        }
         user
     }
 
     unsafe fn heap_dealloc(pointer: *mut u8) -> i32 {
-        let trace = TRACE_ALLOCATOR.load(Ordering::Acquire);
-        if trace {
-            crate::phase_marker(b"prisma-phase: allocator-dealloc-enter\n");
-            crate::phase_value(b"prisma-value: allocator-user=", pointer.addr() as u64);
-        }
         if pointer.is_null() {
             return 1;
         }
@@ -180,23 +150,8 @@ mod arm64ec {
                 .cast::<*mut u8>()
                 .read()
         };
-        if trace {
-            crate::phase_value(b"prisma-value: allocator-heap=", heap.addr() as u64);
-            crate::phase_value(b"prisma-value: allocator-raw=", raw.addr() as u64);
-            crate::phase_marker(b"prisma-phase: allocator-block-validate-enter\n");
-            // SAFETY: the diagnostic asks this exact heap to validate the raw
-            // base recovered from the allocation header without mutating it.
-            let valid = unsafe { HeapValidate(heap, 0, raw.cast()) };
-            crate::phase_value(b"prisma-value: allocator-block-valid=", valid as u64);
-            crate::phase_marker(b"prisma-phase: allocator-heap-free-enter\n");
-        }
         // SAFETY: `raw` is the exact HeapAlloc base from this private heap.
-        let freed = unsafe { HeapFree(heap, 0, raw.cast()) };
-        if trace {
-            crate::phase_value(b"prisma-value: allocator-heap-free-result=", freed as u64);
-            crate::phase_marker(b"prisma-phase: allocator-heap-free-returned\n");
-        }
-        freed
+        unsafe { HeapFree(heap, 0, raw.cast()) }
     }
 
     macro_rules! preserve_arm64ec_nonvolatiles {
@@ -324,38 +279,6 @@ mod arm64ec {
         }
         replacement
     }
-
-    #[inline(never)]
-    unsafe extern "C" fn private_validate(heap: *mut c_void) -> usize {
-        // SAFETY: a null block asks Windows to validate the complete private heap.
-        unsafe { HeapValidate(heap, 0, std::ptr::null()) as usize }
-    }
-
-    pub(super) fn private_heap_is_valid() -> bool {
-        let heap = PRIVATE_HEAP.load(Ordering::Acquire);
-        if heap.is_null() {
-            return true;
-        }
-        let valid: usize;
-        preserve_arm64ec_nonvolatiles!(private_validate;
-            inlateout("x0") heap => valid,
-        );
-        valid != 0
-    }
-
-    pub(super) fn set_allocator_trace(enabled: bool) {
-        TRACE_ALLOCATOR.store(enabled, Ordering::Release);
-    }
-}
-
-#[cfg(all(windows, target_arch = "arm64ec"))]
-pub(crate) fn private_heap_is_valid() -> bool {
-    arm64ec::private_heap_is_valid()
-}
-
-#[cfg(all(windows, target_arch = "arm64ec"))]
-pub(crate) fn set_allocator_trace(enabled: bool) {
-    arm64ec::set_allocator_trace(enabled);
 }
 
 #[cfg(test)]
