@@ -943,7 +943,7 @@ pub struct MorestackEvent {
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 impl MorestackEvent {
-    fn fields(self) -> [u64; MORESTACK_EVENT_FIELD_COUNT] {
+    const fn fields(self) -> [u64; MORESTACK_EVENT_FIELD_COUNT] {
         [
             self.rip,
             self.r14,
@@ -961,7 +961,7 @@ impl MorestackEvent {
         ]
     }
 
-    fn from_fields(fields: [u64; MORESTACK_EVENT_FIELD_COUNT]) -> Self {
+    const fn from_fields(fields: [u64; MORESTACK_EVENT_FIELD_COUNT]) -> Self {
         Self {
             rip: fields[0],
             r14: fields[1],
