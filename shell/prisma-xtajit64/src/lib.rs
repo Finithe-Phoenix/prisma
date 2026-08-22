@@ -39,6 +39,8 @@ pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
     GuestMemory, PrismaExecutor, XmmRegister,
 };
+#[cfg(all(windows, target_arch = "arm64ec"))]
+use dispatch::{ScavengeEvent, RECENT_SCAVENGE_EVENT_COUNT};
 
 pub type NtStatus = i32;
 pub type WinBoolean = u8;
@@ -109,6 +111,40 @@ fn write_recent_jit_rips(recent: ([u64; 32], usize)) {
     let (rips, count) = recent;
     for rip in rips.into_iter().take(count) {
         write_hex_diagnostic(b"prisma-trace: recent-rip=", rip);
+    }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+fn write_recent_scavenge_events(recent: ([ScavengeEvent; RECENT_SCAVENGE_EVENT_COUNT], usize)) {
+    const SCAVENGE_EVENT_ALLOC: u64 = 1;
+    const SCAVENGE_EVENT_FREE: u64 = 2;
+    const PALLOC_CHUNK_PAGES: u64 = 512;
+
+    let (events, count) = recent;
+    let events = &events[..count];
+    let target_chunk = events.iter().rev().find_map(|event| {
+        (event.kind == SCAVENGE_EVENT_ALLOC
+            && event.in_use.saturating_add(event.npages) > PALLOC_CHUNK_PAGES)
+            .then_some(event.chunk)
+    });
+    let Some(target_chunk) = target_chunk else {
+        return;
+    };
+
+    write_hex_diagnostic(b"prisma-trace: scav-target-chunk=", target_chunk);
+    for event in events.iter().filter(|event| event.chunk == target_chunk) {
+        match event.kind {
+            SCAVENGE_EVENT_ALLOC => {
+                write_hex_diagnostic(b"prisma-trace: scav-alloc-in-use=", event.in_use);
+                write_hex_diagnostic(b"prisma-trace: scav-alloc-npages=", event.npages);
+            }
+            SCAVENGE_EVENT_FREE => {
+                write_hex_diagnostic(b"prisma-trace: scav-free-in-use=", event.in_use);
+                write_hex_diagnostic(b"prisma-trace: scav-free-page=", event.page);
+                write_hex_diagnostic(b"prisma-trace: scav-free-npages=", event.npages);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1094,13 +1130,16 @@ fn process_term(post_call: bool, status: NtStatus) {
     if !post_call {
         let recent = {
             let state = lock_provider();
-            state
-                .threads
-                .get(&current_thread_key())
-                .map(|thread| thread.executor.recent_guest_rips())
+            state.threads.get(&current_thread_key()).map(|thread| {
+                (
+                    thread.executor.recent_guest_rips(),
+                    thread.executor.recent_scavenge_events(),
+                )
+            })
         };
-        if let Some(recent) = recent {
-            write_recent_jit_rips(recent);
+        if let Some((recent_rips, recent_scavenge_events)) = recent {
+            write_recent_jit_rips(recent_rips);
+            write_recent_scavenge_events(recent_scavenge_events);
         }
     }
     let mut state = lock_provider();
@@ -1134,7 +1173,10 @@ fn thread_term(handle: Handle) {
         if let Some(context) = state.threads.remove(&key) {
             #[cfg(all(windows, target_arch = "arm64ec"))]
             {
-                recent = Some(context.executor.recent_guest_rips());
+                recent = Some((
+                    context.executor.recent_guest_rips(),
+                    context.executor.recent_scavenge_events(),
+                ));
             }
             context.runtime.cancel();
             state.retire_thread(context);
@@ -1142,8 +1184,9 @@ fn thread_term(handle: Handle) {
     }
     drop(state);
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    if let Some(recent) = recent {
-        write_recent_jit_rips(recent);
+    if let Some((recent_rips, recent_scavenge_events)) = recent {
+        write_recent_jit_rips(recent_rips);
+        write_recent_scavenge_events(recent_scavenge_events);
     }
 }
 

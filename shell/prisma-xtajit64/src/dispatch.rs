@@ -899,15 +899,63 @@ pub trait BlockExecutor {
 const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const RECENT_JIT_RIP_COUNT: usize = 32;
+#[cfg(any(test, target_arch = "arm64ec"))]
+pub const RECENT_SCAVENGE_EVENT_COUNT: usize = 256;
+
+// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. The entry probes
+// capture chunk/page arguments; the state probes run immediately after the
+// guest loads scavChunkData.inUse. This diagnostic is removed with the RIP
+// ring after the first inconsistent transition is isolated.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_ALLOC_ENTRY_RIP: u64 = 0x0001_4003_92a0;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_FREE_ENTRY_RIP: u64 = 0x0001_4003_93a0;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_ALLOC_STATE_RIP: u64 = 0x0001_4003_9635;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_FREE_STATE_RIP: u64 = 0x0001_4003_9735;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_EVENT_ALLOC: u64 = 1;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const SCAVENGE_EVENT_FREE: u64 = 2;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ScavengeEvent {
+    pub kind: u64,
+    pub chunk: u64,
+    pub page: u64,
+    pub npages: u64,
+    pub in_use: u64,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+#[derive(Debug)]
 struct JitCache {
     buffers: Vec<(u64, Vec<u8>, prisma_runtime::jit_memory::ExecBuffer)>,
     bytes: usize,
     recent_rips: [u64; RECENT_JIT_RIP_COUNT],
     recent_rip_cursor: usize,
     recent_rips_full: bool,
+    recent_scavenge_events: [ScavengeEvent; RECENT_SCAVENGE_EVENT_COUNT],
+    recent_scavenge_event_cursor: usize,
+    recent_scavenge_events_full: bool,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl Default for JitCache {
+    fn default() -> Self {
+        Self {
+            buffers: Vec::new(),
+            bytes: 0,
+            recent_rips: [0; RECENT_JIT_RIP_COUNT],
+            recent_rip_cursor: 0,
+            recent_rips_full: false,
+            recent_scavenge_events: [ScavengeEvent::default(); RECENT_SCAVENGE_EVENT_COUNT],
+            recent_scavenge_event_cursor: 0,
+            recent_scavenge_events_full: false,
+        }
+    }
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -932,6 +980,77 @@ impl JitCache {
         let mut ordered = [0_u64; RECENT_JIT_RIP_COUNT];
         for (offset, value) in ordered.iter_mut().take(count).enumerate() {
             *value = self.recent_rips[(start + offset) % RECENT_JIT_RIP_COUNT];
+        }
+        (ordered, count)
+    }
+
+    fn push_scavenge_event(&mut self, event: ScavengeEvent) {
+        self.recent_scavenge_events[self.recent_scavenge_event_cursor] = event;
+        self.recent_scavenge_event_cursor =
+            (self.recent_scavenge_event_cursor + 1) % RECENT_SCAVENGE_EVENT_COUNT;
+        self.recent_scavenge_events_full |= self.recent_scavenge_event_cursor == 0;
+    }
+
+    fn most_recent_scavenge_event_mut(&mut self) -> Option<&mut ScavengeEvent> {
+        if !self.recent_scavenge_events_full && self.recent_scavenge_event_cursor == 0 {
+            return None;
+        }
+        let index = if self.recent_scavenge_event_cursor == 0 {
+            RECENT_SCAVENGE_EVENT_COUNT - 1
+        } else {
+            self.recent_scavenge_event_cursor - 1
+        };
+        self.recent_scavenge_events.get_mut(index)
+    }
+
+    fn record_scavenge_event(&mut self, guest_rip: u64, frame: &CpuStateFrame) {
+        match guest_rip {
+            SCAVENGE_ALLOC_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
+                kind: SCAVENGE_EVENT_ALLOC,
+                chunk: frame.gpr[gpr::RBX],
+                page: 0,
+                npages: frame.gpr[gpr::RCX],
+                in_use: 0,
+            }),
+            SCAVENGE_FREE_ENTRY_RIP => self.push_scavenge_event(ScavengeEvent {
+                kind: SCAVENGE_EVENT_FREE,
+                chunk: frame.gpr[gpr::RBX],
+                page: frame.gpr[gpr::RCX],
+                npages: frame.gpr[gpr::RDI],
+                in_use: 0,
+            }),
+            SCAVENGE_ALLOC_STATE_RIP => {
+                if let Some(event) = self.most_recent_scavenge_event_mut() {
+                    if event.kind == SCAVENGE_EVENT_ALLOC {
+                        event.in_use = frame.gpr[gpr::RDX] & u64::from(u16::MAX);
+                    }
+                }
+            }
+            SCAVENGE_FREE_STATE_RIP => {
+                if let Some(event) = self.most_recent_scavenge_event_mut() {
+                    if event.kind == SCAVENGE_EVENT_FREE {
+                        event.in_use = frame.gpr[gpr::RDX] & u64::from(u16::MAX);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn recent_scavenge_events(&self) -> ([ScavengeEvent; RECENT_SCAVENGE_EVENT_COUNT], usize) {
+        let count = if self.recent_scavenge_events_full {
+            RECENT_SCAVENGE_EVENT_COUNT
+        } else {
+            self.recent_scavenge_event_cursor
+        };
+        let start = if self.recent_scavenge_events_full {
+            self.recent_scavenge_event_cursor
+        } else {
+            0
+        };
+        let mut ordered = [ScavengeEvent::default(); RECENT_SCAVENGE_EVENT_COUNT];
+        for (offset, value) in ordered.iter_mut().take(count).enumerate() {
+            *value = self.recent_scavenge_events[(start + offset) % RECENT_SCAVENGE_EVENT_COUNT];
         }
         (ordered, count)
     }
@@ -1046,6 +1165,16 @@ impl PrismaExecutor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recent_rips()
     }
+
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    pub(super) fn recent_scavenge_events(
+        &self,
+    ) -> ([ScavengeEvent; RECENT_SCAVENGE_EVENT_COUNT], usize) {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recent_scavenge_events()
+    }
 }
 
 #[cfg(target_arch = "arm64ec")]
@@ -1128,6 +1257,7 @@ impl BlockExecutor for PrismaExecutor {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.record_rip(guest_rip);
+                cache.record_scavenge_event(guest_rip, frame);
                 cache.get(guest_rip, &code).map(ExecBuffer::as_ptr)
             };
             let entry = if let Some(entry) = cached_entry {
@@ -1943,6 +2073,48 @@ mod tests {
         assert_eq!(count, RECENT_JIT_RIP_COUNT);
         let expected: [u64; RECENT_JIT_RIP_COUNT] = std::array::from_fn(|index| 4 + index as u64);
         assert_eq!(rips, expected);
+    }
+
+    #[test]
+    fn jit_cache_records_scavenge_alloc_and_free_state() {
+        let mut cache = JitCache::default();
+        let mut frame = CpuStateFrame::default();
+
+        frame.gpr[gpr::RBX] = 0x1234;
+        frame.gpr[gpr::RCX] = 41;
+        cache.record_scavenge_event(SCAVENGE_ALLOC_ENTRY_RIP, &frame);
+        frame.gpr[gpr::RDX] = 484;
+        cache.record_scavenge_event(SCAVENGE_ALLOC_STATE_RIP, &frame);
+
+        frame.gpr[gpr::RBX] = 0x1234;
+        frame.gpr[gpr::RCX] = 7;
+        frame.gpr[gpr::RDI] = 9;
+        cache.record_scavenge_event(SCAVENGE_FREE_ENTRY_RIP, &frame);
+        frame.gpr[gpr::RDX] = 100;
+        cache.record_scavenge_event(SCAVENGE_FREE_STATE_RIP, &frame);
+
+        let (events, count) = cache.recent_scavenge_events();
+        assert_eq!(count, 2);
+        assert_eq!(
+            events[0],
+            ScavengeEvent {
+                kind: SCAVENGE_EVENT_ALLOC,
+                chunk: 0x1234,
+                page: 0,
+                npages: 41,
+                in_use: 484,
+            }
+        );
+        assert_eq!(
+            events[1],
+            ScavengeEvent {
+                kind: SCAVENGE_EVENT_FREE,
+                chunk: 0x1234,
+                page: 7,
+                npages: 9,
+                in_use: 100,
+            }
+        );
     }
 
     #[test]
