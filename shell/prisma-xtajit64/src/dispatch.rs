@@ -908,11 +908,18 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. These four
-// boundaries capture the current g before TLS decoding, the TLS-loaded g,
-// m.g0 immediately before it replaces TLS, and the call boundary into
-// runtime.newstack. The trace replaces the now-resolved palloc probe and stays
-// below its prior 1,552-byte static footprint.
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. The first three
+// boundaries localize the main goroutine's stack state before its failing
+// growth. The remaining four capture the current g before TLS decoding, the
+// TLS-loaded g, m.g0 immediately before it replaces TLS, and the call boundary
+// into runtime.newstack. The trace replaces the now-resolved palloc probe and
+// stays below its prior 1,552-byte static footprint.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_MAIN_ENTRY_RIP: u64 = 0x0001_4005_16c0;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_ENTRY_RIP: u64 = 0x0001_4002_b540;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_CHANRECV_ENTRY_RIP: u64 = 0x0001_4001_9ae0;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const MORESTACK_ENTRY_RIP: u64 = 0x0001_4008_9d20;
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1065,7 +1072,9 @@ where
     F: FnMut(u64) -> Option<u64>,
 {
     let stage = match guest_rip {
-        MORESTACK_ENTRY_RIP => 0,
+        GO_MAIN_ENTRY_RIP | GO_GCENABLE_ENTRY_RIP | GO_CHANRECV_ENTRY_RIP | MORESTACK_ENTRY_RIP => {
+            0
+        }
         MORESTACK_G_LOADED_RIP => 1,
         MORESTACK_G0_LOADED_RIP => 2,
         MORESTACK_NEWSTACK_CALL_RIP => 3,
@@ -2219,6 +2228,16 @@ mod tests {
             morestack_event_with_reader(MORESTACK_ENTRY_RIP - 1, &frame, |_| None),
             None
         );
+        let main_entry = morestack_event_with_reader(GO_MAIN_ENTRY_RIP, &frame, |address| {
+            memory.get(&address).copied()
+        })
+        .unwrap();
+        assert_eq!(main_entry.rip, GO_MAIN_ENTRY_RIP);
+        assert_eq!(
+            (main_entry.r14_stack_lo, main_entry.r14_stack_hi),
+            (0x1100, 0x1800)
+        );
+        assert_eq!(main_entry.tls_g, INVALID_MORESTACK_MEMORY);
         let event = morestack_event_with_reader(MORESTACK_G0_LOADED_RIP, &frame, |address| {
             memory.get(&address).copied()
         })
