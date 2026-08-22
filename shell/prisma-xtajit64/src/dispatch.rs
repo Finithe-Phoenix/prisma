@@ -908,16 +908,29 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. The first three
-// boundaries localize the main goroutine's stack state before its failing
-// growth. The remaining four capture the current g before TLS decoding, the
-// TLS-loaded g, m.g0 immediately before it replaces TLS, and the call boundary
-// into runtime.newstack. The trace replaces the now-resolved palloc probe and
-// stays below its prior 1,552-byte static footprint.
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #108 proved
+// that the main goroutine's stack.lo is valid on the second runtime.gcenable
+// entry and zero on runtime.chanrecv entry. The eight retained boundaries now
+// bisect that interval around makechan and the two newproc calls without
+// increasing the trace's 912-byte static footprint.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_MAIN_ENTRY_RIP: u64 = 0x0001_4005_16c0;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_GCENABLE_ENTRY_RIP: u64 = 0x0001_4002_b540;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_BODY_RIP: u64 = 0x0001_4002_b54a;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_AFTER_MAKECHAN_RIP: u64 = 0x0001_4002_b565;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_FIRST_NEWPROC_CALL_RIP: u64 = 0x0001_4002_b5a1;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_AFTER_FIRST_NEWPROC_RIP: u64 = 0x0001_4002_b5a6;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_SECOND_NEWPROC_CALL_RIP: u64 = 0x0001_4002_b5e0;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP: u64 = 0x0001_4002_b5e5;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_GCENABLE_CHANRECV1_CALL_RIP: u64 = 0x0001_4002_b5ec;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_CHANRECV_ENTRY_RIP: u64 = 0x0001_4001_9ae0;
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1072,9 +1085,17 @@ where
     F: FnMut(u64) -> Option<u64>,
 {
     let stage = match guest_rip {
-        GO_MAIN_ENTRY_RIP | GO_GCENABLE_ENTRY_RIP | GO_CHANRECV_ENTRY_RIP | MORESTACK_ENTRY_RIP => {
-            0
-        }
+        GO_MAIN_ENTRY_RIP
+        | GO_GCENABLE_ENTRY_RIP
+        | GO_GCENABLE_BODY_RIP
+        | GO_GCENABLE_AFTER_MAKECHAN_RIP
+        | GO_GCENABLE_FIRST_NEWPROC_CALL_RIP
+        | GO_GCENABLE_AFTER_FIRST_NEWPROC_RIP
+        | GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
+        | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
+        | GO_GCENABLE_CHANRECV1_CALL_RIP
+        | GO_CHANRECV_ENTRY_RIP
+        | MORESTACK_ENTRY_RIP => 0,
         MORESTACK_G_LOADED_RIP => 1,
         MORESTACK_G0_LOADED_RIP => 2,
         MORESTACK_NEWSTACK_CALL_RIP => 3,
@@ -1119,15 +1140,17 @@ where
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 const fn should_record_stack_event(event: MorestackEvent) -> bool {
-    match event.rip {
-        MORESTACK_ENTRY_RIP
-        | MORESTACK_G_LOADED_RIP
-        | MORESTACK_G0_LOADED_RIP
-        | MORESTACK_NEWSTACK_CALL_RIP => {
-            event.r14_stack_lo == 0 || event.r14_stack_lo == INVALID_MORESTACK_MEMORY
-        }
-        _ => true,
-    }
+    matches!(
+        event.rip,
+        GO_GCENABLE_BODY_RIP
+            | GO_GCENABLE_AFTER_MAKECHAN_RIP
+            | GO_GCENABLE_FIRST_NEWPROC_CALL_RIP
+            | GO_GCENABLE_AFTER_FIRST_NEWPROC_RIP
+            | GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
+            | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
+            | GO_GCENABLE_CHANRECV1_CALL_RIP
+            | GO_CHANRECV_ENTRY_RIP
+    )
 }
 
 #[cfg(target_arch = "arm64ec")]
@@ -2253,7 +2276,13 @@ mod tests {
             (0x1100, 0x1800)
         );
         assert_eq!(main_entry.tls_g, INVALID_MORESTACK_MEMORY);
-        assert!(should_record_stack_event(main_entry));
+        assert!(!should_record_stack_event(main_entry));
+        let body = morestack_event_with_reader(GO_GCENABLE_BODY_RIP, &frame, |address| {
+            memory.get(&address).copied()
+        })
+        .unwrap();
+        assert_eq!(body.rip, GO_GCENABLE_BODY_RIP);
+        assert!(should_record_stack_event(body));
         let event = morestack_event_with_reader(MORESTACK_G0_LOADED_RIP, &frame, |address| {
             memory.get(&address).copied()
         })
@@ -2269,7 +2298,7 @@ mod tests {
         assert_eq!((event.rdi_stack_lo, event.rdi_stack_hi), (0x2100, 0x2800));
         assert_eq!((event.rbx_stack_lo, event.rbx_stack_hi), (0x3100, 0x3800));
         assert!(!should_record_stack_event(event));
-        assert!(should_record_stack_event(MorestackEvent {
+        assert!(!should_record_stack_event(MorestackEvent {
             r14_stack_lo: 0,
             ..event
         }));
