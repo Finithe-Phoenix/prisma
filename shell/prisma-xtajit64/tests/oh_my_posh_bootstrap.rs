@@ -170,6 +170,25 @@ fn go_page_bits_partial_word_mask_survives_exact_dispatch_boundaries() {
 }
 
 #[test]
+fn go_page_bits_single_page_bts_masks_the_register_index() {
+    let mut frame = CpuStateFrame::default();
+    frame.gpr[gpr::RCX] = 0;
+    frame.gpr[gpr::RDX] = 192;
+
+    let mut translator = Translator::for_dispatch();
+    let mut guest_pc = 0x1_4004_49b4_u64;
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x0f, 0xab, 0xd1],
+        &mut frame,
+    ); // bts rcx,rdx
+
+    assert_eq!(frame.gpr[gpr::RCX], 1);
+    assert_eq!(frame.cf, 0);
+}
+
+#[test]
 fn exact_oh_my_posh_bootstrap_writes_only_its_guest_stack_and_global() {
     ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
     ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
