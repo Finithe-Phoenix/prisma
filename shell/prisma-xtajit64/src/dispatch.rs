@@ -29,7 +29,7 @@ fn provider_owned_mapping_active_in_area(area: &ChpeV2CpuAreaInfo) -> bool {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub(crate) fn provider_owned_mapping_active() -> bool {
+pub fn provider_owned_mapping_active() -> bool {
     // SAFETY: Wine invokes the callback on the current simulation thread. A
     // missing CHPE area cannot belong to the provider allocation window.
     unsafe { current_wine_cpu_area() }
@@ -38,7 +38,7 @@ pub(crate) fn provider_owned_mapping_active() -> bool {
 }
 
 #[cfg(any(test, all(windows, target_arch = "arm64ec")))]
-pub(crate) struct ProviderOwnedMappingGuard {
+pub struct ProviderOwnedMappingGuard {
     slot: *mut *mut std::ffi::c_void,
     previous: *mut std::ffi::c_void,
 }
@@ -58,7 +58,7 @@ impl ProviderOwnedMappingGuard {
     }
 
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    pub(crate) fn enter_if_available() -> Option<Self> {
+    pub fn enter_if_available() -> Option<Self> {
         // SAFETY: this is an allocation-free probe of the current TEB. Provider
         // allocations outside Wine simulation simply have no callback window.
         unsafe { current_wine_cpu_area() }
