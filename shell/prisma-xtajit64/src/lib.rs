@@ -36,9 +36,7 @@ core::arch::global_asm!(
 
 use dispatch::{live_runtime_count, ThreadRuntime};
 #[cfg(all(windows, target_arch = "arm64ec"))]
-use dispatch::{
-    take_sys_mem_stat_underflow_events, SysMemStatEvent, RECENT_SYS_MEM_STAT_EVENT_COUNT,
-};
+use dispatch::{take_overlapping_palloc_events, PallocRangeEvent, RECENT_PALLOC_RANGE_EVENT_COUNT};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
     GuestMemory, PrismaExecutor, XmmRegister,
@@ -117,23 +115,38 @@ fn write_recent_jit_rips(recent: ([u64; 32], usize)) {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-fn write_recent_sys_mem_stat_events(
-    recent: ([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize),
+fn write_overlapping_palloc_events(
+    recent: (
+        [PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT],
+        usize,
+        u64,
+    ),
 ) {
-    let (events, count) = recent;
-    let events = &events[..count];
-    if !events
+    const PALLOC_RANGE_EVENT_ALLOC: u8 = 1;
+    const PALLOC_RANGE_EVENT_FREE: u8 = 2;
+
+    let (events, count, target) = recent;
+    write_hex_diagnostic(b"prisma-trace: palloc-target-address=", target);
+    for event in events[..count]
         .iter()
-        .any(|event| event.delta < 0 && event.old < event.delta.unsigned_abs())
+        .filter(|event| event.address == target)
     {
-        return;
-    }
-    for event in events {
-        write_hex_diagnostic(b"prisma-trace: other-sys-old=", event.old);
-        if event.delta >= 0 {
-            write_hex_diagnostic(b"prisma-trace: other-sys-add=", event.delta.unsigned_abs());
-        } else {
-            write_hex_diagnostic(b"prisma-trace: other-sys-sub=", event.delta.unsigned_abs());
+        match event.kind {
+            PALLOC_RANGE_EVENT_ALLOC => {
+                write_hex_diagnostic(b"prisma-trace: palloc-alloc-page=", u64::from(event.page));
+                write_hex_diagnostic(
+                    b"prisma-trace: palloc-alloc-npages=",
+                    u64::from(event.npages),
+                );
+            }
+            PALLOC_RANGE_EVENT_FREE => {
+                write_hex_diagnostic(b"prisma-trace: palloc-free-page=", u64::from(event.page));
+                write_hex_diagnostic(
+                    b"prisma-trace: palloc-free-npages=",
+                    u64::from(event.npages),
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -1128,8 +1141,8 @@ fn process_term(post_call: bool, status: NtStatus) {
         if let Some(recent_rips) = recent_rips {
             write_recent_jit_rips(recent_rips);
         }
-        if let Some(recent_sys_mem_stat_events) = take_sys_mem_stat_underflow_events() {
-            write_recent_sys_mem_stat_events(recent_sys_mem_stat_events);
+        if let Some(overlapping_palloc_events) = take_overlapping_palloc_events() {
+            write_overlapping_palloc_events(overlapping_palloc_events);
         }
     }
     let mut state = lock_provider();
@@ -1175,8 +1188,8 @@ fn thread_term(handle: Handle) {
         write_recent_jit_rips(recent_rips);
     }
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    if let Some(recent_sys_mem_stat_events) = take_sys_mem_stat_underflow_events() {
-        write_recent_sys_mem_stat_events(recent_sys_mem_stat_events);
+    if let Some(overlapping_palloc_events) = take_overlapping_palloc_events() {
+        write_overlapping_palloc_events(overlapping_palloc_events);
     }
 }
 

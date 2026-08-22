@@ -902,122 +902,177 @@ const MAX_JIT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const RECENT_JIT_RIP_COUNT: usize = 32;
 #[cfg(any(test, target_arch = "arm64ec"))]
-pub const RECENT_SYS_MEM_STAT_EVENT_COUNT: usize = 64;
+pub const RECENT_PALLOC_RANGE_EVENT_COUNT: usize = 256;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PALLOC_CHUNK_PAGES: usize = 512;
 
-// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. Immediately after
-// LOCK XADD, RAX is the counter address, RCX preserves the signed delta, and
-// RBX contains the old counter value. The process-wide static trace observes
-// all provider threads without changing JitCache or guest heap layout.
+// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. Both functions use
+// RAX for the pageBits address, RBX for the first page, and RCX for the page
+// count. pallocData.allocRange marks allocated pages; pageBits.clearRange
+// observes frees too. The latter also clears the distinct scavenged bitmap at
+// pallocData + 0x40, so the bitmap address remains part of every event.
 #[cfg(any(test, target_arch = "arm64ec"))]
-const SYS_MEM_STAT_ADD_STATE_RIP: u64 = 0x0001_4004_8295;
+const PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP: u64 = 0x0001_4004_51e0;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const OTHER_SYS_ADDRESS: u64 = 0x0001_40e0_4d88;
+const PAGE_BITS_CLEAR_RANGE_ENTRY_RIP: u64 = 0x0001_4004_4a00;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PALLOC_RANGE_EVENT_ALLOC: u8 = 1;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PALLOC_RANGE_EVENT_FREE: u8 = 2;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct SysMemStatEvent {
-    pub delta: i64,
-    pub old: u64,
+pub struct PallocRangeEvent {
+    pub address: u64,
+    pub page: u16,
+    pub npages: u16,
+    pub kind: u8,
+    pub reserved: [u8; 3],
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
-struct SysMemStatTrace {
+struct PallocRangeTrace {
     cursor: AtomicUsize,
-    sequences: [AtomicUsize; RECENT_SYS_MEM_STAT_EVENT_COUNT],
-    deltas: [AtomicU64; RECENT_SYS_MEM_STAT_EVENT_COUNT],
-    old_values: [AtomicU64; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+    sequences: [AtomicUsize; RECENT_PALLOC_RANGE_EVENT_COUNT],
+    addresses: [AtomicU64; RECENT_PALLOC_RANGE_EVENT_COUNT],
+    ranges: [AtomicU64; RECENT_PALLOC_RANGE_EVENT_COUNT],
     reported: AtomicBool,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
-impl SysMemStatTrace {
+impl PallocRangeTrace {
     const fn new() -> Self {
         Self {
             cursor: AtomicUsize::new(0),
-            sequences: [const { AtomicUsize::new(usize::MAX) }; RECENT_SYS_MEM_STAT_EVENT_COUNT],
-            deltas: [const { AtomicU64::new(0) }; RECENT_SYS_MEM_STAT_EVENT_COUNT],
-            old_values: [const { AtomicU64::new(0) }; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+            sequences: [const { AtomicUsize::new(usize::MAX) }; RECENT_PALLOC_RANGE_EVENT_COUNT],
+            addresses: [const { AtomicU64::new(0) }; RECENT_PALLOC_RANGE_EVENT_COUNT],
+            ranges: [const { AtomicU64::new(0) }; RECENT_PALLOC_RANGE_EVENT_COUNT],
             reported: AtomicBool::new(false),
         }
     }
 
-    fn record(&self, event: SysMemStatEvent) {
+    fn record(&self, event: PallocRangeEvent) {
         let sequence = self.cursor.fetch_add(1, Ordering::SeqCst);
-        let index = sequence % RECENT_SYS_MEM_STAT_EVENT_COUNT;
+        let index = sequence % RECENT_PALLOC_RANGE_EVENT_COUNT;
+        let packed =
+            u64::from(event.page) | (u64::from(event.npages) << 16) | (u64::from(event.kind) << 32);
         self.sequences[index].store(usize::MAX, Ordering::SeqCst);
-        self.deltas[index].store(
-            u64::from_ne_bytes(event.delta.to_ne_bytes()),
-            Ordering::SeqCst,
-        );
-        self.old_values[index].store(event.old, Ordering::SeqCst);
+        self.addresses[index].store(event.address, Ordering::SeqCst);
+        self.ranges[index].store(packed, Ordering::SeqCst);
         self.sequences[index].store(sequence, Ordering::SeqCst);
     }
 
-    fn recent(&self) -> ([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize) {
+    fn recent(&self) -> ([PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT], usize) {
         let end = self.cursor.load(Ordering::SeqCst);
-        let retained = end.min(RECENT_SYS_MEM_STAT_EVENT_COUNT);
+        let retained = end.min(RECENT_PALLOC_RANGE_EVENT_COUNT);
         let start = end.saturating_sub(retained);
-        let mut ordered = [SysMemStatEvent::default(); RECENT_SYS_MEM_STAT_EVENT_COUNT];
+        let mut ordered = [PallocRangeEvent::default(); RECENT_PALLOC_RANGE_EVENT_COUNT];
         let mut count = 0;
         for sequence in start..end {
-            let index = sequence % RECENT_SYS_MEM_STAT_EVENT_COUNT;
+            let index = sequence % RECENT_PALLOC_RANGE_EVENT_COUNT;
             if self.sequences[index].load(Ordering::SeqCst) != sequence {
                 continue;
             }
-            let delta = self.deltas[index].load(Ordering::SeqCst);
-            let old = self.old_values[index].load(Ordering::SeqCst);
+            let address = self.addresses[index].load(Ordering::SeqCst);
+            let packed = self.ranges[index].load(Ordering::SeqCst);
             if self.sequences[index].load(Ordering::SeqCst) != sequence {
                 continue;
             }
-            ordered[count] = SysMemStatEvent {
-                delta: i64::from_ne_bytes(delta.to_ne_bytes()),
-                old,
+            ordered[count] = PallocRangeEvent {
+                address,
+                page: u16::try_from(packed & u64::from(u16::MAX)).unwrap_or(u16::MAX),
+                npages: u16::try_from((packed >> 16) & u64::from(u16::MAX)).unwrap_or(u16::MAX),
+                kind: u8::try_from((packed >> 32) & u64::from(u8::MAX)).unwrap_or(u8::MAX),
+                reserved: [0; 3],
             };
             count += 1;
         }
         (ordered, count)
     }
 
-    fn take_underflow(
+    fn take_overlap(
         &self,
-    ) -> Option<([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize)> {
-        let recent = self.recent();
-        let (events, count) = &recent;
-        let has_underflow = events[..*count]
-            .iter()
-            .any(|event| event.delta < 0 && event.old < event.delta.unsigned_abs());
-        if !has_underflow || self.reported.swap(true, Ordering::SeqCst) {
+    ) -> Option<(
+        [PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT],
+        usize,
+        u64,
+    )> {
+        let (events, count) = self.recent();
+        let target = first_overlapping_palloc_address(&events[..count])?;
+        if self.reported.swap(true, Ordering::SeqCst) {
             return None;
         }
-        Some(recent)
+        Some((events, count, target))
     }
 }
 
-#[cfg(target_arch = "arm64ec")]
-static SYS_MEM_STAT_TRACE: SysMemStatTrace = SysMemStatTrace::new();
-
 #[cfg(any(test, target_arch = "arm64ec"))]
-fn sys_mem_stat_event(guest_rip: u64, frame: &CpuStateFrame) -> Option<SysMemStatEvent> {
-    (guest_rip == SYS_MEM_STAT_ADD_STATE_RIP && frame.gpr[gpr::RAX] == OTHER_SYS_ADDRESS).then(
-        || SysMemStatEvent {
-            delta: i64::from_ne_bytes(frame.gpr[gpr::RCX].to_ne_bytes()),
-            old: frame.gpr[gpr::RBX],
-        },
-    )
+fn first_overlapping_palloc_address(events: &[PallocRangeEvent]) -> Option<u64> {
+    for candidate in events
+        .iter()
+        .filter(|event| event.kind == PALLOC_RANGE_EVENT_ALLOC)
+        .map(|event| event.address)
+    {
+        let mut allocated = [0_u64; PALLOC_CHUNK_PAGES / 64];
+        for event in events.iter().filter(|event| event.address == candidate) {
+            let start = usize::from(event.page);
+            let Some(end) = start.checked_add(usize::from(event.npages)) else {
+                return Some(candidate);
+            };
+            if start >= end || end > PALLOC_CHUNK_PAGES {
+                return Some(candidate);
+            }
+            for page in start..end {
+                let word = page / 64;
+                let bit = 1_u64 << (page % 64);
+                if event.kind == PALLOC_RANGE_EVENT_ALLOC {
+                    if allocated[word] & bit != 0 {
+                        return Some(candidate);
+                    }
+                    allocated[word] |= bit;
+                } else if event.kind == PALLOC_RANGE_EVENT_FREE {
+                    allocated[word] &= !bit;
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(target_arch = "arm64ec")]
-fn record_sys_mem_stat_event(guest_rip: u64, frame: &CpuStateFrame) {
-    if let Some(event) = sys_mem_stat_event(guest_rip, frame) {
-        SYS_MEM_STAT_TRACE.record(event);
+static PALLOC_RANGE_TRACE: PallocRangeTrace = PallocRangeTrace::new();
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+fn palloc_range_event(guest_rip: u64, frame: &CpuStateFrame) -> Option<PallocRangeEvent> {
+    let kind = match guest_rip {
+        PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP => PALLOC_RANGE_EVENT_ALLOC,
+        PAGE_BITS_CLEAR_RANGE_ENTRY_RIP => PALLOC_RANGE_EVENT_FREE,
+        _ => return None,
+    };
+    Some(PallocRangeEvent {
+        address: frame.gpr[gpr::RAX],
+        page: u16::try_from(frame.gpr[gpr::RBX]).unwrap_or(u16::MAX),
+        npages: u16::try_from(frame.gpr[gpr::RCX]).unwrap_or(u16::MAX),
+        kind,
+        reserved: [0; 3],
+    })
+}
+
+#[cfg(target_arch = "arm64ec")]
+fn record_palloc_range_event(guest_rip: u64, frame: &CpuStateFrame) {
+    if let Some(event) = palloc_range_event(guest_rip, frame) {
+        PALLOC_RANGE_TRACE.record(event);
     }
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-pub(super) fn take_sys_mem_stat_underflow_events(
-) -> Option<([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize)> {
-    SYS_MEM_STAT_TRACE.take_underflow()
+pub(super) fn take_overlapping_palloc_events() -> Option<(
+    [PallocRangeEvent; RECENT_PALLOC_RANGE_EVENT_COUNT],
+    usize,
+    u64,
+)> {
+    PALLOC_RANGE_TRACE.take_overlap()
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1255,7 +1310,7 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
-            record_sys_mem_stat_event(guest_rip, frame);
+            record_palloc_range_event(guest_rip, frame);
             let cached_entry = {
                 let mut cache = self
                     .cache
@@ -2080,44 +2135,44 @@ mod tests {
     }
 
     #[test]
-    fn static_trace_records_other_sys_state_and_reports_underflow_once() {
-        assert_eq!(std::mem::size_of::<SysMemStatEvent>(), 16);
-        let trace = SysMemStatTrace::new();
+    fn static_trace_reports_overlapping_palloc_ranges_once() {
+        assert_eq!(std::mem::size_of::<PallocRangeEvent>(), 16);
+        let trace = PallocRangeTrace::new();
         let mut frame = CpuStateFrame::default();
-        frame.gpr[gpr::RAX] = OTHER_SYS_ADDRESS + 8;
-        frame.gpr[gpr::RCX] = 4_096;
-        frame.gpr[gpr::RBX] = 8_192;
-        assert_eq!(sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame), None);
-
-        frame.gpr[gpr::RAX] = OTHER_SYS_ADDRESS;
+        let address = 0x1234_0000;
+        frame.gpr[gpr::RAX] = address;
+        frame.gpr[gpr::RBX] = 0;
+        frame.gpr[gpr::RCX] = 10;
         assert_eq!(
-            sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP - 1, &frame),
+            palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP - 1, &frame),
             None
         );
-        trace.record(sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame).unwrap());
+        trace.record(palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP, &frame).unwrap());
 
-        frame.gpr[gpr::RCX] = u64::from_ne_bytes((-8_192_i64).to_ne_bytes());
-        frame.gpr[gpr::RBX] = 0;
-        trace.record(sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame).unwrap());
+        frame.gpr[gpr::RBX] = 4;
+        frame.gpr[gpr::RCX] = 2;
+        trace.record(palloc_range_event(PAGE_BITS_CLEAR_RANGE_ENTRY_RIP, &frame).unwrap());
+        trace.record(palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP, &frame).unwrap());
+
+        frame.gpr[gpr::RAX] = address + 0x40;
+        trace.record(palloc_range_event(PAGE_BITS_CLEAR_RANGE_ENTRY_RIP, &frame).unwrap());
+
+        frame.gpr[gpr::RAX] = address;
+        frame.gpr[gpr::RBX] = 5;
+        trace.record(palloc_range_event(PALLOC_DATA_ALLOC_RANGE_ENTRY_RIP, &frame).unwrap());
 
         let (events, count) = trace.recent();
-        assert_eq!(count, 2);
+        assert_eq!(count, 5);
+        assert_eq!(events[0].address, address);
+        assert_eq!(events[0].page, 0);
+        assert_eq!(events[0].npages, 10);
+        assert_eq!(events[0].kind, PALLOC_RANGE_EVENT_ALLOC);
         assert_eq!(
-            events[0],
-            SysMemStatEvent {
-                delta: 4_096,
-                old: 8_192,
-            }
+            first_overlapping_palloc_address(&events[..count]),
+            Some(address)
         );
-        assert_eq!(
-            events[1],
-            SysMemStatEvent {
-                delta: -8_192,
-                old: 0,
-            }
-        );
-        assert_eq!(trace.take_underflow(), Some((events, count)));
-        assert_eq!(trace.take_underflow(), None);
+        assert_eq!(trace.take_overlap(), Some((events, count, address)));
+        assert_eq!(trace.take_overlap(), None);
     }
 
     #[test]
