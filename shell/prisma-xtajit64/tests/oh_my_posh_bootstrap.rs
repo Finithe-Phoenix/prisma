@@ -18,6 +18,8 @@ const GUARD_BYTES: usize = 64;
 const CANARY: u8 = 0xa5;
 const PAGE_BITS_SET_RANGE_PC: u64 = 0x1_4004_4940;
 const PAGE_BITS_SINGLE_PAGE_PC: u64 = 0x1_4004_49b0;
+const PALLOC_BITS_FIND_SMALL_N_PC: u64 = 0x1_4004_4fc0;
+const PALLOC_BITS_FIND_SMALL_N_RETURN_PC: u64 = 0x1_4004_5fff;
 
 static DISPATCH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -99,6 +101,92 @@ impl GuestMemory for PageBitsSetRangeMemory {
             0x1_4004_49ef => &[0x5d],                   // pop rbp
             0x1_4004_49f0 => &[0xc3],                   // ret
             _ => return Err(format!("unexpected pageBits.setRange RIP {rip:#x}")),
+        };
+        Ok(instruction[..instruction.len().min(max_len)].to_vec())
+    }
+}
+
+struct PallocBitsFindSmallNMemory;
+
+impl GuestMemory for PallocBitsFindSmallNMemory {
+    fn read_code(&self, rip: u64, max_len: usize) -> Result<Vec<u8>, String> {
+        let instruction: &[u8] = match rip {
+            PALLOC_BITS_FIND_SMALL_N_PC => &[0x48, 0xc1, 0xe9, 0x06], // shr rcx,6
+            0x1_4004_4fc4 => &[0x48, 0xc7, 0xc2, 0xff, 0xff, 0xff, 0xff], // mov rdx,-1
+            0x1_4004_4fcb => &[0x31, 0xf6],                           // xor esi,esi
+            0x1_4004_4fcd => &[0xeb, 0x04],                           // jmp 0x140044fd3
+            0x1_4004_4fcf => &[0x49, 0x8d, 0x49, 0x01],               // lea rcx,[r9+1]
+            0x1_4004_4fd3 => &[0x48, 0x83, 0xf9, 0x08],               // cmp rcx,8
+            0x1_4004_4fd7 => &[0x0f, 0x83, 0xc0, 0, 0, 0],            // jae 0x14004509d
+            0x1_4004_4fdd => &[0x84, 0x00],                           // test [rax],al
+            0x1_4004_4fdf => &[0x48, 0x8b, 0x3c, 0xc8],               // mov rdi,[rax+rcx*8]
+            0x1_4004_4fe3 => &[0x49, 0x89, 0xf8],                     // mov r8,rdi
+            0x1_4004_4fe6 => &[0x48, 0xf7, 0xd7],                     // not rdi
+            0x1_4004_4fe9 => &[0x48, 0x85, 0xff],                     // test rdi,rdi
+            0x1_4004_4fec => &[0x75, 0x07],                           // jne 0x140044ff5
+            0x1_4004_4fee => &[0x49, 0x89, 0xc9],                     // mov r9,rcx
+            0x1_4004_4ff1 => &[0x31, 0xf6],                           // xor esi,esi
+            0x1_4004_4ff3 => &[0xeb, 0xda],                           // jmp 0x140044fcf
+            0x1_4004_4ff5 => &[0x48, 0x83, 0xfa, 0xff],               // cmp rdx,-1
+            0x1_4004_4ff9 => &[0x75, 0x11],                           // jne 0x14004500c
+            0x1_4004_4ffb => &[0x49, 0x89, 0xc9],                     // mov r9,rcx
+            0x1_4004_4ffe => &[0x48, 0xc1, 0xe1, 0x06],               // shl rcx,6
+            0x1_4004_5002 => &[0x4c, 0x0f, 0xbc, 0xd7],               // bsf r10,rdi
+            0x1_4004_5006 => &[0x4a, 0x8d, 0x14, 0x11],               // lea rdx,[rcx+r10]
+            0x1_4004_500a => &[0xeb, 0x03],                           // jmp 0x14004500f
+            0x1_4004_500c => &[0x49, 0x89, 0xc9],                     // mov r9,rcx
+            0x1_4004_500f => &[0x4d, 0x0f, 0xbc, 0xd0],               // bsf r10,r8
+            0x1_4004_5013 => &[0x41, 0xbb, 0x40, 0, 0, 0],            // mov r11d,64
+            0x1_4004_5019 => &[0x4d, 0x0f, 0x44, 0xd3],               // cmove r10,r11
+            0x1_4004_501d => &[0x49, 0x01, 0xf2],                     // add r10,rsi
+            0x1_4004_5020 => &[0x4c, 0x39, 0xd3],                     // cmp rbx,r10
+            0x1_4004_5023 => &[0x76, 0x6a],                           // jbe 0x14004508f
+            0x1_4004_5025 => &[0x48, 0x8d, 0x73, 0xff],               // lea rsi,[rbx-1]
+            0x1_4004_5029 => &[0xb9, 0x01, 0, 0, 0],                  // mov ecx,1
+            0x1_4004_502e => &[0xeb, 0x09],                           // jmp 0x140045039
+            0x1_4004_5030 => &[0x48, 0x29, 0xce],                     // sub rsi,rcx
+            0x1_4004_5033 => &[0x48, 0x01, 0xc9],                     // add rcx,rcx
+            0x1_4004_5036 => &[0x4c, 0x89, 0xd7],                     // mov rdi,r10
+            0x1_4004_5039 => &[0x48, 0x85, 0xf6],                     // test rsi,rsi
+            0x1_4004_503c => &[0x76, 0x28],                           // jbe 0x140045066
+            0x1_4004_503e => &[0x66, 0x90],                           // xchg ax,ax
+            0x1_4004_5040 => &[0x48, 0x39, 0xf1],                     // cmp rcx,rsi
+            0x1_4004_5043 => &[0x73, 0x15],                           // jae 0x14004505a
+            0x1_4004_5045 => &[0x49, 0x89, 0xfa],                     // mov r10,rdi
+            0x1_4004_5048 => &[0x48, 0xd3, 0xef],                     // shr rdi,cl
+            0x1_4004_504b => &[0x49, 0x21, 0xfa],                     // and r10,rdi
+            0x1_4004_504e => &[0x4d, 0x85, 0xd2],                     // test r10,r10
+            0x1_4004_5051 => &[0x75, 0xdd],                           // jne 0x140045030
+            0x1_4004_5053 => &[0xbe, 0x40, 0, 0, 0],                  // mov esi,64
+            0x1_4004_5058 => &[0xeb, 0x14],                           // jmp 0x14004506e
+            0x1_4004_505a => &[0x48, 0x89, 0xf1],                     // mov rcx,rsi
+            0x1_4004_505d => &[0x48, 0x89, 0xfe],                     // mov rsi,rdi
+            0x1_4004_5060 => &[0x48, 0xd3, 0xee],                     // shr rsi,cl
+            0x1_4004_5063 => &[0x48, 0x21, 0xf7],                     // and rdi,rsi
+            0x1_4004_5066 => &[0x48, 0x0f, 0xbc, 0xf7],               // bsf rsi,rdi
+            0x1_4004_506a => &[0x49, 0x0f, 0x44, 0xf3],               // cmove rsi,r11
+            0x1_4004_506e => &[0x48, 0x83, 0xfe, 0x40],               // cmp rsi,64
+            0x1_4004_5072 => &[0x72, 0x34],                           // jb 0x1400450a8
+            0x1_4004_5074 => &[0x49, 0x0f, 0xbd, 0xf0],               // bsr rsi,r8
+            0x1_4004_5078 => &[0x48, 0xc7, 0xc7, 0xff, 0xff, 0xff, 0xff], // mov rdi,-1
+            0x1_4004_507f => &[0x48, 0x0f, 0x44, 0xf7],               // cmove rsi,rdi
+            0x1_4004_5083 => &[0x48, 0x83, 0xc6, 0xc1],               // add rsi,-63
+            0x1_4004_5087 => &[0x48, 0xf7, 0xde],                     // neg rsi
+            0x1_4004_508a => &[0xe9, 0x40, 0xff, 0xff, 0xff],         // jmp 0x140044fcf
+            0x1_4004_508f => &[0x49, 0xc1, 0xe1, 0x06],               // shl r9,6
+            0x1_4004_5093 => &[0x49, 0x29, 0xf1],                     // sub r9,rsi
+            0x1_4004_5096 => &[0x4c, 0x89, 0xc8],                     // mov rax,r9
+            0x1_4004_5099 => &[0x48, 0x89, 0xd3],                     // mov rbx,rdx
+            0x1_4004_509c => &[0xc3],                                 // ret
+            0x1_4004_509d => &[0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff], // mov rax,-1
+            0x1_4004_50a4 => &[0x48, 0x89, 0xd3],                     // mov rbx,rdx
+            0x1_4004_50a7 => &[0xc3],                                 // ret
+            0x1_4004_50a8 => &[0x49, 0xc1, 0xe1, 0x06],               // shl r9,6
+            0x1_4004_50ac => &[0x4a, 0x8d, 0x04, 0x0e],               // lea rax,[rsi+r9]
+            0x1_4004_50b0 => &[0x48, 0x89, 0xd3],                     // mov rbx,rdx
+            0x1_4004_50b3 => &[0xc3],                                 // ret
+            PALLOC_BITS_FIND_SMALL_N_RETURN_PC => &[0xeb, 0xfe],      // jmp to self
+            _ => return Err(format!("unexpected pallocBits.findSmallN RIP {rip:#x}")),
         };
         Ok(instruction[..instruction.len().min(max_len)].to_vec())
     }
@@ -525,6 +613,102 @@ fn go_page_bits_multiword_full_dispatch_sets_initial_389_pages() {
     assert_eq!(
         &arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()],
         &RETURN_PC.to_le_bytes()
+    );
+    assert!(guarded[..GUARD_BYTES].iter().all(|byte| *byte == CANARY));
+    assert!(guarded[GUARD_BYTES + ARENA_BYTES..]
+        .iter()
+        .all(|byte| *byte == CANARY));
+
+    ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    let snapshot = provider_snapshot();
+    assert_eq!(snapshot.active_threads, 0);
+    assert_eq!(snapshot.tracked_mappings, 0);
+    assert_eq!(snapshot.active_dispatches, 0);
+    assert_eq!(snapshot.live_runtimes, 0);
+    assert_eq!(snapshot.live_dispatch_stacks, 0);
+}
+
+#[test]
+fn go_palloc_bits_find_small_n_skips_allocated_partial_word() {
+    let _guard = DISPATCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    assert_eq!(ProcessInit(), STATUS_SUCCESS);
+    assert_eq!(ThreadInit(), STATUS_SUCCESS);
+
+    const GUEST_BASE: u64 = 0x3_0000;
+    const ARENA_BYTES: usize = 0x400;
+    const BITMAP_OFFSET: usize = 0x80;
+    const STACK_OFFSET: usize = 0x300;
+    const REQUESTED_PAGES: u64 = 7;
+    const SEARCH_INDEX: u64 = 192;
+    const EXPECTED_PAGE: u64 = 215;
+    let initial_bitmap = [
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        (1_u64 << 23) - 1,
+        0,
+        0,
+        0,
+        0x440,
+    ];
+    let mut guarded = [CANARY; GUARD_BYTES + ARENA_BYTES + GUARD_BYTES];
+    let arena = &mut guarded[GUARD_BYTES..GUARD_BYTES + ARENA_BYTES];
+    for (index, word) in initial_bitmap.iter().enumerate() {
+        let offset = BITMAP_OFFSET + index * size_of::<u64>();
+        arena[offset..offset + size_of::<u64>()].copy_from_slice(&word.to_le_bytes());
+    }
+    arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()]
+        .copy_from_slice(&PALLOC_BITS_FIND_SMALL_N_RETURN_PC.to_le_bytes());
+
+    let executor = RebasedExecutor {
+        mem_base: (arena.as_ptr().addr() as u64).wrapping_sub(GUEST_BASE),
+    };
+    let guest_bitmap = GUEST_BASE + BITMAP_OFFSET as u64;
+    let initial_rsp = GUEST_BASE + STACK_OFFSET as u64;
+    let mut context = Arm64EcContext {
+        x8_rax: guest_bitmap,
+        x0_rcx: SEARCH_INDEX,
+        x27_rbx: REQUESTED_PAGES,
+        sp_rsp: initial_rsp,
+        pc_rip: PALLOC_BITS_FIND_SMALL_N_PC,
+        ..Arm64EcContext::default()
+    };
+
+    let report = dispatch_context(
+        &mut context,
+        &PallocBitsFindSmallNMemory,
+        &executor,
+        DispatchLimits {
+            max_blocks: 128,
+            max_fetch_bytes: 16,
+            max_instructions_per_block: 1,
+        },
+    )
+    .expect("execute exact pallocBits.findSmallN route");
+
+    assert_eq!(report.stop, DispatchStop::BlockLimit);
+    assert_eq!(report.blocks, 128);
+    assert_eq!(report.instructions, 128);
+    assert_eq!(report.rip, PALLOC_BITS_FIND_SMALL_N_RETURN_PC);
+    assert_eq!(context.pc_rip, PALLOC_BITS_FIND_SMALL_N_RETURN_PC);
+    assert_eq!(context.x8_rax, EXPECTED_PAGE);
+    assert_eq!(context.x27_rbx, EXPECTED_PAGE);
+    assert_eq!(context.sp_rsp, initial_rsp + size_of::<u64>() as u64);
+
+    let mut actual_bitmap = [0_u64; 8];
+    for (index, word) in actual_bitmap.iter_mut().enumerate() {
+        let offset = BITMAP_OFFSET + index * size_of::<u64>();
+        *word = u64::from_le_bytes(arena[offset..offset + size_of::<u64>()].try_into().unwrap());
+    }
+    assert_eq!(actual_bitmap, initial_bitmap);
+    assert_eq!(
+        &arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()],
+        &PALLOC_BITS_FIND_SMALL_N_RETURN_PC.to_le_bytes()
     );
     assert!(guarded[..GUARD_BYTES].iter().all(|byte| *byte == CANARY));
     assert!(guarded[GUARD_BYTES + ARENA_BYTES..]
