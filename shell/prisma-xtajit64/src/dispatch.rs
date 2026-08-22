@@ -1034,21 +1034,25 @@ impl StackcacheLinkWatch {
         {
             return None;
         }
-        let r14 = frame.gpr[gpr::R14];
+        let rsp = frame.gpr[gpr::RSP];
         let linked_stack_bounds = read_morestack_stack(watched_stack_bounds.0, &mut read_u64);
-        let current_stack_bounds = read_morestack_stack(r14, &mut read_u64);
+        let return_address = read_u64(rsp).unwrap_or(INVALID_MORESTACK_MEMORY);
+        // A dynamic watch event is distinguishable because its RIP is neither
+        // of the fixed stackcache probes. Preserve the live copy registers plus the
+        // return address and source/destination so a write observed inside a
+        // runtime memory primitive can be resolved to its exact caller.
         Some(MorestackEvent {
             rip: guest_rip,
-            r14,
-            rax: address,
-            rbx: 0,
-            rcx: watched_stack_bounds.0,
-            rsp: frame.gpr[gpr::RSP],
-            r8: frame.gpr[gpr::R8],
-            r14_stack_lo: current_stack_bounds.0,
-            r14_stack_hi: current_stack_bounds.1,
-            rax_stack_lo: watched_stack_bounds.0,
-            rax_stack_hi: watched_stack_bounds.1,
+            r14: frame.gpr[gpr::R14],
+            rax: frame.gpr[gpr::RAX],
+            rbx: frame.gpr[gpr::RBX],
+            rcx: frame.gpr[gpr::RCX],
+            rsp,
+            r8: return_address,
+            r14_stack_lo: frame.gpr[gpr::RSI],
+            r14_stack_hi: frame.gpr[gpr::RDI],
+            rax_stack_lo: address,
+            rax_stack_hi: watched_stack_bounds.0,
             rcx_stack_lo: linked_stack_bounds.0,
             rcx_stack_hi: linked_stack_bounds.1,
         })
@@ -2363,13 +2367,19 @@ mod tests {
         });
         let mut frame = CpuStateFrame::default();
         frame.gpr[gpr::R14] = 0x1000;
+        frame.gpr[gpr::RAX] = 0xa000;
+        frame.gpr[gpr::RBX] = 0xb000;
+        frame.gpr[gpr::RCX] = 0xc000;
         frame.gpr[gpr::RSP] = 0x5000;
         frame.gpr[gpr::R8] = 0x8000;
+        frame.gpr[gpr::RSI] = 0x2000;
+        frame.gpr[gpr::RDI] = 0x4100;
         let mut memory = BTreeMap::from([
             (0x1000, 0x1100),
             (0x1008, 0x1800),
             (0x4100, 0),
             (0x4108, 0x4800),
+            (0x5000, 0x700c),
             (0x6000, 0x6100),
             (0x6008, 0x6800),
         ]);
@@ -2384,12 +2394,13 @@ mod tests {
             .mutation_event_with_reader(0x7008, &frame, |address| memory.get(&address).copied())
             .unwrap();
         assert_eq!(event.rip, 0x7008);
-        assert_eq!(event.rax, 0x4100);
-        assert_eq!(event.rcx, 0x6000);
+        assert_eq!(event.rax, 0xa000);
+        assert_eq!(event.rbx, 0xb000);
+        assert_eq!(event.rcx, 0xc000);
         assert_eq!(event.rsp, 0x5000);
-        assert_eq!(event.r8, 0x8000);
-        assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
-        assert_eq!((event.rax_stack_lo, event.rax_stack_hi), (0x6000, 0x4800));
+        assert_eq!(event.r8, 0x700c);
+        assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x2000, 0x4100));
+        assert_eq!((event.rax_stack_lo, event.rax_stack_hi), (0x4100, 0x6000));
         assert_eq!((event.rcx_stack_lo, event.rcx_stack_hi), (0x6100, 0x6800));
         assert_eq!(
             watch.mutation_event_with_reader(0x7010, &frame, |address| {
