@@ -35,12 +35,14 @@ core::arch::global_asm!(
 );
 
 use dispatch::{live_runtime_count, ThreadRuntime};
+#[cfg(all(windows, target_arch = "arm64ec"))]
+use dispatch::{
+    take_sys_mem_stat_underflow_events, SysMemStatEvent, RECENT_SYS_MEM_STAT_EVENT_COUNT,
+};
 pub use dispatch::{
     Arm64EcContext, BlockExecutor, DispatchError, DispatchLimits, DispatchReport, DispatchStop,
     GuestMemory, PrismaExecutor, XmmRegister,
 };
-#[cfg(all(windows, target_arch = "arm64ec"))]
-use dispatch::{SysMemStatEvent, RECENT_SYS_MEM_STAT_EVENT_COUNT};
 
 pub type NtStatus = i32;
 pub type WinBoolean = u8;
@@ -120,10 +122,10 @@ fn write_recent_sys_mem_stat_events(
 ) {
     let (events, count) = recent;
     let events = &events[..count];
-    let Some(last) = events.last() else {
-        return;
-    };
-    if last.delta >= 0 || last.old >= last.delta.unsigned_abs() {
+    if !events
+        .iter()
+        .any(|event| event.delta < 0 && event.old < event.delta.unsigned_abs())
+    {
         return;
     }
     for event in events {
@@ -1116,17 +1118,17 @@ fn phase_error(phase: ProviderPhase) -> LifecycleError {
 fn process_term(post_call: bool, status: NtStatus) {
     #[cfg(all(windows, target_arch = "arm64ec"))]
     if !post_call {
-        let recent = {
+        let recent_rips = {
             let state = lock_provider();
-            state.threads.get(&current_thread_key()).map(|thread| {
-                (
-                    thread.executor.recent_guest_rips(),
-                    thread.executor.recent_sys_mem_stat_events(),
-                )
-            })
+            state
+                .threads
+                .get(&current_thread_key())
+                .map(|thread| thread.executor.recent_guest_rips())
         };
-        if let Some((recent_rips, recent_sys_mem_stat_events)) = recent {
+        if let Some(recent_rips) = recent_rips {
             write_recent_jit_rips(recent_rips);
+        }
+        if let Some(recent_sys_mem_stat_events) = take_sys_mem_stat_underflow_events() {
             write_recent_sys_mem_stat_events(recent_sys_mem_stat_events);
         }
     }
@@ -1161,10 +1163,7 @@ fn thread_term(handle: Handle) {
         if let Some(context) = state.threads.remove(&key) {
             #[cfg(all(windows, target_arch = "arm64ec"))]
             {
-                recent = Some((
-                    context.executor.recent_guest_rips(),
-                    context.executor.recent_sys_mem_stat_events(),
-                ));
+                recent = Some(context.executor.recent_guest_rips());
             }
             context.runtime.cancel();
             state.retire_thread(context);
@@ -1172,8 +1171,11 @@ fn thread_term(handle: Handle) {
     }
     drop(state);
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    if let Some((recent_rips, recent_sys_mem_stat_events)) = recent {
+    if let Some(recent_rips) = recent {
         write_recent_jit_rips(recent_rips);
+    }
+    #[cfg(all(windows, target_arch = "arm64ec"))]
+    if let Some(recent_sys_mem_stat_events) = take_sys_mem_stat_underflow_events() {
         write_recent_sys_mem_stat_events(recent_sys_mem_stat_events);
     }
 }

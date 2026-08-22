@@ -2,6 +2,8 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
+#[cfg(any(test, target_arch = "arm64ec"))]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -902,19 +904,14 @@ const RECENT_JIT_RIP_COUNT: usize = 32;
 #[cfg(any(test, target_arch = "arm64ec"))]
 pub const RECENT_SYS_MEM_STAT_EVENT_COUNT: usize = 64;
 
-// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. At entry to
-// sysMemStat.add, RAX is the counter address and RBX is the signed delta. At
-// the instruction after LOCK XADD, RBX contains the old counter value while
-// RCX still preserves the delta. This diagnostic is removed with the RIP ring
-// once the first inconsistent other_sys transition is isolated.
-#[cfg(any(test, target_arch = "arm64ec"))]
-const SYS_MEM_STAT_ADD_ENTRY_RIP: u64 = 0x0001_4004_8280;
+// Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. Immediately after
+// LOCK XADD, RAX is the counter address, RCX preserves the signed delta, and
+// RBX contains the old counter value. The process-wide static trace observes
+// all provider threads without changing JitCache or guest heap layout.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const SYS_MEM_STAT_ADD_STATE_RIP: u64 = 0x0001_4004_8295;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const OTHER_SYS_ADDRESS: u64 = 0x0001_40e0_4d88;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const SYS_MEM_STAT_OLD_UNAVAILABLE: u64 = u64::MAX;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -925,6 +922,105 @@ pub struct SysMemStatEvent {
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
+struct SysMemStatTrace {
+    cursor: AtomicUsize,
+    sequences: [AtomicUsize; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+    deltas: [AtomicU64; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+    old_values: [AtomicU64; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+    reported: AtomicBool,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl SysMemStatTrace {
+    const fn new() -> Self {
+        Self {
+            cursor: AtomicUsize::new(0),
+            sequences: [const { AtomicUsize::new(usize::MAX) }; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+            deltas: [const { AtomicU64::new(0) }; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+            old_values: [const { AtomicU64::new(0) }; RECENT_SYS_MEM_STAT_EVENT_COUNT],
+            reported: AtomicBool::new(false),
+        }
+    }
+
+    fn record(&self, event: SysMemStatEvent) {
+        let sequence = self.cursor.fetch_add(1, Ordering::SeqCst);
+        let index = sequence % RECENT_SYS_MEM_STAT_EVENT_COUNT;
+        self.sequences[index].store(usize::MAX, Ordering::SeqCst);
+        self.deltas[index].store(
+            u64::from_ne_bytes(event.delta.to_ne_bytes()),
+            Ordering::SeqCst,
+        );
+        self.old_values[index].store(event.old, Ordering::SeqCst);
+        self.sequences[index].store(sequence, Ordering::SeqCst);
+    }
+
+    fn recent(&self) -> ([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize) {
+        let end = self.cursor.load(Ordering::SeqCst);
+        let retained = end.min(RECENT_SYS_MEM_STAT_EVENT_COUNT);
+        let start = end.saturating_sub(retained);
+        let mut ordered = [SysMemStatEvent::default(); RECENT_SYS_MEM_STAT_EVENT_COUNT];
+        let mut count = 0;
+        for sequence in start..end {
+            let index = sequence % RECENT_SYS_MEM_STAT_EVENT_COUNT;
+            if self.sequences[index].load(Ordering::SeqCst) != sequence {
+                continue;
+            }
+            let delta = self.deltas[index].load(Ordering::SeqCst);
+            let old = self.old_values[index].load(Ordering::SeqCst);
+            if self.sequences[index].load(Ordering::SeqCst) != sequence {
+                continue;
+            }
+            ordered[count] = SysMemStatEvent {
+                delta: i64::from_ne_bytes(delta.to_ne_bytes()),
+                old,
+            };
+            count += 1;
+        }
+        (ordered, count)
+    }
+
+    fn take_underflow(
+        &self,
+    ) -> Option<([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize)> {
+        let recent = self.recent();
+        let (events, count) = &recent;
+        let has_underflow = events[..*count]
+            .iter()
+            .any(|event| event.delta < 0 && event.old < event.delta.unsigned_abs());
+        if !has_underflow || self.reported.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        Some(recent)
+    }
+}
+
+#[cfg(target_arch = "arm64ec")]
+static SYS_MEM_STAT_TRACE: SysMemStatTrace = SysMemStatTrace::new();
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+fn sys_mem_stat_event(guest_rip: u64, frame: &CpuStateFrame) -> Option<SysMemStatEvent> {
+    (guest_rip == SYS_MEM_STAT_ADD_STATE_RIP && frame.gpr[gpr::RAX] == OTHER_SYS_ADDRESS).then(
+        || SysMemStatEvent {
+            delta: i64::from_ne_bytes(frame.gpr[gpr::RCX].to_ne_bytes()),
+            old: frame.gpr[gpr::RBX],
+        },
+    )
+}
+
+#[cfg(target_arch = "arm64ec")]
+fn record_sys_mem_stat_event(guest_rip: u64, frame: &CpuStateFrame) {
+    if let Some(event) = sys_mem_stat_event(guest_rip, frame) {
+        SYS_MEM_STAT_TRACE.record(event);
+    }
+}
+
+#[cfg(all(windows, target_arch = "arm64ec"))]
+pub(super) fn take_sys_mem_stat_underflow_events(
+) -> Option<([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize)> {
+    SYS_MEM_STAT_TRACE.take_underflow()
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
 #[derive(Debug)]
 struct JitCache {
     buffers: Vec<(u64, Vec<u8>, prisma_runtime::jit_memory::ExecBuffer)>,
@@ -932,9 +1028,6 @@ struct JitCache {
     recent_rips: [u64; RECENT_JIT_RIP_COUNT],
     recent_rip_cursor: usize,
     recent_rips_full: bool,
-    recent_sys_mem_stat_events: [SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT],
-    recent_sys_mem_stat_event_cursor: usize,
-    recent_sys_mem_stat_events_full: bool,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -946,10 +1039,6 @@ impl Default for JitCache {
             recent_rips: [0; RECENT_JIT_RIP_COUNT],
             recent_rip_cursor: 0,
             recent_rips_full: false,
-            recent_sys_mem_stat_events: [SysMemStatEvent::default();
-                RECENT_SYS_MEM_STAT_EVENT_COUNT],
-            recent_sys_mem_stat_event_cursor: 0,
-            recent_sys_mem_stat_events_full: false,
         }
     }
 }
@@ -976,66 +1065,6 @@ impl JitCache {
         let mut ordered = [0_u64; RECENT_JIT_RIP_COUNT];
         for (offset, value) in ordered.iter_mut().take(count).enumerate() {
             *value = self.recent_rips[(start + offset) % RECENT_JIT_RIP_COUNT];
-        }
-        (ordered, count)
-    }
-
-    fn push_sys_mem_stat_event(&mut self, event: SysMemStatEvent) {
-        self.recent_sys_mem_stat_events[self.recent_sys_mem_stat_event_cursor] = event;
-        self.recent_sys_mem_stat_event_cursor =
-            (self.recent_sys_mem_stat_event_cursor + 1) % RECENT_SYS_MEM_STAT_EVENT_COUNT;
-        self.recent_sys_mem_stat_events_full |= self.recent_sys_mem_stat_event_cursor == 0;
-    }
-
-    fn most_recent_sys_mem_stat_event_mut(&mut self) -> Option<&mut SysMemStatEvent> {
-        if !self.recent_sys_mem_stat_events_full && self.recent_sys_mem_stat_event_cursor == 0 {
-            return None;
-        }
-        let index = if self.recent_sys_mem_stat_event_cursor == 0 {
-            RECENT_SYS_MEM_STAT_EVENT_COUNT - 1
-        } else {
-            self.recent_sys_mem_stat_event_cursor - 1
-        };
-        self.recent_sys_mem_stat_events.get_mut(index)
-    }
-
-    fn record_sys_mem_stat_event(&mut self, guest_rip: u64, frame: &CpuStateFrame) {
-        match guest_rip {
-            SYS_MEM_STAT_ADD_ENTRY_RIP if frame.gpr[gpr::RAX] == OTHER_SYS_ADDRESS => {
-                self.push_sys_mem_stat_event(SysMemStatEvent {
-                    delta: i64::from_ne_bytes(frame.gpr[gpr::RBX].to_ne_bytes()),
-                    old: SYS_MEM_STAT_OLD_UNAVAILABLE,
-                });
-            }
-            SYS_MEM_STAT_ADD_STATE_RIP if frame.gpr[gpr::RAX] == OTHER_SYS_ADDRESS => {
-                let delta = i64::from_ne_bytes(frame.gpr[gpr::RCX].to_ne_bytes());
-                if let Some(event) = self.most_recent_sys_mem_stat_event_mut() {
-                    if event.delta == delta {
-                        event.old = frame.gpr[gpr::RBX];
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn recent_sys_mem_stat_events(
-        &self,
-    ) -> ([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize) {
-        let count = if self.recent_sys_mem_stat_events_full {
-            RECENT_SYS_MEM_STAT_EVENT_COUNT
-        } else {
-            self.recent_sys_mem_stat_event_cursor
-        };
-        let start = if self.recent_sys_mem_stat_events_full {
-            self.recent_sys_mem_stat_event_cursor
-        } else {
-            0
-        };
-        let mut ordered = [SysMemStatEvent::default(); RECENT_SYS_MEM_STAT_EVENT_COUNT];
-        for (offset, value) in ordered.iter_mut().take(count).enumerate() {
-            *value =
-                self.recent_sys_mem_stat_events[(start + offset) % RECENT_SYS_MEM_STAT_EVENT_COUNT];
         }
         (ordered, count)
     }
@@ -1150,16 +1179,6 @@ impl PrismaExecutor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recent_rips()
     }
-
-    #[cfg(all(windows, target_arch = "arm64ec"))]
-    pub(super) fn recent_sys_mem_stat_events(
-        &self,
-    ) -> ([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize) {
-        self.cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recent_sys_mem_stat_events()
-    }
 }
 
 #[cfg(target_arch = "arm64ec")]
@@ -1236,13 +1255,13 @@ impl BlockExecutor for PrismaExecutor {
             use prisma_runtime::executor::wrap_block;
             use prisma_runtime::jit_memory::ExecBuffer;
 
+            record_sys_mem_stat_event(guest_rip, frame);
             let cached_entry = {
                 let mut cache = self
                     .cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.record_rip(guest_rip);
-                cache.record_sys_mem_stat_event(guest_rip, frame);
                 cache.get(guest_rip, &code).map(ExecBuffer::as_ptr)
             };
             let entry = if let Some(entry) = cached_entry {
@@ -2061,27 +2080,27 @@ mod tests {
     }
 
     #[test]
-    fn jit_cache_records_other_sys_add_state() {
+    fn static_trace_records_other_sys_state_and_reports_underflow_once() {
         assert_eq!(std::mem::size_of::<SysMemStatEvent>(), 16);
-        let mut cache = JitCache::default();
+        let trace = SysMemStatTrace::new();
         let mut frame = CpuStateFrame::default();
         frame.gpr[gpr::RAX] = OTHER_SYS_ADDRESS + 8;
-        frame.gpr[gpr::RBX] = 4_096;
-        cache.record_sys_mem_stat_event(SYS_MEM_STAT_ADD_ENTRY_RIP, &frame);
-
-        frame.gpr[gpr::RAX] = OTHER_SYS_ADDRESS;
-        cache.record_sys_mem_stat_event(SYS_MEM_STAT_ADD_ENTRY_RIP, &frame);
         frame.gpr[gpr::RCX] = 4_096;
         frame.gpr[gpr::RBX] = 8_192;
-        cache.record_sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame);
+        assert_eq!(sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame), None);
 
-        frame.gpr[gpr::RBX] = u64::from_ne_bytes((-8_192_i64).to_ne_bytes());
-        cache.record_sys_mem_stat_event(SYS_MEM_STAT_ADD_ENTRY_RIP, &frame);
+        frame.gpr[gpr::RAX] = OTHER_SYS_ADDRESS;
+        assert_eq!(
+            sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP - 1, &frame),
+            None
+        );
+        trace.record(sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame).unwrap());
+
         frame.gpr[gpr::RCX] = u64::from_ne_bytes((-8_192_i64).to_ne_bytes());
-        frame.gpr[gpr::RBX] = 12_288;
-        cache.record_sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame);
+        frame.gpr[gpr::RBX] = 0;
+        trace.record(sys_mem_stat_event(SYS_MEM_STAT_ADD_STATE_RIP, &frame).unwrap());
 
-        let (events, count) = cache.recent_sys_mem_stat_events();
+        let (events, count) = trace.recent();
         assert_eq!(count, 2);
         assert_eq!(
             events[0],
@@ -2094,9 +2113,11 @@ mod tests {
             events[1],
             SysMemStatEvent {
                 delta: -8_192,
-                old: 12_288,
+                old: 0,
             }
         );
+        assert_eq!(trace.take_underflow(), Some((events, count)));
+        assert_eq!(trace.take_underflow(), None);
     }
 
     #[test]
