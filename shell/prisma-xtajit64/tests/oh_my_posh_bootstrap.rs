@@ -1,5 +1,7 @@
 #![cfg(target_arch = "aarch64")]
 
+use std::sync::Mutex;
+
 use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, ExecError, EXIT_BRANCH};
 use prisma_translator::Translator;
 use prisma_xtajit64::{
@@ -14,6 +16,10 @@ const GUEST_GLOBAL: u64 = 0x1_40db_8ac0;
 const INITIAL_RSP: u64 = 0x1_40dc_0000;
 const GUARD_BYTES: usize = 64;
 const CANARY: u8 = 0xa5;
+const PAGE_BITS_SET_RANGE_PC: u64 = 0x1_4004_4940;
+const PAGE_BITS_SINGLE_PAGE_PC: u64 = 0x1_4004_49b0;
+
+static DISPATCH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const BOOTSTRAP: [u8; 66] = [
     0x48, 0x89, 0xf8, // mov rax,rdi
@@ -40,6 +46,32 @@ impl GuestMemory for FixtureMemory {
             .map_err(|_| "RIP outside host usize")?;
         let bytes = BOOTSTRAP.get(offset..).ok_or("RIP beyond fixture")?;
         Ok(bytes[..bytes.len().min(max_len)].to_vec())
+    }
+}
+
+struct PageBitsSinglePageMemory;
+
+impl GuestMemory for PageBitsSinglePageMemory {
+    fn read_code(&self, rip: u64, max_len: usize) -> Result<Vec<u8>, String> {
+        let instruction: &[u8] = match rip {
+            0x1_4004_4940 => &[0x55],                              // push rbp
+            0x1_4004_4941 => &[0x48, 0x89, 0xe5],                  // mov rbp,rsp
+            0x1_4004_4944 => &[0x84, 0x00],                        // test [rax],al
+            0x1_4004_4946 => &[0x48, 0x89, 0xda],                  // mov rdx,rbx
+            0x1_4004_4949 => &[0x48, 0xc1, 0xeb, 0x06],            // shr rbx,6
+            0x1_4004_494d => &[0x48, 0x83, 0xfb, 0x08],            // cmp rbx,8
+            0x1_4004_4951 => &[0x0f, 0x83, 0x9f, 0, 0, 0],         // jae 0x1400449f6
+            0x1_4004_4957 => &[0x48, 0x83, 0xf9, 0x01],            // cmp rcx,1
+            0x1_4004_495b => &[0x74, 0x53],                        // je 0x1400449b0
+            PAGE_BITS_SINGLE_PAGE_PC => &[0x48, 0x8b, 0x0c, 0xd8], // mov rcx,[rax+rbx*8]
+            0x1_4004_49b4 => &[0x48, 0x0f, 0xab, 0xd1],            // bts rcx,rdx
+            0x1_4004_49b8 => &[0x90],                              // nop
+            0x1_4004_49b9 => &[0x48, 0x89, 0x0c, 0xd8],            // mov [rax+rbx*8],rcx
+            0x1_4004_49bd => &[0x5d],                              // pop rbp
+            0x1_4004_49be => &[0xc3],                              // ret
+            _ => return Err(format!("unexpected pageBits.setRange RIP {rip:#x}")),
+        };
+        Ok(instruction[..instruction.len().min(max_len)].to_vec())
     }
 }
 
@@ -201,7 +233,7 @@ fn go_page_bits_single_page_load_bts_store_updates_scaled_word() {
     frame.gpr[gpr::RDX] = 192;
 
     let mut translator = Translator::for_dispatch();
-    let mut guest_pc = 0x1_4004_49b0_u64;
+    let mut guest_pc = PAGE_BITS_SINGLE_PAGE_PC;
     execute_dispatch_instruction(
         &mut translator,
         &mut guest_pc,
@@ -233,6 +265,101 @@ fn go_page_bits_single_page_load_bts_store_updates_scaled_word() {
 }
 
 #[test]
+fn go_page_bits_single_page_full_dispatch_updates_fourth_word() {
+    let _guard = DISPATCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    assert_eq!(ProcessInit(), STATUS_SUCCESS);
+    assert_eq!(ThreadInit(), STATUS_SUCCESS);
+
+    const GUEST_BASE: u64 = 0x1_0000;
+    const ARENA_BYTES: usize = 0x400;
+    const BITMAP_OFFSET: usize = 0x80;
+    const STACK_OFFSET: usize = 0x300;
+    const RETURN_PC: u64 = 0x1_4004_4fff;
+    const SAVED_RBP: u64 = 0x0123_4567_89ab_cdef;
+    let initial_bitmap = [0x11_u64, 0x22, 0x44, 0, 0x88, 0x110, 0x220, 0x440];
+    let mut guarded = [CANARY; GUARD_BYTES + ARENA_BYTES + GUARD_BYTES];
+    let arena = &mut guarded[GUARD_BYTES..GUARD_BYTES + ARENA_BYTES];
+    for (index, word) in initial_bitmap.iter().enumerate() {
+        let offset = BITMAP_OFFSET + index * size_of::<u64>();
+        arena[offset..offset + size_of::<u64>()].copy_from_slice(&word.to_le_bytes());
+    }
+    arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()].copy_from_slice(&RETURN_PC.to_le_bytes());
+
+    let executor = RebasedExecutor {
+        mem_base: (arena.as_ptr().addr() as u64).wrapping_sub(GUEST_BASE),
+    };
+    let guest_bitmap = GUEST_BASE + BITMAP_OFFSET as u64;
+    let initial_rsp = GUEST_BASE + STACK_OFFSET as u64;
+    let mut context = Arm64EcContext {
+        x8_rax: guest_bitmap,
+        x0_rcx: 1,
+        x27_rbx: 192,
+        sp_rsp: initial_rsp,
+        fp_rbp: SAVED_RBP,
+        pc_rip: PAGE_BITS_SET_RANGE_PC,
+        ..Arm64EcContext::default()
+    };
+
+    let report = dispatch_context(
+        &mut context,
+        &PageBitsSinglePageMemory,
+        &executor,
+        DispatchLimits {
+            max_blocks: 15,
+            max_fetch_bytes: 16,
+            max_instructions_per_block: 1,
+        },
+    )
+    .expect("execute complete pageBits.setRange single-page route");
+
+    assert_eq!(report.stop, DispatchStop::BlockLimit);
+    assert_eq!(report.blocks, 15);
+    assert_eq!(report.instructions, 15);
+    assert_eq!(report.rip, RETURN_PC);
+    assert_eq!(context.pc_rip, RETURN_PC);
+    assert_eq!(context.x8_rax, guest_bitmap);
+    assert_eq!(context.x0_rcx, 1);
+    assert_eq!(context.x1_rdx, 192);
+    assert_eq!(context.x27_rbx, 3);
+    assert_eq!(context.sp_rsp, initial_rsp + size_of::<u64>() as u64);
+    assert_eq!(context.fp_rbp, SAVED_RBP);
+
+    let mut actual_bitmap = [0_u64; 8];
+    for (index, word) in actual_bitmap.iter_mut().enumerate() {
+        let offset = BITMAP_OFFSET + index * size_of::<u64>();
+        *word = u64::from_le_bytes(arena[offset..offset + size_of::<u64>()].try_into().unwrap());
+    }
+    let mut expected_bitmap = initial_bitmap;
+    expected_bitmap[3] = 1;
+    assert_eq!(actual_bitmap, expected_bitmap);
+    assert_eq!(
+        &arena[STACK_OFFSET - size_of::<u64>()..STACK_OFFSET],
+        &SAVED_RBP.to_le_bytes()
+    );
+    assert_eq!(
+        &arena[STACK_OFFSET..STACK_OFFSET + size_of::<u64>()],
+        &RETURN_PC.to_le_bytes()
+    );
+    assert!(guarded[..GUARD_BYTES].iter().all(|byte| *byte == CANARY));
+    assert!(guarded[GUARD_BYTES + ARENA_BYTES..]
+        .iter()
+        .all(|byte| *byte == CANARY));
+
+    ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
+    ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
+    let snapshot = provider_snapshot();
+    assert_eq!(snapshot.active_threads, 0);
+    assert_eq!(snapshot.tracked_mappings, 0);
+    assert_eq!(snapshot.active_dispatches, 0);
+    assert_eq!(snapshot.live_runtimes, 0);
+    assert_eq!(snapshot.live_dispatch_stacks, 0);
+}
+
+#[test]
 fn go_page_bits_single_page_branch_consumes_persisted_zf() {
     let mut frame = CpuStateFrame::default();
     frame.gpr[gpr::RCX] = 1;
@@ -260,6 +387,9 @@ fn go_page_bits_single_page_branch_consumes_persisted_zf() {
 
 #[test]
 fn exact_oh_my_posh_bootstrap_writes_only_its_guest_stack_and_global() {
+    let _guard = DISPATCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ProcessTerm(std::ptr::null_mut(), 0, STATUS_SUCCESS);
     ProcessTerm(std::ptr::null_mut(), 1, STATUS_SUCCESS);
     assert_eq!(ProcessInit(), STATUS_SUCCESS);
