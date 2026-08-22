@@ -120,15 +120,15 @@ fn write_morestack_events(recent: ([MorestackEvent; RECENT_MORESTACK_EVENT_COUNT
     for event in events.into_iter().take(count) {
         write_hex_diagnostic(b"prisma-trace: morestack-rip=", event.rip);
         write_hex_diagnostic(b"prisma-trace: morestack-r14=", event.r14);
-        write_hex_diagnostic(b"prisma-trace: morestack-rdi=", event.rdi);
+        write_hex_diagnostic(b"prisma-trace: morestack-rax=", event.rax);
         write_hex_diagnostic(b"prisma-trace: morestack-rbx=", event.rbx);
         write_hex_diagnostic(b"prisma-trace: morestack-rcx=", event.rcx);
         write_hex_diagnostic(b"prisma-trace: morestack-rsp=", event.rsp);
-        write_hex_diagnostic(b"prisma-trace: morestack-tls-g=", event.tls_g);
+        write_hex_diagnostic(b"prisma-trace: morestack-rdx=", event.rdx);
         write_hex_diagnostic(b"prisma-trace: morestack-r14-stack-lo=", event.r14_stack_lo);
         write_hex_diagnostic(b"prisma-trace: morestack-r14-stack-hi=", event.r14_stack_hi);
-        write_hex_diagnostic(b"prisma-trace: morestack-rdi-stack-lo=", event.rdi_stack_lo);
-        write_hex_diagnostic(b"prisma-trace: morestack-rdi-stack-hi=", event.rdi_stack_hi);
+        write_hex_diagnostic(b"prisma-trace: morestack-rax-stack-lo=", event.rax_stack_lo);
+        write_hex_diagnostic(b"prisma-trace: morestack-rax-stack-hi=", event.rax_stack_hi);
         write_hex_diagnostic(b"prisma-trace: morestack-rbx-stack-lo=", event.rbx_stack_lo);
         write_hex_diagnostic(b"prisma-trace: morestack-rbx-stack-hi=", event.rbx_stack_hi);
     }

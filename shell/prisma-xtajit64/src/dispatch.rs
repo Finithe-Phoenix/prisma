@@ -908,39 +908,27 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #108 proved
-// that the main goroutine's stack.lo is valid on the second runtime.gcenable
-// entry and zero on runtime.chanrecv entry. The eight retained boundaries now
-// bisect that interval around makechan and the two newproc calls without
-// increasing the trace's 912-byte static footprint.
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_MAIN_ENTRY_RIP: u64 = 0x0001_4005_16c0;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_ENTRY_RIP: u64 = 0x0001_4002_b540;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_BODY_RIP: u64 = 0x0001_4002_b54a;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_AFTER_MAKECHAN_RIP: u64 = 0x0001_4002_b565;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_FIRST_NEWPROC_CALL_RIP: u64 = 0x0001_4002_b5a1;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_AFTER_FIRST_NEWPROC_RIP: u64 = 0x0001_4002_b5a6;
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #110
+// observed stack.lo changing during the second runtime.newproc invocation.
+// The eight retained boundaries cover only that invocation's wrapper,
+// systemstack callback, newproc1 call, and return without increasing the
+// trace's 912-byte static footprint.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_GCENABLE_SECOND_NEWPROC_CALL_RIP: u64 = 0x0001_4002_b5e0;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP: u64 = 0x0001_4002_b5e5;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_CHANRECV1_CALL_RIP: u64 = 0x0001_4002_b5ec;
+const GO_NEWPROC_ENTRY_RIP: u64 = 0x0001_4005_b620;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_CHANRECV_ENTRY_RIP: u64 = 0x0001_4001_9ae0;
+const GO_NEWPROC_SYSTEMSTACK_CALL_RIP: u64 = 0x0001_4005_b65a;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const MORESTACK_ENTRY_RIP: u64 = 0x0001_4008_9d20;
+const GO_NEWPROC_AFTER_SYSTEMSTACK_RIP: u64 = 0x0001_4005_b65f;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const MORESTACK_G_LOADED_RIP: u64 = 0x0001_4008_9d2e;
+const GO_NEWPROC_G_RELOADED_RIP: u64 = 0x0001_4005_b671;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const MORESTACK_G0_LOADED_RIP: u64 = 0x0001_4008_9d89;
+const GO_NEWPROC1_CALL_RIP: u64 = 0x0001_4005_b6c0;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const MORESTACK_NEWSTACK_CALL_RIP: u64 = 0x0001_4008_9d97;
+const GO_NEWPROC1_RETURN_RIP: u64 = 0x0001_4005_b6c5;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -948,15 +936,15 @@ const MORESTACK_NEWSTACK_CALL_RIP: u64 = 0x0001_4008_9d97;
 pub struct MorestackEvent {
     pub rip: u64,
     pub r14: u64,
-    pub rdi: u64,
+    pub rax: u64,
     pub rbx: u64,
     pub rcx: u64,
     pub rsp: u64,
-    pub tls_g: u64,
+    pub rdx: u64,
     pub r14_stack_lo: u64,
     pub r14_stack_hi: u64,
-    pub rdi_stack_lo: u64,
-    pub rdi_stack_hi: u64,
+    pub rax_stack_lo: u64,
+    pub rax_stack_hi: u64,
     pub rbx_stack_lo: u64,
     pub rbx_stack_hi: u64,
 }
@@ -967,15 +955,15 @@ impl MorestackEvent {
         [
             self.rip,
             self.r14,
-            self.rdi,
+            self.rax,
             self.rbx,
             self.rcx,
             self.rsp,
-            self.tls_g,
+            self.rdx,
             self.r14_stack_lo,
             self.r14_stack_hi,
-            self.rdi_stack_lo,
-            self.rdi_stack_hi,
+            self.rax_stack_lo,
+            self.rax_stack_hi,
             self.rbx_stack_lo,
             self.rbx_stack_hi,
         ]
@@ -985,15 +973,15 @@ impl MorestackEvent {
         Self {
             rip: fields[0],
             r14: fields[1],
-            rdi: fields[2],
+            rax: fields[2],
             rbx: fields[3],
             rcx: fields[4],
             rsp: fields[5],
-            tls_g: fields[6],
+            rdx: fields[6],
             r14_stack_lo: fields[7],
             r14_stack_hi: fields[8],
-            rdi_stack_lo: fields[9],
-            rdi_stack_hi: fields[10],
+            rax_stack_lo: fields[9],
+            rax_stack_hi: fields[10],
             rbx_stack_lo: fields[11],
             rbx_stack_hi: fields[12],
         }
@@ -1084,57 +1072,39 @@ fn morestack_event_with_reader<F>(
 where
     F: FnMut(u64) -> Option<u64>,
 {
-    let stage = match guest_rip {
-        GO_MAIN_ENTRY_RIP
-        | GO_GCENABLE_ENTRY_RIP
-        | GO_GCENABLE_BODY_RIP
-        | GO_GCENABLE_AFTER_MAKECHAN_RIP
-        | GO_GCENABLE_FIRST_NEWPROC_CALL_RIP
-        | GO_GCENABLE_AFTER_FIRST_NEWPROC_RIP
-        | GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
+    match guest_rip {
+        GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
         | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
-        | GO_GCENABLE_CHANRECV1_CALL_RIP
-        | GO_CHANRECV_ENTRY_RIP
-        | MORESTACK_ENTRY_RIP => 0,
-        MORESTACK_G_LOADED_RIP => 1,
-        MORESTACK_G0_LOADED_RIP => 2,
-        MORESTACK_NEWSTACK_CALL_RIP => 3,
+        | GO_NEWPROC_ENTRY_RIP
+        | GO_NEWPROC_SYSTEMSTACK_CALL_RIP
+        | GO_NEWPROC_AFTER_SYSTEMSTACK_RIP
+        | GO_NEWPROC_G_RELOADED_RIP
+        | GO_NEWPROC1_CALL_RIP
+        | GO_NEWPROC1_RETURN_RIP => {}
         _ => return None,
-    };
+    }
     let r14 = frame.gpr[gpr::R14];
-    let rdi = frame.gpr[gpr::RDI];
+    let rax = frame.gpr[gpr::RAX];
     let rbx = frame.gpr[gpr::RBX];
     let rcx = frame.gpr[gpr::RCX];
-    let (r14_stack_lo, r14_stack_hi) = read_morestack_stack(r14, &mut read_u64);
-    let (rdi_stack_lo, rdi_stack_hi) = if stage >= 1 {
-        read_morestack_stack(rdi, &mut read_u64)
-    } else {
-        (INVALID_MORESTACK_MEMORY, INVALID_MORESTACK_MEMORY)
-    };
-    let (rbx_stack_lo, rbx_stack_hi) = if stage >= 2 {
-        read_morestack_stack(rbx, &mut read_u64)
-    } else {
-        (INVALID_MORESTACK_MEMORY, INVALID_MORESTACK_MEMORY)
-    };
-    let tls_g = if stage >= 1 {
-        read_u64(rcx).unwrap_or(INVALID_MORESTACK_MEMORY)
-    } else {
-        INVALID_MORESTACK_MEMORY
-    };
+    let rdx = frame.gpr[gpr::RDX];
+    let current_stack_bounds = read_morestack_stack(r14, &mut read_u64);
+    let result_stack_bounds = read_morestack_stack(rax, &mut read_u64);
+    let argument_stack_bounds = read_morestack_stack(rbx, &mut read_u64);
     Some(MorestackEvent {
         rip: guest_rip,
         r14,
-        rdi,
+        rax,
         rbx,
         rcx,
         rsp: frame.gpr[gpr::RSP],
-        tls_g,
-        r14_stack_lo,
-        r14_stack_hi,
-        rdi_stack_lo,
-        rdi_stack_hi,
-        rbx_stack_lo,
-        rbx_stack_hi,
+        rdx,
+        r14_stack_lo: current_stack_bounds.0,
+        r14_stack_hi: current_stack_bounds.1,
+        rax_stack_lo: result_stack_bounds.0,
+        rax_stack_hi: result_stack_bounds.1,
+        rbx_stack_lo: argument_stack_bounds.0,
+        rbx_stack_hi: argument_stack_bounds.1,
     })
 }
 
@@ -1142,14 +1112,14 @@ where
 const fn should_record_stack_event(event: MorestackEvent) -> bool {
     matches!(
         event.rip,
-        GO_GCENABLE_BODY_RIP
-            | GO_GCENABLE_AFTER_MAKECHAN_RIP
-            | GO_GCENABLE_FIRST_NEWPROC_CALL_RIP
-            | GO_GCENABLE_AFTER_FIRST_NEWPROC_RIP
-            | GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
+        GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
             | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
-            | GO_GCENABLE_CHANRECV1_CALL_RIP
-            | GO_CHANRECV_ENTRY_RIP
+            | GO_NEWPROC_ENTRY_RIP
+            | GO_NEWPROC_SYSTEMSTACK_CALL_RIP
+            | GO_NEWPROC_AFTER_SYSTEMSTACK_RIP
+            | GO_NEWPROC_G_RELOADED_RIP
+            | GO_NEWPROC1_CALL_RIP
+            | GO_NEWPROC1_RETURN_RIP
     )
 }
 
@@ -2246,13 +2216,14 @@ mod tests {
     }
 
     #[test]
-    fn morestack_event_captures_tls_g_and_stack_bounds() {
+    fn morestack_event_captures_newproc_registers_and_stack_bounds() {
         let mut frame = CpuStateFrame::default();
         frame.gpr[gpr::R14] = 0x1000;
-        frame.gpr[gpr::RDI] = 0x2000;
+        frame.gpr[gpr::RAX] = 0x2000;
         frame.gpr[gpr::RBX] = 0x3000;
         frame.gpr[gpr::RCX] = 0x4000;
         frame.gpr[gpr::RSP] = 0x5000;
+        frame.gpr[gpr::RDX] = 0x6000;
         let memory = BTreeMap::from([
             (0x1000, 0x1100),
             (0x1008, 0x1800),
@@ -2260,46 +2231,29 @@ mod tests {
             (0x2008, 0x2800),
             (0x3000, 0x3100),
             (0x3008, 0x3800),
-            (0x4000, 0x2000),
         ]);
         assert_eq!(
-            morestack_event_with_reader(MORESTACK_ENTRY_RIP - 1, &frame, |_| None),
+            morestack_event_with_reader(GO_NEWPROC_ENTRY_RIP - 1, &frame, |_| None),
             None
         );
-        let main_entry = morestack_event_with_reader(GO_MAIN_ENTRY_RIP, &frame, |address| {
-            memory.get(&address).copied()
-        })
-        .unwrap();
-        assert_eq!(main_entry.rip, GO_MAIN_ENTRY_RIP);
-        assert_eq!(
-            (main_entry.r14_stack_lo, main_entry.r14_stack_hi),
-            (0x1100, 0x1800)
-        );
-        assert_eq!(main_entry.tls_g, INVALID_MORESTACK_MEMORY);
-        assert!(!should_record_stack_event(main_entry));
-        let body = morestack_event_with_reader(GO_GCENABLE_BODY_RIP, &frame, |address| {
-            memory.get(&address).copied()
-        })
-        .unwrap();
-        assert_eq!(body.rip, GO_GCENABLE_BODY_RIP);
-        assert!(should_record_stack_event(body));
-        let event = morestack_event_with_reader(MORESTACK_G0_LOADED_RIP, &frame, |address| {
-            memory.get(&address).copied()
-        })
-        .unwrap();
-        assert_eq!(event.rip, MORESTACK_G0_LOADED_RIP);
+        let event =
+            morestack_event_with_reader(GO_GCENABLE_SECOND_NEWPROC_CALL_RIP, &frame, |address| {
+                memory.get(&address).copied()
+            })
+            .unwrap();
+        assert_eq!(event.rip, GO_GCENABLE_SECOND_NEWPROC_CALL_RIP);
         assert_eq!(event.r14, 0x1000);
-        assert_eq!(event.rdi, 0x2000);
+        assert_eq!(event.rax, 0x2000);
         assert_eq!(event.rbx, 0x3000);
         assert_eq!(event.rcx, 0x4000);
         assert_eq!(event.rsp, 0x5000);
-        assert_eq!(event.tls_g, 0x2000);
+        assert_eq!(event.rdx, 0x6000);
         assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
-        assert_eq!((event.rdi_stack_lo, event.rdi_stack_hi), (0x2100, 0x2800));
+        assert_eq!((event.rax_stack_lo, event.rax_stack_hi), (0x2100, 0x2800));
         assert_eq!((event.rbx_stack_lo, event.rbx_stack_hi), (0x3100, 0x3800));
-        assert!(!should_record_stack_event(event));
+        assert!(should_record_stack_event(event));
         assert!(!should_record_stack_event(MorestackEvent {
-            r14_stack_lo: 0,
+            rip: GO_NEWPROC_ENTRY_RIP - 1,
             ..event
         }));
     }
