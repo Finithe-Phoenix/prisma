@@ -1092,6 +1092,7 @@ impl BlockExecutor for PrismaExecutor {
                 .get(guest_rip, &code)
                 .map(ExecBuffer::as_ptr);
             let entry = if let Some(entry) = cached_entry {
+                drop(code);
                 entry
             } else {
                 let callable = wrap_block(&code);
