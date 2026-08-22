@@ -40,7 +40,7 @@ pub use dispatch::{
     GuestMemory, PrismaExecutor, XmmRegister,
 };
 #[cfg(all(windows, target_arch = "arm64ec"))]
-use dispatch::{ScavengeEvent, RECENT_SCAVENGE_EVENT_COUNT};
+use dispatch::{SysMemStatEvent, RECENT_SYS_MEM_STAT_EVENT_COUNT};
 
 pub type NtStatus = i32;
 pub type WinBoolean = u8;
@@ -115,52 +115,23 @@ fn write_recent_jit_rips(recent: ([u64; 32], usize)) {
 }
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
-fn write_recent_scavenge_events(recent: ([ScavengeEvent; RECENT_SCAVENGE_EVENT_COUNT], usize)) {
-    const SCAVENGE_EVENT_ALLOC: u8 = 1;
-    const SCAVENGE_EVENT_FREE: u8 = 2;
-    const PALLOC_CHUNK_PAGES: u64 = 512;
-
+fn write_recent_sys_mem_stat_events(
+    recent: ([SysMemStatEvent; RECENT_SYS_MEM_STAT_EVENT_COUNT], usize),
+) {
     let (events, count) = recent;
     let events = &events[..count];
-    let target_chunk = events.iter().rev().find_map(|event| {
-        (event.kind == SCAVENGE_EVENT_ALLOC
-            && u64::from(event.in_use).saturating_add(u64::from(event.scavenge_npages))
-                > PALLOC_CHUNK_PAGES)
-            .then_some(event.chunk)
-    });
-    let Some(target_chunk) = target_chunk else {
+    let Some(last) = events.last() else {
         return;
     };
-
-    write_hex_diagnostic(b"prisma-trace: scav-target-chunk=", target_chunk);
-    for event in events.iter().filter(|event| event.chunk == target_chunk) {
-        match event.kind {
-            SCAVENGE_EVENT_ALLOC => {
-                write_hex_diagnostic(b"prisma-trace: scav-alloc-in-use=", u64::from(event.in_use));
-                write_hex_diagnostic(b"prisma-trace: scav-alloc-page=", u64::from(event.page));
-                write_hex_diagnostic(
-                    b"prisma-trace: scav-alloc-palloc-npages=",
-                    u64::from(event.npages),
-                );
-                write_hex_diagnostic(
-                    b"prisma-trace: scav-alloc-npages=",
-                    u64::from(event.scavenge_npages),
-                );
-                write_hex_diagnostic(
-                    b"prisma-trace: scav-alloc-bitmap-before=",
-                    u64::from(event.bitmap_before),
-                );
-                write_hex_diagnostic(
-                    b"prisma-trace: scav-alloc-bitmap-after=",
-                    u64::from(event.bitmap_after),
-                );
-            }
-            SCAVENGE_EVENT_FREE => {
-                write_hex_diagnostic(b"prisma-trace: scav-free-in-use=", u64::from(event.in_use));
-                write_hex_diagnostic(b"prisma-trace: scav-free-page=", u64::from(event.page));
-                write_hex_diagnostic(b"prisma-trace: scav-free-npages=", u64::from(event.npages));
-            }
-            _ => {}
+    if last.delta >= 0 || last.old >= last.delta.unsigned_abs() {
+        return;
+    }
+    for event in events {
+        write_hex_diagnostic(b"prisma-trace: other-sys-old=", event.old);
+        if event.delta >= 0 {
+            write_hex_diagnostic(b"prisma-trace: other-sys-add=", event.delta.unsigned_abs());
+        } else {
+            write_hex_diagnostic(b"prisma-trace: other-sys-sub=", event.delta.unsigned_abs());
         }
     }
 }
@@ -1150,13 +1121,13 @@ fn process_term(post_call: bool, status: NtStatus) {
             state.threads.get(&current_thread_key()).map(|thread| {
                 (
                     thread.executor.recent_guest_rips(),
-                    thread.executor.recent_scavenge_events(),
+                    thread.executor.recent_sys_mem_stat_events(),
                 )
             })
         };
-        if let Some((recent_rips, recent_scavenge_events)) = recent {
+        if let Some((recent_rips, recent_sys_mem_stat_events)) = recent {
             write_recent_jit_rips(recent_rips);
-            write_recent_scavenge_events(recent_scavenge_events);
+            write_recent_sys_mem_stat_events(recent_sys_mem_stat_events);
         }
     }
     let mut state = lock_provider();
@@ -1192,7 +1163,7 @@ fn thread_term(handle: Handle) {
             {
                 recent = Some((
                     context.executor.recent_guest_rips(),
-                    context.executor.recent_scavenge_events(),
+                    context.executor.recent_sys_mem_stat_events(),
                 ));
             }
             context.runtime.cancel();
@@ -1201,9 +1172,9 @@ fn thread_term(handle: Handle) {
     }
     drop(state);
     #[cfg(all(windows, target_arch = "arm64ec"))]
-    if let Some((recent_rips, recent_scavenge_events)) = recent {
+    if let Some((recent_rips, recent_sys_mem_stat_events)) = recent {
         write_recent_jit_rips(recent_rips);
-        write_recent_scavenge_events(recent_scavenge_events);
+        write_recent_sys_mem_stat_events(recent_sys_mem_stat_events);
     }
 }
 
