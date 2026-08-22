@@ -1,6 +1,7 @@
 #![cfg(target_arch = "aarch64")]
 
-use prisma_runtime::executor::{execute_block, CpuStateFrame, ExecError};
+use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, ExecError};
+use prisma_translator::Translator;
 use prisma_xtajit64::{
     dispatch_context, provider_snapshot, Arm64EcContext, BlockExecutor, DispatchLimits,
     DispatchStop, GuestMemory, ProcessInit, ProcessTerm, ThreadInit, STATUS_SUCCESS,
@@ -61,6 +62,111 @@ impl BlockExecutor for RebasedExecutor {
 fn write_u64(arena: &mut [u8], guest_address: u64, value: u64) {
     let offset = usize::try_from(guest_address - GUEST_ARENA_BASE).unwrap();
     arena[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn execute_dispatch_instruction(
+    translator: &mut Translator,
+    guest_pc: &mut u64,
+    instruction: &[u8],
+    frame: &mut CpuStateFrame,
+) {
+    let (translation, ended_at_terminator) = translator
+        .translate_dispatch_instruction(*guest_pc, instruction)
+        .expect("translate exact dispatch instruction");
+    assert_eq!(translation.guest_bytes, instruction.len());
+    assert!(!ended_at_terminator);
+    execute_block(&translation.code, frame).expect("execute exact dispatch instruction");
+    *guest_pc = guest_pc.wrapping_add(instruction.len() as u64);
+}
+
+#[test]
+fn go_page_bits_partial_word_mask_survives_exact_dispatch_boundaries() {
+    let mut bitmap = [0_u64; 8];
+    let guest_bitmap = 0x1_0000_u64;
+    let host_bitmap = bitmap.as_mut_ptr().addr() as u64;
+    let mut frame = CpuStateFrame::default();
+    frame.mem_base = host_bitmap.wrapping_sub(guest_bitmap);
+    frame.gpr[gpr::RAX] = guest_bitmap;
+    frame.gpr[gpr::RSI] = 2;
+    frame.gpr[gpr::RDI] = 172;
+
+    let mut translator = Translator::for_dispatch();
+    let mut guest_pc = 0x1_4004_49cf_u64;
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x83, 0xe7, 0x3f],
+        &mut frame,
+    ); // and edi,0x3f
+    assert_eq!(frame.gpr[gpr::RDI], 44);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x8d, 0x4f, 0x01],
+        &mut frame,
+    ); // lea rcx,[rdi+1]
+    assert_eq!(frame.gpr[gpr::RCX], 45);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0xba, 0x01, 0x00, 0x00, 0x00],
+        &mut frame,
+    ); // mov edx,1
+    assert_eq!(frame.gpr[gpr::RDX], 1);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0xd3, 0xe2],
+        &mut frame,
+    ); // shl rdx,cl
+    assert_eq!(frame.gpr[gpr::RDX], 1_u64 << 45);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x83, 0xf9, 0x40],
+        &mut frame,
+    ); // cmp rcx,64
+    assert_eq!(frame.cf, 1);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x19, 0xdb],
+        &mut frame,
+    ); // sbb rbx,rbx
+    assert_eq!(frame.gpr[gpr::RBX], u64::MAX);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x21, 0xda],
+        &mut frame,
+    ); // and rdx,rbx
+    assert_eq!(frame.gpr[gpr::RDX], 1_u64 << 45);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0xff, 0xca],
+        &mut frame,
+    ); // dec rdx
+    let expected_mask = (1_u64 << 45) - 1;
+    assert_eq!(frame.gpr[gpr::RDX], expected_mask);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x09, 0x14, 0xf0],
+        &mut frame,
+    ); // or [rax+rsi*8],rdx
+    assert_eq!(bitmap[2], expected_mask);
+    assert!(bitmap[..2].iter().all(|word| *word == 0));
+    assert!(bitmap[3..].iter().all(|word| *word == 0));
 }
 
 #[test]
