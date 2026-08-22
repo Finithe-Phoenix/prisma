@@ -908,19 +908,12 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #115 proved
-// that stackalloc pops the active g object from its local stack cache. The
-// eight retained events now preserve the preceding stackcacherefill, the
-// stackfree cache push, and the later cache pop without increasing the
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #119 and
+// #120 proved that stackcacherefill publishes a correct two-node chain, while
+// a later stackalloc can pop memory already used by an active runtime object.
+// Retain only local cache pushes and pops now so the eight fixed slots expose
+// the mutation that introduced the aliased node without increasing the
 // trace's 912-byte footprint.
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_STACKCACHE_REFILL_ENTRY_RIP: u64 = 0x0001_4006_7d80;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_STACKCACHE_REFILL_LOOP_STATE_RIP: u64 = 0x0001_4006_7dfa;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_STACKCACHE_REFILL_PUBLISH_HEAD_RIP: u64 = 0x0001_4006_7e37;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_STACKCACHE_REFILL_PUBLISH_SIZE_RIP: u64 = 0x0001_4006_7e44;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1069,12 +1062,7 @@ where
     F: FnMut(u64) -> Option<u64>,
 {
     match guest_rip {
-        GO_STACKCACHE_REFILL_ENTRY_RIP
-        | GO_STACKCACHE_REFILL_LOOP_STATE_RIP
-        | GO_STACKCACHE_REFILL_PUBLISH_HEAD_RIP
-        | GO_STACKCACHE_REFILL_PUBLISH_SIZE_RIP
-        | GO_STACKALLOC_CACHE_POP_RIP
-        | GO_STACKFREE_CACHE_PUSH_RIP => {}
+        GO_STACKALLOC_CACHE_POP_RIP | GO_STACKFREE_CACHE_PUSH_RIP => {}
         _ => return None,
     }
     let r14 = frame.gpr[gpr::R14];
@@ -1119,21 +1107,9 @@ where
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 const fn should_record_stack_event(event: MorestackEvent) -> bool {
-    if event.rip == GO_STACKCACHE_REFILL_LOOP_STATE_RIP
-        && event.rax == 0
-        && event.rbx == 0
-        && event.rcx == 0
-    {
-        return false;
-    }
     matches!(
         event.rip,
-        GO_STACKCACHE_REFILL_ENTRY_RIP
-            | GO_STACKCACHE_REFILL_LOOP_STATE_RIP
-            | GO_STACKCACHE_REFILL_PUBLISH_HEAD_RIP
-            | GO_STACKCACHE_REFILL_PUBLISH_SIZE_RIP
-            | GO_STACKALLOC_CACHE_POP_RIP
-            | GO_STACKFREE_CACHE_PUSH_RIP
+        GO_STACKALLOC_CACHE_POP_RIP | GO_STACKFREE_CACHE_PUSH_RIP
     )
 }
 
@@ -2230,7 +2206,7 @@ mod tests {
     }
 
     #[test]
-    fn stackcache_event_captures_registers_and_stack_bounds() {
+    fn stackcache_event_captures_registers_and_operation_specific_links() {
         let mut frame = CpuStateFrame::default();
         frame.gpr[gpr::R14] = 0x1000;
         frame.gpr[gpr::RAX] = 0x2000;
@@ -2251,15 +2227,14 @@ mod tests {
             (0x6008, 0x6800),
         ]);
         assert_eq!(
-            morestack_event_with_reader(GO_STACKCACHE_REFILL_ENTRY_RIP - 1, &frame, |_| None),
+            morestack_event_with_reader(GO_STACKALLOC_CACHE_POP_RIP - 1, &frame, |_| None),
             None
         );
-        let event =
-            morestack_event_with_reader(GO_STACKCACHE_REFILL_ENTRY_RIP, &frame, |address| {
-                memory.get(&address).copied()
-            })
-            .unwrap();
-        assert_eq!(event.rip, GO_STACKCACHE_REFILL_ENTRY_RIP);
+        let event = morestack_event_with_reader(GO_STACKALLOC_CACHE_POP_RIP, &frame, |address| {
+            memory.get(&address).copied()
+        })
+        .unwrap();
+        assert_eq!(event.rip, GO_STACKALLOC_CACHE_POP_RIP);
         assert_eq!(event.r14, 0x1000);
         assert_eq!(event.rax, 0x2000);
         assert_eq!(event.rbx, 0x3000);
@@ -2268,17 +2243,8 @@ mod tests {
         assert_eq!(event.r8, 0x6000);
         assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
         assert_eq!((event.rax_stack_lo, event.rax_stack_hi), (0x2100, 0x2800));
-        assert_eq!((event.rcx_stack_lo, event.rcx_stack_hi), (0x4100, 0x4800));
+        assert_eq!((event.rcx_stack_lo, event.rcx_stack_hi), (0x6100, 0x6800));
         assert!(should_record_stack_event(event));
-        let pop_event =
-            morestack_event_with_reader(GO_STACKALLOC_CACHE_POP_RIP, &frame, |address| {
-                memory.get(&address).copied()
-            })
-            .unwrap();
-        assert_eq!(
-            (pop_event.rcx_stack_lo, pop_event.rcx_stack_hi),
-            (0x6100, 0x6800)
-        );
         let push_event =
             morestack_event_with_reader(GO_STACKFREE_CACHE_PUSH_RIP, &frame, |address| {
                 memory.get(&address).copied()
@@ -2293,14 +2259,7 @@ mod tests {
             (0x4100, 0x4800)
         );
         assert!(!should_record_stack_event(MorestackEvent {
-            rip: GO_STACKCACHE_REFILL_ENTRY_RIP - 1,
-            ..event
-        }));
-        assert!(!should_record_stack_event(MorestackEvent {
-            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
+            rip: GO_STACKALLOC_CACHE_POP_RIP - 1,
             ..event
         }));
     }
