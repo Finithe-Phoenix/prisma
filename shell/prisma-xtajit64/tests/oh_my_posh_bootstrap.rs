@@ -189,6 +189,50 @@ fn go_page_bits_single_page_bts_masks_the_register_index() {
 }
 
 #[test]
+fn go_page_bits_single_page_load_bts_store_updates_scaled_word() {
+    let initial_bitmap = [0x11_u64, 0x22, 0x44, 0, 0x88, 0x110, 0x220, 0x440];
+    let mut bitmap = initial_bitmap;
+    let guest_bitmap = 0x1_0000_u64;
+    let host_bitmap = bitmap.as_mut_ptr().addr() as u64;
+    let mut frame = CpuStateFrame::default();
+    frame.mem_base = host_bitmap.wrapping_sub(guest_bitmap);
+    frame.gpr[gpr::RAX] = guest_bitmap;
+    frame.gpr[gpr::RBX] = 3;
+    frame.gpr[gpr::RDX] = 192;
+
+    let mut translator = Translator::for_dispatch();
+    let mut guest_pc = 0x1_4004_49b0_u64;
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x8b, 0x0c, 0xd8],
+        &mut frame,
+    ); // mov rcx,[rax+rbx*8]
+    assert_eq!(frame.gpr[gpr::RCX], 0);
+
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x0f, 0xab, 0xd1],
+        &mut frame,
+    ); // bts rcx,rdx
+    assert_eq!(frame.gpr[gpr::RCX], 1);
+    assert_eq!(frame.cf, 0);
+
+    execute_dispatch_instruction(&mut translator, &mut guest_pc, &[0x90], &mut frame); // nop
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x89, 0x0c, 0xd8],
+        &mut frame,
+    ); // mov [rax+rbx*8],rcx
+
+    let mut expected_bitmap = initial_bitmap;
+    expected_bitmap[3] = 1;
+    assert_eq!(bitmap, expected_bitmap);
+}
+
+#[test]
 fn go_page_bits_single_page_branch_consumes_persisted_zf() {
     let mut frame = CpuStateFrame::default();
     frame.gpr[gpr::RCX] = 1;
