@@ -1,6 +1,6 @@
 #![cfg(target_arch = "aarch64")]
 
-use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, ExecError};
+use prisma_runtime::executor::{execute_block, gpr, CpuStateFrame, ExecError, EXIT_BRANCH};
 use prisma_translator::Translator;
 use prisma_xtajit64::{
     dispatch_context, provider_snapshot, Arm64EcContext, BlockExecutor, DispatchLimits,
@@ -186,6 +186,32 @@ fn go_page_bits_single_page_bts_masks_the_register_index() {
 
     assert_eq!(frame.gpr[gpr::RCX], 1);
     assert_eq!(frame.cf, 0);
+}
+
+#[test]
+fn go_page_bits_single_page_branch_consumes_persisted_zf() {
+    let mut frame = CpuStateFrame::default();
+    frame.gpr[gpr::RCX] = 1;
+
+    let mut translator = Translator::for_dispatch();
+    let mut guest_pc = 0x1_4004_4957_u64;
+    execute_dispatch_instruction(
+        &mut translator,
+        &mut guest_pc,
+        &[0x48, 0x83, 0xf9, 0x01],
+        &mut frame,
+    ); // cmp rcx,1
+    assert_ne!(frame.rflags & (1 << 6), 0, "CMP must persist ZF");
+
+    let (translation, ended_at_terminator) = translator
+        .translate_dispatch_instruction(guest_pc, &[0x74, 0x53])
+        .expect("translate exact JE dispatch instruction");
+    assert_eq!(translation.guest_bytes, 2);
+    assert!(ended_at_terminator);
+    execute_block(&translation.code, &mut frame).expect("execute exact JE dispatch instruction");
+
+    assert_eq!(frame.exit_reason, EXIT_BRANCH);
+    assert_eq!(frame.next_pc, 0x1_4004_49b0);
 }
 
 #[test]
