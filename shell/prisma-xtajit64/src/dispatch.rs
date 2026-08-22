@@ -908,26 +908,26 @@ const MORESTACK_EVENT_FIELD_COUNT: usize = 13;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 
-// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #113 proved
-// that gfget returns nil and malg returns a fresh g with an overlapping stack.
-// The eight retained boundaries now bracket stackalloc and both writes of its
-// returned bounds without increasing the trace's 912-byte static footprint.
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_SECOND_NEWPROC_CALL_RIP: u64 = 0x0001_4002_b5e0;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP: u64 = 0x0001_4002_b5e5;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_MALG_NEWG_RETURN_RIP: u64 = 0x0001_4005_b525;
-#[cfg(any(test, target_arch = "arm64ec"))]
-const GO_MALG_AFTER_G_RELOAD_RIP: u64 = 0x0001_4005_b592;
+// Exact Go 1.26.0 PCs in the pinned Oh My Posh 30.6.3 fixture. CI #114 proved
+// that stackalloc itself returns the overlapping [lo, hi) range. The eight
+// retained boundaries now distinguish its small-stack cache and pool paths
+// without increasing the trace's 912-byte static footprint.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_MALG_STACKALLOC_CALL_RIP: u64 = 0x0001_4005_b5fa;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_MALG_STACKALLOC_RETURN_RIP: u64 = 0x0001_4005_b604;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_MALG_AFTER_STACK_LO_STORE_RIP: u64 = 0x0001_4005_b607;
+const GO_STACKALLOC_ENTRY_RIP: u64 = 0x0001_4006_80a0;
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_MALG_AFTER_STACK_HI_STORE_RIP: u64 = 0x0001_4005_b60b;
+const GO_STACKALLOC_SMALL_CLASS_RIP: u64 = 0x0001_4006_8300;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKALLOC_NO_CACHE_RIP: u64 = 0x0001_4006_831d;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKALLOC_CACHE_RIP: u64 = 0x0001_4006_8373;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKALLOC_POOL_RETURN_RIP: u64 = 0x0001_4006_8352;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKALLOC_RESULT_RIP: u64 = 0x0001_4006_82c2;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -1072,14 +1072,14 @@ where
     F: FnMut(u64) -> Option<u64>,
 {
     match guest_rip {
-        GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
-        | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
-        | GO_MALG_NEWG_RETURN_RIP
-        | GO_MALG_AFTER_G_RELOAD_RIP
-        | GO_MALG_STACKALLOC_CALL_RIP
+        GO_MALG_STACKALLOC_CALL_RIP
         | GO_MALG_STACKALLOC_RETURN_RIP
-        | GO_MALG_AFTER_STACK_LO_STORE_RIP
-        | GO_MALG_AFTER_STACK_HI_STORE_RIP => {}
+        | GO_STACKALLOC_ENTRY_RIP
+        | GO_STACKALLOC_SMALL_CLASS_RIP
+        | GO_STACKALLOC_NO_CACHE_RIP
+        | GO_STACKALLOC_CACHE_RIP
+        | GO_STACKALLOC_POOL_RETURN_RIP
+        | GO_STACKALLOC_RESULT_RIP => {}
         _ => return None,
     }
     let r14 = frame.gpr[gpr::R14];
@@ -1111,14 +1111,14 @@ where
 const fn should_record_stack_event(event: MorestackEvent) -> bool {
     matches!(
         event.rip,
-        GO_GCENABLE_SECOND_NEWPROC_CALL_RIP
-            | GO_GCENABLE_AFTER_SECOND_NEWPROC_RIP
-            | GO_MALG_NEWG_RETURN_RIP
-            | GO_MALG_AFTER_G_RELOAD_RIP
-            | GO_MALG_STACKALLOC_CALL_RIP
+        GO_MALG_STACKALLOC_CALL_RIP
             | GO_MALG_STACKALLOC_RETURN_RIP
-            | GO_MALG_AFTER_STACK_LO_STORE_RIP
-            | GO_MALG_AFTER_STACK_HI_STORE_RIP
+            | GO_STACKALLOC_ENTRY_RIP
+            | GO_STACKALLOC_SMALL_CLASS_RIP
+            | GO_STACKALLOC_NO_CACHE_RIP
+            | GO_STACKALLOC_CACHE_RIP
+            | GO_STACKALLOC_POOL_RETURN_RIP
+            | GO_STACKALLOC_RESULT_RIP
     )
 }
 
@@ -2234,15 +2234,14 @@ mod tests {
             (0x4008, 0x4800),
         ]);
         assert_eq!(
-            morestack_event_with_reader(GO_MALG_NEWG_RETURN_RIP - 1, &frame, |_| None),
+            morestack_event_with_reader(GO_STACKALLOC_ENTRY_RIP - 1, &frame, |_| None),
             None
         );
-        let event =
-            morestack_event_with_reader(GO_GCENABLE_SECOND_NEWPROC_CALL_RIP, &frame, |address| {
-                memory.get(&address).copied()
-            })
-            .unwrap();
-        assert_eq!(event.rip, GO_GCENABLE_SECOND_NEWPROC_CALL_RIP);
+        let event = morestack_event_with_reader(GO_MALG_STACKALLOC_CALL_RIP, &frame, |address| {
+            memory.get(&address).copied()
+        })
+        .unwrap();
+        assert_eq!(event.rip, GO_MALG_STACKALLOC_CALL_RIP);
         assert_eq!(event.r14, 0x1000);
         assert_eq!(event.rax, 0x2000);
         assert_eq!(event.rbx, 0x3000);
@@ -2254,7 +2253,7 @@ mod tests {
         assert_eq!((event.rcx_stack_lo, event.rcx_stack_hi), (0x4100, 0x4800));
         assert!(should_record_stack_event(event));
         assert!(!should_record_stack_event(MorestackEvent {
-            rip: GO_MALG_NEWG_RETURN_RIP - 1,
+            rip: GO_STACKALLOC_ENTRY_RIP - 1,
             ..event
         }));
     }
