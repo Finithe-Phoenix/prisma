@@ -1117,13 +1117,28 @@ where
     })
 }
 
+#[cfg(any(test, target_arch = "arm64ec"))]
+const fn should_record_stack_event(event: MorestackEvent) -> bool {
+    match event.rip {
+        MORESTACK_ENTRY_RIP
+        | MORESTACK_G_LOADED_RIP
+        | MORESTACK_G0_LOADED_RIP
+        | MORESTACK_NEWSTACK_CALL_RIP => {
+            event.r14_stack_lo == 0 || event.r14_stack_lo == INVALID_MORESTACK_MEMORY
+        }
+        _ => true,
+    }
+}
+
 #[cfg(target_arch = "arm64ec")]
 static MORESTACK_TRACE: MorestackTrace = MorestackTrace::new();
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_morestack_event(guest_rip: u64, frame: &CpuStateFrame) {
     if let Some(event) = morestack_event_with_reader(guest_rip, frame, read_current_process_u64) {
-        MORESTACK_TRACE.record(event);
+        if should_record_stack_event(event) {
+            MORESTACK_TRACE.record(event);
+        }
     }
 }
 
@@ -2238,6 +2253,7 @@ mod tests {
             (0x1100, 0x1800)
         );
         assert_eq!(main_entry.tls_g, INVALID_MORESTACK_MEMORY);
+        assert!(should_record_stack_event(main_entry));
         let event = morestack_event_with_reader(MORESTACK_G0_LOADED_RIP, &frame, |address| {
             memory.get(&address).copied()
         })
@@ -2252,6 +2268,11 @@ mod tests {
         assert_eq!((event.r14_stack_lo, event.r14_stack_hi), (0x1100, 0x1800));
         assert_eq!((event.rdi_stack_lo, event.rdi_stack_hi), (0x2100, 0x2800));
         assert_eq!((event.rbx_stack_lo, event.rbx_stack_hi), (0x3100, 0x3800));
+        assert!(!should_record_stack_event(event));
+        assert!(should_record_stack_event(MorestackEvent {
+            r14_stack_lo: 0,
+            ..event
+        }));
     }
 
     #[test]
