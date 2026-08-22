@@ -8470,8 +8470,9 @@ fn decode_tzcnt(
 
 // BSF/BSR (bare 0F BC/BD). BSF = trailing-zero count; BSR = the high set-bit *index*
 // = (bit_width - 1) - lzcnt (NOT lzcnt itself). x86 sets ZF=1 and leaves the
-// destination unchanged when the source is zero, so a CmpFlags{src,0} sets ZF
-// and a Select keeps the old destination on the zero case.
+// destination unchanged when the source is zero, so a CmpFlags{src,0} sets ZF,
+// a Select keeps the old destination on the zero case, and the same NZCV value
+// is published to persistent RFLAGS for the next guest instruction.
 fn decode_bsf_bsr(
     prefixes: &PrefixSet,
     _op2: u8,
@@ -8566,6 +8567,11 @@ fn decode_bsf_bsr(
             size,
         }),
     ));
+    // BSF/BSR define only ZF. Preserve the modelled CF/PF/AF values; SF/OF are
+    // architecturally undefined and may follow the comparison. Publishing here
+    // is essential because the next x86 instruction is translated separately
+    // and otherwise reloads a stale ZF from the guest frame.
+    push_store_rflags_from_nzcv(stmts, RflagsCarryMode::Preserve, None, None);
     Ok(1 + used)
 }
 
@@ -15994,7 +16000,8 @@ mod tests {
         // bsf rax, rcx  (48 0F BC C1) — bare (no F3) => BSF, not TZCNT.
         let d = decode_one(b"\x48\x0F\xBC\xC1", 0).unwrap();
         assert_eq!(d.bytes_consumed, 4);
-        // src load, old-dst load, tzcnt, zero const, cmpflags, select, store.
+        // src load, old-dst load, tzcnt, zero const, cmpflags, select, store,
+        // persistent ZF publication.
         assert_eq!(
             d.stmts[0],
             Stmt::new(
@@ -16014,9 +16021,20 @@ mod tests {
             Some(CondCode::Eq)
         ));
         assert!(matches!(
-            d.stmts.last().unwrap().op,
+            d.stmts[d.stmts.len() - 2].op,
             Op::StoreReg(StoreReg { reg: Gpr::Rax, .. })
         ));
+        assert_eq!(
+            d.stmts.last().unwrap(),
+            &Stmt::new(
+                None,
+                Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
+                    carry: RflagsCarryMode::Preserve,
+                    pf: None,
+                    af: None,
+                }),
+            )
+        );
     }
 
     #[test]
@@ -16068,11 +16086,19 @@ mod tests {
             })
         )));
         assert!(matches!(
-            bsf.stmts.last().unwrap().op,
+            bsf.stmts[bsf.stmts.len() - 2].op,
             Op::StoreReg(StoreReg {
                 reg: Gpr::Rax,
                 size: OpSize::I64,
                 ..
+            })
+        ));
+        assert!(matches!(
+            bsf.stmts.last().unwrap().op,
+            Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
+                carry: RflagsCarryMode::Preserve,
+                pf: None,
+                af: None,
             })
         ));
 
