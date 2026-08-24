@@ -1502,6 +1502,105 @@ impl PallocOriginTracker {
         })
     }
 
+    fn intervening_page_cache_events(
+        &self,
+        heap_mspan: u64,
+        manual_mspan: u64,
+        watched_address: u64,
+    ) -> [Option<MorestackEvent>; 2] {
+        if heap_mspan == 0 || manual_mspan == 0 || watched_address == 0 {
+            return [None; 2];
+        }
+        let Ok(state) = self.state.lock() else {
+            return [None; 2];
+        };
+        let Some(heap_origin) = state
+            .page_cache_origins
+            .iter()
+            .find(|origin| origin.mspan == heap_mspan)
+        else {
+            return [None; 2];
+        };
+        let Some(manual_origin) = state
+            .page_cache_origins
+            .iter()
+            .find(|origin| origin.mspan == manual_mspan)
+        else {
+            return [None; 2];
+        };
+        let lower_sequence = manual_origin.allocation.sequence;
+        let upper_sequence = heap_origin.allocation.sequence;
+        let page_cache = heap_origin.allocation.page_cache;
+        if lower_sequence >= upper_sequence || page_cache != manual_origin.allocation.page_cache {
+            return [None; 2];
+        }
+        let mut retained = [None; 2];
+        for allocation in state
+            .page_cache_allocations
+            .iter()
+            .copied()
+            .filter(|allocation| {
+                allocation.page_cache == page_cache
+                    && allocation.sequence > lower_sequence
+                    && allocation.sequence < upper_sequence
+            })
+        {
+            if retained[0]
+                .is_none_or(|first: PageCacheAllocation| allocation.sequence < first.sequence)
+            {
+                retained[1] = retained[0];
+                retained[0] = Some(allocation);
+            } else if retained[1]
+                .is_none_or(|second: PageCacheAllocation| allocation.sequence < second.sequence)
+            {
+                retained[1] = Some(allocation);
+            }
+        }
+        retained.map(|allocation| {
+            allocation.and_then(|allocation| {
+                let page_delta = allocation
+                    .allocated_base
+                    .checked_sub(allocation.cache_base)?;
+                if page_delta % 0x2000 != 0 || allocation.npages == 0 {
+                    return None;
+                }
+                let page_index = page_delta / 0x2000;
+                let range_end = page_index.checked_add(allocation.npages)?;
+                if range_end > 64 {
+                    return None;
+                }
+                let npages_shift = u32::try_from(allocation.npages).ok()?;
+                let page_shift = u32::try_from(page_index).ok()?;
+                let unshifted_mask = if allocation.npages == 64 {
+                    u64::MAX
+                } else {
+                    1_u64.checked_shl(npages_shift)?.wrapping_sub(1)
+                };
+                let mask = unshifted_mask.checked_shl(page_shift)?;
+                // These compact events describe the allocations between the
+                // manual and heap origins. The call PC distinguishes them from
+                // origin events; R8 is the allocating g, and the remaining
+                // fields retain the cache identity, sequence, selected base,
+                // scavenged bitmap, and selected bits before and after alloc.
+                Some(MorestackEvent {
+                    rip: GO_PAGE_CACHE_ALLOC_CALL_RIP,
+                    r14: watched_address,
+                    rax: allocation.page_cache,
+                    rbx: allocation.cache_base,
+                    rcx: allocation.npages,
+                    rsp: allocation.sequence,
+                    r8: allocation.g,
+                    r14_stack_lo: allocation.allocated_base,
+                    r14_stack_hi: allocation.scav_before,
+                    rax_stack_lo: allocation.cache_before,
+                    rax_stack_hi: mask,
+                    rcx_stack_lo: allocation.cache_before & mask,
+                    rcx_stack_hi: allocation.cache_after & mask,
+                })
+            })
+        })
+    }
+
     fn record_stackpool_call(&self, guest_rip: u64, frame: &CpuStateFrame) {
         if !matches!(
             guest_rip,
@@ -2039,6 +2138,13 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
         let heap_mspan = event.rbx;
         let manual_mspan = STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst);
         let watched_address = STACKCACHE_LINK_WATCH.address.load(Ordering::SeqCst);
+        for intervening in PALLOC_ORIGIN_TRACKER
+            .intervening_page_cache_events(heap_mspan, manual_mspan, watched_address)
+            .into_iter()
+            .flatten()
+        {
+            MORESTACK_TRACE.record(intervening);
+        }
         if let Some(heap_origin) =
             PALLOC_ORIGIN_TRACKER.page_cache_origin_event(heap_mspan, watched_address)
         {
@@ -3477,6 +3583,91 @@ mod tests {
         assert_eq!(origin.rax_stack_hi, 0x02);
         assert_eq!(origin.rcx_stack_lo, 0x02);
         assert_eq!(origin.rcx_stack_hi, 0);
+    }
+
+    #[test]
+    fn palloc_origin_tracker_reports_allocations_between_alias_origins() {
+        let tracker = PallocOriginTracker::new();
+        let cache_base = 0x1c60_abe0_0000;
+        let page_cache = 0xa000;
+        let manual_mspan = 0x8000;
+        let heap_mspan = 0x9000;
+        let allocation =
+            |sequence, cache_before, npages, allocated_base, cache_after| PageCacheAllocation {
+                sequence,
+                g: 0x7000,
+                page_cache,
+                cache_base,
+                cache_before,
+                scav_before: 0,
+                npages,
+                allocated_base,
+                cache_after,
+            };
+        let manual_allocation = allocation(2, 0x3f, 4, cache_base, 0x30);
+        let first_intervening = allocation(3, 0x30, 1, cache_base + 0x8000, 0x20);
+        let second_intervening = allocation(4, 0x20, 1, cache_base + 0xa000, 0);
+        let heap_allocation = allocation(5, 0x02, 1, cache_base + 0x2000, 0);
+        {
+            let mut state = tracker.state.lock().unwrap();
+            state.page_cache_allocations[0] = second_intervening;
+            state.page_cache_allocations[1] = first_intervening;
+            state.page_cache_origins[0] = PageCacheOrigin {
+                mspan: manual_mspan,
+                start: cache_base,
+                allocation: manual_allocation,
+            };
+            state.page_cache_origins[1] = PageCacheOrigin {
+                mspan: heap_mspan,
+                start: cache_base + 0x2000,
+                allocation: heap_allocation,
+            };
+        }
+
+        let events =
+            tracker.intervening_page_cache_events(heap_mspan, manual_mspan, cache_base + 0x2000);
+        let first = events[0].unwrap();
+        let second = events[1].unwrap();
+        assert_eq!(
+            (
+                first.rip,
+                first.rsp,
+                first.r14_stack_lo,
+                first.rax_stack_lo,
+                first.rax_stack_hi,
+                first.rcx_stack_lo,
+                first.rcx_stack_hi,
+            ),
+            (
+                GO_PAGE_CACHE_ALLOC_CALL_RIP,
+                3,
+                cache_base + 0x8000,
+                0x30,
+                0x10,
+                0x10,
+                0,
+            )
+        );
+        assert_eq!(
+            (
+                second.rip,
+                second.rsp,
+                second.r14_stack_lo,
+                second.rax_stack_lo,
+                second.rax_stack_hi,
+                second.rcx_stack_lo,
+                second.rcx_stack_hi,
+            ),
+            (
+                GO_PAGE_CACHE_ALLOC_CALL_RIP,
+                4,
+                cache_base + 0xa000,
+                0x20,
+                0x20,
+                0x20,
+                0,
+            )
+        );
     }
 
     #[test]
