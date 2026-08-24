@@ -917,6 +917,12 @@ const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 // increasing the fixed eight-event/912-byte trace.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKCACHE_REFILL_LOOP_STATE_RIP: u64 = 0x0001_4006_7dfa;
+// Call site of stackpoolalloc from stackcacherefill. Remember the palloc
+// sequence at this boundary so a range acquired inside the call can be tied
+// to the mspan returned at the loop-state boundary above. The association is
+// retained by mspan identity across later refills.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKCACHE_REFILL_POOL_CALL_RIP: u64 = 0x0001_4006_7dd1;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
 // First block after the fast small-scan allocator has selected an object from
@@ -930,12 +936,15 @@ const GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP: u64 = 0x0001_4002_2175;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_MALLOCGC_SMALL_SCAN_SLOW_RESULT_RIP: u64 = 0x0001_4002_21a5;
 
-// Entry to pallocData.allocRange in the pinned Go 1.26.0 fixture. While the
-// stackcache tail watch is armed, sample only a range that covers the watched
-// 8 KiB page so the allocation bitmap can be inspected immediately before it
-// is marked occupied.
+// Entry to pallocData.allocRange in the pinned Go 1.26.0 fixture. Capture its
+// compact pre-mutation bitmap state and correlate it with stackpoolalloc's
+// returned mspan. CI #130 proved that waiting until the final tail watch was
+// armed was too late: that refill consumed an existing manual span and did
+// not enter allocRange.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_PALLOC_DATA_ALLOC_RANGE_RIP: u64 = 0x0001_4004_51e0;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const PALLOC_ORIGIN_SLOT_COUNT: usize = 8;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -1006,6 +1015,7 @@ struct MorestackTrace {
 #[cfg(any(test, target_arch = "arm64ec"))]
 struct StackcacheLinkWatch {
     address: AtomicU64,
+    mspan: AtomicU64,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1013,6 +1023,7 @@ impl StackcacheLinkWatch {
     const fn new() -> Self {
         Self {
             address: AtomicU64::new(0),
+            mspan: AtomicU64::new(0),
         }
     }
 
@@ -1023,6 +1034,7 @@ impl StackcacheLinkWatch {
             && event.rcx_stack_lo != INVALID_MORESTACK_MEMORY
             && event.rax_stack_lo == 0
         {
+            self.mspan.store(event.r8, Ordering::SeqCst);
             self.address.store(event.rcx_stack_lo, Ordering::SeqCst);
         }
     }
@@ -1134,54 +1146,261 @@ impl StackcacheLinkWatch {
             rcx_stack_hi: elem_size,
         })
     }
+}
 
-    fn palloc_range_event_with_reader<F>(
+#[cfg(any(test, target_arch = "arm64ec"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PendingStackpoolCall {
+    g: u64,
+    palloc_sequence: u64,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PallocRangeSnapshot {
+    sequence: u64,
+    g: u64,
+    bitmap: u64,
+    page: u64,
+    npages: u64,
+    first_word: u64,
+    last_word: u64,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ManualSpanOrigin {
+    mspan: u64,
+    start: u64,
+    snapshot: PallocRangeSnapshot,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+struct PallocOriginState {
+    palloc_sequence: u64,
+    pending_cursor: usize,
+    pending: [PendingStackpoolCall; PALLOC_ORIGIN_SLOT_COUNT],
+    snapshot_cursor: usize,
+    snapshots: [PallocRangeSnapshot; PALLOC_ORIGIN_SLOT_COUNT],
+    origin_cursor: usize,
+    origins: [ManualSpanOrigin; PALLOC_ORIGIN_SLOT_COUNT],
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl PallocOriginState {
+    const fn new() -> Self {
+        Self {
+            palloc_sequence: 0,
+            pending_cursor: 0,
+            pending: [PendingStackpoolCall {
+                g: 0,
+                palloc_sequence: 0,
+            }; PALLOC_ORIGIN_SLOT_COUNT],
+            snapshot_cursor: 0,
+            snapshots: [PallocRangeSnapshot {
+                sequence: 0,
+                g: 0,
+                bitmap: 0,
+                page: 0,
+                npages: 0,
+                first_word: 0,
+                last_word: 0,
+            }; PALLOC_ORIGIN_SLOT_COUNT],
+            origin_cursor: 0,
+            origins: [ManualSpanOrigin {
+                mspan: 0,
+                start: 0,
+                snapshot: PallocRangeSnapshot {
+                    sequence: 0,
+                    g: 0,
+                    bitmap: 0,
+                    page: 0,
+                    npages: 0,
+                    first_word: 0,
+                    last_word: 0,
+                },
+            }; PALLOC_ORIGIN_SLOT_COUNT],
+        }
+    }
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+struct PallocOriginTracker {
+    state: Mutex<PallocOriginState>,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+impl PallocOriginTracker {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(PallocOriginState::new()),
+        }
+    }
+
+    fn record_stackpool_call(&self, guest_rip: u64, frame: &CpuStateFrame) {
+        if guest_rip != GO_STACKCACHE_REFILL_POOL_CALL_RIP {
+            return;
+        }
+        let g = frame.gpr[gpr::R14];
+        if g == 0 {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let entry = PendingStackpoolCall {
+            g,
+            palloc_sequence: state.palloc_sequence,
+        };
+        if let Some(slot) = state.pending.iter_mut().find(|slot| slot.g == g) {
+            *slot = entry;
+            return;
+        }
+        let index = state.pending_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+        state.pending[index] = entry;
+        state.pending_cursor = state.pending_cursor.wrapping_add(1);
+    }
+
+    fn record_palloc_range_with_reader<F>(
         &self,
         guest_rip: u64,
         frame: &CpuStateFrame,
         mut read_u64: F,
-    ) -> Option<MorestackEvent>
-    where
+    ) where
         F: FnMut(u64) -> Option<u64>,
     {
         if guest_rip != GO_PALLOC_DATA_ALLOC_RANGE_RIP {
-            return None;
-        }
-        let address = self.address.load(Ordering::SeqCst);
-        if address == 0 {
-            return None;
+            return;
         }
         let bitmap = frame.gpr[gpr::RAX];
         let page = frame.gpr[gpr::RBX];
         let npages = frame.gpr[gpr::RCX];
-        let range_end = page.checked_add(npages)?;
-        // A palloc chunk spans 4 MiB and contains 512 8 KiB pages. Restrict
-        // the probe to the single allocation range that covers the watched
-        // stackcache tail, avoiding a broad allocator trace.
-        let watched_page = (address & ((1_u64 << 22) - 1)) >> 13;
-        if page > watched_page || range_end <= watched_page {
+        let Some(last_page) = npages
+            .checked_sub(1)
+            .and_then(|delta| page.checked_add(delta))
+        else {
+            return;
+        };
+        let Some(first_word_address) = bitmap.checked_add((page / 64) * 8) else {
+            return;
+        };
+        let Some(last_word_address) = bitmap.checked_add((last_page / 64) * 8) else {
+            return;
+        };
+        let first_word = read_u64(first_word_address).unwrap_or(INVALID_MORESTACK_MEMORY);
+        let last_word = if last_word_address == first_word_address {
+            first_word
+        } else {
+            read_u64(last_word_address).unwrap_or(INVALID_MORESTACK_MEMORY)
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.palloc_sequence = state.palloc_sequence.wrapping_add(1);
+        let snapshot = PallocRangeSnapshot {
+            sequence: state.palloc_sequence,
+            g: frame.gpr[gpr::R14],
+            bitmap,
+            page,
+            npages,
+            first_word,
+            last_word,
+        };
+        let index = state.snapshot_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+        state.snapshots[index] = snapshot;
+        state.snapshot_cursor = state.snapshot_cursor.wrapping_add(1);
+    }
+
+    fn associate_refill(&self, event: MorestackEvent) {
+        if event.rip != GO_STACKCACHE_REFILL_LOOP_STATE_RIP
+            || event.r8 == 0
+            || matches!(event.r14_stack_lo, 0 | INVALID_MORESTACK_MEMORY)
+        {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let Some(call) = state
+            .pending
+            .iter()
+            .find(|call| call.g == event.r14)
+            .copied()
+        else {
+            return;
+        };
+        let local_page = (event.r14_stack_lo & ((1_u64 << 22) - 1)) >> 13;
+        let Some(snapshot) = state
+            .snapshots
+            .iter()
+            .filter(|snapshot| {
+                snapshot.g == event.r14
+                    && snapshot.sequence > call.palloc_sequence
+                    && snapshot.page <= local_page
+                    && snapshot
+                        .page
+                        .checked_add(snapshot.npages)
+                        .is_some_and(|end| local_page < end)
+            })
+            .max_by_key(|snapshot| snapshot.sequence)
+            .copied()
+        else {
+            return;
+        };
+        let origin = ManualSpanOrigin {
+            mspan: event.r8,
+            start: event.r14_stack_lo,
+            snapshot,
+        };
+        if let Some(slot) = state
+            .origins
+            .iter_mut()
+            .find(|origin| origin.mspan == event.r8)
+        {
+            *slot = origin;
+            return;
+        }
+        let index = state.origin_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+        state.origins[index] = origin;
+        state.origin_cursor = state.origin_cursor.wrapping_add(1);
+    }
+
+    fn origin_event(&self, mspan: u64, watched_address: u64) -> Option<MorestackEvent> {
+        if mspan == 0 || watched_address == 0 {
             return None;
         }
-        let bitmap_word_address = bitmap.checked_add((watched_page / 64) * 8)?;
-        let bitmap_word = read_u64(bitmap_word_address).unwrap_or(INVALID_MORESTACK_MEMORY);
-        let watched_bit = 1_u64 << (watched_page % 64);
-        // Compact field reuse: R14=watched address, RAX=bitmap, RBX=page,
-        // RCX=npages, R8=watched page, then the word address/value, watched
-        // bit/masked value and exclusive range end. This records whether the
-        // allocator selected a page whose occupancy bit was already set.
+        let state = self.state.lock().ok()?;
+        let origin = *state.origins.iter().find(|origin| origin.mspan == mspan)?;
+        drop(state);
+        let local_page = (watched_address & ((1_u64 << 22) - 1)) >> 13;
+        let range_end = origin.snapshot.page.checked_add(origin.snapshot.npages)?;
+        if origin.snapshot.page > local_page || range_end <= local_page {
+            return None;
+        }
+        let bitmap_word_address = origin.snapshot.bitmap.checked_add((local_page / 64) * 8)?;
+        let first_word_address = origin.snapshot.bitmap + (origin.snapshot.page / 64) * 8;
+        let last_word_address = origin.snapshot.bitmap + ((range_end - 1) / 64) * 8;
+        let bitmap_word_before = if bitmap_word_address == first_word_address {
+            origin.snapshot.first_word
+        } else if bitmap_word_address == last_word_address {
+            origin.snapshot.last_word
+        } else {
+            return None;
+        };
+        let watched_bit = 1_u64 << (local_page % 64);
         Some(MorestackEvent {
-            rip: guest_rip,
-            r14: address,
-            rax: bitmap,
-            rbx: page,
-            rcx: npages,
-            rsp: frame.gpr[gpr::RSP],
-            r8: watched_page,
-            r14_stack_lo: bitmap_word_address,
-            r14_stack_hi: bitmap_word,
-            rax_stack_lo: watched_bit,
-            rax_stack_hi: bitmap_word & watched_bit,
-            rcx_stack_lo: range_end,
+            rip: GO_PALLOC_DATA_ALLOC_RANGE_RIP,
+            r14: watched_address,
+            rax: origin.snapshot.bitmap,
+            rbx: origin.snapshot.page,
+            rcx: origin.snapshot.npages,
+            rsp: origin.snapshot.sequence,
+            r8: origin.mspan,
+            r14_stack_lo: origin.start,
+            r14_stack_hi: bitmap_word_address,
+            rax_stack_lo: bitmap_word_before,
+            rax_stack_hi: watched_bit,
+            rcx_stack_lo: bitmap_word_before & watched_bit,
             rcx_stack_hi: 0,
         })
     }
@@ -1342,20 +1561,28 @@ static MORESTACK_TRACE: MorestackTrace = MorestackTrace::new();
 #[cfg(target_arch = "arm64ec")]
 static STACKCACHE_LINK_WATCH: StackcacheLinkWatch = StackcacheLinkWatch::new();
 
+#[cfg(target_arch = "arm64ec")]
+static PALLOC_ORIGIN_TRACKER: PallocOriginTracker = PallocOriginTracker::new();
+
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
-    if let Some(event) = STACKCACHE_LINK_WATCH.palloc_range_event_with_reader(
+    PALLOC_ORIGIN_TRACKER.record_stackpool_call(guest_rip, frame);
+    PALLOC_ORIGIN_TRACKER.record_palloc_range_with_reader(
         guest_rip,
         frame,
         read_current_process_u64,
-    ) {
-        MORESTACK_TRACE.record(event);
-    }
+    );
     if let Some(event) = STACKCACHE_LINK_WATCH.allocation_alias_event_with_reader(
         guest_rip,
         frame,
         read_current_process_u64,
     ) {
+        if let Some(origin) = PALLOC_ORIGIN_TRACKER.origin_event(
+            STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst),
+            STACKCACHE_LINK_WATCH.address.load(Ordering::SeqCst),
+        ) {
+            MORESTACK_TRACE.record(origin);
+        }
         MORESTACK_TRACE.record(event);
     }
     if let Some(event) =
@@ -1369,6 +1596,7 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
 fn record_morestack_event(guest_rip: u64, frame: &CpuStateFrame) {
     if let Some(event) = morestack_event_with_reader(guest_rip, frame, read_current_process_u64) {
         if should_record_stack_event(event) {
+            PALLOC_ORIGIN_TRACKER.associate_refill(event);
             MORESTACK_TRACE.record(event);
             STACKCACHE_LINK_WATCH.arm_from_refill(event);
         }
@@ -2582,58 +2810,43 @@ mod tests {
     }
 
     #[test]
-    fn stackcache_link_watch_reports_covering_palloc_range_and_prior_bit() {
-        let watch = StackcacheLinkWatch::new();
-        watch.arm_from_refill(MorestackEvent {
-            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
-            rax: 0x4000,
-            rax_stack_lo: 0,
-            rcx_stack_lo: 0x1c60_abe0_2000,
-            ..MorestackEvent::default()
-        });
+    fn palloc_origin_tracker_retains_manual_span_bitmap_state_for_later_alias() {
+        let tracker = PallocOriginTracker::new();
         let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x7000;
+        tracker.record_stackpool_call(GO_STACKCACHE_REFILL_POOL_CALL_RIP, &frame);
         frame.gpr[gpr::RAX] = 0x9000;
         frame.gpr[gpr::RBX] = 256;
         frame.gpr[gpr::RCX] = 2;
         frame.gpr[gpr::RSP] = 0xa000;
         let memory = BTreeMap::from([(0x9020, 0x7)]);
-        assert_eq!(
-            watch.palloc_range_event_with_reader(
-                GO_PALLOC_DATA_ALLOC_RANGE_RIP - 1,
-                &frame,
-                |address| memory.get(&address).copied()
-            ),
-            None
+        tracker.record_palloc_range_with_reader(
+            GO_PALLOC_DATA_ALLOC_RANGE_RIP,
+            &frame,
+            |address| memory.get(&address).copied(),
         );
-        frame.gpr[gpr::RBX] = 258;
-        assert_eq!(
-            watch.palloc_range_event_with_reader(
-                GO_PALLOC_DATA_ALLOC_RANGE_RIP,
-                &frame,
-                |address| memory.get(&address).copied()
-            ),
-            None
-        );
-        frame.gpr[gpr::RBX] = 256;
-        let event = watch
-            .palloc_range_event_with_reader(GO_PALLOC_DATA_ALLOC_RANGE_RIP, &frame, |address| {
-                memory.get(&address).copied()
-            })
-            .unwrap();
+        tracker.associate_refill(MorestackEvent {
+            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
+            r14: 0x7000,
+            r8: 0x8000,
+            r14_stack_lo: 0x1c60_abe0_2000,
+            ..MorestackEvent::default()
+        });
+        let event = tracker.origin_event(0x8000, 0x1c60_abe0_2000).unwrap();
         assert_eq!(event.rip, GO_PALLOC_DATA_ALLOC_RANGE_RIP);
         assert_eq!(event.r14, 0x1c60_abe0_2000);
         assert_eq!(event.rax, 0x9000);
         assert_eq!(event.rbx, 256);
         assert_eq!(event.rcx, 2);
-        assert_eq!(event.rsp, 0xa000);
-        assert_eq!(event.r8, 257);
-        assert_eq!(event.r14_stack_lo, 0x9020);
-        assert_eq!(event.r14_stack_hi, 0x7);
-        assert_eq!(event.rax_stack_lo, 0x2);
+        assert_eq!(event.rsp, 1);
+        assert_eq!(event.r8, 0x8000);
+        assert_eq!(event.r14_stack_lo, 0x1c60_abe0_2000);
+        assert_eq!(event.r14_stack_hi, 0x9020);
+        assert_eq!(event.rax_stack_lo, 0x7);
         assert_eq!(event.rax_stack_hi, 0x2);
-        assert_eq!(event.rcx_stack_lo, 258);
+        assert_eq!(event.rcx_stack_lo, 0x2);
         assert_eq!(event.rcx_stack_hi, 0);
-        assert_eq!(watch.address.load(Ordering::SeqCst), 0x1c60_abe0_2000);
+        assert_eq!(tracker.origin_event(0x8008, 0x1c60_abe0_2000), None);
     }
 
     #[test]
