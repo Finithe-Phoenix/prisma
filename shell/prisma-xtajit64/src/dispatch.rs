@@ -933,6 +933,15 @@ const GO_STACKPOOL_CREATE_CALL_RIP: u64 = 0x0001_4006_7ab6;
 const GO_STACKPOOL_CREATE_RETURN_RIP: u64 = 0x0001_4006_7ac0;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKPOOL_CREATED_TAIL_OFFSET: u64 = 0x2000;
+// Fast-path page-cache allocation inside mheap.allocSpan. The call boundary
+// exposes the P-local pageCache and its free bitmap; the return boundary
+// exposes the selected base after the cache bits have been cleared. Preserve
+// this causal source because small manual stack spans do not necessarily enter
+// pallocData.allocRange.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_PAGE_CACHE_ALLOC_CALL_RIP: u64 = 0x0001_4003_df80;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_PAGE_CACHE_ALLOC_RETURN_RIP: u64 = 0x0001_4003_df85;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
 // First block after the fast small-scan allocator has selected an object from
@@ -1195,6 +1204,28 @@ struct ManualSpanOrigin {
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PageCacheAllocation {
+    sequence: u64,
+    g: u64,
+    page_cache: u64,
+    cache_base: u64,
+    cache_before: u64,
+    scav_before: u64,
+    npages: u64,
+    allocated_base: u64,
+    cache_after: u64,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PageCacheOrigin {
+    mspan: u64,
+    start: u64,
+    allocation: PageCacheAllocation,
+}
+
+#[cfg(any(test, target_arch = "arm64ec"))]
 struct PallocOriginState {
     palloc_sequence: u64,
     pending_cursor: usize,
@@ -1203,6 +1234,11 @@ struct PallocOriginState {
     snapshots: [PallocRangeSnapshot; PALLOC_ORIGIN_SLOT_COUNT],
     origin_cursor: usize,
     origins: [ManualSpanOrigin; PALLOC_ORIGIN_SLOT_COUNT],
+    page_cache_sequence: u64,
+    page_cache_cursor: usize,
+    page_cache_allocations: [PageCacheAllocation; PALLOC_ORIGIN_SLOT_COUNT],
+    page_cache_origin_cursor: usize,
+    page_cache_origins: [PageCacheOrigin; PALLOC_ORIGIN_SLOT_COUNT],
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1242,6 +1278,35 @@ impl PallocOriginState {
                 call_sequence: 0,
                 observed_sequence: 0,
             }; PALLOC_ORIGIN_SLOT_COUNT],
+            page_cache_sequence: 0,
+            page_cache_cursor: 0,
+            page_cache_allocations: [PageCacheAllocation {
+                sequence: 0,
+                g: 0,
+                page_cache: 0,
+                cache_base: 0,
+                cache_before: 0,
+                scav_before: 0,
+                npages: 0,
+                allocated_base: 0,
+                cache_after: 0,
+            }; PALLOC_ORIGIN_SLOT_COUNT],
+            page_cache_origin_cursor: 0,
+            page_cache_origins: [PageCacheOrigin {
+                mspan: 0,
+                start: 0,
+                allocation: PageCacheAllocation {
+                    sequence: 0,
+                    g: 0,
+                    page_cache: 0,
+                    cache_base: 0,
+                    cache_before: 0,
+                    scav_before: 0,
+                    npages: 0,
+                    allocated_base: 0,
+                    cache_after: 0,
+                },
+            }; PALLOC_ORIGIN_SLOT_COUNT],
         }
     }
 }
@@ -1257,6 +1322,160 @@ impl PallocOriginTracker {
         Self {
             state: Mutex::new(PallocOriginState::new()),
         }
+    }
+
+    fn record_page_cache_allocation_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        mut read_u64: F,
+    ) where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        let g = frame.gpr[gpr::R14];
+        if guest_rip == GO_PAGE_CACHE_ALLOC_CALL_RIP {
+            let page_cache = frame.gpr[gpr::RAX];
+            let npages = frame.gpr[gpr::RBX];
+            if g == 0 || page_cache == 0 || npages == 0 {
+                return;
+            }
+            let cache_base = read_u64(page_cache).unwrap_or(INVALID_MORESTACK_MEMORY);
+            let cache_before = page_cache
+                .checked_add(8)
+                .and_then(&mut read_u64)
+                .unwrap_or(INVALID_MORESTACK_MEMORY);
+            let scav_before = page_cache
+                .checked_add(16)
+                .and_then(&mut read_u64)
+                .unwrap_or(INVALID_MORESTACK_MEMORY);
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.page_cache_sequence = state.page_cache_sequence.wrapping_add(1);
+            let allocation = PageCacheAllocation {
+                sequence: state.page_cache_sequence,
+                g,
+                page_cache,
+                cache_base,
+                cache_before,
+                scav_before,
+                npages,
+                allocated_base: 0,
+                cache_after: INVALID_MORESTACK_MEMORY,
+            };
+            let index = state.page_cache_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+            state.page_cache_allocations[index] = allocation;
+            state.page_cache_cursor = state.page_cache_cursor.wrapping_add(1);
+            return;
+        }
+        if guest_rip != GO_PAGE_CACHE_ALLOC_RETURN_RIP || g == 0 {
+            return;
+        }
+        let allocated_base = frame.gpr[gpr::RAX];
+        if allocated_base == 0 {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let Some(index) = state
+            .page_cache_allocations
+            .iter()
+            .enumerate()
+            .filter(|(_, allocation)| {
+                allocation.sequence != 0 && allocation.g == g && allocation.allocated_base == 0
+            })
+            .max_by_key(|(_, allocation)| allocation.sequence)
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        let page_cache = state.page_cache_allocations[index].page_cache;
+        let cache_after = page_cache
+            .checked_add(8)
+            .and_then(&mut read_u64)
+            .unwrap_or(INVALID_MORESTACK_MEMORY);
+        state.page_cache_allocations[index].allocated_base = allocated_base;
+        state.page_cache_allocations[index].cache_after = cache_after;
+    }
+
+    fn associate_page_cache_origin(&self, mspan: u64, start: u64) {
+        if mspan == 0 || start == 0 {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state
+            .page_cache_origins
+            .iter()
+            .any(|origin| origin.mspan == mspan)
+        {
+            return;
+        }
+        let Some(allocation) = state
+            .page_cache_allocations
+            .iter()
+            .filter(|allocation| allocation.sequence != 0 && allocation.allocated_base == start)
+            .max_by_key(|allocation| allocation.sequence)
+            .copied()
+        else {
+            return;
+        };
+        let index = state.page_cache_origin_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+        state.page_cache_origins[index] = PageCacheOrigin {
+            mspan,
+            start,
+            allocation,
+        };
+        state.page_cache_origin_cursor = state.page_cache_origin_cursor.wrapping_add(1);
+    }
+
+    fn page_cache_origin_event(&self, mspan: u64, watched_address: u64) -> Option<MorestackEvent> {
+        if mspan == 0 || watched_address == 0 {
+            return None;
+        }
+        let state = self.state.lock().ok()?;
+        let origin = *state
+            .page_cache_origins
+            .iter()
+            .find(|origin| origin.mspan == mspan)?;
+        drop(state);
+        let allocation = origin.allocation;
+        let page_delta = allocation
+            .allocated_base
+            .checked_sub(allocation.cache_base)?;
+        if page_delta % 0x2000 != 0 || allocation.npages == 0 {
+            return None;
+        }
+        let page_index = page_delta / 0x2000;
+        let range_end = page_index.checked_add(allocation.npages)?;
+        if range_end > 64 {
+            return None;
+        }
+        let npages_shift = u32::try_from(allocation.npages).ok()?;
+        let page_shift = u32::try_from(page_index).ok()?;
+        let unshifted_mask = if allocation.npages == 64 {
+            u64::MAX
+        } else {
+            1_u64.checked_shl(npages_shift)?.wrapping_sub(1)
+        };
+        let mask = unshifted_mask.checked_shl(page_shift)?;
+        Some(MorestackEvent {
+            rip: GO_PAGE_CACHE_ALLOC_RETURN_RIP,
+            r14: watched_address,
+            rax: allocation.page_cache,
+            rbx: allocation.cache_base,
+            rcx: allocation.npages,
+            rsp: allocation.sequence,
+            r8: origin.mspan,
+            r14_stack_lo: origin.start,
+            r14_stack_hi: allocation.allocated_base,
+            rax_stack_lo: allocation.cache_before,
+            rax_stack_hi: mask,
+            rcx_stack_lo: allocation.cache_before & mask,
+            rcx_stack_hi: allocation.cache_after & mask,
+        })
     }
 
     fn record_stackpool_call(&self, guest_rip: u64, frame: &CpuStateFrame) {
@@ -1351,10 +1570,12 @@ impl PallocOriginTracker {
         let g = frame.gpr[gpr::R14];
         let mspan = frame.gpr[gpr::RAX];
         let start = mspan.checked_add(0x18).and_then(read_u64)?;
+        self.associate_page_cache_origin(mspan, start);
         self.associate_manual_span(g, mspan, start);
         let watched_address = start.checked_add(GO_STACKPOOL_CREATED_TAIL_OFFSET)?;
         let mut event = self
-            .origin_event(mspan, watched_address)
+            .page_cache_origin_event(mspan, watched_address)
+            .or_else(|| self.origin_event(mspan, watched_address))
             .or_else(|| self.origin_miss_event(g, mspan, start, watched_address))?;
         // Emit at the creation boundary rather than waiting for the later heap
         // alias. This keeps the same fixed trace ring while preserving the
@@ -1763,6 +1984,11 @@ static PALLOC_ORIGIN_TRACKER: PallocOriginTracker = PallocOriginTracker::new();
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
+    PALLOC_ORIGIN_TRACKER.record_page_cache_allocation_with_reader(
+        guest_rip,
+        frame,
+        read_current_process_u64,
+    );
     PALLOC_ORIGIN_TRACKER.record_stackpool_call(guest_rip, frame);
     PALLOC_ORIGIN_TRACKER.record_palloc_range_with_reader(
         guest_rip,
@@ -1784,7 +2010,8 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
         let mspan = STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst);
         let watched_address = STACKCACHE_LINK_WATCH.address.load(Ordering::SeqCst);
         if let Some(origin) = PALLOC_ORIGIN_TRACKER
-            .origin_event(mspan, watched_address)
+            .page_cache_origin_event(mspan, watched_address)
+            .or_else(|| PALLOC_ORIGIN_TRACKER.origin_event(mspan, watched_address))
             .or_else(|| {
                 PALLOC_ORIGIN_TRACKER.origin_miss_event(
                     STACKCACHE_LINK_WATCH.g.load(Ordering::SeqCst),
@@ -3116,6 +3343,68 @@ mod tests {
     }
 
     #[test]
+    fn palloc_origin_tracker_associates_page_cache_fast_path_at_creation() {
+        let tracker = PallocOriginTracker::new();
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x7000;
+        tracker.record_stackpool_call(GO_STACKPOOL_CREATE_CALL_RIP, &frame);
+
+        frame.gpr[gpr::RAX] = 0xa000;
+        frame.gpr[gpr::RBX] = 4;
+        let before = BTreeMap::from([
+            (0xa000, 0x1c60_abe0_0000),
+            (0xa008, 0x1f00),
+            (0xa010, 0x0100),
+        ]);
+        tracker.record_page_cache_allocation_with_reader(
+            GO_PAGE_CACHE_ALLOC_CALL_RIP,
+            &frame,
+            |address| before.get(&address).copied(),
+        );
+
+        frame.gpr[gpr::RAX] = 0x1c60_abe1_0000;
+        tracker.record_page_cache_allocation_with_reader(
+            GO_PAGE_CACHE_ALLOC_RETURN_RIP,
+            &frame,
+            |address| (address == 0xa008).then_some(0x1000),
+        );
+
+        frame.gpr[gpr::RAX] = 0x8000;
+        let creation_event = tracker
+            .associate_stackpool_creation_with_reader(
+                GO_STACKPOOL_CREATE_RETURN_RIP,
+                &frame,
+                |address| (address == 0x8018).then_some(0x1c60_abe1_0000),
+            )
+            .unwrap();
+        assert_eq!(creation_event.rip, GO_STACKPOOL_CREATE_RETURN_RIP);
+        assert_eq!(creation_event.r14, 0x1c60_abe1_2000);
+        assert_eq!(creation_event.rax, 0xa000);
+        assert_eq!(creation_event.rbx, 0x1c60_abe0_0000);
+        assert_eq!(creation_event.rcx, 4);
+        assert_eq!(creation_event.rsp, 1);
+        assert_eq!(creation_event.r8, 0x8000);
+        assert_eq!(creation_event.r14_stack_lo, 0x1c60_abe1_0000);
+        assert_eq!(creation_event.r14_stack_hi, 0x1c60_abe1_0000);
+        assert_eq!(creation_event.rax_stack_lo, 0x1f00);
+        assert_eq!(creation_event.rax_stack_hi, 0x0f00);
+        assert_eq!(creation_event.rcx_stack_lo, 0x0f00);
+        assert_eq!(creation_event.rcx_stack_hi, 0);
+
+        let origin = tracker
+            .page_cache_origin_event(0x8000, 0x1c60_abe1_2000)
+            .unwrap();
+        assert_eq!(origin.rip, GO_PAGE_CACHE_ALLOC_RETURN_RIP);
+        assert_eq!(
+            origin,
+            MorestackEvent {
+                rip: GO_PAGE_CACHE_ALLOC_RETURN_RIP,
+                ..creation_event
+            }
+        );
+    }
+
+    #[test]
     fn palloc_origin_tracker_retains_first_no_palloc_span_observation() {
         let tracker = PallocOriginTracker::new();
         let mut frame = CpuStateFrame::default();
@@ -3792,3 +4081,4 @@ mod tests {
         assert_eq!(first.emulator_data[PROVIDER_OWNED_MAPPING_SLOT], original);
     }
 }
+
