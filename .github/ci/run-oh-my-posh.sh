@@ -50,6 +50,26 @@ for cycle in 1 2 3; do
   printf 'cycle=%s stderr-begin\n' "$cycle"
   cat "$stderr_file"
   printf 'cycle=%s stderr-end\n' "$cycle"
+  if [[ "$status" -ne 0 ]]; then
+    slow_alias_trace="$(
+      awk '
+        /prisma-trace: morestack-rip=0x0*1400221a5/ { remaining = 13 }
+        remaining > 0 {
+          sub(/\r$/, "")
+          sub(/^.*prisma-trace: /, "")
+          printf "%s%s", separator, $0
+          separator = "; "
+          remaining--
+        }
+      ' "$stderr_file"
+    )"
+    if [[ -n "$slow_alias_trace" ]]; then
+      printf '::error title=PRISMA slow heap alias::%s\n' "$slow_alias_trace"
+    else
+      printf '%s\n' \
+        '::error title=PRISMA slow heap alias::event 0x1400221a5 missing'
+    fi
+  fi
   test "$status" -eq 0
   cmp "$expected_stdout" "$stdout_file"
   ! grep -Fq 'prisma-error:' "$stderr_file"
