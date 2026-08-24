@@ -942,12 +942,15 @@ const GO_STACKPOOL_CREATED_TAIL_OFFSET: u64 = 0x2000;
 const GO_PAGE_CACHE_ALLOC_CALL_RIP: u64 = 0x0001_4003_df80;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_PAGE_CACHE_ALLOC_RETURN_RIP: u64 = 0x0001_4003_df85;
-// First boundary after allocToCache's returned base/free/scavenged words have
-// been stored into the P-local pageCache. Retain the returned free bitmap in
-// the next page-cache allocation record so the alias trace can distinguish a
-// refill that already reintroduced a live page from a later local mutation.
+// Return boundary of allocToCache, before the caller reloads the pageCache
+// owner from its stack slot and stores the returned base/free/scavenged words.
+// Retain the returned free bitmap in the next page-cache allocation record so
+// the alias trace can distinguish a refill that already reintroduced a live
+// page from a later local mutation. This boundary is the direct call
+// continuation; CI #141 showed that the later compiler NOP at 0x14003df5b was
+// not a reliable dispatch observation point.
 #[cfg(any(test, target_arch = "arm64ec"))]
-const GO_PAGE_CACHE_REFILL_STORED_RIP: u64 = 0x0001_4003_df5b;
+const GO_PAGE_CACHE_REFILL_RETURN_RIP: u64 = 0x0001_4003_df47;
 // Final initialized return boundary of mheap.allocSpan. RAX contains the
 // returned mspan here, so associate every page-cache allocation with the span
 // it actually backed. This lets the later stackcache alias report the origin
@@ -1425,12 +1428,23 @@ impl PallocOriginTracker {
         state.page_cache_allocations[index].cache_after = cache_after;
     }
 
-    fn record_page_cache_refill(&self, guest_rip: u64, frame: &CpuStateFrame) {
-        if guest_rip != GO_PAGE_CACHE_REFILL_STORED_RIP {
+    fn record_page_cache_refill_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        mut read_u64: F,
+    ) where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        if guest_rip != GO_PAGE_CACHE_REFILL_RETURN_RIP {
             return;
         }
         let g = frame.gpr[gpr::R14];
-        let Some(page_cache) = frame.gpr[gpr::RDX].checked_add(0x40) else {
+        let Some(owner_slot) = frame.gpr[gpr::RSP].checked_add(0x58) else {
+            return;
+        };
+        let Some(page_cache) = read_u64(owner_slot).and_then(|owner| owner.checked_add(0x40))
+        else {
             return;
         };
         let cache_base = frame.gpr[gpr::RAX];
@@ -2164,7 +2178,11 @@ static PALLOC_ORIGIN_TRACKER: PallocOriginTracker = PallocOriginTracker::new();
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
-    PALLOC_ORIGIN_TRACKER.record_page_cache_refill(guest_rip, frame);
+    PALLOC_ORIGIN_TRACKER.record_page_cache_refill_with_reader(
+        guest_rip,
+        frame,
+        read_current_process_u64,
+    );
     PALLOC_ORIGIN_TRACKER.record_page_cache_allocation_with_reader(
         guest_rip,
         frame,
@@ -3650,11 +3668,15 @@ mod tests {
         let cache_base = 0x1c60_abe0_0000;
         let page_cache = 0xa000;
         frame.gpr[gpr::R14] = 0x7000;
-        frame.gpr[gpr::RDX] = page_cache - 0x40;
+        frame.gpr[gpr::RSP] = 0x8000;
         frame.gpr[gpr::RAX] = cache_base;
         frame.gpr[gpr::RBX] = 0x2f;
         frame.gpr[gpr::RCX] = 0x20;
-        tracker.record_page_cache_refill(GO_PAGE_CACHE_REFILL_STORED_RIP, &frame);
+        tracker.record_page_cache_refill_with_reader(
+            GO_PAGE_CACHE_REFILL_RETURN_RIP,
+            &frame,
+            |address| (address == 0x8058).then_some(page_cache - 0x40),
+        );
 
         frame.gpr[gpr::RAX] = page_cache;
         frame.gpr[gpr::RBX] = 1;
