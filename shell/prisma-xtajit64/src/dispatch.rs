@@ -919,6 +919,11 @@ const INVALID_MORESTACK_MEMORY: u64 = u64::MAX;
 const GO_STACKCACHE_REFILL_LOOP_STATE_RIP: u64 = 0x0001_4006_7dfa;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
+// First block after the fast small-scan allocator has selected an object from
+// its mcache span. At this boundary R13 is the object, R10 is the mspan, and
+// RAX still carries the requested byte size.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP: u64 = 0x0001_4002_2175;
 
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
@@ -1055,6 +1060,53 @@ impl StackcacheLinkWatch {
             rax_stack_hi: watched_stack_bounds.0,
             rcx_stack_lo: linked_stack_bounds.0,
             rcx_stack_hi: linked_stack_bounds.1,
+        })
+    }
+
+    fn allocation_alias_event_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        mut read_u64: F,
+    ) -> Option<MorestackEvent>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        if guest_rip != GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP {
+            return None;
+        }
+        let address = self.address.load(Ordering::SeqCst);
+        let result = frame.gpr[gpr::R13];
+        if address == 0 || result != address {
+            return None;
+        }
+        let span = frame.gpr[gpr::R10];
+        let span_base = read_u64(span.checked_add(0x18)?).unwrap_or(INVALID_MORESTACK_MEMORY);
+        let free_index_fields =
+            read_u64(span.checked_add(0x30)?).unwrap_or(INVALID_MORESTACK_MEMORY);
+        let alloc_cache = read_u64(span.checked_add(0x38)?).unwrap_or(INVALID_MORESTACK_MEMORY);
+        let span_state_fields =
+            read_u64(span.checked_add(0x60)?).unwrap_or(INVALID_MORESTACK_MEMORY);
+        let elem_size = read_u64(span.checked_add(0x68)?).unwrap_or(INVALID_MORESTACK_MEMORY);
+        // This event captures the allocator decision before runtime.memmove
+        // writes the watched stackcache node. The compact field reuse is:
+        // RAX=result, RBX=mspan, RCX=requested size, R8=type, RSI=mcache,
+        // followed by mspan startAddr, free-index fields, allocCache,
+        // state fields and elemsize.
+        Some(MorestackEvent {
+            rip: guest_rip,
+            r14: frame.gpr[gpr::R14],
+            rax: result,
+            rbx: span,
+            rcx: frame.gpr[gpr::RAX],
+            rsp: frame.gpr[gpr::RSP],
+            r8: frame.gpr[gpr::RBX],
+            r14_stack_lo: frame.gpr[gpr::RSI],
+            r14_stack_hi: span_base,
+            rax_stack_lo: free_index_fields,
+            rax_stack_hi: alloc_cache,
+            rcx_stack_lo: span_state_fields,
+            rcx_stack_hi: elem_size,
         })
     }
 }
@@ -1195,6 +1247,13 @@ static STACKCACHE_LINK_WATCH: StackcacheLinkWatch = StackcacheLinkWatch::new();
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
+    if let Some(event) = STACKCACHE_LINK_WATCH.allocation_alias_event_with_reader(
+        guest_rip,
+        frame,
+        read_current_process_u64,
+    ) {
+        MORESTACK_TRACE.record(event);
+    }
     if let Some(event) =
         STACKCACHE_LINK_WATCH.mutation_event_with_reader(guest_rip, frame, read_current_process_u64)
     {
@@ -2408,6 +2467,62 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn stackcache_link_watch_reports_allocator_alias_before_mutation() {
+        let watch = StackcacheLinkWatch::new();
+        watch.arm_from_refill(MorestackEvent {
+            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
+            rax: 0x4000,
+            rax_stack_lo: 0,
+            rcx_stack_lo: 0x4100,
+            ..MorestackEvent::default()
+        });
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x1000;
+        frame.gpr[gpr::RAX] = 0x10;
+        frame.gpr[gpr::RBX] = 0x2000;
+        frame.gpr[gpr::RSP] = 0x3000;
+        frame.gpr[gpr::RSI] = 0x5000;
+        frame.gpr[gpr::R10] = 0x6000;
+        frame.gpr[gpr::R13] = 0x4100;
+        let memory = BTreeMap::from([
+            (0x6018, 0x4100),
+            (0x6030, 0x0020_0011),
+            (0x6038, 0x55aa),
+            (0x6060, 0x66bb),
+            (0x6068, 0x10),
+        ]);
+        assert_eq!(
+            watch.allocation_alias_event_with_reader(
+                GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP - 1,
+                &frame,
+                |address| memory.get(&address).copied()
+            ),
+            None
+        );
+        let event = watch
+            .allocation_alias_event_with_reader(
+                GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP,
+                &frame,
+                |address| memory.get(&address).copied(),
+            )
+            .unwrap();
+        assert_eq!(event.rip, GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP);
+        assert_eq!(event.r14, 0x1000);
+        assert_eq!(event.rax, 0x4100);
+        assert_eq!(event.rbx, 0x6000);
+        assert_eq!(event.rcx, 0x10);
+        assert_eq!(event.rsp, 0x3000);
+        assert_eq!(event.r8, 0x2000);
+        assert_eq!(event.r14_stack_lo, 0x5000);
+        assert_eq!(event.r14_stack_hi, 0x4100);
+        assert_eq!(event.rax_stack_lo, 0x0020_0011);
+        assert_eq!(event.rax_stack_hi, 0x55aa);
+        assert_eq!(event.rcx_stack_lo, 0x66bb);
+        assert_eq!(event.rcx_stack_hi, 0x10);
+        assert_eq!(watch.address.load(Ordering::SeqCst), 0x4100);
     }
 
     #[test]
