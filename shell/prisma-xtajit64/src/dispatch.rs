@@ -923,6 +923,14 @@ const GO_STACKCACHE_REFILL_LOOP_STATE_RIP: u64 = 0x0001_4006_7dfa;
 // retained by mspan identity across later refills.
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKCACHE_REFILL_POOL_CALL_RIP: u64 = 0x0001_4006_7dd1;
+// Empty-list path inside stackpoolalloc. The call allocates the backing manual
+// span, and the return boundary exposes that mspan in RAX after any nested
+// pallocData.allocRange observation. Recording this inner boundary prevents a
+// later refill from misclassifying an existing stackpool span as its creator.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKPOOL_CREATE_CALL_RIP: u64 = 0x0001_4006_7ab6;
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKPOOL_CREATE_RETURN_RIP: u64 = 0x0001_4006_7ac0;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
 // First block after the fast small-scan allocator has selected an object from
@@ -1250,7 +1258,10 @@ impl PallocOriginTracker {
     }
 
     fn record_stackpool_call(&self, guest_rip: u64, frame: &CpuStateFrame) {
-        if guest_rip != GO_STACKCACHE_REFILL_POOL_CALL_RIP {
+        if !matches!(
+            guest_rip,
+            GO_STACKCACHE_REFILL_POOL_CALL_RIP | GO_STACKPOOL_CREATE_CALL_RIP
+        ) {
             return;
         }
         let g = frame.gpr[gpr::R14];
@@ -1323,6 +1334,24 @@ impl PallocOriginTracker {
         state.snapshot_cursor = state.snapshot_cursor.wrapping_add(1);
     }
 
+    fn associate_stackpool_creation_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        read_u64: F,
+    ) where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        if guest_rip != GO_STACKPOOL_CREATE_RETURN_RIP {
+            return;
+        }
+        let mspan = frame.gpr[gpr::RAX];
+        let Some(start) = mspan.checked_add(0x18).and_then(read_u64) else {
+            return;
+        };
+        self.associate_manual_span(frame.gpr[gpr::R14], mspan, start);
+    }
+
     fn associate_refill(&self, event: MorestackEvent) {
         if event.rip != GO_STACKCACHE_REFILL_LOOP_STATE_RIP
             || event.r8 == 0
@@ -1330,21 +1359,20 @@ impl PallocOriginTracker {
         {
             return;
         }
+        self.associate_manual_span(event.r14, event.r8, event.r14_stack_lo);
+    }
+
+    fn associate_manual_span(&self, g: u64, mspan: u64, start: u64) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        let Some(call) = state
-            .pending
-            .iter()
-            .find(|call| call.g == event.r14)
-            .copied()
-        else {
+        let Some(call) = state.pending.iter().find(|call| call.g == g).copied() else {
             return;
         };
         // The first refill that exposes a manual span is the useful temporal
         // boundary. Later refills may consume that same span after unrelated
         // page allocations, so never replace the first observation.
-        if state.origins.iter().any(|origin| origin.mspan == event.r8) {
+        if state.origins.iter().any(|origin| origin.mspan == mspan) {
             return;
         }
         // Status 2 retains a first observation with no page allocation after
@@ -1353,8 +1381,8 @@ impl PallocOriginTracker {
         if state.palloc_sequence == call.palloc_sequence {
             let index = state.origin_cursor % PALLOC_ORIGIN_SLOT_COUNT;
             state.origins[index] = ManualSpanOrigin {
-                mspan: event.r8,
-                start: event.r14_stack_lo,
+                mspan,
+                start,
                 snapshot: PallocRangeSnapshot::default(),
                 status: 2,
                 call_sequence: call.palloc_sequence,
@@ -1363,12 +1391,12 @@ impl PallocOriginTracker {
             state.origin_cursor = state.origin_cursor.wrapping_add(1);
             return;
         }
-        let local_page = (event.r14_stack_lo & ((1_u64 << 22) - 1)) >> 13;
+        let local_page = (start & ((1_u64 << 22) - 1)) >> 13;
         let covering_snapshot = state
             .snapshots
             .iter()
             .filter(|snapshot| {
-                snapshot.g == event.r14
+                snapshot.g == g
                     && snapshot.sequence > call.palloc_sequence
                     && snapshot.page <= local_page
                     && snapshot
@@ -1381,7 +1409,7 @@ impl PallocOriginTracker {
         let same_g_snapshot = state
             .snapshots
             .iter()
-            .filter(|snapshot| snapshot.g == event.r14 && snapshot.sequence > call.palloc_sequence)
+            .filter(|snapshot| snapshot.g == g && snapshot.sequence > call.palloc_sequence)
             .max_by_key(|snapshot| snapshot.sequence)
             .copied();
         let any_g_snapshot = state
@@ -1408,8 +1436,8 @@ impl PallocOriginTracker {
             |snapshot| (0, snapshot),
         );
         let origin = ManualSpanOrigin {
-            mspan: event.r8,
-            start: event.r14_stack_lo,
+            mspan,
+            start,
             snapshot,
             status,
             call_sequence: call.palloc_sequence,
@@ -1726,6 +1754,11 @@ static PALLOC_ORIGIN_TRACKER: PallocOriginTracker = PallocOriginTracker::new();
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
     PALLOC_ORIGIN_TRACKER.record_stackpool_call(guest_rip, frame);
     PALLOC_ORIGIN_TRACKER.record_palloc_range_with_reader(
+        guest_rip,
+        frame,
+        read_current_process_u64,
+    );
+    PALLOC_ORIGIN_TRACKER.associate_stackpool_creation_with_reader(
         guest_rip,
         frame,
         read_current_process_u64,
@@ -3029,6 +3062,35 @@ mod tests {
         assert_eq!(outside_range.rbx, 5);
         assert_eq!(outside_range.rcx_stack_lo, 1);
         assert_eq!(outside_range.rcx_stack_hi, 256);
+    }
+
+    #[test]
+    fn palloc_origin_tracker_associates_span_at_stackpool_creation_return() {
+        let tracker = PallocOriginTracker::new();
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x7000;
+        tracker.record_stackpool_call(GO_STACKPOOL_CREATE_CALL_RIP, &frame);
+        frame.gpr[gpr::RAX] = 0x9000;
+        frame.gpr[gpr::RBX] = 256;
+        frame.gpr[gpr::RCX] = 2;
+        tracker
+            .record_palloc_range_with_reader(GO_PALLOC_DATA_ALLOC_RANGE_RIP, &frame, |_| Some(0x7));
+
+        frame.gpr[gpr::RAX] = 0x8000;
+        tracker.associate_stackpool_creation_with_reader(
+            GO_STACKPOOL_CREATE_RETURN_RIP,
+            &frame,
+            |address| (address == 0x8018).then_some(0x1c60_abe0_2000),
+        );
+
+        let event = tracker.origin_event(0x8000, 0x1c60_abe0_2000).unwrap();
+        assert_eq!(event.rip, GO_PALLOC_DATA_ALLOC_RANGE_RIP);
+        assert_eq!(event.r14, 0x1c60_abe0_2000);
+        assert_eq!(event.rax, 0x9000);
+        assert_eq!(event.rbx, 256);
+        assert_eq!(event.rcx, 2);
+        assert_eq!(event.rsp, 1);
+        assert_eq!(event.r8, 0x8000);
     }
 
     #[test]
