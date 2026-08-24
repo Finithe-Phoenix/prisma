@@ -1213,13 +1213,34 @@ where
     let rax = frame.gpr[gpr::RAX];
     let rbx = frame.gpr[gpr::RBX];
     let rcx = frame.gpr[gpr::RCX];
-    let r8 = frame.gpr[gpr::R8];
-    let current_stack_bounds = read_morestack_stack(r14, &mut read_u64);
+    let rdi = frame.gpr[gpr::RDI];
+    let r8 = if guest_rip == GO_STACKCACHE_REFILL_LOOP_STATE_RIP {
+        rdi
+    } else {
+        frame.gpr[gpr::R8]
+    };
+    let current_stack_bounds = if guest_rip == GO_STACKCACHE_REFILL_LOOP_STATE_RIP {
+        // stackpoolalloc returns the extracted node in RAX while retaining its
+        // owning mspan in RDI. Preserve the span identity, start address and
+        // packed allocCount/spanclass/state bytes so the later heap alias can
+        // be distinguished as the same span or an overlapping second span.
+        (
+            rdi.checked_add(0x18)
+                .and_then(&mut read_u64)
+                .unwrap_or(INVALID_MORESTACK_MEMORY),
+            rdi.checked_add(0x60)
+                .and_then(&mut read_u64)
+                .unwrap_or(INVALID_MORESTACK_MEMORY),
+        )
+    } else {
+        read_morestack_stack(r14, &mut read_u64)
+    };
     // At the refill loop state, RCX is the newly linked head and [RCX] is its
     // tail. Follow that link once with the existing result probe so the second
-    // loop event observes the tail after the refill's second allocation. At
-    // stackalloc's cache pop, R8 is the head whose link is about to be loaded.
-    // The fixed event ABI and footprint remain unchanged.
+    // loop event observes the tail after the refill's second allocation. The
+    // refill reuses R8 for the mspan identity captured above. At stackalloc's
+    // cache pop, R8 remains the head whose link is about to be loaded. The
+    // fixed event ABI and footprint remain unchanged.
     let result_probe_base = if guest_rip == GO_STACKCACHE_REFILL_LOOP_STATE_RIP {
         read_u64(rcx).unwrap_or(INVALID_MORESTACK_MEMORY)
     } else {
@@ -2379,6 +2400,7 @@ mod tests {
         frame.gpr[gpr::RCX] = 0x4000;
         frame.gpr[gpr::RSP] = 0x5000;
         frame.gpr[gpr::R8] = 0x6000;
+        frame.gpr[gpr::RDI] = 0x7000;
         let memory = BTreeMap::from([
             (0x1000, 0x1100),
             (0x1008, 0x1800),
@@ -2392,6 +2414,8 @@ mod tests {
             (0x4108, 0x4180),
             (0x6000, 0x6100),
             (0x6008, 0x6800),
+            (0x7018, 0x7100),
+            (0x7060, 0x7200),
         ]);
         assert_eq!(
             morestack_event_with_reader(GO_STACKALLOC_CACHE_POP_RIP - 1, &frame, |_| None),
@@ -2417,6 +2441,11 @@ mod tests {
                 memory.get(&address).copied()
             })
             .unwrap();
+        assert_eq!(refill_event.r8, 0x7000);
+        assert_eq!(
+            (refill_event.r14_stack_lo, refill_event.r14_stack_hi),
+            (0x7100, 0x7200)
+        );
         assert_eq!(
             (refill_event.rax_stack_lo, refill_event.rax_stack_hi),
             (0x4110, 0x4180)
