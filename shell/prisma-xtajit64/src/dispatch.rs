@@ -932,6 +932,8 @@ const GO_STACKPOOL_CREATE_CALL_RIP: u64 = 0x0001_4006_7ab6;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKPOOL_CREATE_RETURN_RIP: u64 = 0x0001_4006_7ac0;
 #[cfg(any(test, target_arch = "arm64ec"))]
+const GO_STACKPOOL_CREATED_TAIL_OFFSET: u64 = 0x2000;
+#[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
 // First block after the fast small-scan allocator has selected an object from
 // its mcache span. At this boundary R13 is the object, R10 is the mspan, and
@@ -1339,17 +1341,26 @@ impl PallocOriginTracker {
         guest_rip: u64,
         frame: &CpuStateFrame,
         read_u64: F,
-    ) where
+    ) -> Option<MorestackEvent>
+    where
         F: FnMut(u64) -> Option<u64>,
     {
         if guest_rip != GO_STACKPOOL_CREATE_RETURN_RIP {
-            return;
+            return None;
         }
+        let g = frame.gpr[gpr::R14];
         let mspan = frame.gpr[gpr::RAX];
-        let Some(start) = mspan.checked_add(0x18).and_then(read_u64) else {
-            return;
-        };
-        self.associate_manual_span(frame.gpr[gpr::R14], mspan, start);
+        let start = mspan.checked_add(0x18).and_then(read_u64)?;
+        self.associate_manual_span(g, mspan, start);
+        let watched_address = start.checked_add(GO_STACKPOOL_CREATED_TAIL_OFFSET)?;
+        let mut event = self
+            .origin_event(mspan, watched_address)
+            .or_else(|| self.origin_miss_event(g, mspan, start, watched_address))?;
+        // Emit at the creation boundary rather than waiting for the later heap
+        // alias. This keeps the same fixed trace ring while preserving the
+        // allocator bitmap evidence even if the guest terminates first.
+        event.rip = GO_STACKPOOL_CREATE_RETURN_RIP;
+        Some(event)
     }
 
     fn associate_refill(&self, event: MorestackEvent) {
@@ -1758,11 +1769,13 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
         frame,
         read_current_process_u64,
     );
-    PALLOC_ORIGIN_TRACKER.associate_stackpool_creation_with_reader(
+    if let Some(event) = PALLOC_ORIGIN_TRACKER.associate_stackpool_creation_with_reader(
         guest_rip,
         frame,
         read_current_process_u64,
-    );
+    ) {
+        MORESTACK_TRACE.record(event);
+    }
     if let Some(event) = STACKCACHE_LINK_WATCH.allocation_alias_event_with_reader(
         guest_rip,
         frame,
@@ -3072,23 +3085,32 @@ mod tests {
         tracker.record_stackpool_call(GO_STACKPOOL_CREATE_CALL_RIP, &frame);
         frame.gpr[gpr::RAX] = 0x9000;
         frame.gpr[gpr::RBX] = 256;
-        frame.gpr[gpr::RCX] = 2;
+        frame.gpr[gpr::RCX] = 4;
         tracker
             .record_palloc_range_with_reader(GO_PALLOC_DATA_ALLOC_RANGE_RIP, &frame, |_| Some(0x7));
 
         frame.gpr[gpr::RAX] = 0x8000;
-        tracker.associate_stackpool_creation_with_reader(
-            GO_STACKPOOL_CREATE_RETURN_RIP,
-            &frame,
-            |address| (address == 0x8018).then_some(0x1c60_abe0_2000),
-        );
+        let creation_event = tracker
+            .associate_stackpool_creation_with_reader(
+                GO_STACKPOOL_CREATE_RETURN_RIP,
+                &frame,
+                |address| (address == 0x8018).then_some(0x1c60_abe0_2000),
+            )
+            .unwrap();
+        assert_eq!(creation_event.rip, GO_STACKPOOL_CREATE_RETURN_RIP);
+        assert_eq!(creation_event.r14, 0x1c60_abe0_4000);
+        assert_eq!(creation_event.rax, 0x9000);
+        assert_eq!(creation_event.rbx, 256);
+        assert_eq!(creation_event.rcx, 4);
+        assert_eq!(creation_event.rsp, 1);
+        assert_eq!(creation_event.r8, 0x8000);
 
         let event = tracker.origin_event(0x8000, 0x1c60_abe0_2000).unwrap();
         assert_eq!(event.rip, GO_PALLOC_DATA_ALLOC_RANGE_RIP);
         assert_eq!(event.r14, 0x1c60_abe0_2000);
         assert_eq!(event.rax, 0x9000);
         assert_eq!(event.rbx, 256);
-        assert_eq!(event.rcx, 2);
+        assert_eq!(event.rcx, 4);
         assert_eq!(event.rsp, 1);
         assert_eq!(event.r8, 0x8000);
     }
