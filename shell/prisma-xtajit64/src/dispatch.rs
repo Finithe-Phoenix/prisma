@@ -930,6 +930,13 @@ const GO_MALLOCGC_SMALL_SCAN_FAST_RESULT_RIP: u64 = 0x0001_4002_2175;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_MALLOCGC_SMALL_SCAN_SLOW_RESULT_RIP: u64 = 0x0001_4002_21a5;
 
+// Entry to pallocData.allocRange in the pinned Go 1.26.0 fixture. While the
+// stackcache tail watch is armed, sample only a range that covers the watched
+// 8 KiB page so the allocation bitmap can be inspected immediately before it
+// is marked occupied.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_PALLOC_DATA_ALLOC_RANGE_RIP: u64 = 0x0001_4004_51e0;
+
 #[cfg(any(test, target_arch = "arm64ec"))]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1127,6 +1134,57 @@ impl StackcacheLinkWatch {
             rcx_stack_hi: elem_size,
         })
     }
+
+    fn palloc_range_event_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        mut read_u64: F,
+    ) -> Option<MorestackEvent>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        if guest_rip != GO_PALLOC_DATA_ALLOC_RANGE_RIP {
+            return None;
+        }
+        let address = self.address.load(Ordering::SeqCst);
+        if address == 0 {
+            return None;
+        }
+        let bitmap = frame.gpr[gpr::RAX];
+        let page = frame.gpr[gpr::RBX];
+        let npages = frame.gpr[gpr::RCX];
+        let range_end = page.checked_add(npages)?;
+        // A palloc chunk spans 4 MiB and contains 512 8 KiB pages. Restrict
+        // the probe to the single allocation range that covers the watched
+        // stackcache tail, avoiding a broad allocator trace.
+        let watched_page = (address & ((1_u64 << 22) - 1)) >> 13;
+        if page > watched_page || range_end <= watched_page {
+            return None;
+        }
+        let bitmap_word_address = bitmap.checked_add((watched_page / 64) * 8)?;
+        let bitmap_word = read_u64(bitmap_word_address).unwrap_or(INVALID_MORESTACK_MEMORY);
+        let watched_bit = 1_u64 << (watched_page % 64);
+        // Compact field reuse: R14=watched address, RAX=bitmap, RBX=page,
+        // RCX=npages, R8=watched page, then the word address/value, watched
+        // bit/masked value and exclusive range end. This records whether the
+        // allocator selected a page whose occupancy bit was already set.
+        Some(MorestackEvent {
+            rip: guest_rip,
+            r14: address,
+            rax: bitmap,
+            rbx: page,
+            rcx: npages,
+            rsp: frame.gpr[gpr::RSP],
+            r8: watched_page,
+            r14_stack_lo: bitmap_word_address,
+            r14_stack_hi: bitmap_word,
+            rax_stack_lo: watched_bit,
+            rax_stack_hi: bitmap_word & watched_bit,
+            rcx_stack_lo: range_end,
+            rcx_stack_hi: 0,
+        })
+    }
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1286,6 +1344,13 @@ static STACKCACHE_LINK_WATCH: StackcacheLinkWatch = StackcacheLinkWatch::new();
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
+    if let Some(event) = STACKCACHE_LINK_WATCH.palloc_range_event_with_reader(
+        guest_rip,
+        frame,
+        read_current_process_u64,
+    ) {
+        MORESTACK_TRACE.record(event);
+    }
     if let Some(event) = STACKCACHE_LINK_WATCH.allocation_alias_event_with_reader(
         guest_rip,
         frame,
@@ -2514,6 +2579,61 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn stackcache_link_watch_reports_covering_palloc_range_and_prior_bit() {
+        let watch = StackcacheLinkWatch::new();
+        watch.arm_from_refill(MorestackEvent {
+            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
+            rax: 0x4000,
+            rax_stack_lo: 0,
+            rcx_stack_lo: 0x1c60_abe0_2000,
+            ..MorestackEvent::default()
+        });
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::RAX] = 0x9000;
+        frame.gpr[gpr::RBX] = 256;
+        frame.gpr[gpr::RCX] = 2;
+        frame.gpr[gpr::RSP] = 0xa000;
+        let memory = BTreeMap::from([(0x9020, 0x7)]);
+        assert_eq!(
+            watch.palloc_range_event_with_reader(
+                GO_PALLOC_DATA_ALLOC_RANGE_RIP - 1,
+                &frame,
+                |address| memory.get(&address).copied()
+            ),
+            None
+        );
+        frame.gpr[gpr::RBX] = 258;
+        assert_eq!(
+            watch.palloc_range_event_with_reader(
+                GO_PALLOC_DATA_ALLOC_RANGE_RIP,
+                &frame,
+                |address| memory.get(&address).copied()
+            ),
+            None
+        );
+        frame.gpr[gpr::RBX] = 256;
+        let event = watch
+            .palloc_range_event_with_reader(GO_PALLOC_DATA_ALLOC_RANGE_RIP, &frame, |address| {
+                memory.get(&address).copied()
+            })
+            .unwrap();
+        assert_eq!(event.rip, GO_PALLOC_DATA_ALLOC_RANGE_RIP);
+        assert_eq!(event.r14, 0x1c60_abe0_2000);
+        assert_eq!(event.rax, 0x9000);
+        assert_eq!(event.rbx, 256);
+        assert_eq!(event.rcx, 2);
+        assert_eq!(event.rsp, 0xa000);
+        assert_eq!(event.r8, 257);
+        assert_eq!(event.r14_stack_lo, 0x9020);
+        assert_eq!(event.r14_stack_hi, 0x7);
+        assert_eq!(event.rax_stack_lo, 0x2);
+        assert_eq!(event.rax_stack_hi, 0x2);
+        assert_eq!(event.rcx_stack_lo, 258);
+        assert_eq!(event.rcx_stack_hi, 0);
+        assert_eq!(watch.address.load(Ordering::SeqCst), 0x1c60_abe0_2000);
     }
 
     #[test]
