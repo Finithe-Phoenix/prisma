@@ -1251,6 +1251,9 @@ struct PallocOriginState {
     origins: [ManualSpanOrigin; PALLOC_ORIGIN_SLOT_COUNT],
     page_cache_sequence: u64,
     page_cache_cursor: usize,
+    pending_refill_base: u64,
+    pending_refill_cache: u64,
+    pending_refill_scav: u64,
     page_cache_allocations: [PageCacheAllocation; PALLOC_ORIGIN_SLOT_COUNT],
     page_cache_origin_cursor: usize,
     page_cache_origins: [PageCacheOrigin; PALLOC_ORIGIN_SLOT_COUNT],
@@ -1295,6 +1298,9 @@ impl PallocOriginState {
             }; PALLOC_ORIGIN_SLOT_COUNT],
             page_cache_sequence: 0,
             page_cache_cursor: 0,
+            pending_refill_base: 0,
+            pending_refill_cache: 0,
+            pending_refill_scav: 0,
             page_cache_allocations: [PageCacheAllocation {
                 sequence: 0,
                 g: 0,
@@ -1359,25 +1365,25 @@ impl PallocOriginTracker {
                 .checked_add(8)
                 .and_then(&mut read_u64)
                 .unwrap_or(INVALID_MORESTACK_MEMORY);
+            let scav_before = page_cache
+                .checked_add(16)
+                .and_then(&mut read_u64)
+                .unwrap_or(INVALID_MORESTACK_MEMORY);
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
             state.page_cache_sequence = state.page_cache_sequence.wrapping_add(1);
-            let pending_refill_index = state
-                .page_cache_allocations
-                .iter()
-                .enumerate()
-                .filter(|(_, allocation)| {
-                    allocation.g == g
-                        && allocation.page_cache == page_cache
-                        && allocation.npages == 0
-                        && allocation.allocated_base == 0
-                })
-                .max_by_key(|(_, allocation)| allocation.sequence)
-                .map(|(index, _)| index);
-            let refill_cache = pending_refill_index.map_or(INVALID_MORESTACK_MEMORY, |index| {
-                state.page_cache_allocations[index].cache_before
-            });
+            let refill_cache = if state.pending_refill_base == cache_base
+                && state.pending_refill_cache == cache_before
+                && state.pending_refill_scav == scav_before
+            {
+                state.pending_refill_cache
+            } else {
+                INVALID_MORESTACK_MEMORY
+            };
+            state.pending_refill_base = 0;
+            state.pending_refill_cache = 0;
+            state.pending_refill_scav = 0;
             let allocation = PageCacheAllocation {
                 sequence: state.page_cache_sequence,
                 g,
@@ -1389,11 +1395,8 @@ impl PallocOriginTracker {
                 allocated_base: 0,
                 cache_after: INVALID_MORESTACK_MEMORY,
             };
-            let index = pending_refill_index.unwrap_or_else(|| {
-                let index = state.page_cache_cursor % PALLOC_ORIGIN_SLOT_COUNT;
-                state.page_cache_cursor = state.page_cache_cursor.wrapping_add(1);
-                index
-            });
+            let index = state.page_cache_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+            state.page_cache_cursor = state.page_cache_cursor.wrapping_add(1);
             state.page_cache_allocations[index] = allocation;
             return;
         }
@@ -1428,47 +1431,22 @@ impl PallocOriginTracker {
         state.page_cache_allocations[index].cache_after = cache_after;
     }
 
-    fn record_page_cache_refill_with_reader<F>(
-        &self,
-        guest_rip: u64,
-        frame: &CpuStateFrame,
-        mut read_u64: F,
-    ) where
-        F: FnMut(u64) -> Option<u64>,
-    {
+    fn record_page_cache_refill(&self, guest_rip: u64, frame: &CpuStateFrame) {
         if guest_rip != GO_PAGE_CACHE_REFILL_RETURN_RIP {
             return;
         }
-        let g = frame.gpr[gpr::R14];
-        let Some(owner_slot) = frame.gpr[gpr::RSP].checked_add(0x58) else {
-            return;
-        };
-        let Some(page_cache) = read_u64(owner_slot).and_then(|owner| owner.checked_add(0x40))
-        else {
-            return;
-        };
         let cache_base = frame.gpr[gpr::RAX];
         let refill_cache = frame.gpr[gpr::RBX];
         let refill_scav = frame.gpr[gpr::RCX];
-        if g == 0 || page_cache == 0 || cache_base == 0 || refill_cache == 0 {
+        if cache_base == 0 || refill_cache == 0 {
             return;
         }
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        let index = state.page_cache_cursor % PALLOC_ORIGIN_SLOT_COUNT;
-        state.page_cache_allocations[index] = PageCacheAllocation {
-            sequence: state.page_cache_sequence,
-            g,
-            page_cache,
-            cache_base,
-            cache_before: refill_cache,
-            scav_before: refill_scav,
-            npages: 0,
-            allocated_base: 0,
-            cache_after: INVALID_MORESTACK_MEMORY,
-        };
-        state.page_cache_cursor = state.page_cache_cursor.wrapping_add(1);
+        state.pending_refill_base = cache_base;
+        state.pending_refill_cache = refill_cache;
+        state.pending_refill_scav = refill_scav;
     }
 
     fn associate_page_cache_origin(&self, mspan: u64, start: u64) {
@@ -2178,11 +2156,7 @@ static PALLOC_ORIGIN_TRACKER: PallocOriginTracker = PallocOriginTracker::new();
 
 #[cfg(all(windows, target_arch = "arm64ec"))]
 fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
-    PALLOC_ORIGIN_TRACKER.record_page_cache_refill_with_reader(
-        guest_rip,
-        frame,
-        read_current_process_u64,
-    );
+    PALLOC_ORIGIN_TRACKER.record_page_cache_refill(guest_rip, frame);
     PALLOC_ORIGIN_TRACKER.record_page_cache_allocation_with_reader(
         guest_rip,
         frame,
@@ -3672,15 +3646,16 @@ mod tests {
         frame.gpr[gpr::RAX] = cache_base;
         frame.gpr[gpr::RBX] = 0x2f;
         frame.gpr[gpr::RCX] = 0x20;
-        tracker.record_page_cache_refill_with_reader(
-            GO_PAGE_CACHE_REFILL_RETURN_RIP,
-            &frame,
-            |address| (address == 0x8058).then_some(page_cache - 0x40),
-        );
+        tracker.record_page_cache_refill(GO_PAGE_CACHE_REFILL_RETURN_RIP, &frame);
 
+        frame.gpr[gpr::R14] = 0x7100;
         frame.gpr[gpr::RAX] = page_cache;
         frame.gpr[gpr::RBX] = 1;
-        let before = BTreeMap::from([(page_cache, cache_base), (page_cache + 8, 0x2f)]);
+        let before = BTreeMap::from([
+            (page_cache, cache_base),
+            (page_cache + 8, 0x2f),
+            (page_cache + 16, 0x20),
+        ]);
         tracker.record_page_cache_allocation_with_reader(
             GO_PAGE_CACHE_ALLOC_CALL_RIP,
             &frame,
