@@ -942,6 +942,12 @@ const GO_STACKPOOL_CREATED_TAIL_OFFSET: u64 = 0x2000;
 const GO_PAGE_CACHE_ALLOC_CALL_RIP: u64 = 0x0001_4003_df80;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_PAGE_CACHE_ALLOC_RETURN_RIP: u64 = 0x0001_4003_df85;
+// Final initialized return boundary of mheap.allocSpan. RAX contains the
+// returned mspan here, so associate every page-cache allocation with the span
+// it actually backed. This lets the later stackcache alias report the origin
+// of both the manual stack span and the overlapping heap span.
+#[cfg(any(test, target_arch = "arm64ec"))]
+const GO_MHEAP_ALLOC_SPAN_RETURN_RIP: u64 = 0x0001_4003_e4bf;
 #[cfg(any(test, target_arch = "arm64ec"))]
 const GO_STACKALLOC_CACHE_POP_RIP: u64 = 0x0001_4006_83cb;
 // First block after the fast small-scan allocator has selected an object from
@@ -1429,6 +1435,24 @@ impl PallocOriginTracker {
             allocation,
         };
         state.page_cache_origin_cursor = state.page_cache_origin_cursor.wrapping_add(1);
+    }
+
+    fn associate_alloc_span_return_with_reader<F>(
+        &self,
+        guest_rip: u64,
+        frame: &CpuStateFrame,
+        read_u64: F,
+    ) where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        if guest_rip != GO_MHEAP_ALLOC_SPAN_RETURN_RIP {
+            return;
+        }
+        let mspan = frame.gpr[gpr::RAX];
+        let Some(start) = mspan.checked_add(0x18).and_then(read_u64) else {
+            return;
+        };
+        self.associate_page_cache_origin(mspan, start);
     }
 
     fn page_cache_origin_event(&self, mspan: u64, watched_address: u64) -> Option<MorestackEvent> {
@@ -1995,6 +2019,11 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
         frame,
         read_current_process_u64,
     );
+    PALLOC_ORIGIN_TRACKER.associate_alloc_span_return_with_reader(
+        guest_rip,
+        frame,
+        read_current_process_u64,
+    );
     if let Some(event) = PALLOC_ORIGIN_TRACKER.associate_stackpool_creation_with_reader(
         guest_rip,
         frame,
@@ -2007,15 +2036,21 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
         frame,
         read_current_process_u64,
     ) {
-        let mspan = STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst);
+        let heap_mspan = event.rbx;
+        let manual_mspan = STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst);
         let watched_address = STACKCACHE_LINK_WATCH.address.load(Ordering::SeqCst);
+        if let Some(heap_origin) =
+            PALLOC_ORIGIN_TRACKER.page_cache_origin_event(heap_mspan, watched_address)
+        {
+            MORESTACK_TRACE.record(heap_origin);
+        }
         if let Some(origin) = PALLOC_ORIGIN_TRACKER
-            .page_cache_origin_event(mspan, watched_address)
-            .or_else(|| PALLOC_ORIGIN_TRACKER.origin_event(mspan, watched_address))
+            .page_cache_origin_event(manual_mspan, watched_address)
+            .or_else(|| PALLOC_ORIGIN_TRACKER.origin_event(manual_mspan, watched_address))
             .or_else(|| {
                 PALLOC_ORIGIN_TRACKER.origin_miss_event(
                     STACKCACHE_LINK_WATCH.g.load(Ordering::SeqCst),
-                    mspan,
+                    manual_mspan,
                     STACKCACHE_LINK_WATCH.start.load(Ordering::SeqCst),
                     watched_address,
                 )
@@ -3402,6 +3437,46 @@ mod tests {
                 ..creation_event
             }
         );
+    }
+
+    #[test]
+    fn palloc_origin_tracker_associates_page_cache_with_alloc_span_return() {
+        let tracker = PallocOriginTracker::new();
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x7000;
+        frame.gpr[gpr::RAX] = 0xa000;
+        frame.gpr[gpr::RBX] = 1;
+        let before = BTreeMap::from([(0xa000, 0x1c60_abe0_0000), (0xa008, 0x02), (0xa010, 0)]);
+        tracker.record_page_cache_allocation_with_reader(
+            GO_PAGE_CACHE_ALLOC_CALL_RIP,
+            &frame,
+            |address| before.get(&address).copied(),
+        );
+
+        frame.gpr[gpr::RAX] = 0x1c60_abe0_2000;
+        tracker.record_page_cache_allocation_with_reader(
+            GO_PAGE_CACHE_ALLOC_RETURN_RIP,
+            &frame,
+            |address| (address == 0xa008).then_some(0),
+        );
+
+        frame.gpr[gpr::RAX] = 0x9000;
+        tracker.associate_alloc_span_return_with_reader(
+            GO_MHEAP_ALLOC_SPAN_RETURN_RIP,
+            &frame,
+            |address| (address == 0x9018).then_some(0x1c60_abe0_2000),
+        );
+
+        let origin = tracker
+            .page_cache_origin_event(0x9000, 0x1c60_abe0_2000)
+            .unwrap();
+        assert_eq!(origin.rip, GO_PAGE_CACHE_ALLOC_RETURN_RIP);
+        assert_eq!(origin.r14, 0x1c60_abe0_2000);
+        assert_eq!(origin.r8, 0x9000);
+        assert_eq!(origin.r14_stack_lo, 0x1c60_abe0_2000);
+        assert_eq!(origin.rax_stack_hi, 0x02);
+        assert_eq!(origin.rcx_stack_lo, 0x02);
+        assert_eq!(origin.rcx_stack_hi, 0);
     }
 
     #[test]
