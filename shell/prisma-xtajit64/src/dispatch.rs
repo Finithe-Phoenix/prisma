@@ -1016,6 +1016,8 @@ struct MorestackTrace {
 struct StackcacheLinkWatch {
     address: AtomicU64,
     mspan: AtomicU64,
+    start: AtomicU64,
+    g: AtomicU64,
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1024,6 +1026,8 @@ impl StackcacheLinkWatch {
         Self {
             address: AtomicU64::new(0),
             mspan: AtomicU64::new(0),
+            start: AtomicU64::new(0),
+            g: AtomicU64::new(0),
         }
     }
 
@@ -1034,7 +1038,9 @@ impl StackcacheLinkWatch {
             && event.rcx_stack_lo != INVALID_MORESTACK_MEMORY
             && event.rax_stack_lo == 0
         {
+            self.g.store(event.r14, Ordering::SeqCst);
             self.mspan.store(event.r8, Ordering::SeqCst);
+            self.start.store(event.r14_stack_lo, Ordering::SeqCst);
             self.address.store(event.rcx_stack_lo, Ordering::SeqCst);
         }
     }
@@ -1404,6 +1410,92 @@ impl PallocOriginTracker {
             rcx_stack_hi: 0,
         })
     }
+
+    fn origin_miss_event(
+        &self,
+        g: u64,
+        mspan: u64,
+        start: u64,
+        watched_address: u64,
+    ) -> Option<MorestackEvent> {
+        if g == 0 || mspan == 0 || start == 0 || watched_address == 0 {
+            return None;
+        }
+        let state = self.state.lock().ok()?;
+        let retained_origin = state
+            .origins
+            .iter()
+            .find(|origin| origin.mspan == mspan)
+            .copied();
+        let pending = state.pending.iter().find(|call| call.g == g).copied();
+        let after_call_snapshot = pending.and_then(|call| {
+            state
+                .snapshots
+                .iter()
+                .filter(|snapshot| snapshot.g == g && snapshot.sequence > call.palloc_sequence)
+                .max_by_key(|snapshot| snapshot.sequence)
+                .copied()
+        });
+        let local_page = (start & ((1_u64 << 22) - 1)) >> 13;
+        // If the mspan origin was absent (the outcome in CI #131), emit
+        // one compact event before the allocator alias. RAX=0 marks a miss;
+        // RBX classifies it as no pending call (1), no later same-g snapshot
+        // (2), a later snapshot outside this manual span (3), or a covering
+        // snapshot whose origin is no longer retained (4). A retained origin
+        // rejected because its range misses the watched page is 5; an interior
+        // bitmap word that the compact snapshot did not retain is 6. The
+        // remaining fields preserve the sequences and ring cursors.
+        let status = retained_origin.map_or_else(
+            || match (pending, after_call_snapshot) {
+                (None, _) => 1,
+                (Some(_), None) => 2,
+                (Some(_), Some(snapshot))
+                    if snapshot.page <= local_page
+                        && snapshot
+                            .page
+                            .checked_add(snapshot.npages)
+                            .is_some_and(|end| local_page < end) =>
+                {
+                    4
+                }
+                (Some(_), Some(_)) => 3,
+            },
+            |origin| {
+                let watched_page = (watched_address & ((1_u64 << 22) - 1)) >> 13;
+                if origin.snapshot.page <= watched_page
+                    && origin
+                        .snapshot
+                        .page
+                        .checked_add(origin.snapshot.npages)
+                        .is_some_and(|end| watched_page < end)
+                {
+                    6
+                } else {
+                    5
+                }
+            },
+        );
+        let diagnostic_snapshot = retained_origin
+            .map(|origin| origin.snapshot)
+            .or(after_call_snapshot);
+        Some(MorestackEvent {
+            rip: GO_PALLOC_DATA_ALLOC_RANGE_RIP,
+            r14: watched_address,
+            rax: 0,
+            rbx: status,
+            rcx: state.palloc_sequence,
+            rsp: pending.map_or(INVALID_MORESTACK_MEMORY, |call| call.palloc_sequence),
+            r8: mspan,
+            r14_stack_lo: start,
+            r14_stack_hi: g,
+            rax_stack_lo: state.snapshot_cursor as u64,
+            rax_stack_hi: state.origin_cursor as u64,
+            rcx_stack_lo: diagnostic_snapshot
+                .map_or(INVALID_MORESTACK_MEMORY, |snapshot| snapshot.sequence),
+            rcx_stack_hi: diagnostic_snapshot
+                .map_or(INVALID_MORESTACK_MEMORY, |snapshot| snapshot.page),
+        })
+    }
 }
 
 #[cfg(any(test, target_arch = "arm64ec"))]
@@ -1577,10 +1669,19 @@ fn record_stackcache_watch_mutation(guest_rip: u64, frame: &CpuStateFrame) {
         frame,
         read_current_process_u64,
     ) {
-        if let Some(origin) = PALLOC_ORIGIN_TRACKER.origin_event(
-            STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst),
-            STACKCACHE_LINK_WATCH.address.load(Ordering::SeqCst),
-        ) {
+        let mspan = STACKCACHE_LINK_WATCH.mspan.load(Ordering::SeqCst);
+        let watched_address = STACKCACHE_LINK_WATCH.address.load(Ordering::SeqCst);
+        if let Some(origin) = PALLOC_ORIGIN_TRACKER
+            .origin_event(mspan, watched_address)
+            .or_else(|| {
+                PALLOC_ORIGIN_TRACKER.origin_miss_event(
+                    STACKCACHE_LINK_WATCH.g.load(Ordering::SeqCst),
+                    mspan,
+                    STACKCACHE_LINK_WATCH.start.load(Ordering::SeqCst),
+                    watched_address,
+                )
+            })
+        {
             MORESTACK_TRACE.record(origin);
         }
         MORESTACK_TRACE.record(event);
@@ -2847,6 +2948,21 @@ mod tests {
         assert_eq!(event.rcx_stack_lo, 0x2);
         assert_eq!(event.rcx_stack_hi, 0);
         assert_eq!(tracker.origin_event(0x8008, 0x1c60_abe0_2000), None);
+        let missing = tracker
+            .origin_miss_event(0x7000, 0x8008, 0x1c60_abe0_2000, 0x1c60_abe0_2000)
+            .unwrap();
+        assert_eq!(missing.rax, 0);
+        assert_eq!(missing.rbx, 4);
+        assert_eq!(missing.rax_stack_lo, 1);
+        assert_eq!(missing.rax_stack_hi, 1);
+        assert_eq!(tracker.origin_event(0x8000, 0x1c60_abe0_6000), None);
+        let outside_range = tracker
+            .origin_miss_event(0x7000, 0x8000, 0x1c60_abe0_2000, 0x1c60_abe0_6000)
+            .unwrap();
+        assert_eq!(outside_range.rax, 0);
+        assert_eq!(outside_range.rbx, 5);
+        assert_eq!(outside_range.rcx_stack_lo, 1);
+        assert_eq!(outside_range.rcx_stack_hi, 256);
     }
 
     #[test]
