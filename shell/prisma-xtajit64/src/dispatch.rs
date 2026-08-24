@@ -4081,4 +4081,3 @@ mod tests {
         assert_eq!(first.emulator_data[PROVIDER_OWNED_MAPPING_SLOT], original);
     }
 }
-
