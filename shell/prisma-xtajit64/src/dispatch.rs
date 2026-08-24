@@ -1341,10 +1341,26 @@ impl PallocOriginTracker {
         else {
             return;
         };
-        // A later refill may consume an already-created manual span without
-        // entering the page allocator. Keep any creation-time association
-        // attempt instead of replacing it with that expected no-palloc path.
+        // The first refill that exposes a manual span is the useful temporal
+        // boundary. Later refills may consume that same span after unrelated
+        // page allocations, so never replace the first observation.
+        if state.origins.iter().any(|origin| origin.mspan == event.r8) {
+            return;
+        }
+        // Status 2 retains a first observation with no page allocation after
+        // the stackpool call. Its sequences distinguish a span that was
+        // already available from one whose creation path escaped the probe.
         if state.palloc_sequence == call.palloc_sequence {
+            let index = state.origin_cursor % PALLOC_ORIGIN_SLOT_COUNT;
+            state.origins[index] = ManualSpanOrigin {
+                mspan: event.r8,
+                start: event.r14_stack_lo,
+                snapshot: PallocRangeSnapshot::default(),
+                status: 2,
+                call_sequence: call.palloc_sequence,
+                observed_sequence: state.palloc_sequence,
+            };
+            state.origin_cursor = state.origin_cursor.wrapping_add(1);
             return;
         }
         let local_page = (event.r14_stack_lo & ((1_u64 << 22) - 1)) >> 13;
@@ -1399,14 +1415,6 @@ impl PallocOriginTracker {
             call_sequence: call.palloc_sequence,
             observed_sequence: state.palloc_sequence,
         };
-        if let Some(slot) = state
-            .origins
-            .iter_mut()
-            .find(|origin| origin.mspan == event.r8)
-        {
-            *slot = origin;
-            return;
-        }
         let index = state.origin_cursor % PALLOC_ORIGIN_SLOT_COUNT;
         state.origins[index] = origin;
         state.origin_cursor = state.origin_cursor.wrapping_add(1);
@@ -1487,9 +1495,11 @@ impl PallocOriginTracker {
         // (2), a later snapshot outside this manual span (3), or a covering
         // snapshot whose origin is no longer retained (4). A retained origin
         // rejected because its range misses the watched page is 5; an interior
-        // bitmap word that the compact snapshot did not retain is 6. A retained
-        // association attempt with only a different-g candidate is 7, and an
-        // attempt whose after-call snapshots had already left the ring is 8.
+        // bitmap word that the compact snapshot did not retain is 6. Status 2
+        // also represents a retained first observation with no intervening
+        // palloc. A retained association attempt with only a different-g
+        // candidate is 7, and an attempt whose after-call snapshots had already
+        // left the ring is 8.
         // The remaining fields preserve the sequences and ring cursors.
         let status = retained_origin.map_or_else(
             || match (pending, after_call_snapshot) {
@@ -1525,7 +1535,7 @@ impl PallocOriginTracker {
             },
         );
         let diagnostic_snapshot = retained_origin
-            .filter(|origin| origin.status != 8)
+            .filter(|origin| origin.snapshot.sequence != 0)
             .map(|origin| origin.snapshot)
             .or(after_call_snapshot);
         let observed_sequence =
@@ -3019,6 +3029,43 @@ mod tests {
         assert_eq!(outside_range.rbx, 5);
         assert_eq!(outside_range.rcx_stack_lo, 1);
         assert_eq!(outside_range.rcx_stack_hi, 256);
+    }
+
+    #[test]
+    fn palloc_origin_tracker_retains_first_no_palloc_span_observation() {
+        let tracker = PallocOriginTracker::new();
+        let mut frame = CpuStateFrame::default();
+        frame.gpr[gpr::R14] = 0x7000;
+        tracker.record_stackpool_call(GO_STACKCACHE_REFILL_POOL_CALL_RIP, &frame);
+        let refill = MorestackEvent {
+            rip: GO_STACKCACHE_REFILL_LOOP_STATE_RIP,
+            r14: 0x7000,
+            r8: 0x8000,
+            r14_stack_lo: 0x1c60_abe0_2000,
+            ..MorestackEvent::default()
+        };
+        tracker.associate_refill(refill);
+
+        frame.gpr[gpr::RAX] = 0x9000;
+        frame.gpr[gpr::RBX] = 256;
+        frame.gpr[gpr::RCX] = 2;
+        tracker
+            .record_palloc_range_with_reader(GO_PALLOC_DATA_ALLOC_RANGE_RIP, &frame, |_| Some(0x7));
+        tracker.record_stackpool_call(GO_STACKCACHE_REFILL_POOL_CALL_RIP, &frame);
+        tracker.associate_refill(refill);
+
+        assert_eq!(tracker.origin_event(0x8000, 0x1c60_abe0_2000), None);
+        let event = tracker
+            .origin_miss_event(0x7000, 0x8000, 0x1c60_abe0_2000, 0x1c60_abe0_2000)
+            .unwrap();
+        assert_eq!(event.rax, 0);
+        assert_eq!(event.rbx, 2);
+        assert_eq!(event.rcx, 0);
+        assert_eq!(event.rsp, 0);
+        assert_eq!(event.rax_stack_lo, 1);
+        assert_eq!(event.rax_stack_hi, 1);
+        assert_eq!(event.rcx_stack_lo, INVALID_MORESTACK_MEMORY);
+        assert_eq!(event.rcx_stack_hi, INVALID_MORESTACK_MEMORY);
     }
 
     #[test]
