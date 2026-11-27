@@ -121,6 +121,7 @@ structure MachineState where
   regs    : RegFile
   env     : Env
   mem     : Memory
+  rflags  : UInt64 := 2    -- guest flag word, including the reserved bit 1
   flags   : Ref → Flags    -- Flags Refs from WriteFlags map here
   deriving Inhabited
 
@@ -146,6 +147,14 @@ def step (s : MachineState) : Stmt → Option MachineState
       some { s with env := s.env.extend r (s.regs g) }
   | { result := none,   op := .storeReg g v _ } =>
       some { s with regs := s.regs.set g (s.env v) }
+  | { result := some r, op := .loadCarry } =>
+      some { s with env := s.env.extend r (s.rflags &&& 1) }
+  | { result := none, op := .storeCarry value } =>
+      some { s with rflags := (s.rflags &&& 0xFFFFFFFFFFFFFFFE) ||| 2 ||| (s.env value &&& 1) }
+  | { result := some r, op := .loadRflags } =>
+      some { s with env := s.env.extend r (s.rflags ||| 2) }
+  | { result := none, op := .storeRflags value } =>
+      some { s with rflags := s.env value ||| 2 }
   | { result := some r, op := .binop op lhs rhs sz } =>
       some { s with
              env := s.env.extend r (maskToSize (evalBinOp op (s.env lhs) (s.env rhs)) sz) }
@@ -187,5 +196,21 @@ def stepCondJumpFlags (s : MachineState)
     | CondCode.pl    => !f.sign
     | _              => false
   if taken then ifTrue else ifFalse
+
+/-- A carry update only takes bit zero and preserves the other guest flags. -/
+example :
+    let s := { MachineState.empty with rflags := 0x8D7, env := fun _ => 0xFE }
+    let updated := step s ⟨none, .storeCarry 0⟩
+    (updated.map MachineState.rflags) = some 0x8D6 := by decide
+
+/-- POPF-style writes expose bit one even if the guest supplied zero there. -/
+example :
+    let s := { MachineState.empty with env := fun _ => 0x201 }
+    let observed := do
+      let stored ← step s ⟨none, .storeRflags 0⟩
+      let carry ← step stored ⟨some 1, .loadCarry⟩
+      let full ← step carry ⟨some 2, .loadRflags⟩
+      pure (full.env 1, full.env 2)
+    observed = some (1, 0x203) := by decide
 
 end PrismaIR

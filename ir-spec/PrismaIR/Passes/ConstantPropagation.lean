@@ -99,6 +99,10 @@ theorem cp_fold_op_sound
   | constant _ _      => rfl
   | loadReg _ _       => rfl
   | storeReg _ _ _    => rfl
+  | loadCarry         => rfl
+  | storeCarry _      => rfl
+  | loadRflags        => rfl
+  | storeRflags _     => rfl
   | loadSegBase _     => rfl
   | compare _ _ _ _   => rfl
   | loadMem _ _       => rfl

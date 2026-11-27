@@ -5,6 +5,7 @@
 
 #include "prisma/ir.hpp"
 #include "prisma/ir_serialization.hpp"
+#include "prisma/ir_serialize.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -331,4 +332,28 @@ TEST_CASE("IR deserialization: rejects malformed input") {
 
     require_error(deserialize_binary_op(bytes), IrDeserializeError::TrailingBytes);
   }
+}
+
+TEST_CASE("IR serialization: published v2 Return streams retain their distinct tag and envelope") {
+  const std::vector<Stmt> program{{std::nullopt, Return{}}};
+  // RFC 0009 appends CRC32C and uses tag 14. The kind-tagged format uses tag 17.
+  const std::vector<std::uint8_t> rfc_bytes{
+      'P', 'I', 'R', 'B', 2, 0, 0, 0, 1, 0, 0, 0, 0, 14, 0x2D, 0xFA, 0x3B, 0x41,
+  };
+  const std::vector<std::uint8_t> kind_bytes{'P', 'I', 'R', 'B', 2, 0, 1, 0, 1, 0, 0, 0, 0, 17};
+  REQUIRE(serialize(program) == rfc_bytes);
+  REQUIRE(serialize_stmts(program) == kind_bytes);
+  const auto decoded = deserialize_stmts(rfc_bytes);
+  REQUIRE(decoded.error == DeserializeError::Ok);
+  REQUIRE(decoded.stmts == program);
+  REQUIRE(std::get<std::vector<Stmt>>(deserialize_binary_stmts(kind_bytes)) == program);
+  REQUIRE(deserialize_stmts(kind_bytes).error != DeserializeError::Ok);
+  REQUIRE(std::holds_alternative<IrDeserializeError>(deserialize_binary_stmts(rfc_bytes)));
+
+  auto earlier_rfc = rfc_bytes;
+  earlier_rfc[4] = 1;
+  auto earlier_kind = kind_bytes;
+  earlier_kind[4] = 1;
+  REQUIRE(deserialize_stmts(earlier_rfc).error == DeserializeError::BadVersion);
+  require_error(deserialize_binary_stmts(earlier_kind), IrDeserializeError::UnsupportedVersion);
 }
