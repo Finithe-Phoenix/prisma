@@ -169,6 +169,7 @@ constexpr auto build_one_byte_dispatch_table() noexcept {
   table[0x9Du] = {OneByteDispatchKind::Popfq};
   table[0xC1u] = {OneByteDispatchKind::ShiftImm8};
   table[0xD1u] = {OneByteDispatchKind::ShiftOne};
+  table[0xD2u] = {OneByteDispatchKind::ShiftCl};
   table[0xD3u] = {OneByteDispatchKind::ShiftCl};
   table[0xF6u] = {OneByteDispatchKind::Group3Byte};
   table[0xF7u] = {OneByteDispatchKind::Group3};
@@ -2327,7 +2328,8 @@ std::variant<Decoded, DecodeError> decode_xgetbv(std::size_t bytes_consumed) {
   return d;
 }
 
-std::variant<Decoded, DecodeError> decode_syscall_placeholder(std::uint64_t instruction_guest_pc, std::size_t bytes_consumed) {
+std::variant<Decoded, DecodeError> decode_syscall_placeholder(std::uint64_t instruction_guest_pc,
+                                                              std::size_t bytes_consumed) {
   Decoded d;
   d.stmts.push_back({std::nullopt, ir::Syscall{instruction_guest_pc + bytes_consumed}});
   d.bytes_consumed = bytes_consumed;
@@ -2581,70 +2583,48 @@ bool is_rcl_rcr(ir::BinOpKind op) noexcept {
 std::pair<ir::Ref, ir::Ref> emit_rcl_rcr_value_count(std::vector<ir::Stmt>& stmts,
                                                      ir::Ref& next_ref, bool is_rcr, ir::Ref dst,
                                                      ir::Ref raw_count, ir::OpSize size) {
-  const std::uint64_t width_value = ir::bit_width(size);
-  const std::uint64_t count_mask = size == ir::OpSize::I64 ? 0x3fu : 0x1fu;
-  const std::uint64_t rotate_width_value = width_value + 1u;
-
-  const ir::Ref cf = next_ref++;
-  stmts.push_back({cf, ir::LoadCarry{}});
-  const ir::Ref zero = push_constant_ref(stmts, next_ref, 0u, size);
-  const ir::Ref one = push_constant_ref(stmts, next_ref, 1u, size);
-  const ir::Ref mask = push_constant_ref(stmts, next_ref, count_mask, size);
-  const ir::Ref width = push_constant_ref(stmts, next_ref, width_value, size);
-  const ir::Ref rotate_width = push_constant_ref(stmts, next_ref, rotate_width_value, size);
-  const ir::Ref masked_count =
-      push_binop_ref(stmts, next_ref, ir::BinOpKind::And, raw_count, mask, size);
-  const ir::Ref count =
-      push_binop_ref(stmts, next_ref, ir::BinOpKind::UMod, masked_count, rotate_width, size);
-  const ir::Ref count_minus_one =
-      push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub, count, one, size);
-  const ir::Ref width_minus_count =
-      push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub, width, count, size);
-  const ir::Ref rotate_width_minus_count =
-      push_binop_ref(stmts, next_ref, ir::BinOpKind::Sub, rotate_width, count, size);
-
-  auto cmp_and_select = [&](ir::Ref lhs, ir::Ref rhs, ir::CondCode cc, ir::Ref true_value,
-                            ir::Ref false_value) {
-    stmts.push_back({std::nullopt, ir::CmpFlags{lhs, rhs, size}});
-    const ir::Ref selected = next_ref++;
-    stmts.push_back({selected, ir::Select{cc, true_value, false_value, size}});
-    return selected;
+  const auto w = ir::bit_width(size);
+  const auto k = [&](std::uint64_t v) {
+    return push_constant_ref(stmts, next_ref, v, ir::OpSize::I64);
   };
+  const auto bin = [&](ir::BinOpKind op, ir::Ref lhs, ir::Ref rhs) {
+    return push_binop_ref(stmts, next_ref, op, lhs, rhs, ir::OpSize::I64);
+  };
+  using enum ir::BinOpKind;
+  const auto masked = bin(And, raw_count, k(w == 64u ? 63u : 31u));
+  const auto count = w < 32u ? bin(UMod, masked, k(w + 1u)) : masked;
+  const ir::Ref carry = next_ref++;
+  stmts.push_back({carry, ir::LoadCarry{}});
 
-  ir::Ref rotated_dst;
-  ir::Ref rotated_cf;
-  if (is_rcr) {
-    const ir::Ref shifted = push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr, dst, count, size);
-    const ir::Ref cf_top =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl, cf, width_minus_count, size);
-    const ir::Ref wrap_candidate =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl, dst, rotate_width_minus_count, size);
-    const ir::Ref wrap = cmp_and_select(count, one, ir::CondCode::Eq, zero, wrap_candidate);
-    const ir::Ref dst_with_cf =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Or, shifted, cf_top, size);
-    rotated_dst = push_binop_ref(stmts, next_ref, ir::BinOpKind::Or, dst_with_cf, wrap, size);
-    const ir::Ref cf_candidate_shifted =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr, dst, count_minus_one, size);
-    rotated_cf =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::And, cf_candidate_shifted, one, size);
-  } else {
-    const ir::Ref shifted = push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl, dst, count, size);
-    const ir::Ref cf_insert =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shl, cf, count_minus_one, size);
-    const ir::Ref wrap_candidate =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr, dst, rotate_width_minus_count, size);
-    const ir::Ref wrap = cmp_and_select(count, one, ir::CondCode::Eq, zero, wrap_candidate);
-    const ir::Ref dst_with_cf =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Or, shifted, cf_insert, size);
-    rotated_dst = push_binop_ref(stmts, next_ref, ir::BinOpKind::Or, dst_with_cf, wrap, size);
-    const ir::Ref cf_candidate_shifted =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::Shr, dst, width_minus_count, size);
-    rotated_cf =
-        push_binop_ref(stmts, next_ref, ir::BinOpKind::And, cf_candidate_shifted, one, size);
+  if (w < 64u) {
+    // The entire 9-, 17- or 33-bit ring fits in a single u64.
+    const auto ring = bin(Or, dst, bin(Shl, carry, k(w)));
+    const auto opposite = bin(Sub, k(w + 1u), count);
+    const auto first = bin(is_rcr ? Shr : Shl, ring, count);
+    const auto wrap = bin(is_rcr ? Shl : Shr, ring, opposite);
+    const auto rotated = bin(Or, first, wrap);
+    const auto cf = bin(And, bin(Shr, rotated, k(w)), k(1));
+    return {rotated, cf};
   }
 
-  const ir::Ref final_dst = cmp_and_select(count, zero, ir::CondCode::Eq, dst, rotated_dst);
-  const ir::Ref final_cf = cmp_and_select(count, zero, ir::CondCode::Eq, cf, rotated_cf);
+  // The 65-bit ring does not fit in a u64. Splitting the wrap into two
+  // shifts avoids a shift by 64 (which would alias a shift by zero).
+  const auto complement = bin(Sub, k(w), count);
+  const auto one_less = bin(Sub, count, k(1));
+  const auto carry_bits = bin(Shl, carry, is_rcr ? complement : one_less);
+  const auto shifted = bin(is_rcr ? Shr : Shl, dst, count);
+  const auto with_carry = bin(Or, shifted, carry_bits);
+  const auto pre_shift = bin(is_rcr ? Shl : Shr, dst, k(1));
+  const auto wrap = bin(is_rcr ? Shl : Shr, pre_shift, complement);
+  const auto rotated = bin(Or, with_carry, wrap);
+  const auto shifted_cf = bin(Shr, dst, is_rcr ? one_less : complement);
+  const auto cf = bin(And, shifted_cf, k(1));
+  const auto zero = k(0);
+  stmts.push_back({std::nullopt, ir::CmpFlags{count, zero, ir::OpSize::I64}});
+  const ir::Ref final_dst = next_ref++;
+  stmts.push_back({final_dst, ir::Select{ir::CondCode::Eq, dst, rotated, ir::OpSize::I64}});
+  const ir::Ref final_cf = next_ref++;
+  stmts.push_back({final_cf, ir::Select{ir::CondCode::Eq, carry, cf, ir::OpSize::I64}});
   return {final_dst, final_cf};
 }
 
@@ -2887,7 +2867,7 @@ decode_shift_r64_rm_imm8_from_rm(std::span<const Byte> bytes, const ModRmOperand
 std::variant<Decoded, DecodeError>
 decode_shift_r64_rm_cl_from_rm(const ModRmOperand& m, std::size_t bytes_consumed,
                                std::uint64_t instruction_guest_pc, ir::Ref& next_ref,
-                               ir::BinOpKind op, ir::OpSize size) {
+                               ir::BinOpKind op, ir::OpSize size, bool high_byte) {
   Decoded d;
   std::optional<ir::Ref> addr;
   if (m.mod != 0b11u) {
@@ -2897,20 +2877,57 @@ decode_shift_r64_rm_cl_from_rm(const ModRmOperand& m, std::size_t bytes_consumed
   if (is_rcl_rcr(op)) {
     const ir::Ref raw_count = next_ref++;
     d.stmts.push_back({raw_count, ir::LoadReg{ir::Gpr::Rcx, ir::OpSize::I64}});
-    const ir::Ref dst = next_ref++;
+    const ir::Gpr reg = high_byte ? gpr_from_index(static_cast<unsigned>(m.base) - 4u) : m.base;
+    ir::Ref dst = next_ref++;
     if (m.mod == 0b11u) {
-      d.stmts.push_back({dst, ir::LoadReg{m.base, size}});
+      d.stmts.push_back({dst, ir::LoadReg{reg, high_byte ? ir::OpSize::I16 : size}});
+      if (high_byte) {
+        const auto shift = push_constant_ref(d.stmts, next_ref, 8, ir::OpSize::I16);
+        dst = push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Shr, dst, shift, ir::OpSize::I16);
+      }
     } else {
       d.stmts.push_back({dst, ir::LoadMem{*addr, size}});
     }
     const auto [result, cf] =
         emit_rcl_rcr_value_count(d.stmts, next_ref, op == ir::BinOpKind::Rcr, dst, raw_count, size);
-    if (m.mod == 0b11u) {
-      d.stmts.push_back({std::nullopt, ir::StoreReg{m.base, result, size}});
+    if (high_byte) {
+      const auto low = next_ref++;
+      d.stmts.push_back({low, ir::LoadReg{reg, ir::OpSize::I8}});
+      const auto shift = push_constant_ref(d.stmts, next_ref, 8, ir::OpSize::I16);
+      const auto high =
+          push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Shl, result, shift, ir::OpSize::I16);
+      const auto word =
+          push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Or, low, high, ir::OpSize::I16);
+      d.stmts.push_back({std::nullopt, ir::StoreReg{reg, word, ir::OpSize::I16}});
+    } else if (m.mod == 0b11u) {
+      d.stmts.push_back({std::nullopt, ir::StoreReg{reg, result, size}});
     } else {
       d.stmts.push_back({std::nullopt, ir::StoreMem{*addr, result, size}});
     }
     d.stmts.push_back({std::nullopt, ir::StoreCarry{cf}});
+
+    // For either direction, a one-bit carry rotate overflows when the sign changes.
+    // Preserve OF for zero and for counts where the architecture leaves it undefined.
+    const auto changed = push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Xor, dst, result, size);
+    const auto sign = push_bit_ref_i8(d.stmts, next_ref, changed, ir::bit_width(size) - 1u, size);
+    const auto shift = push_constant_ref(d.stmts, next_ref, 11, ir::OpSize::I64);
+    const auto of =
+        push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Shl, sign, shift, ir::OpSize::I64);
+    const auto old = next_ref++;
+    d.stmts.push_back({old, ir::LoadRflags{}});
+    const auto keep = push_constant_ref(d.stmts, next_ref, ~(1ull << 11), ir::OpSize::I64);
+    const auto cleared =
+        push_binop_ref(d.stmts, next_ref, ir::BinOpKind::And, old, keep, ir::OpSize::I64);
+    const auto updated =
+        push_binop_ref(d.stmts, next_ref, ir::BinOpKind::Or, cleared, of, ir::OpSize::I64);
+    const auto count_mask =
+        push_constant_ref(d.stmts, next_ref, size == ir::OpSize::I64 ? 63u : 31u, ir::OpSize::I64);
+    const auto masked = push_binop_ref(d.stmts, next_ref, ir::BinOpKind::And, raw_count, count_mask,
+                                       ir::OpSize::I64);
+    const auto one = push_constant_ref(d.stmts, next_ref, 1, ir::OpSize::I64);
+    const auto flags = select_after_cmp(d.stmts, next_ref, masked, one, ir::CondCode::Eq, updated,
+                                        old, ir::OpSize::I64, ir::OpSize::I64);
+    d.stmts.push_back({std::nullopt, ir::StoreRflags{flags}});
     d.bytes_consumed = bytes_consumed;
     return d;
   }
@@ -3071,8 +3088,9 @@ DispatchDecodeResult decode_shift_group_cl_dispatch(std::span<const Byte> bytes,
                                                     bool has_operand_size_override,
                                                     bool has_address_size_override,
                                                     std::uint64_t instruction_guest_pc,
-                                                    ir::Ref& next_ref) {
-  const auto size = checked_operand_size(rex, has_operand_size_override);
+                                                    ir::Ref& next_ref, bool byte_operand) {
+  const auto size =
+      byte_operand ? ir::OpSize::I8 : checked_operand_size(rex, has_operand_size_override);
   if (!size)
     return DecodeError::UnsupportedEncoding;
 
@@ -3081,10 +3099,13 @@ DispatchDecodeResult decode_shift_group_cl_dispatch(std::span<const Byte> bytes,
     return std::get<DecodeError>(modrm);
   }
   const auto& m = std::get<ModRmOperand>(modrm);
-  const auto op = shift_group_binop(m.reg);
-  if (!op)
+  const auto op = shift_group_binop(m.reg & 7u);
+  if (!op || (byte_operand && !is_rcl_rcr(*op)))
     return DecodeError::UnsupportedEncoding;
-  return decode_shift_r64_rm_cl_from_rm(m, cursor, instruction_guest_pc, next_ref, *op, *size);
+  const bool high_byte =
+      byte_operand && m.mod == 3u && !rex.present && static_cast<unsigned>(m.base) >= 4u;
+  return decode_shift_r64_rm_cl_from_rm(m, cursor, instruction_guest_pc, next_ref, *op, *size,
+                                        high_byte);
 }
 
 DispatchDecodeResult decode_group5_dispatch(std::span<const Byte> bytes, std::size_t& cursor,
@@ -3538,7 +3559,7 @@ try_decode_two_byte_dispatch(Byte subop, std::span<const Byte> bytes, std::size_
     case OneByteDispatchKind::ShiftCl:
       return DispatchDecodeResult{decode_shift_group_cl_dispatch(
           bytes, cursor, rex, has_operand_size_override, has_address_size_override,
-          instruction_guest_pc, next_ref)};
+          instruction_guest_pc, next_ref, opcode == 0xD2u)};
     case OneByteDispatchKind::AluRmR: {
       const auto size = checked_operand_size(rex, has_operand_size_override);
       if (!size)

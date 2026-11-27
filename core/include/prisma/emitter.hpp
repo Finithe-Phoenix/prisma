@@ -195,6 +195,8 @@ class Emitter {
   void cmp(arm64::Reg rn, arm64::Reg rm);
   void cset(arm64::Reg rd, ir::CondCode cc);
 
+  void restore_nzcv_from_rflags(arm64::Reg flags, arm64::Reg packed, arm64::Reg bit);
+
   // F2-IR-045 follow-up. Build NZCV for LZCNT/TZCNT:
   //   ARM Z = (result == 0)
   //   ARM C = NOT (src == 0)

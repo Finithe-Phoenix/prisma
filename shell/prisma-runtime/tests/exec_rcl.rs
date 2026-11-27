@@ -107,3 +107,103 @@ fn rcr_rotates_carry_into_msb() {
         assert!(matches!(r, Err(ExecError::WrongArch)));
     }
 }
+
+/// Reference the ISA one bit at a time, including count masking before the
+/// modulo-9/17 reduction and the single-masked-count definition of OF.
+fn expected_rotate(mut word: u64, width: u32, raw: u64, right: bool, flags: u64) -> (u64, u64) {
+    let mask = u64::MAX >> (64 - width);
+    word &= mask;
+    let sign = word >> (width - 1);
+    let mut cf = flags & 1;
+    let masked = raw & if width == 64 { 63 } else { 31 };
+    for _ in 0..masked % u64::from(width + 1) {
+        (word, cf) = if right {
+            ((word >> 1) | (cf << (width - 1)), word & 1)
+        } else {
+            (((word << 1) | cf) & mask, word >> (width - 1))
+        };
+    }
+    let mut flags = (flags & !1) | cf;
+    if masked == 1 {
+        flags = (flags & !(1 << 11)) | ((sign ^ (word >> (width - 1))) << 11);
+    }
+    (word, flags)
+}
+
+#[test]
+fn cl_rotates_match_value_and_all_flags() {
+    use prisma_translator::interp::{interpret_block, BlockOutcome, GuestRegs};
+    for (width, opcode) in [
+        (8_u32, vec![0xd2]),
+        (16, vec![0x66, 0xd3]),
+        (32, vec![0xd3]),
+        (64, vec![0x48, 0xd3]),
+    ] {
+        for right in [false, true] {
+            for operand in [0xc0_u8, 0xc4, 0] {
+                // register, AH, [rax]
+                let high = operand == 0xc4;
+                if high && width != 8 {
+                    continue;
+                }
+                let mem = operand == 0;
+                let mut program = opcode.clone();
+                program.push(operand | if right { 0x18 } else { 0x10 });
+                let code = translate(0x1000, &program);
+                let decoded = prisma_decoder::decode_one(&program, 0).expect("decode");
+                for raw in [0, 1, 2, u64::from(width), u64::from(width + 1), 33, 65, 255] {
+                    for flags in [0x246, 0xad7] {
+                        let original = 0xfedc_ba91_9837_6789_u64;
+                        let offset = if high { 8 } else { 0 };
+                        let mask = u64::MAX >> (64 - width) << offset;
+                        let (word, expected_flags) =
+                            expected_rotate(original >> offset, width, raw, right, flags);
+                        let expected = if !mem && width == 32 {
+                            word
+                        } else {
+                            original & !mask | word << offset
+                        };
+                        if !mem {
+                            let mut regs = GuestRegs {
+                                cf: flags & 1,
+                                rflags: flags,
+                                ..GuestRegs::default()
+                            };
+                            regs.gpr[gpr::RAX] = original;
+                            regs.gpr[gpr::RCX] = raw;
+                            assert_eq!(
+                                interpret_block(&decoded.stmts, &mut regs),
+                                BlockOutcome::Fallthrough
+                            );
+                            assert_eq!(
+                                (regs.gpr[gpr::RAX], regs.rflags, regs.cf),
+                                (expected, expected_flags, expected_flags & 1)
+                            );
+                        }
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            let mut backing = original;
+                            let mut state = CpuStateFrame::default();
+                            state.gpr[gpr::RAX] = if mem {
+                                std::ptr::from_mut(&mut backing) as u64
+                            } else {
+                                original
+                            };
+                            state.gpr[gpr::RCX] = raw;
+                            state.cf = flags & 1;
+                            state.rflags = flags;
+                            execute_block(&code, &mut state).unwrap();
+                            let value = if mem { backing } else { state.gpr[gpr::RAX] };
+                            assert_eq!(
+                                (value, state.rflags, state.cf),
+                                (expected, expected_flags, expected_flags & 1)
+                            );
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                assert!(!code.is_empty());
+            }
+        }
+    }
+}

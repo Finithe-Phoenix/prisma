@@ -365,6 +365,21 @@ pub struct WideDiv {
     pub signed: bool,
     pub result: WideDivResult,
 }
+/// Pure projection of a variable-count x86 carry rotate. The count is masked before
+/// reducing modulo the operand width plus one. C++ expands this into scalar IR.
+/// Keeping the operands together lets the ARM64 lowerer hold the 65-bit ring
+/// without exceeding the scalar temporary register window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RotateCarry {
+    pub value: Ref,
+    pub count: Ref,
+    pub carry: Ref,
+    pub size: OpSize,
+    pub right: bool,
+    /// `Some(old_flags)` computes the updated RFLAGS. `None` computes the destination.
+    pub flags: Option<Ref>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Compare {
     pub cc: CondCode,
@@ -1103,6 +1118,7 @@ pub enum Op {
     StoreRflags(StoreRflags),
     StoreRflagsFromNzcv(StoreRflagsFromNzcv),
     StoreRflagsFromBits(StoreRflagsFromBits),
+    RotateCarry(RotateCarry),
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,6 +1162,12 @@ impl Op {
             Self::BinOp(x) => {
                 x.lhs = f(x.lhs);
                 x.rhs = f(x.rhs);
+            }
+            Self::RotateCarry(x) => {
+                x.value = f(x.value);
+                x.count = f(x.count);
+                x.carry = f(x.carry);
+                x.flags = x.flags.map(&mut f);
             }
             Self::WideDiv(x) => {
                 x.high = f(x.high);

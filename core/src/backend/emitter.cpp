@@ -456,6 +456,22 @@ void Emitter::cset(arm64::Reg rd, ir::CondCode cc) {
   impl_->masm.Cset(to_vixl_x(rd), to_vixl_cond(cc));
 }
 
+void Emitter::restore_nzcv_from_rflags(arm64::Reg flags, arm64::Reg packed, arm64::Reg bit) {
+  auto& masm = impl_->masm;
+  const auto src = to_vixl_x(flags);
+  const auto nzcv = to_vixl_x(packed);
+  const auto tmp = to_vixl_x(bit);
+  // Match the persistent flags convention used by the Rust backend and SETcc.
+  masm.Ubfx(nzcv, src, 7, 1);
+  masm.Lsl(nzcv, nzcv, 31);
+  masm.Ubfx(tmp, src, 6, 1);
+  masm.Bfi(nzcv, tmp, 30, 1);
+  masm.Bfi(nzcv, src, 29, 1);
+  masm.Ubfx(tmp, src, 11, 1);
+  masm.Bfi(nzcv, tmp, 28, 1);
+  masm.Msr(vixl_aa::NZCV, nzcv);
+}
+
 void Emitter::count_zero_flags(arm64::Reg result, arm64::Reg src, arm64::Reg w_tmp) {
   // Build NZCV from the architectural LZCNT/TZCNT semantics (Intel SDM):
   //   Z = (result == 0)

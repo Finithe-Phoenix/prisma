@@ -23,6 +23,7 @@ fn is_pure_for_dce(op: &Op) -> bool {
         Op::Constant(_)
             | Op::LoadReg(_)
             | Op::BinOp(_)
+            | Op::RotateCarry(_)
             | Op::WideDiv(_)
             | Op::Compare(_)
             | Op::Select(_)
@@ -128,6 +129,10 @@ fn collect_operand_refs(op: &Op, into: &mut HashSet<Ref>) {
         Op::BinOp(x) => {
             into.insert(x.lhs);
             into.insert(x.rhs);
+        }
+        Op::RotateCarry(x) => {
+            into.extend([x.value, x.count, x.carry]);
+            into.extend(x.flags);
         }
         Op::WideDiv(x) => {
             into.insert(x.high);

@@ -1557,8 +1557,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
           }
           if (op.is_signed) {
             if (!allocate_temporary(work.divisor)) {
-              return {false, LowerError::OutOfScratchRegs,
-                      "WideDiv signed divisor temporary"};
+              return {false, LowerError::OutOfScratchRegs, "WideDiv signed divisor temporary"};
             }
           } else {
             // Unsigned division never mutates the divisor. Reuse its live
@@ -1987,7 +1986,8 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
           // Advance guest_pc to the next instruction before the handler is called.
           // The handler can overwrite it if it needs to (e.g. rt_sigreturn).
           emitter_.mov_imm64(arm64::Reg::X9, op.next_pc);
-          emitter_.store_offset(arm64::Reg::X9, arm64::Reg::X27, runtime::CpuStateFrame::guest_pc_offset());
+          emitter_.store_offset(arm64::Reg::X9, arm64::Reg::X27,
+                                runtime::CpuStateFrame::guest_pc_offset());
 
           // If a syscall handler has been configured, emit blr to it.
           // The handler reads guest regs from the state frame, performs
@@ -2013,7 +2013,8 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
           }
           // The block ends here. The next block will start at whatever guest_pc is.
           // Syscall handler may have changed it (e.g., rt_sigreturn).
-          emitter_.load_offset(arm64::Reg::X0, arm64::Reg::X27, runtime::CpuStateFrame::guest_pc_offset());
+          emitter_.load_offset(arm64::Reg::X0, arm64::Reg::X27,
+                               runtime::CpuStateFrame::guest_pc_offset());
           if (options_.emit_ret_on_terminator)
             emitter_.ret();
           return {};
@@ -2147,6 +2148,7 @@ LowerResult Lowerer::lower_stmt(const ir::Stmt& s) {
           emitter_.mov_imm64(mask, 1);
           emitter_.and_(carry, forced, mask);
           emitter_.store_offset(carry, abi::kStatePtrReg, runtime::CpuStateFrame::cf_offset());
+          emitter_.restore_nzcv_from_rflags(forced, mask, carry);
           return {};
         } else if constexpr (std::is_same_v<T, ir::StoreRflagsFromNzcv>) {
           constexpr std::uint64_t kCf = 1ull << 0;

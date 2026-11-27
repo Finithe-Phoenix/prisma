@@ -783,6 +783,9 @@ fn lower_stmt(
         Op::BinOp(bin) => {
             lower_binop(stmt, asm, values, constants, bin, exit.return_via_epilogue)?;
         }
+        Op::RotateCarry(rotate) => {
+            lower_rotate_carry(stmt, asm, values, rotate)?;
+        }
         Op::WideDiv(div) => {
             lower_wide_div(stmt, asm, values, div, exit.return_via_epilogue)?;
         }
@@ -1921,6 +1924,100 @@ fn emit_or_rflags_bit_into_nzcv(asm: &mut Arm64Assembler, rflags_shift: u64, nzc
     emit_u64_constant(asm, FLAG_ALIGN_SHIFT_REG, nzcv_shift);
     asm.lsl_x(NZCV_MASK_REG, NZCV_MASK_REG, FLAG_ALIGN_SHIFT_REG);
     asm.orr_x(NZCV_CARRY_REG, NZCV_CARRY_REG, NZCV_MASK_REG);
+}
+
+/// Lower one projection of the (width + 1)-bit rotate without losing its carry lane.
+/// CBZ/CBNZ keep the architectural NZCV of the surrounding block intact.
+fn lower_rotate_carry(
+    stmt: &Stmt,
+    asm: &mut Arm64Assembler,
+    values: &mut HashMap<Ref, u8>,
+    rotate: &prisma_ir::RotateCarry,
+) -> Result<(), LowerError> {
+    let reg = |r: Ref| values.get(&r).copied().ok_or(LowerError::MissingValue(r));
+    let value = reg(rotate.value)?;
+    let raw_count = reg(rotate.count)?;
+    let carry = reg(rotate.carry)?;
+    let old_flags = rotate.flags.map(reg).transpose()?;
+    let result = stmt
+        .result
+        .ok_or(LowerError::MissingResult("RotateCarry"))?;
+    let dst = value_reg(result);
+    let width = u64::from(rotate.size.bit_width());
+    let count = FLAG_ALIGN_LHS_REG;
+    let shift = FLAG_ALIGN_RHS_REG;
+    let temp = FLAG_ALIGN_SHIFT_REG;
+    let extra = MOD_QUOTIENT_REG;
+    let done = asm.create_label();
+    emit_u64_constant(asm, shift, if width == 64 { 63 } else { 31 });
+    asm.and_x(count, raw_count, shift);
+    asm.mov_x(dst, old_flags.unwrap_or(value));
+
+    if let Some(flags) = old_flags {
+        // OF is defined only for masked count 1. In both directions it reports
+        // the change of sign: old MSB xor (old next MSB for RCL, old CF for RCR).
+        let keep_overflow = asm.create_label();
+        asm.sub_x_imm(temp, count, 1);
+        asm.cbnz_x_label(temp, keep_overflow);
+        emit_u64_constant(asm, shift, width - 1);
+        asm.lsr_x(temp, value, shift);
+        if rotate.right {
+            asm.eor_x(temp, temp, carry);
+        } else {
+            asm.sub_x_imm(shift, shift, 1);
+            asm.lsr_x(extra, value, shift);
+            asm.eor_x(temp, temp, extra);
+        }
+        emit_u64_constant(asm, shift, 1);
+        asm.and_x(temp, temp, shift);
+        emit_u64_constant(asm, shift, 11);
+        asm.lsl_x(temp, temp, shift);
+        emit_u64_constant(asm, shift, !RFLAGS_OF_BIT);
+        asm.and_x(dst, flags, shift);
+        asm.orr_x(dst, dst, temp);
+        asm.bind_label(keep_overflow);
+    }
+    if width < 32 {
+        emit_u64_constant(asm, shift, width + 1);
+        asm.udiv_x(temp, count, shift);
+        asm.msub_x(count, temp, shift, count);
+    }
+    asm.cbz_x_label(count, done);
+    emit_u64_constant(asm, shift, width);
+    asm.sub_x(shift, shift, count); // width - n
+    if old_flags.is_some() {
+        if rotate.right {
+            asm.sub_x_imm(shift, count, 1);
+        }
+        asm.lsr_x(temp, value, shift);
+        emit_u64_constant(asm, shift, 1);
+        asm.and_x(temp, temp, shift);
+        emit_u64_constant(asm, shift, !1);
+        asm.and_x(dst, dst, shift);
+        asm.orr_x(dst, dst, temp);
+    } else {
+        emit_u64_constant(asm, temp, 1);
+        if rotate.right {
+            // Two shifts by 1 and width-n avoid the modulo-64 shift by 64 at n=1.
+            asm.lsl_x(extra, value, temp);
+            asm.lsl_x(extra, extra, shift);
+            asm.lsl_x(temp, carry, shift);
+            asm.lsr_x(dst, value, count);
+        } else {
+            asm.lsr_x(extra, value, temp);
+            asm.lsr_x(extra, extra, shift);
+            asm.sub_x_imm(shift, count, 1);
+            asm.lsl_x(temp, carry, shift);
+            asm.lsl_x(dst, value, count);
+        }
+        asm.orr_x(dst, dst, extra);
+        asm.orr_x(dst, dst, temp);
+        emit_u64_constant(asm, shift, rotate.size.mask());
+        asm.and_x(dst, dst, shift);
+    }
+    asm.bind_label(done);
+    values.insert(result, dst);
+    Ok(())
 }
 
 fn lower_store_carry(asm: &mut Arm64Assembler, value: u8) {

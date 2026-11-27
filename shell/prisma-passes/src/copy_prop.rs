@@ -34,6 +34,10 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.rhs = resolve_alias(op.rhs, aliases);
             Op::BinOp(op)
         }
+        mut rotate @ Op::RotateCarry(_) => {
+            rotate.map_refs(|r| resolve_alias(r, aliases));
+            rotate
+        }
         Op::WideDiv(mut op) => {
             op.high = resolve_alias(op.high, aliases);
             op.low = resolve_alias(op.low, aliases);
