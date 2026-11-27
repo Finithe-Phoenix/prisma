@@ -18,15 +18,15 @@ env:
 
 jobs:
   asan-ubsan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
       - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang-17
+        uses: ./.github/actions/linux-core-toolchain
+        with:
+          architecture: x86_64
 
       - name: Configure AddressSanitizer and UndefinedBehaviorSanitizer
         run: |
@@ -41,7 +41,9 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          cmake --build core/build-asan 2>&1 | tee asan-ubsan-build.log
+          /usr/bin/time -a -o "$GITHUB_STEP_SUMMARY" \
+            -f '- asan-ubsan build: %e seconds, maximum process RSS %M KiB, exit %x' \
+            cmake --build core/build-asan 2>&1 | tee asan-ubsan-build.log
 
       - name: Run tests
         env:
@@ -49,8 +51,14 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           set -o pipefail
-          ctest --test-dir core/build-asan --output-on-failure \
+          /usr/bin/time -a -o "$GITHUB_STEP_SUMMARY" \
+            -f '- asan-ubsan test: %e seconds, maximum process RSS %M KiB, exit %x' \
+            ctest --test-dir core/build-asan --output-on-failure \
             2>&1 | tee asan-ubsan-test.log
+
+      - name: Stage diagnostic binary
+        if: failure()
+        run: bash .github/actions/linux-core-toolchain/stage-binary.sh core/build-asan/prisma_core_tests
 
       - name: Preserve ASan and UBSan diagnostics
         if: failure()
@@ -63,18 +71,20 @@ jobs:
             asan-ubsan-configure.log
             asan-ubsan-build.log
             asan-ubsan-test.log
+            runner-health.log
             core/build-asan/Testing/Temporary/LastTest.log
+            prisma_core_tests.gz
 
   tsan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
       - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang-17
+        uses: ./.github/actions/linux-core-toolchain
+        with:
+          architecture: x86_64
 
       - name: Configure ThreadSanitizer
         run: |
@@ -88,15 +98,23 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          cmake --build core/build-tsan 2>&1 | tee tsan-build.log
+          /usr/bin/time -a -o "$GITHUB_STEP_SUMMARY" \
+            -f '- tsan build: %e seconds, maximum process RSS %M KiB, exit %x' \
+            cmake --build core/build-tsan 2>&1 | tee tsan-build.log
 
       - name: Run tests
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: |
           set -o pipefail
-          ctest --test-dir core/build-tsan --output-on-failure \
+          /usr/bin/time -a -o "$GITHUB_STEP_SUMMARY" \
+            -f '- tsan test: %e seconds, maximum process RSS %M KiB, exit %x' \
+            ctest --test-dir core/build-tsan --output-on-failure \
             2>&1 | tee tsan-test.log
+
+      - name: Stage diagnostic binary
+        if: failure()
+        run: bash .github/actions/linux-core-toolchain/stage-binary.sh core/build-tsan/prisma_core_tests
 
       - name: Preserve TSan diagnostics
         if: failure()
@@ -109,4 +127,6 @@ jobs:
             tsan-configure.log
             tsan-build.log
             tsan-test.log
+            runner-health.log
             core/build-tsan/Testing/Temporary/LastTest.log
+            prisma_core_tests.gz

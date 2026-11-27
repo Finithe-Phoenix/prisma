@@ -20,15 +20,15 @@ env:
 jobs:
   ffi-link:
     name: ffi-link
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
       - name: Install C++ toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang-17
+        uses: ./.github/actions/linux-core-toolchain
+        with:
+          architecture: x86_64
 
       - name: Configure C API library
         run: |
@@ -44,6 +44,12 @@ jobs:
           set -o pipefail
           cmake --build core/build --target prisma_core_c \
             2>&1 | tee ffi-linux-build.log
+
+      - name: Cache locked Cargo downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('shell/Cargo.lock') }}
 
       - name: Install Rust toolchain
         run: |
@@ -71,6 +77,10 @@ jobs:
           cargo test --manifest-path shell/Cargo.toml --workspace \
             2>&1 | tee ffi-linux-test.log
 
+      - name: Stage diagnostic binary
+        if: failure()
+        run: bash .github/actions/linux-core-toolchain/stage-binary.sh core/build/libprisma_core_c.so
+
       - name: Preserve Linux FFI diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
@@ -83,6 +93,8 @@ jobs:
             ffi-linux-build.log
             ffi-linux-lint.log
             ffi-linux-test.log
+            runner-health.log
+            libprisma_core_c.so.gz
 
   ffi-link-arm64:
     name: ffi-link-arm64
@@ -92,9 +104,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install C++ toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang-17
+        uses: ./.github/actions/linux-core-toolchain
+        with:
+          architecture: aarch64
 
       - name: Configure C API library
         run: |
@@ -111,6 +123,12 @@ jobs:
           cmake --build core/build --target prisma_core_c \
             2>&1 | tee ffi-arm64-build.log
 
+      - name: Cache locked Cargo downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('shell/Cargo.lock') }}
+
       - name: Install Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal
@@ -125,6 +143,10 @@ jobs:
           cargo test --manifest-path shell/Cargo.toml --workspace \
             2>&1 | tee ffi-arm64-test.log
 
+      - name: Stage diagnostic binary
+        if: failure()
+        run: bash .github/actions/linux-core-toolchain/stage-binary.sh core/build/libprisma_core_c.so
+
       - name: Preserve ARM64 FFI diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
@@ -136,6 +158,8 @@ jobs:
             ffi-arm64-configure.log
             ffi-arm64-build.log
             ffi-arm64-test.log
+            runner-health.log
+            libprisma_core_c.so.gz
 
   ffi-link-windows:
     name: ffi-link-windows
