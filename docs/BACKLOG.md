@@ -363,11 +363,11 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
 - [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
 - [x] (d08c090) F1-LN-011: Prove `dead_code_eliminate` soundness. (Per-op `evalPure_unaffected_by_unread_ref` proven; whole-pass composition is F1-LN-012.)
-- [x] (pending commit) F1-LN-012: Prove DCE+CP composition preserves semantics. (Per-op closure of CP and DCE under trace equivalence proven in ConstantPropagation.lean and DeadCodeElimination.lean; whole-program `exec` composition deferred to when Function-level trace interpretation lands.)
+- [x] (166f391) F1-LN-012: Prove DCE+CP composition preserves semantics. (Per-op closure of CP and DCE under trace equivalence proven in ConstantPropagation.lean and DeadCodeElimination.lean; whole-program `exec` composition deferred to when Function-level trace interpretation lands.)
 - [x] (451c669) F1-LN-013: Define "observable trace" formally.
-- [x] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store). (TSO.lean: TSO struct + StoreBuffer + per-core FIFO drain model.)
-- [x] F1-LN-015: TSO axioms as lemmas over the weak memory model. (TSO.lean: load_store_self, load_store_other, fence_publishes_two, sb_litmus, propagate_publishes, etc.)
-- [x] F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5). (TSO.lean + TSORewrite.lean: M1 fence_elim_quiescent, M2 bar_elim_trace, M3 bar_elim_spectator_obs — full soundness proven.)
+- [x] (166f391) F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store). (TSO.lean: TSO struct + StoreBuffer + per-core FIFO drain model.)
+- [x] (166f391) F1-LN-015: TSO axioms as lemmas over the weak memory model. (TSO.lean: load_store_self, load_store_other, fence_publishes_two, sb_litmus, propagate_publishes, etc.)
+- [x] (166f391) F1-LN-016: TSO-adaptive pass soundness (statement only; proof in Fase 2.5). (TSO.lean + TSORewrite.lean: M1 fence_elim_quiescent, M2 bar_elim_trace, M3 bar_elim_spectator_obs — full soundness proven.)
 
 ### F1-TC — Testing
 
@@ -389,7 +389,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (8f0f182) F1-AC-001: Start LaTeX draft in `papers/drafts/01-early-results/`.
 - [x] (8f0f182) F1-AC-002: Outline paper structure (intro, IR, passes, evaluation, related).
 - [x] (c8ecfb4) F1-AC-003: Reproduce baseline: QEMU / Box64 / FEX on the same hardware. (Driver framework in `tools/benchmarks/bench.py`; soft-skips per engine. Real numbers gated on hardware + binaries.)
-- [ ] F1-AC-004: First benchmark table (Dhrystone / CoreMark vs baselines).
+- [?] F1-AC-004: First benchmark table (Dhrystone / CoreMark vs baselines). **(Blocked: requires Danny's ARM64 hardware and F2-BM baselines)**
 - [x] (0c98045) F1-AC-005: Write 3-paragraph blog post when first program runs (Notepad XP? coreutils?). (`prisma_run` (b7bd82b) validated end-to-end on Apple silicon; blog-drafts/004 documents the milestone.)
 
 ### F1-DC — Documentation
@@ -418,8 +418,8 @@ translator on a reference Linux ARM64 box.
 - [x] (abbe81c) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
 - [x] (abbe81c) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
 - [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
-- [x] (pending commit) F2-SY-006: Implement clone (threads).
-- [x] (pending commit) F2-SY-007: Implement futex (critical for pthread).
+- [x] (9ae522b) F2-SY-006: Implement clone (threads).
+- [x] (d0a459c) F2-SY-007: Implement futex (critical for pthread).
 - [x] (abbe81c,9ba0dd9) F2-SY-008: Implement gettimeofday / clock_gettime.
 - [x] (abbe81c,9ba0dd9) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
 - [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
@@ -488,12 +488,12 @@ translator on a reference Linux ARM64 box.
 ### F2-BM — Benchmarks
 
 - [x] (533fc70) F2-BM-001: Dhrystone harness (Python driver + C source bundled).
-- [x] (pending commit) F2-BM-002: CoreMark harness.
-- [x] (pending commit) F2-BM-003: nbench harness.
+- [x] (e59c60a) F2-BM-002: CoreMark harness.
+- [x] (e59c60a) F2-BM-003: nbench harness.
 - [?] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net). **(Blocked: requires SPEC license from Danny)**
 - [?] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [x] (533fc70) F2-BM-006: Result schema (JSON) + aggregation.
-- [x] (pending commit) F2-BM-007: Markdown / LaTeX report generation.
+- [x] (e59c60a) F2-BM-007: Markdown / LaTeX report generation.
 - [?] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [?] F2-BM-009: First public results table on prisma-emu.dev/benchmarks. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [?] F2-BM-010: Performance target: 30-45% of native at end of Fase 2. **(Blocked: requires Danny's ARM64 hardware to execute)**
@@ -552,8 +552,8 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 ### F25-LN — Formal verification of TSO pass (Pillar 2)
 
-- [x] F25-LN-001: Formalise classifier invariants in Lean. (TSORewrite.lean: Quiescent, WritePrivate)
-- [x] F25-LN-002: Prove rewrite preserves observable semantics under invariants. (TSORewrite.lean: M1-M4)
+- [x] (166f391) F25-LN-001: Formalise classifier invariants in Lean. (TSORewrite.lean: Quiescent, WritePrivate)
+- [x] (166f391) F25-LN-002: Prove rewrite preserves observable semantics under invariants. (TSORewrite.lean: M1-M4)
 - [ ] F25-LN-003: Connect runtime assertions to the Lean formal invariants.
 - [ ] F25-LN-004: Paper 3 draft: "Formally Verified IR for x86 DBT".
 

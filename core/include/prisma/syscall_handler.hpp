@@ -28,9 +28,10 @@ struct GuestThreadStartupState {
     std::uint64_t clear_child_tid{0};
     std::uint64_t robust_list_head{0};
     std::uint64_t robust_list_len{0};
+    std::uint32_t host_exit_request{0};
 };
 
-[[nodiscard]] GuestThreadStartupState current_guest_thread_startup_state() noexcept;
+[[nodiscard]] GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept;
 
 extern "C" void prisma_syscall_handler(CpuStateFrame* state);
 
