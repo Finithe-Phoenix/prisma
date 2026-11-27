@@ -1,0 +1,39 @@
+name: Linux core toolchain
+description: Verify the hosted runner and install the compiler used by core and FFI jobs.
+inputs:
+  architecture:
+    description: Expected output of uname -m on the hosted runner
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Record runner health
+      shell: bash
+      env:
+        EXPECTED_ARCH: ${{ inputs.architecture }}
+      run: |
+        set -euo pipefail
+        {
+          echo "Commit $(git rev-parse HEAD), job $GITHUB_JOB, attempt $GITHUB_RUN_ATTEMPT"
+          echo "Image ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          uname -srmo
+          lscpu | awk '/^Architecture:|^CPU\(s\):|^Model name:/'
+          free -h
+          df -h .
+        } | tee runner-health.log
+        test "$(uname -m)" = "$EXPECTED_ARCH"
+
+    - name: Install Clang 17 and CMake 3.31
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq clang-17 clang-tools-17 ninja-build python3-venv time
+        python3 -m venv "$RUNNER_TEMP/prisma-cmake"
+        "$RUNNER_TEMP/prisma-cmake/bin/python" -m pip install --only-binary=:all: cmake==3.31.10
+        echo "$RUNNER_TEMP/prisma-cmake/bin" >> "$GITHUB_PATH"
+        {
+          clang++-17 --version
+          "$RUNNER_TEMP/prisma-cmake/bin/cmake" --version
+          ninja --version
+        } | tee -a runner-health.log
