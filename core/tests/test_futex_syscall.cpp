@@ -48,7 +48,9 @@ TEST_CASE("syscall_handler: futex validates guest words through the bound reader
     ScopedSyscallRuntimeContext binding{context};
     CHECK(futex_syscall(kGuestFutex, kFutexWait | private_flag, 6) == -EAGAIN);
     CHECK(futex_syscall(kGuestFutex + 4, kFutexWait | private_flag, 6) == -EFAULT);
-    CHECK(futex_syscall(kGuestFutex + 1, kFutexWake | private_flag, 1) == -EFAULT);
+    CHECK(futex_syscall(kGuestFutex + 4, kFutexWake | private_flag, 1) == -EFAULT);
+    CHECK(futex_syscall(kGuestFutex + 1, kFutexWait | private_flag, 6) == -EINVAL);
+    CHECK(futex_syscall(kGuestFutex + 1, kFutexWake | private_flag, 1) == -EINVAL);
     CHECK(futex_syscall(kGuestFutex, kFutexWake | private_flag, 8) == 0);
     CHECK(table.waiter_count(kGuestFutex) == 0);
     auto unbound_thread =
@@ -71,7 +73,7 @@ TEST_CASE("syscall_handler: futex rejects unsupported operations before reading 
   CHECK(futex_syscall(kGuestFutex, kFutexRequeue, 0) == -ENOSYS);
   CHECK(futex_syscall(kGuestFutex, kFutexWait | kFutexClockRealtime, 0) == -ENOSYS);
   CHECK(futex_syscall(kGuestFutex, kFutexWait, 0, 1) == -ENOSYS);
-  CHECK(futex_syscall(kGuestFutex + 1, kFutexWait, 0) == -EFAULT);
+  CHECK(futex_syscall(kGuestFutex + 1, kFutexWait, 0) == -EINVAL);
   CHECK(reads == 0);
 }
 

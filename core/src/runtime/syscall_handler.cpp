@@ -87,7 +87,11 @@ std::int64_t handle_futex(std::uint64_t address, std::uint32_t op, std::uint32_t
     return -ENOSYS;
   }
   const auto& [table, read_word] = *syscall_context;
-  if (!read_word || address % sizeof(std::uint32_t) != 0) {
+  // Linux checks the futex word's alignment before accessing guest memory.
+  if (address % sizeof(std::uint32_t) != 0) {
+    return -EINVAL;
+  }
+  if (!read_word) {
     return -EFAULT;
   }
   if (table.is_shutdown()) {
