@@ -72,6 +72,7 @@ def build_minimal_elf(code: bytes, out_path: Path) -> None:
     # ELF header for x86_64 little-endian executable.
     e_ident = bytes([0x7F, ord("E"), ord("L"), ord("F"),
                      2, 1, 1, 0,            # EI_CLASS=64, EI_DATA=LE, EI_VERSION=1, EI_OSABI=0
+                     0,                     # EI_ABIVERSION
                      0, 0, 0, 0, 0, 0, 0])  # padding
     ehdr = (
         e_ident
