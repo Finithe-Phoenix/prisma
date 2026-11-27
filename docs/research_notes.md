@@ -8,6 +8,21 @@
 
 ---
 
+## Decisiones de producto que requieren pruebas en dispositivo
+
+Corte de investigación para [#324](https://github.com/Finithe-Phoenix/prisma/issues/324).
+La evidencia de escritorio permite elegir el primer experimento.
+Las mediciones por dispositivo quedan pendientes.
+
+| Frente | Evidencia y decisión para el prototipo | Prueba para avanzar |
+|---|---|---|
+| Wine y el primer PE | Wine configura emuladores por arquitectura. Elegir un PE de prueba propio, registrar si es i386 o AMD64 y fijar una revisión de Wine. Comprobar el ABI de carga de ese binario antes de usar los callbacks de WoW64 con el DBT x86-64. [Configuración de Wine](https://github.com/wine-mirror/wine/blob/master/loader/wine.inf.in) · [ABI ARM64EC](https://learn.microsoft.com/en-us/windows/arm/arm64ec) | Seguir la carga hasta el primer bloque invitado, resolver una importación, verificar el valor que devuelve y salir. Registrar arquitectura de cada módulo. Después probar abrir, guardar y reabrir un archivo con Notepad en el teléfono. |
+| D3D9/11 y D3D12 | DXVK implementa D3D9/11 sobre Vulkan. VKD3D-Proton cubre D3D12. Empaquetar los dos adaptadores como opciones de Wine y fijar sus versiones por separado. [DXVK](https://github.com/doitsujin/dxvk) · [VKD3D-Proton](https://github.com/HansKristian-Work/vkd3d-proton) | En el mismo teléfono, comprobar el resultado de una escena D3D9, otra D3D11 y otra D3D12 con una imagen de referencia. Guardar extensiones Vulkan, tiempos de fotograma y fallos por adaptador antes de habilitarlo en ese perfil. |
+| Controlador Android | Turnip tiene cobertura específica por GPU Adreno. Seleccionar el controlador a partir del identificador de GPU y las funciones que anuncia. Mantener un perfil independiente para el controlador del fabricante. [Freedreno y Turnip](https://docs.mesa3d.org/drivers/freedreno.html) | Repetir la misma escena con cada controlador disponible. Registrar modelo, versión Android, GPU, versión de driver y resultado. Si falta una extensión requerida, marcar esa combinación como incompatible. |
+| Flujo de usuario | Winlator integra Wine y emulación en Android. GameNative añade bibliotecas de juegos y una base de compatibilidad. Para el primer prototipo de Prisma basta instalar un PE de prueba y conservar su estado por contenedor. [Winlator](https://github.com/brunodev85/winlator) · [GameNative](https://github.com/utkarshdalal/GameNative) | En dos arranques de la app, comprobar que el mismo contenedor recupera el archivo guardado y que otro contenedor queda aislado. Registrar los pasos y la versión del dispositivo. |
+| NPU y heurística de CPU | Android marcó NNAPI como obsoleta en Android 15. El proveedor NNAPI de ONNX Runtime permite evaluar modelos ya disponibles. Para Qualcomm existe QNN y el acceso al SDK NeuroPilot de MediaTek depende de la plataforma y sus permisos. Mantener estos experimentos fuera del bucle de traducción. [Android NNAPI](https://developer.android.com/ndk/guides/neuralnetworks) · [ORT NNAPI](https://onnxruntime.ai/docs/execution-providers/NNAPI-ExecutionProvider.html) · [ORT QNN](https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html) · [MediaTek](https://genio.mediatek.com/doc/iot-aihub/ai_hub/related_resource.html) | Sobre las mismas trazas retenidas, comparar precisión y tiempo total con una heurística CPU, incluyendo copia, envío y espera. Registrar el backend que realmente ejecutó, memoria y energía. Adoptar sólo en modelos de dispositivo donde la ganancia total sea reproducible. |
+| AVF y Windows en Pixel | AVF proporciona virtualización basada en pKVM en dispositivos ARM64 compatibles. Microdroid es un invitado documentado. Arrancar Windows requiere demostrar además soporte del invitado y sus dispositivos. [Arquitectura AVF](https://source.android.com/docs/core/virtualization) | En un Pixel compatible, registrar versión, permisos y capacidades, arrancar un payload Microdroid soportado y medir coste de ida y vuelta. Abrir el experimento de Windows sólo al disponer de una imagen autorizada, un mecanismo de arranque soportado y evidencia de E/S funcional. |
+
 ## Reading list estructurada
 
 Marcar cada item con su estado: ⬜ pendiente | 🟡 en progreso | ✅ completado. Al completar, añadir enlace a la sección de notas correspondiente abajo.
