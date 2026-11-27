@@ -1,0 +1,31 @@
+name: coreutils reference
+
+on:
+  pull_request:
+    paths:
+      - 'tools/coreutils/**'
+      - 'tools/diff-qemu/**'
+      - '.github/workflows/coreutils.yml'
+  workflow_dispatch:
+
+jobs:
+  reference:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install QEMU user mode
+        run: sudo apt-get update -qq && sudo apt-get install -y qemu-user
+      - name: Verify the reference harness and QEMU probe
+        run: |
+          python3 -m unittest discover -s tools/coreutils -v
+          python3 tools/diff-qemu/run.py --probe
+      - name: Compare native and emulated GNU coreutils
+        run: |
+          python3 tools/coreutils/run.py --backend native --output results/native.json
+          python3 tools/coreutils/run.py --backend qemu --baseline results/native.json --output results/qemu.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coreutils-reference
+          path: results/*.json
+          if-no-files-found: error
