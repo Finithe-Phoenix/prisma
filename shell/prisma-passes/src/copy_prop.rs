@@ -34,6 +34,12 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.rhs = resolve_alias(op.rhs, aliases);
             Op::BinOp(op)
         }
+        Op::WideDiv(mut op) => {
+            op.high = resolve_alias(op.high, aliases);
+            op.low = resolve_alias(op.low, aliases);
+            op.divisor = resolve_alias(op.divisor, aliases);
+            Op::WideDiv(op)
+        }
         Op::Compare(mut op) => {
             op.lhs = resolve_alias(op.lhs, aliases);
             op.rhs = resolve_alias(op.rhs, aliases);
@@ -43,6 +49,10 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.true_value = resolve_alias(op.true_value, aliases);
             op.false_value = resolve_alias(op.false_value, aliases);
             Op::Select(op)
+        }
+        Op::TrapIf(mut op) => {
+            op.condition = resolve_alias(op.condition, aliases);
+            Op::TrapIf(op)
         }
         Op::LoadMem(mut op) => {
             op.addr = resolve_alias(op.addr, aliases);
@@ -62,6 +72,37 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.value = resolve_alias(op.value, aliases);
             Op::StoreMemTSO(op)
         }
+        Op::AtomicCmpxchg(mut op) => {
+            op.addr = resolve_alias(op.addr, aliases);
+            op.expected = resolve_alias(op.expected, aliases);
+            op.new_value = resolve_alias(op.new_value, aliases);
+            Op::AtomicCmpxchg(op)
+        }
+        Op::AtomicCmpxchgPair(mut op) => {
+            op.addr = resolve_alias(op.addr, aliases);
+            op.expected_low = resolve_alias(op.expected_low, aliases);
+            op.expected_high = resolve_alias(op.expected_high, aliases);
+            op.new_low = resolve_alias(op.new_low, aliases);
+            op.new_high = resolve_alias(op.new_high, aliases);
+            Op::AtomicCmpxchgPair(op)
+        }
+        Op::StoreRflags(mut op) => {
+            op.value = resolve_alias(op.value, aliases);
+            Op::StoreRflags(op)
+        }
+        Op::StoreRflagsFromNzcv(mut op) => {
+            op.pf = op.pf.map(|r| resolve_alias(r, aliases));
+            op.af = op.af.map(|r| resolve_alias(r, aliases));
+            Op::StoreRflagsFromNzcv(op)
+        }
+        Op::StoreRflagsFromBits(mut op) => {
+            op.pf = op.pf.map(|r| resolve_alias(r, aliases));
+            op.af = op.af.map(|r| resolve_alias(r, aliases));
+            op.zf = resolve_alias(op.zf, aliases);
+            op.sf = resolve_alias(op.sf, aliases);
+            op.of = resolve_alias(op.of, aliases);
+            Op::StoreRflagsFromBits(op)
+        }
         Op::CondJump(mut op) => {
             op.cond = resolve_alias(op.cond, aliases);
             Op::CondJump(op)
@@ -79,6 +120,11 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.lhs = resolve_alias(op.lhs, aliases);
             op.rhs = resolve_alias(op.rhs, aliases);
             Op::AluFlags(op)
+        }
+        Op::AluFlagsPreserveCarry(mut op) => {
+            op.lhs = resolve_alias(op.lhs, aliases);
+            op.rhs = resolve_alias(op.rhs, aliases);
+            Op::AluFlagsPreserveCarry(op)
         }
         Op::ReadFlag(mut op) => {
             op.flags = resolve_alias(op.flags, aliases);
@@ -145,10 +191,45 @@ fn rewrite(op: Op, aliases: &HashMap<u32, u32>) -> Op {
             op.value = resolve_alias(op.value, aliases);
             Op::GprFromXmm(op)
         }
+        Op::VecBinOp(mut op) => {
+            op.lhs = resolve_alias(op.lhs, aliases);
+            op.rhs = resolve_alias(op.rhs, aliases);
+            Op::VecBinOp(op)
+        }
+        Op::VecClMul(mut op) => {
+            op.lhs = resolve_alias(op.lhs, aliases);
+            op.rhs = resolve_alias(op.rhs, aliases);
+            Op::VecClMul(op)
+        }
+        Op::VecF16Cvt(mut op) => {
+            op.src = resolve_alias(op.src, aliases);
+            Op::VecF16Cvt(op)
+        }
         Op::VecCmp(mut op) => {
             op.lhs = resolve_alias(op.lhs, aliases);
             op.rhs = resolve_alias(op.rhs, aliases);
             Op::VecCmp(op)
+        }
+        Op::PcmpStrIndex(mut op) => {
+            op.lhs = resolve_alias(op.lhs, aliases);
+            op.rhs = resolve_alias(op.rhs, aliases);
+            op.lhs_len = op.lhs_len.map(|r| resolve_alias(r, aliases));
+            op.rhs_len = op.rhs_len.map(|r| resolve_alias(r, aliases));
+            Op::PcmpStrIndex(op)
+        }
+        Op::PcmpStrMask(mut op) => {
+            op.lhs = resolve_alias(op.lhs, aliases);
+            op.rhs = resolve_alias(op.rhs, aliases);
+            op.lhs_len = op.lhs_len.map(|r| resolve_alias(r, aliases));
+            op.rhs_len = op.rhs_len.map(|r| resolve_alias(r, aliases));
+            Op::PcmpStrMask(op)
+        }
+        Op::PcmpStrFlags(mut op) => {
+            op.lhs = resolve_alias(op.lhs, aliases);
+            op.rhs = resolve_alias(op.rhs, aliases);
+            op.lhs_len = op.lhs_len.map(|r| resolve_alias(r, aliases));
+            op.rhs_len = op.rhs_len.map(|r| resolve_alias(r, aliases));
+            Op::PcmpStrFlags(op)
         }
         Op::VecUnpack(mut op) => {
             op.lhs = resolve_alias(op.lhs, aliases);

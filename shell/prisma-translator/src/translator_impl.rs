@@ -1,0 +1,344 @@
+impl Translator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Translate the guest instruction at `bytes[0..]` (decoded at `guest_addr`)
+    /// into ARM64 machine code, running the full optimization pipeline and
+    /// memoizing the result in the translation cache.
+    ///
+    /// # Errors
+    /// [`TranslateError::Decode`] if the bytes are not a decodable instruction;
+    /// [`TranslateError::Lower`] if the resulting IR is not lowerable by the
+    /// current backend slice.
+    pub fn translate(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+    ) -> Result<Translation, TranslateError> {
+        let decoded = decode_one_at(bytes, 0, guest_addr).map_err(TranslateError::Decode)?;
+        self.translate_decoded(guest_addr, bytes, &decoded)
+    }
+
+    /// Translate a straight-line run of instructions starting at `guest_addr`
+    /// into one concatenated ARM64 block, stopping at the first control-transfer
+    /// instruction, when `bytes` is exhausted, or after `max_insns` (a guard
+    /// against pathological runs). Each instruction is translated and cached
+    /// independently. An undecodable byte mid-run ends the block; an
+    /// undecodable first instruction is an error.
+    ///
+    /// # Errors
+    /// [`TranslateError`] from the first instruction if it cannot be decoded or
+    /// lowered.
+    pub fn translate_block(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+        max_insns: usize,
+    ) -> Result<BlockTranslation, TranslateError> {
+        let mut code = Vec::new();
+        let mut offset = 0usize;
+        let mut pc = guest_addr;
+        let mut instruction_count = 0usize;
+        let mut ended_at_terminator = false;
+        let mut successors: Vec<u64> = Vec::new();
+
+        while offset < bytes.len() && instruction_count < max_insns {
+            let decoded = match decode_one_at(bytes, offset, pc) {
+                Ok(d) => d,
+                Err(e) => {
+                    if instruction_count == 0 {
+                        return Err(TranslateError::Decode(e));
+                    }
+                    break;
+                }
+            };
+            // The decoder can report consuming more bytes than remain (a
+            // truncated trailing instruction whose operand runs off the
+            // buffer). Bound the slice instead of panicking: stop the block if
+            // we already have an instruction, else surface a typed error.
+            let Some(insn) = offset
+                .checked_add(decoded.bytes_consumed)
+                .and_then(|end| bytes.get(offset..end))
+            else {
+                if instruction_count == 0 {
+                    return Err(TranslateError::Truncated {
+                        offset,
+                        consumed: decoded.bytes_consumed,
+                        remaining: bytes.len() - offset,
+                    });
+                }
+                break;
+            };
+            let translation = self.translate_decoded(pc, insn, &decoded)?;
+            code.extend_from_slice(&translation.code);
+            instruction_count += 1;
+            offset += decoded.bytes_consumed;
+            pc = pc.wrapping_add(decoded.bytes_consumed as u64);
+            if let Some(term) = decoded.stmts.iter().find(|s| is_terminator(&s.op)) {
+                successors = static_successors(&term.op);
+                ended_at_terminator = true;
+                break;
+            }
+        }
+
+        if !ended_at_terminator && instruction_count > 0 {
+            // Block ended on the cap / exhausted bytes: its only successor is
+            // the fall-through PC after the last instruction.
+            successors = vec![pc];
+        }
+
+        Ok(BlockTranslation {
+            code,
+            instruction_count,
+            guest_bytes: offset,
+            ended_at_terminator,
+            successors,
+        })
+    }
+
+    /// Like [`Translator::translate_block`], but fuses the whole straight-line
+    /// run into a SINGLE optimized SSA region instead of translating each
+    /// instruction in isolation. The decoder numbers refs per instruction, so
+    /// each instruction's refs are renumbered (via [`prisma_ir::Op::map_refs`])
+    /// into a disjoint range before being concatenated; the default pipeline
+    /// then optimizes ACROSS instruction boundaries (e.g. forwarding a
+    /// register write into a later read) and the result is lowered once.
+    ///
+    /// Not cached (the unit is a block, not a single instruction). Returns an
+    /// empty block for empty input.
+    ///
+    /// # Errors
+    /// [`TranslateError::Decode`] if the first instruction cannot be decoded;
+    /// [`TranslateError::Lower`] if the fused region is not lowerable.
+    pub fn translate_fused_block(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+        max_insns: usize,
+    ) -> Result<BlockTranslation, TranslateError> {
+        let opt = self.optimize_fused_block(guest_addr, bytes, max_insns)?;
+        // The runtime executes every translated block via execute_block, which
+        // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
+        // ret, SYSCALL) must route through the full epilogue — a bare ret would
+        // skip the prologue's stack/callee-saved restore and corrupt the host on
+        // return. with_branch_exits additionally routes a relative branch through
+        // the frame's next_pc (this is a single block, with no sibling to branch
+        // to) so the run loop can chain to the taken target.
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&opt.func)
+            .map_err(TranslateError::Lower)?;
+        let mut code = Vec::with_capacity(words.len() * 4);
+        for word in &words {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        Ok(BlockTranslation {
+            code,
+            instruction_count: opt.instruction_count,
+            guest_bytes: opt.guest_bytes,
+            ended_at_terminator: opt.ended_at_terminator,
+            successors: opt.successors,
+        })
+    }
+
+    /// Decode a straight-line run starting at `guest_addr` into one block, shift
+    /// each instruction's SSA refs above the previous so names never collide, and
+    /// run the optimization pipeline — returning the optimized IR plus how the
+    /// block ended, WITHOUT lowering. [`Self::translate_fused_block`] lowers this;
+    /// the reference interpreter ([`crate::interp`]) executes the same IR, so the
+    /// backend and the oracle agree on exactly what they evaluate.
+    ///
+    /// # Errors
+    /// [`TranslateError::Decode`] if the first instruction is undecodable.
+    pub fn optimize_fused_block(
+        &mut self,
+        guest_addr: u64,
+        bytes: &[u8],
+        max_insns: usize,
+    ) -> Result<OptimizedBlock, TranslateError> {
+        let mut stmts = Vec::new();
+        let mut offset = 0usize;
+        let mut pc = guest_addr;
+        let mut instruction_count = 0usize;
+        let mut ended_at_terminator = false;
+        let mut successors: Vec<u64> = Vec::new();
+        // Next free SSA ref: every instruction's refs are shifted above all
+        // refs already placed in the block so names never collide.
+        let mut base: u32 = 0;
+
+        while offset < bytes.len() && instruction_count < max_insns {
+            let decoded = match decode_one_at(bytes, offset, pc) {
+                Ok(d) => d,
+                Err(e) => {
+                    if instruction_count == 0 {
+                        return Err(TranslateError::Decode(e));
+                    }
+                    break;
+                }
+            };
+
+            // As in `translate_block`, reject a decoded instruction whose
+            // reported size runs past the remaining guest buffer. A truncated
+            // trailing instruction must not inflate `guest_bytes` beyond the
+            // bytes supplied by the caller.
+            let Some(end) = offset
+                .checked_add(decoded.bytes_consumed)
+                .filter(|&end| end <= bytes.len())
+            else {
+                if instruction_count == 0 {
+                    return Err(TranslateError::Truncated {
+                        offset,
+                        consumed: decoded.bytes_consumed,
+                        remaining: bytes.len() - offset,
+                    });
+                }
+                break;
+            };
+
+            let mut renumbered = decoded.stmts.clone();
+            let mut local_max = base;
+            let mut overflow = false;
+            for stmt in &mut renumbered {
+                stmt.map_refs(|r| {
+                    r.checked_add(base).map_or_else(
+                        || {
+                            overflow = true;
+                            r
+                        },
+                        |v| {
+                            local_max = local_max.max(v);
+                            v
+                        },
+                    )
+                });
+            }
+            if overflow {
+                // Ref space exhausted (pathological run): stop cleanly.
+                break;
+            }
+
+            stmts.extend(renumbered);
+            instruction_count += 1;
+            offset = end;
+            pc = pc.wrapping_add(decoded.bytes_consumed as u64);
+            base = local_max.saturating_add(1);
+
+            if let Some(term) = decoded.stmts.iter().find(|s| is_terminator(&s.op)) {
+                successors = static_successors(&term.op);
+                ended_at_terminator = true;
+                break;
+            }
+        }
+
+        if !ended_at_terminator && instruction_count > 0 {
+            successors = vec![pc];
+        }
+
+        let func = Function {
+            entry: 0,
+            blocks: vec![BasicBlock { id: 0, stmts }],
+        };
+        Ok(OptimizedBlock {
+            func: self.pipeline.run(func),
+            instruction_count,
+            guest_bytes: offset,
+            ended_at_terminator,
+            successors,
+        })
+    }
+
+    fn translate_decoded(
+        &mut self,
+        guest_addr: u64,
+        insn: &[u8],
+        decoded: &Decoded,
+    ) -> Result<Translation, TranslateError> {
+        if let LookupResult::Hit(entry) = self.cache.lookup(guest_addr, insn) {
+            self.stats.cache_hits += 1;
+            return Ok(Translation {
+                code: entry.code_bytes.into_vec(),
+                guest_bytes: decoded.bytes_consumed,
+                from_cache: true,
+            });
+        }
+        self.stats.cache_misses += 1;
+
+        let func = Function {
+            entry: 0,
+            blocks: vec![BasicBlock {
+                id: 0,
+                stmts: decoded.stmts.clone(),
+            }],
+        };
+        let optimized = self.pipeline.run(func);
+
+        // The runtime executes every translated block via execute_block, which
+        // wraps it in the AAPCS64 block prologue/epilogue. A terminator (guest
+        // ret, SYSCALL) must route through the full epilogue — a bare ret would
+        // skip the prologue's stack/callee-saved restore and corrupt the host on
+        // return. with_branch_exits additionally routes a relative branch through
+        // the frame's next_pc (this is a single block, with no sibling to branch
+        // to) so the run loop can chain to the taken target.
+        let words = Lowerer::new()
+            .with_branch_exits()
+            .lower_function(&optimized)
+            .map_err(TranslateError::Lower)?;
+        let mut code = Vec::with_capacity(words.len() * 4);
+        for word in &words {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        let entry = CacheEntry {
+            guest_addr,
+            guest_size: u32::try_from(decoded.bytes_consumed).unwrap_or(u32::MAX),
+            code_size: u32::try_from(code.len()).unwrap_or(u32::MAX),
+            code_bytes: code.clone().into_boxed_slice(),
+            hit_count: 0,
+            last_used: 0,
+        };
+        self.cache.insert((guest_addr, fnv1a_64(insn)), entry);
+
+        Ok(Translation {
+            code,
+            guest_bytes: decoded.bytes_consumed,
+            from_cache: false,
+        })
+    }
+
+    /// Number of distinct translations currently held in the cache.
+    pub fn cached_count(&self) -> usize {
+        self.cache.entry_count()
+    }
+
+    /// Cumulative cache hit/miss counters since construction (or last reset).
+    pub const fn stats(&self) -> TranslatorStats {
+        self.stats
+    }
+
+    /// Reset the hit/miss counters to zero (the cache contents are untouched).
+    pub fn reset_stats(&mut self) {
+        self.stats = TranslatorStats::default();
+    }
+
+    /// Bound the translation cache: at most `max_entries` entries and
+    /// `max_bytes` of code (0 means unbounded). LRU eviction enforces both.
+    pub fn set_cache_limits(&mut self, max_entries: usize, max_bytes: usize) {
+        self.cache.set_limits(max_entries, max_bytes);
+    }
+
+    /// Drop the cached translation(s) at `guest_addr`. Call this when the guest
+    /// rewrites code at that address (self-modifying code) so the next
+    /// translation re-decodes the new bytes instead of serving stale code.
+    pub fn invalidate(&mut self, guest_addr: u64) {
+        // The cache keys on (addr, content hash) but tracks addr -> hash, so a
+        // zero-hash key evicts whatever translation currently lives at the addr.
+        self.cache.invalidate(&(guest_addr, 0));
+    }
+
+    /// Drop every cached translation (e.g. on a full guest address-space flush).
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+}

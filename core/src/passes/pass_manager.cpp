@@ -140,6 +140,7 @@ PassManager default_pipeline() {
     pm.add("dead_store_eliminate",           dead_store_eliminate);
     pm.add("branch_fold",                    branch_fold);
     pm.add("flag_write_elimination",         flag_write_elimination);
+    pm.add("inline_short_helpers",           inline_short_helpers);
     pm.add("dead_code_eliminate",            dead_code_eliminate);
     return pm;
 }

@@ -25,82 +25,81 @@ namespace {
 
 // Hashable canonical key for a BinOp expression.
 struct BinOpKey {
-    ir::BinOpKind op;
-    ir::Ref       lhs;
-    ir::Ref       rhs;
-    ir::OpSize    size;
+  ir::BinOpKind op;
+  ir::Ref lhs;
+  ir::Ref rhs;
+  ir::OpSize size;
 
-    bool operator==(const BinOpKey& o) const noexcept = default;
+  bool operator==(const BinOpKey& o) const noexcept = default;
 };
 
 struct BinOpKeyHash {
-    std::size_t operator()(const BinOpKey& k) const noexcept {
-        // FNV-1a over the 4 fields. Good enough; collisions are
-        // disambiguated by operator== on the full tuple.
-        std::uint64_t h = 0xcbf29ce484222325ULL;
-        const auto mix = [&](std::uint64_t v) {
-            h ^= v;
-            h *= 0x100000001b3ULL;
-        };
-        mix(static_cast<std::uint64_t>(k.op));
-        mix(k.lhs);
-        mix(k.rhs);
-        mix(static_cast<std::uint64_t>(k.size));
-        return static_cast<std::size_t>(h);
-    }
+  std::size_t operator()(const BinOpKey& k) const noexcept {
+    // FNV-1a over the 4 fields. Good enough; collisions are
+    // disambiguated by operator== on the full tuple.
+    std::uint64_t h = 0xcbf29ce484222325ULL;
+    const auto mix = [&](std::uint64_t v) {
+      h ^= v;
+      h *= 0x100000001b3ULL;
+    };
+    mix(static_cast<std::uint64_t>(k.op));
+    mix(k.lhs);
+    mix(k.rhs);
+    mix(static_cast<std::uint64_t>(k.size));
+    return static_cast<std::size_t>(h);
+  }
 };
 
 bool is_flushing_op(const ir::Op& op) noexcept {
-    return std::visit([](auto const& x) -> bool {
+  return std::visit(
+      [](auto const& x) -> bool {
         using T = std::decay_t<decltype(x)>;
-        return std::is_same_v<T, ir::StoreReg>
-            || std::is_same_v<T, ir::StoreMem>
-            || std::is_same_v<T, ir::StoreMemTSO>
-            || std::is_same_v<T, ir::CmpFlags>
-            || std::is_same_v<T, ir::AluFlags>
-            || std::is_same_v<T, ir::WriteFlagsCountZero>
-            || std::is_same_v<T, ir::Syscall>;
-    }, op);
+        return std::is_same_v<T, ir::StoreReg> || std::is_same_v<T, ir::StoreMem> ||
+               std::is_same_v<T, ir::StoreMemTSO> || std::is_same_v<T, ir::AtomicCmpxchg> ||
+               std::is_same_v<T, ir::AtomicCmpxchgPair> || std::is_same_v<T, ir::StoreCarry> ||
+               std::is_same_v<T, ir::StoreRflags> || std::is_same_v<T, ir::StoreRflagsFromNzcv> ||
+               std::is_same_v<T, ir::StoreRflagsFromBits> || std::is_same_v<T, ir::CmpFlags> ||
+               std::is_same_v<T, ir::AluFlags> || std::is_same_v<T, ir::WriteFlagsCountZero> ||
+               std::is_same_v<T, ir::Syscall>;
+      },
+      op);
 }
 
 }  // namespace
 
-std::vector<ir::Stmt>
-common_subexpression_eliminate(const std::vector<ir::Stmt>& stmts) {
-    std::vector<ir::Stmt> out;
-    out.reserve(stmts.size());
+std::vector<ir::Stmt> common_subexpression_eliminate(const std::vector<ir::Stmt>& stmts) {
+  std::vector<ir::Stmt> out;
+  out.reserve(stmts.size());
 
-    std::unordered_map<BinOpKey, ir::Ref, BinOpKeyHash> seen;
+  std::unordered_map<BinOpKey, ir::Ref, BinOpKeyHash> seen;
 
-    for (const auto& s : stmts) {
-        ir::Stmt new_stmt = s;
+  for (const auto& s : stmts) {
+    ir::Stmt new_stmt = s;
 
-        if (is_flushing_op(s.op)) {
-            // Conservative: any side effect invalidates the table. A
-            // stricter pass would only flush refs that depend on the
-            // changed register; that's future work.
-            seen.clear();
-        }
-        else if (std::holds_alternative<ir::BinOp>(s.op) && s.result) {
-            const auto& b = std::get<ir::BinOp>(s.op);
-            const BinOpKey key{b.op, b.lhs, b.rhs, b.size};
-            const auto it = seen.find(key);
-            if (it != seen.end()) {
-                // Redundant computation — rewrite to a copy. We don't
-                // have a dedicated Copy op; use `BinOp Or prev,prev`
-                // which the Lowerer renders as `orr xd, xprev, xprev`
-                // (equivalent to `mov xd, xprev`).
-                new_stmt.op = ir::Op{ir::BinOp{
-                    ir::BinOpKind::Or, it->second, it->second, b.size}};
-            } else {
-                seen[key] = *s.result;
-            }
-        }
-
-        out.push_back(std::move(new_stmt));
+    if (is_flushing_op(s.op)) {
+      // Conservative: any side effect invalidates the table. A
+      // stricter pass would only flush refs that depend on the
+      // changed register; that's future work.
+      seen.clear();
+    } else if (std::holds_alternative<ir::BinOp>(s.op) && s.result) {
+      const auto& b = std::get<ir::BinOp>(s.op);
+      const BinOpKey key{b.op, b.lhs, b.rhs, b.size};
+      const auto it = seen.find(key);
+      if (it != seen.end()) {
+        // Redundant computation — rewrite to a copy. We don't
+        // have a dedicated Copy op; use `BinOp Or prev,prev`
+        // which the Lowerer renders as `orr xd, xprev, xprev`
+        // (equivalent to `mov xd, xprev`).
+        new_stmt.op = ir::Op{ir::BinOp{ir::BinOpKind::Or, it->second, it->second, b.size}};
+      } else {
+        seen[key] = *s.result;
+      }
     }
 
-    return out;
+    out.push_back(std::move(new_stmt));
+  }
+
+  return out;
 }
 
 }  // namespace prisma::passes

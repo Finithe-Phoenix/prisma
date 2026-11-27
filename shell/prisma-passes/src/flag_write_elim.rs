@@ -1,10 +1,13 @@
 //! Flag write elimination pass.
 //!
 //! Mirrors C++ `flag_write_elimination`. Drops implicit flag writes whose
-//! NZCV is never consumed. Flag writers: `CmpFlags`, `AluFlags`, `Compare`,
-//! `WriteFlagsPopcnt`, `WriteFlagsCountZero`. Flag readers: `CondJumpRel`,
-//! `Select` (lowers to csel). `Compare` is never dropped (its result ref may be
-//! consumed elsewhere); only the result-less writers (`CmpFlags`, `AluFlags`,
+//! NZCV is never consumed. Flag writers: `CmpFlags`, `AluFlags`,
+//! `AluFlagsPreserveCarry`, `Compare`, `WriteFlagsPopcnt`,
+//! `WriteFlagsCountZero`. Flag readers: `CondJumpRel`, `CondJumpFlags`,
+//! `Select` (lowers to csel), `ReadFlag`, `ReadCarryOut`, and
+//! `StoreRflagsFromNzcv`. `Compare` is never dropped (its result ref may be
+//! consumed elsewhere); only the
+//! result-less writers (`CmpFlags`, `AluFlags`, `AluFlagsPreserveCarry`,
 //! `WriteFlagsPopcnt`, `WriteFlagsCountZero`) are droppable.
 
 use prisma_ir::{BasicBlock, Function, Op};
@@ -47,6 +50,7 @@ pub fn flag_write_elimination(func: Function) -> Function {
                 match &stmt.op {
                     Op::CmpFlags(_)
                     | Op::AluFlags(_)
+                    | Op::AluFlagsPreserveCarry(_)
                     | Op::WriteFlagsPopcnt(_)
                     | Op::WriteFlagsCountZero(_) => {
                         if let Some(prev) = pending_writer {
@@ -66,7 +70,12 @@ pub fn flag_write_elimination(func: Function) -> Function {
                         pending_writer = Some(i);
                         pending_droppable = false;
                     }
-                    Op::CondJumpRel(_) | Op::Select(_) => {
+                    Op::CondJumpRel(_)
+                    | Op::CondJumpFlags(_)
+                    | Op::Select(_)
+                    | Op::ReadFlag(_)
+                    | Op::ReadCarryOut(_)
+                    | Op::StoreRflagsFromNzcv(_) => {
                         // Reader pins the most recent writer.
                         pending_writer = None;
                         pending_droppable = false;
@@ -104,7 +113,10 @@ pub fn flag_write_elimination(func: Function) -> Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prisma_ir::{CmpFlags, CondCode, CondJumpRel, OpSize, Select, Stmt};
+    use prisma_ir::{
+        CmpFlags, CondCode, CondJumpFlags, CondJumpRel, FlagBit, OpSize, ReadCarryOut, ReadFlag,
+        RflagsCarryMode, Select, Stmt, StoreRflagsFromNzcv,
+    };
 
     fn cmp(lhs: u32, rhs: u32) -> Stmt {
         Stmt::new(
@@ -169,6 +181,69 @@ mod tests {
                     true_value: 0,
                     false_value: 1,
                     size: OpSize::I64,
+                }),
+            ),
+        ]));
+        assert_eq!(out.blocks[0].stmts.len(), 2);
+    }
+
+    #[test]
+    fn read_flag_pins_writer() {
+        let out = flag_write_elimination(block(vec![
+            cmp(0, 1),
+            Stmt::new(
+                Some(9),
+                Op::ReadFlag(ReadFlag {
+                    flags: 8,
+                    which: FlagBit::Carry,
+                }),
+            ),
+        ]));
+        assert_eq!(out.blocks[0].stmts.len(), 2);
+    }
+
+    #[test]
+    fn read_carry_out_pins_writer() {
+        let out = flag_write_elimination(block(vec![
+            cmp(0, 1),
+            Stmt::new(
+                Some(9),
+                Op::ReadCarryOut(ReadCarryOut {
+                    flags: 8,
+                    from_sub: false,
+                }),
+            ),
+        ]));
+        assert_eq!(out.blocks[0].stmts.len(), 2);
+    }
+
+    #[test]
+    fn cond_jump_flags_pins_writer() {
+        let out = flag_write_elimination(block(vec![
+            cmp(0, 1),
+            Stmt::new(
+                None,
+                Op::CondJumpFlags(CondJumpFlags {
+                    flags: 8,
+                    cc: CondCode::Eq,
+                    if_true: 1,
+                    if_false: 2,
+                }),
+            ),
+        ]));
+        assert_eq!(out.blocks[0].stmts.len(), 2);
+    }
+
+    #[test]
+    fn store_rflags_from_nzcv_pins_writer() {
+        let out = flag_write_elimination(block(vec![
+            cmp(0, 1),
+            Stmt::new(
+                None,
+                Op::StoreRflagsFromNzcv(StoreRflagsFromNzcv {
+                    carry: RflagsCarryMode::Preserve,
+                    pf: None,
+                    af: None,
                 }),
             ),
         ]));

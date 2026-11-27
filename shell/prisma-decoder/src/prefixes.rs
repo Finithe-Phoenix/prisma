@@ -33,10 +33,14 @@ pub struct RexPrefix {
 /// Parsed VEX prefix (2-byte C5 or 3-byte C4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VexPrefix {
-    pub p: u8,    // implied 0x66/F3/F2 prefix
+    pub p: u8,    // implied 0x66/F3/F2 prefix, retained for older callers
+    pub w: bool,  // VEX.W
+    pub r: bool,  // inverted VEX.R decoded to REX-like polarity
+    pub x: bool,  // inverted VEX.X decoded to REX-like polarity
+    pub b: bool,  // inverted VEX.B decoded to REX-like polarity
     pub l: bool,  // 256-bit (L=1)
-    pub vvvv: u8, // dest/src register (inverted)
-    pub pp: u8,   // 2-bit opcode extension
+    pub vvvv: u8, // decoded source register field
+    pub pp: u8,   // 2-bit mandatory-prefix extension
     pub mmmm: u8, // 5-bit map select
 }
 
@@ -71,14 +75,20 @@ pub fn parse_prefixes(bytes: &[u8], start: usize) -> (PrefixSet, usize) {
                     Some(&b) => b,
                     None => return (p, cursor + 1),
                 };
+                let pp = b2 & 0x03;
                 p.vex = Some(VexPrefix {
-                    p: 0,
+                    p: pp,
+                    w: false,
+                    r: b2 & 0x80 == 0,
+                    x: false,
+                    b: false,
                     l: b2 & 0x04 != 0,
                     vvvv: (!b2 >> 3) & 0x0F,
-                    pp: b2 & 0x03,
+                    pp,
                     mmmm: 1,
                 });
                 cursor += 2;
+                return (p, cursor);
             }
             // VEX 3-byte (C4)
             0xC4 => {
@@ -90,14 +100,20 @@ pub fn parse_prefixes(bytes: &[u8], start: usize) -> (PrefixSet, usize) {
                     Some(&b) => b,
                     None => return (p, cursor + 2),
                 };
+                let pp = b3 & 0x03;
                 p.vex = Some(VexPrefix {
-                    p: b3 & 0x03,
+                    p: pp,
+                    w: b3 & 0x80 != 0,
+                    r: b2 & 0x80 == 0,
+                    x: b2 & 0x40 == 0,
+                    b: b2 & 0x20 == 0,
                     l: b3 & 0x04 != 0,
-                    vvvv: (!b2 >> 3) & 0x0F,
-                    pp: b3 & 0x03,
+                    vvvv: (!b3 >> 3) & 0x0F,
+                    pp,
                     mmmm: b2 & 0x1F,
                 });
                 cursor += 3;
+                return (p, cursor);
             }
             // Lock prefix
             0xF0 => {
@@ -222,6 +238,38 @@ mod tests {
         let (p, cursor) = parse_prefixes(b"\xF0\x90", 0);
         assert_eq!(cursor, 1);
         assert!(p.lock);
+    }
+
+    #[test]
+    fn vex_two_byte_prefix_decodes_rex_like_bits() {
+        let (p, cursor) = parse_prefixes(b"\xC5\x6D\xF3", 0);
+        let vex = p.vex.unwrap();
+        assert_eq!(cursor, 2);
+        assert_eq!(vex.p, 1);
+        assert_eq!(vex.pp, 1);
+        assert_eq!(vex.mmmm, 1);
+        assert!(!vex.w);
+        assert!(vex.r);
+        assert!(!vex.x);
+        assert!(!vex.b);
+        assert!(vex.l);
+        assert_eq!(vex.vvvv, 2);
+    }
+
+    #[test]
+    fn vex_three_byte_prefix_decodes_map_w_and_register_fields() {
+        let (p, cursor) = parse_prefixes(b"\xC4\x43\xA5\xF2", 0);
+        let vex = p.vex.unwrap();
+        assert_eq!(cursor, 3);
+        assert_eq!(vex.p, 1);
+        assert_eq!(vex.pp, 1);
+        assert_eq!(vex.mmmm, 3);
+        assert!(vex.w);
+        assert!(vex.r);
+        assert!(!vex.x);
+        assert!(vex.b);
+        assert!(vex.l);
+        assert_eq!(vex.vvvv, 11);
     }
 
     #[test]

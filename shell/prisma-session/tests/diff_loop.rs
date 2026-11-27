@@ -60,8 +60,16 @@ fn arm64_matches_interpreter_block_by_block() {
                 .translate_fused_block(pc, &LOOP_PROGRAM[off..], 16)
                 .expect("translate");
 
-            // Both sides start from the same architectural state.
-            let mut iregs = GuestRegs { gpr: frame.gpr };
+            // Both sides start from the same architectural state. This program
+            // is intentionally GPR-only; CpuStateFrame keeps vector bytes
+            // opaque/reserved, so the reference interpreter uses its neutral
+            // XMM state rather than pretending that the frame exposes it.
+            let mut iregs = GuestRegs {
+                gpr: frame.gpr,
+                cf: frame.cf,
+                rflags: frame.rflags,
+                xmm: [0; 16],
+            };
             let iout = interpret_block(&opt.func.blocks[0].stmts, &mut iregs);
 
             frame.exit_reason = EXIT_NORMAL;

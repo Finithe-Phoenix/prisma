@@ -14,6 +14,7 @@
 
 #include "prisma/syscall_handler.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -27,8 +28,6 @@
 
 #include <cstring>
 #include <dirent.h>
-#include <pthread.h>
-
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -48,6 +47,27 @@
 #include <unistd.h>
 
 namespace prisma::runtime {
+
+namespace {
+
+std::atomic<std::uint64_t> next_guest_tid{1};
+
+thread_local GuestThreadStartupState guest_thread_startup_state{
+    next_guest_tid.fetch_add(1, std::memory_order_relaxed),
+    0,
+    0,
+    0,
+};
+
+}  // namespace
+
+static GuestThreadStartupState& mutable_guest_thread_startup_state() noexcept {
+    return guest_thread_startup_state;
+}
+
+GuestThreadStartupState current_guest_thread_startup_state() noexcept {
+    return mutable_guest_thread_startup_state();
+}
 
 // x86_64 Linux syscall numbers used in this file.
 enum X64Sysno : std::uint64_t {
@@ -96,6 +116,8 @@ enum X64Sysno : std::uint64_t {
     kX64Getdents     = 78,
     kX64Getdents64   = 217,
     kX64SetTidAddress = 218,
+    kX64SetRobustList = 273,
+    kX64Rseq          = 334,
     kX64ClockGettime = 228,
     kX64Gettimeofday = 96,
     kX64Time         = 201,
@@ -166,6 +188,8 @@ static const char* syscall_name(std::uint64_t n) noexcept {
         case kX64Getdents:    return "getdents";
         case kX64Getdents64:  return "getdents64";
         case kX64SetTidAddress: return "set_tid_address";
+        case kX64SetRobustList: return "set_robust_list";
+        case kX64Rseq:          return "rseq";
         case kX64ClockGettime: return "clock_gettime";
         case kX64Gettimeofday: return "gettimeofday";
         case kX64Time:        return "time";
@@ -192,6 +216,7 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     const std::uint64_t a6 = state->gpr[static_cast<std::size_t>(Gpr::R9)];
 
     std::int64_t result = 0;
+    auto& thread_state = mutable_guest_thread_startup_state();
 
     if (strace_enabled()) {
         std::fprintf(stderr, "[prisma-strace] %s(%llu, %llu, %llu, %llu, %llu, %llu) = ",
@@ -316,14 +341,9 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
         case kX64Geteuid:
             result = static_cast<std::int64_t>(::geteuid());
             break;
-        case kX64Gettid: {
-            // Use pthread_self() as a lightweight tid proxy. On Linux
-            // this matches the kernel tid for the main thread; on macOS
-            // it returns a pthread_t that is unique per-thread.
-            result = static_cast<std::int64_t>(
-                reinterpret_cast<std::uintptr_t>(::pthread_self()));
+        case kX64Gettid:
+            result = static_cast<std::int64_t>(thread_state.tid);
             break;
-        }
 
         // -- F2-SY-008: time ---------------------------------------------------
         case kX64Gettimeofday: {
@@ -650,12 +670,34 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
             break;
         }
 
-        // -- F2-SY-030: set_tid_address ----------------------------------------
+        // -- RFC 0022: thread-startup syscall state ---------------------------
         case kX64SetTidAddress:
-            // glibc calls set_tid_address during startup. For single-threaded
-            // guests the tid (== pid == gettid()) is sufficient; the tidptr
-            // write-on-thread-exit is a no-op until we implement threads.
-            result = static_cast<std::int64_t>(::gettid());
+            // Record the guest address now; clone/thread-exit will later clear
+            // this word and wake joiners. Do not dereference guest memory here.
+            thread_state.clear_child_tid = a1;
+            result = static_cast<std::int64_t>(thread_state.tid);
+            break;
+
+        case kX64SetRobustList: {
+            // x86_64 robust_list_head is three 64-bit words. Linux accepts the
+            // registration only when len exactly matches sizeof(*head).
+            constexpr std::uint64_t kRobustListHeadSize =
+                static_cast<std::uint64_t>(3 * sizeof(std::uint64_t));
+            if (a2 != kRobustListHeadSize) {
+                result = -EINVAL;
+                break;
+            }
+
+            thread_state.robust_list_head = a1;
+            thread_state.robust_list_len = a2;
+            result = 0;
+            break;
+        }
+
+        case kX64Rseq:
+            // Deliberate startup-compatible stub. Registration and abort-IP
+            // semantics belong to the multi-thread runtime, not this slice.
+            result = -ENOSYS;
             break;
 
         // -- F2-SY-024: epoll --------------------------------------------------
@@ -702,6 +744,14 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
 }
 
 #else   // _MSC_VER — stub returning -ENOSYS for all syscalls
+
+namespace prisma::runtime {
+
+GuestThreadStartupState current_guest_thread_startup_state() noexcept {
+    return {};
+}
+
+}  // namespace prisma::runtime
 
 extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     // All syscalls return -ENOSYS on MSVC builds.

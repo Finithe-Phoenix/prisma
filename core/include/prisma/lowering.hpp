@@ -34,35 +34,38 @@
 
 #pragma once
 
+#include "prisma/arm64_encoding.hpp"  // for arm64::Reg
+#include "prisma/emitter.hpp"
+#include "prisma/ir.hpp"
+
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-#include "prisma/arm64_encoding.hpp"  // for arm64::Reg
-#include "prisma/emitter.hpp"
-#include "prisma/ir.hpp"
-
-namespace prisma::runtime { struct CpuStateFrame; }
+namespace prisma::runtime {
+struct CpuStateFrame;
+}
 
 namespace prisma::backend {
 
 using SyscallHandlerFn = void (*)(runtime::CpuStateFrame*);
 
 enum class LowerError {
-    UnsupportedOp,       // IR op we do not lower yet (e.g. Compare, Jump).
-    OutOfScratchRegs,    // More than 10 simultaneously-live SSA values.
-    DanglingRef,         // A statement references a Ref that was never defined.
-    InvalidBlock,        // Function CFG references a missing/duplicate block.
+  UnsupportedOp,     // IR op we do not lower yet (e.g. Compare, Jump).
+  OutOfScratchRegs,  // More than 10 simultaneously-live SSA values.
+  DanglingRef,       // A statement references a Ref that was never defined.
+  InvalidBlock,      // Function CFG references a missing/duplicate block.
 };
 
 struct LowerResult {
-    bool success{true};
-    LowerError error{LowerError::UnsupportedOp};
-    std::string message{};  // human-readable context when !success
+  bool success{true};
+  LowerError error{LowerError::UnsupportedOp};
+  std::string message{};  // human-readable context when !success
 };
 
 // Lowering options.
@@ -93,160 +96,173 @@ struct LowerResult {
 // ECX=0 reports `xgetbv_xcr0` in EDX:EAX. The zero defaults keep
 // standalone Lowerer uses on the legacy all-zero behaviour.
 struct LowerOptions {
-    bool          emit_ret_on_terminator{true};
-    unsigned      spill_slots{0};
-    std::int32_t  spill_slot_base_offset{0};
-    std::uint32_t cpuid_max_leaf{0};
-    std::uint32_t cpuid_vendor_ebx{0};
-    std::uint32_t cpuid_vendor_ecx{0};
-    std::uint32_t cpuid_vendor_edx{0};
-    std::uint32_t cpuid_leaf1_eax{0};
-    std::uint32_t cpuid_leaf1_ebx{0};
-    std::uint32_t cpuid_leaf1_ecx{0};
-    std::uint32_t cpuid_leaf1_edx{0};
-    std::uint32_t cpuid_leaf7_ebx{0};
-    std::uint64_t xgetbv_xcr0{0};
+  bool emit_ret_on_terminator{true};
+  unsigned spill_slots{0};
+  std::int32_t spill_slot_base_offset{0};
+  std::uint32_t cpuid_max_leaf{0};
+  std::uint32_t cpuid_vendor_ebx{0};
+  std::uint32_t cpuid_vendor_ecx{0};
+  std::uint32_t cpuid_vendor_edx{0};
+  std::uint32_t cpuid_leaf1_eax{0};
+  std::uint32_t cpuid_leaf1_ebx{0};
+  std::uint32_t cpuid_leaf1_ecx{0};
+  std::uint32_t cpuid_leaf1_edx{0};
+  std::uint32_t cpuid_leaf7_ebx{0};
+  std::uint64_t xgetbv_xcr0{0};
 
-    // Syscall dispatch: when non-null, `Syscall` IR ops emit a `blr` to
-    // this function instead of halting. The handler receives the guest
-    // CpuStateFrame, reads guest registers (RAX = sysno, etc.), performs
-    // the host operation, and writes results back to the frame.
-    SyscallHandlerFn syscall_handler{nullptr};
+  // Syscall dispatch: when non-null, `Syscall` IR ops emit a `blr` to
+  // this function instead of halting. The handler receives the guest
+  // CpuStateFrame, reads guest registers (RAX = sysno, etc.), performs
+  // the host operation, and writes results back to the frame.
+  SyscallHandlerFn syscall_handler{nullptr};
 };
 
 class Lowerer {
-public:
-    explicit Lowerer(Emitter& emitter, LowerOptions options = {})
-        : emitter_(emitter), options_(options) {}
+ public:
+  explicit Lowerer(Emitter& emitter, LowerOptions options = {})
+      : emitter_(emitter), options_(options) {}
 
-    // Lower the given statement list onto the underlying Emitter. Returns
-    // a result indicating success or the first error encountered. After
-    // an error the Emitter state is undefined — throw it away.
-    [[nodiscard]] LowerResult lower(std::span<const ir::Stmt> stmts);
+  // Lower the given statement list onto the underlying Emitter. Returns
+  // a result indicating success or the first error encountered. After
+  // an error the Emitter state is undefined — throw it away.
+  [[nodiscard]] LowerResult lower(std::span<const ir::Stmt> stmts);
 
-    // Lower a multi-block ir::Function with explicit CFG (F1-BK-003,
-    // F1-BK-004, F1-BK-006). Pre-creates one Emitter::Label per
-    // BasicBlock, walks the blocks in their stored order, binds each
-    // block's label, and lowers its statements. Within a block,
-    // Jump{target_block} emits an unconditional `b <label>` and
-    // CondJump{cond, if_true, if_false} emits `cbnz xcond, label_true; b
-    // label_false`. vixl's MacroAssembler resolves forward references at
-    // finalize time — that is the "label fix-up" of F1-BK-006.
-    //
-    // The flat lower(stmts) overload above is unchanged: it still rejects
-    // Jump / CondJump with UnsupportedOp because no block context exists.
-    //
-    // This call mutates internal state (ref allocator, block label map)
-    // exactly like the flat lower(); they share private members.
-    [[nodiscard]] LowerResult lower(const ir::Function& fn);
+  // Lower a multi-block ir::Function with explicit CFG (F1-BK-003,
+  // F1-BK-004, F1-BK-006). Pre-creates one Emitter::Label per
+  // BasicBlock, walks the blocks in their stored order, binds each
+  // block's label, and lowers its statements. Within a block,
+  // Jump{target_block} emits an unconditional `b <label>` and
+  // CondJump{cond, if_true, if_false} emits `cbnz xcond, label_true; b
+  // label_false`. vixl's MacroAssembler resolves forward references at
+  // finalize time — that is the "label fix-up" of F1-BK-006.
+  //
+  // The flat lower(stmts) overload above is unchanged: it still rejects
+  // Jump / CondJump with UnsupportedOp because no block context exists.
+  //
+  // This call mutates internal state (ref allocator, block label map)
+  // exactly like the flat lower(); they share private members.
+  [[nodiscard]] LowerResult lower(const ir::Function& fn);
 
-    // For tests: the peak number of scratch registers that were
-    // simultaneously live during the last call to lower(). A value of 10
-    // means the pool was saturated.
-    [[nodiscard]] unsigned scratch_used() const noexcept { return peak_live_; }
+  // For tests: the peak number of scratch registers that were
+  // simultaneously live during the last call to lower(). A value of 10
+  // means the pool was saturated.
+  [[nodiscard]] unsigned scratch_used() const noexcept { return peak_live_; }
 
-private:
-    Emitter& emitter_;
-    LowerOptions options_;
+ private:
+  Emitter& emitter_;
+  LowerOptions options_;
 
-    // Map IR Ref → host scratch register (active assignments only — entries
-    // are erased on expiry).
-    std::unordered_map<ir::Ref, arm64::Reg> ref_to_scratch_;
+  // Map IR Ref → host scratch register (active assignments only — entries
+  // are erased on expiry).
+  std::unordered_map<ir::Ref, arm64::Reg> ref_to_scratch_;
 
-    // Liveness info: last_use_[r] == max statement index that reads r, or
-    // the def index if r is never used. Populated once by compute_liveness
-    // at the start of lower().
-    std::unordered_map<ir::Ref, std::size_t> last_use_;
+  // Liveness info: last_use_[r] == max statement index that reads r, or
+  // the def index if r is never used. Populated once by compute_liveness
+  // at the start of lower().
+  std::unordered_map<ir::Ref, std::size_t> last_use_;
 
-    // Free-list of scratch registers. Used as a stack: back is popped
-    // first. Initialised with x9..x0 so x0 comes out first.
-    std::vector<arm64::Reg> free_regs_;
+  // Free-list of scratch registers. Used as a stack: back is popped
+  // first. Initialised with x9..x0 so x0 comes out first.
+  std::vector<arm64::Reg> free_regs_;
 
-    // Scratch regs allocated as single-statement temporaries (e.g. the
-    // Rol/Rcl `neg` helper). Returned to the free list after lower_stmt.
-    std::vector<arm64::Reg> stmt_temporaries_;
+  // Scratch regs allocated as single-statement temporaries (e.g. the
+  // Rol/Rcl `neg` helper). Returned to the free list after lower_stmt.
+  std::vector<arm64::Reg> stmt_temporaries_;
 
-    // Monotonically increasing during lower(): the index of the stmt we
-    // are about to emit. Used both for post-stmt expiry and for debug.
-    std::size_t stmt_index_{0};
+  // Monotonically increasing during lower(): the index of the stmt we
+  // are about to emit. Used both for post-stmt expiry and for debug.
+  std::size_t stmt_index_{0};
 
-    // Peak occupancy of ref_to_scratch_ + stmt_temporaries_ observed
-    // during the last lower() call. Exposed by scratch_used().
-    unsigned peak_live_{0};
+  // Peak occupancy of ref_to_scratch_ + stmt_temporaries_ observed
+  // during the last lower() call. Exposed by scratch_used().
+  unsigned peak_live_{0};
 
-    [[nodiscard]] LowerResult lower_stmt(const ir::Stmt& s);
+  [[nodiscard]] LowerResult lower_stmt(const ir::Stmt& s);
 
-    // Walk `stmts` once to populate last_use_ for every def'd Ref.
-    void compute_liveness(std::span<const ir::Stmt> stmts);
+  // Walk `stmts` once to populate last_use_ for every def'd Ref.
+  void compute_liveness(std::span<const ir::Stmt> stmts);
 
-    // Called after each lower_stmt: free any Ref whose last_use_ has
-    // passed, plus return this stmt's temporaries to the free list.
-    void expire_intervals();
+  // Called after each lower_stmt: free any Ref whose last_use_ has
+  // passed, plus return this stmt's temporaries to the free list.
+  void expire_intervals();
 
-    // Allocate a scratch register bound to `ref`. Returns false on
-    // exhaustion (and spilling, if enabled, also failed to free one).
-    [[nodiscard]] bool allocate_scratch(ir::Ref ref, arm64::Reg& out);
+  // Allocate a scratch register bound to `ref`. Returns false on
+  // exhaustion (and spilling, if enabled, also failed to free one).
+  [[nodiscard]] bool allocate_scratch(ir::Ref ref, arm64::Reg& out);
 
-    // Allocate one extra scratch register for temporary use within a
-    // single stmt (e.g. emulated rotate-left). Auto-freed at stmt end.
-    [[nodiscard]] bool allocate_temporary(arm64::Reg& out);
+  // Allocate one extra scratch register for temporary use within a
+  // single stmt (e.g. emulated rotate-left). Auto-freed at stmt end.
+  [[nodiscard]] bool allocate_temporary(arm64::Reg& out);
 
-    // Look up the host register that currently holds an SSA Ref's
-    // value, reloading from a spill slot if necessary. Non-const because
-    // a reload may emit a `ldr` + allocate a fresh scratch (which may
-    // itself evict another ref).
-    [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out);
+  // Look up the host register that currently holds an SSA Ref's
+  // value, reloading from a spill slot if necessary. Non-const because
+  // a reload may emit a `ldr` + allocate a fresh scratch (which may
+  // itself evict another ref).
+  [[nodiscard]] bool reg_of(ir::Ref ref, arm64::Reg& out);
 
-    // Shift narrow integer operands up to the ARM64 flag bit position
-    // before using x-sized flag-setting ops. This makes NZCV reflect the
-    // IR operand width for I8/I16/I32 arithmetic and compares.
-    [[nodiscard]] LowerResult align_flag_operands(arm64::Reg lhs,
-                                                  arm64::Reg rhs,
-                                                  ir::OpSize size,
-                                                  arm64::Reg& out_lhs,
-                                                  arm64::Reg& out_rhs);
+  // Shift narrow integer operands up to the ARM64 flag bit position
+  // before using x-sized flag-setting ops. This makes NZCV reflect the
+  // IR operand width for I8/I16/I32 arithmetic and compares.
+  [[nodiscard]] LowerResult align_flag_operands(arm64::Reg lhs, arm64::Reg rhs, ir::OpSize size,
+                                                arm64::Reg& out_lhs, arm64::Reg& out_rhs);
 
-    // Spill one currently-held ref to a stack slot, returning its reg
-    // to the free list. Picks the victim with the farthest next-use
-    // (Belady). Returns false if spill_slots are exhausted or no ref
-    // is evictable (e.g. all refs expire at this stmt).
-    [[nodiscard]] bool spill_one_ref();
+  // Spill one currently-held ref to a stack slot, returning its reg
+  // to the free list. Picks the victim with the farthest next-use
+  // (Belady). Returns false if spill_slots are exhausted or no ref
+  // is evictable (e.g. all refs expire at this stmt).
+  [[nodiscard]] bool spill_one_ref();
 
-    // Spill tracking (F1-BK-008). `spilled_to_slot_[r] == i` means r
-    // lives in `[sp, #spill_slot_base_offset + i*8]`. `free_slots_`
-    // is a stack of available slot indices.
-    std::unordered_map<ir::Ref, std::uint32_t> spilled_to_slot_;
-    std::vector<std::uint32_t>                 free_slots_;
-    unsigned                                   peak_spills_{0};
+  // Spill tracking (F1-BK-008). `spilled_to_slot_[r] == i` means r
+  // lives in `[sp, #spill_slot_base_offset + i*8]`. `free_slots_`
+  // is a stack of available slot indices.
+  std::unordered_map<ir::Ref, std::uint32_t> spilled_to_slot_;
+  std::vector<std::uint32_t> free_slots_;
+  unsigned peak_spills_{0};
 
-    // Per-Function lowering: maps BasicBlock id → its Emitter::Label.
-    // Empty for the flat lower(span<Stmt>) path; non-empty (and
-    // populated up-front) for the lower(Function) path. Looked up by
-    // Jump / CondJump lowering inside lower_stmt.
-    std::unordered_map<std::uint32_t, Emitter::Label> block_labels_;
+  // Per-Function lowering: maps BasicBlock id → its Emitter::Label.
+  // Empty for the flat lower(span<Stmt>) path; non-empty (and
+  // populated up-front) for the lower(Function) path. Looked up by
+  // Jump / CondJump lowering inside lower_stmt.
+  std::unordered_map<std::uint32_t, Emitter::Label> block_labels_;
 
-    // FP scratch pool (F1-BK-013). 8-register pool V0..V7, separate
-    // from the integer pool because ARM64's V regs encode in their
-    // own namespace. Non-spillable in the MVP — too many simultaneous
-    // FP refs returns OutOfScratchRegs.
-    std::unordered_map<ir::Ref, Emitter::FpReg> ref_to_fp_;
-    std::vector<Emitter::FpReg>                 fp_free_;
-    [[nodiscard]] bool allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out);
-    [[nodiscard]] bool fp_reg_of(ir::Ref ref, Emitter::FpReg& out);
+  // FP scratch pool (F1-BK-013). 8-register pool V0..V7, separate
+  // from the integer pool because ARM64's V regs encode in their
+  // own namespace. Non-spillable in the MVP — too many simultaneous
+  // FP refs returns OutOfScratchRegs.
+  std::unordered_map<ir::Ref, Emitter::FpReg> ref_to_fp_;
+  std::vector<Emitter::FpReg> fp_free_;
+  [[nodiscard]] bool allocate_fp_scratch(ir::Ref ref, Emitter::FpReg& out);
+  [[nodiscard]] bool fp_reg_of(ir::Ref ref, Emitter::FpReg& out);
 
-    // Flags refs (F1-IR-003 .. F1-IR-007) don't have a host register
-    // — they live in NZCV. We just track which Refs are valid Flags
-    // values so consumers (ReadFlag / CondJumpFlags) can verify
-    // their operand was produced by a prior WriteFlags.
-    std::unordered_set<ir::Ref> flag_refs_;
-    // F2-IR-026 — subset of flag_refs_ produced by WriteFlagsFp.
-    // ReadFlag / CondJumpFlags pick FP-specific cond codes for these.
-    std::unordered_set<ir::Ref> fp_flag_refs_;
+  [[nodiscard]] LowerResult lower_pcmpstr_index(const ir::PcmpStrIndex& op, ir::Ref result);
+  [[nodiscard]] LowerResult lower_pcmpstr_mask(const ir::PcmpStrMask& op, ir::Ref result);
+  [[nodiscard]] LowerResult lower_pcmpstr_flags(const ir::PcmpStrFlags& op, ir::Ref result);
+  [[nodiscard]] LowerResult emit_pcmpstr_scalar_helper(ir::Ref lhs, ir::Ref rhs,
+                                                       std::optional<ir::Ref> lhs_len,
+                                                       std::optional<ir::Ref> rhs_len,
+                                                       std::uint8_t imm8, std::uint64_t helper_addr,
+                                                       const char* name, ir::Ref result);
+  [[nodiscard]] LowerResult emit_pcmpstr_mask_helper(ir::Ref lhs, ir::Ref rhs,
+                                                     std::optional<ir::Ref> lhs_len,
+                                                     std::optional<ir::Ref> rhs_len,
+                                                     std::uint8_t imm8, ir::Ref result);
+  // W2-09 — F16C conversions via a software helper call so all four
+  // VCVTPS2PH rounding modes stay bit-exact with the Rust backend.
+  [[nodiscard]] LowerResult lower_vec_f16cvt(const ir::VecF16Cvt& op, ir::Ref result);
 
-public:
-    // For tests: peak number of slots in concurrent use during the
-    // last lower() call.
-    [[nodiscard]] unsigned peak_spills() const noexcept { return peak_spills_; }
+  // Flags refs (F1-IR-003 .. F1-IR-007) don't have a host register
+  // — they live in NZCV. We just track which Refs are valid Flags
+  // values so consumers (ReadFlag / CondJumpFlags) can verify
+  // their operand was produced by a prior WriteFlags.
+  std::unordered_set<ir::Ref> flag_refs_;
+  // F2-IR-026 — subset of flag_refs_ produced by WriteFlagsFp.
+  // ReadFlag / CondJumpFlags pick FP-specific cond codes for these.
+  std::unordered_set<ir::Ref> fp_flag_refs_;
+
+ public:
+  // For tests: peak number of slots in concurrent use during the
+  // last lower() call.
+  [[nodiscard]] unsigned peak_spills() const noexcept { return peak_spills_; }
 };
 
 }  // namespace prisma::backend

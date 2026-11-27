@@ -17,6 +17,8 @@ pub enum Feature {
     Sse,
     Sse2,
     Sse3,
+    Pclmul,
+    F16c,
     Ssse3,
     Sse41,
     Sse42,
@@ -101,8 +103,8 @@ pub fn feature_set(features: &[Feature]) -> FeatureSet {
 /// The features the translator can actually lower today, mirroring the C++
 /// core's coverage.
 ///
-/// SSE..SSE4.2 + AVX/AVX2 + FMA + BMI1/2 + POPCNT/LZCNT + AES + SHA + MOVBE +
-/// CRC32. Update this in lockstep when the decoder/backend gain a new family —
+/// SSE..SSE4.2 + PCLMULQDQ + F16C + AVX/AVX2 + FMA + BMI1/2 +
+/// POPCNT/LZCNT + AES + SHA + MOVBE + CRC32. Update this in lockstep when the decoder/backend gain a new family —
 /// it is the single source of truth for what is safe to advertise.
 #[must_use]
 pub fn translatable() -> FeatureSet {
@@ -110,6 +112,8 @@ pub fn translatable() -> FeatureSet {
         Feature::Sse,
         Feature::Sse2,
         Feature::Sse3,
+        Feature::Pclmul,
+        Feature::F16c,
         Feature::Ssse3,
         Feature::Sse41,
         Feature::Sse42,

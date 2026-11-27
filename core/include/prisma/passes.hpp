@@ -258,6 +258,13 @@ tail_call_optimise(const std::vector<ir::Stmt>& stmts);
 [[nodiscard]] std::vector<ir::Stmt>
 dead_store_eliminate(const std::vector<ir::Stmt>& stmts);
 
+// F2-PS-005: Inlining of short helpers.
+// Scans for CallRel operations where the target is a known short block.
+// This is a stub for Fase 2 that currently only logs candidates, as true
+// inlining requires cross-block IR capabilities.
+[[nodiscard]] std::vector<ir::Stmt>
+inline_short_helpers(const std::vector<ir::Stmt>& stmts);
+
 // ---------------------------------------------------------------------------
 // PassManager — ordered pipeline of named passes, with run statistics.
 // ---------------------------------------------------------------------------

@@ -28,57 +28,55 @@ namespace prisma::passes {
 namespace {
 
 struct LoadKey {
-    ir::Ref    addr;
-    ir::OpSize size;
-    bool operator==(const LoadKey&) const = default;
+  ir::Ref addr;
+  ir::OpSize size;
+  bool operator==(const LoadKey&) const = default;
 };
 
 struct LoadKeyHash {
-    std::size_t operator()(const LoadKey& k) const noexcept {
-        return std::hash<ir::Ref>{}(k.addr) * 31u
-             + static_cast<std::size_t>(k.size);
-    }
+  std::size_t operator()(const LoadKey& k) const noexcept {
+    return std::hash<ir::Ref>{}(k.addr) * 31u + static_cast<std::size_t>(k.size);
+  }
 };
 
 }  // namespace
 
-std::vector<ir::Stmt>
-redundant_load_eliminate(const std::vector<ir::Stmt>& stmts) {
-    std::unordered_map<LoadKey, ir::Ref, LoadKeyHash> last_load;
+std::vector<ir::Stmt> redundant_load_eliminate(const std::vector<ir::Stmt>& stmts) {
+  std::unordered_map<LoadKey, ir::Ref, LoadKeyHash> last_load;
 
-    std::vector<ir::Stmt> out;
-    out.reserve(stmts.size());
+  std::vector<ir::Stmt> out;
+  out.reserve(stmts.size());
 
-    for (const auto& s : stmts) {
-        if (std::holds_alternative<ir::LoadMem>(s.op) && s.result) {
-            const auto& l = std::get<ir::LoadMem>(s.op);
-            const LoadKey k{l.addr, l.size};
-            auto it = last_load.find(k);
-            if (it != last_load.end()) {
-                // Rewrite as a copy of the prior load's result.
-                ir::Stmt rewritten{s.result,
-                    ir::Op{ir::BinOp{
-                        ir::BinOpKind::Or, it->second, it->second, l.size}}};
-                out.push_back(std::move(rewritten));
-                continue;
-            }
-            last_load[k] = *s.result;
-        }
-        else if (std::holds_alternative<ir::StoreMem>(s.op)
-              || std::holds_alternative<ir::StoreMemTSO>(s.op)
-              || std::holds_alternative<ir::Fence>(s.op)) {
-            // Any store could alias any tracked address. A fence can make
-            // surrounding memory operations observable, so do not forward
-            // plain loads across it.
-            last_load.clear();
-        }
-        // LoadMemTSO, Jumps, Calls, CmpFlags, pure ops — no effect on the
-        // memory image visible via plain LoadMem, so the table survives.
-
-        out.push_back(s);
+  for (const auto& s : stmts) {
+    if (std::holds_alternative<ir::LoadMem>(s.op) && s.result) {
+      const auto& l = std::get<ir::LoadMem>(s.op);
+      const LoadKey k{l.addr, l.size};
+      auto it = last_load.find(k);
+      if (it != last_load.end()) {
+        // Rewrite as a copy of the prior load's result.
+        ir::Stmt rewritten{s.result,
+                           ir::Op{ir::BinOp{ir::BinOpKind::Or, it->second, it->second, l.size}}};
+        out.push_back(std::move(rewritten));
+        continue;
+      }
+      last_load[k] = *s.result;
+    } else if (std::holds_alternative<ir::StoreMem>(s.op) ||
+               std::holds_alternative<ir::StoreMemTSO>(s.op) ||
+               std::holds_alternative<ir::AtomicCmpxchg>(s.op) ||
+               std::holds_alternative<ir::AtomicCmpxchgPair>(s.op) ||
+               std::holds_alternative<ir::Fence>(s.op)) {
+      // Any store could alias any tracked address. A fence can make
+      // surrounding memory operations observable, so do not forward
+      // plain loads across it.
+      last_load.clear();
     }
+    // LoadMemTSO, Jumps, Calls, CmpFlags, pure ops — no effect on the
+    // memory image visible via plain LoadMem, so the table survives.
 
-    return out;
+    out.push_back(s);
+  }
+
+  return out;
 }
 
 }  // namespace prisma::passes
