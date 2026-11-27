@@ -26,9 +26,12 @@ fn stmt_is_pure(op: &Op) -> bool {
             | Op::LoadReg(_)
             | Op::LoadSegBase(_)
             | Op::BinOp(_)
+            | Op::WideDiv(_)
             | Op::Compare(_)
             | Op::Extend(_)
             | Op::Truncate(_)
+            | Op::VecClMul(_)
+            | Op::VecF16Cvt(_)
     )
 }
 
@@ -38,12 +41,22 @@ fn operand_refs(op: &Op, into: &mut Vec<Ref>) {
             into.push(x.lhs);
             into.push(x.rhs);
         }
+        Op::WideDiv(x) => {
+            into.push(x.high);
+            into.push(x.low);
+            into.push(x.divisor);
+        }
         Op::Compare(x) => {
             into.push(x.lhs);
             into.push(x.rhs);
         }
         Op::Extend(x) => into.push(x.value),
         Op::Truncate(x) => into.push(x.value),
+        Op::VecClMul(x) => {
+            into.push(x.lhs);
+            into.push(x.rhs);
+        }
+        Op::VecF16Cvt(x) => into.push(x.src),
         // Constant / LoadReg / LoadSegBase have no operand refs.
         _ => {}
     }

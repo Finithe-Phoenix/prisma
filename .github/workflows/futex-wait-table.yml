@@ -1,0 +1,75 @@
+name: futex wait table
+
+on:
+  push:
+    paths:
+      - "core/include/prisma/futex_wait_table.hpp"
+      - "core/tests/futex_wait_table_smoke/**"
+      - ".github/workflows/futex-wait-table.yml"
+  pull_request:
+    paths:
+      - "core/include/prisma/futex_wait_table.hpp"
+      - "core/tests/futex_wait_table_smoke/**"
+      - ".github/workflows/futex-wait-table.yml"
+
+concurrency:
+  group: futex-wait-table-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure
+        run: >-
+          cmake
+          -S core/tests/futex_wait_table_smoke
+          -B build/futex-wait-table
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build/futex-wait-table --config Debug --parallel
+
+      - name: Test
+        run: >-
+          ctest
+          --test-dir build/futex-wait-table
+          --build-config Debug
+          --output-on-failure
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Clang 17
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-17
+
+      - name: Configure with ThreadSanitizer
+        run: |
+          cmake \
+            -S core/tests/futex_wait_table_smoke \
+            -B build/futex-wait-table-tsan \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DPRISMA_FUTEX_ENABLE_TSAN=ON
+
+      - name: Build
+        run: cmake --build build/futex-wait-table-tsan
+
+      - name: Test
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: >-
+          ctest
+          --test-dir build/futex-wait-table-tsan
+          --output-on-failure

@@ -43,7 +43,7 @@ pub const EXIT_BRANCH: u64 = 2;
 ///
 /// Relative to [`abi::K_STATE_PTR_REG`] (x27): `gpr[i]` at byte `i * 8` (x86 GPR
 /// order Rax..R15), `fs_base` at 792, `gs_base` at 800. The reserved span stands
-/// in for the vector/flag state the C++ `CpuStateFrame` holds in between — it is
+/// in for the vector state the C++ `CpuStateFrame` holds in between — it is
 /// untouched by GPR-only blocks but keeps segment-base accesses in bounds.
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -58,18 +58,22 @@ pub struct CpuStateFrame {
     /// Persistent x86 carry flag (0 or 1) at byte offset 808, matching the
     /// lowerer's `CF_OFFSET`. Used by multi-precision ADC/SBB.
     pub cf: u64,
+    /// Persistent x86 RFLAGS subset at byte offset 816, matching the lowerer's
+    /// `RFLAGS_OFFSET`. Bit 1 is forced by PUSHFQ; currently CF is synchronized
+    /// with [`CpuStateFrame::cf`] and the field is ready for ZF/SF/OF expansion.
+    pub rflags: u64,
     /// Why the block returned to the host ([`EXIT_NORMAL`] / [`EXIT_SYSCALL`]),
-    /// at byte offset 816 (matching the lowerer's `EXIT_REASON_OFFSET`). A guest
+    /// at byte offset 824 (matching the lowerer's `EXIT_REASON_OFFSET`). A guest
     /// `SYSCALL` block stores [`EXIT_SYSCALL`] here before returning; a normal
     /// block leaves it untouched, so the run loop clears it to [`EXIT_NORMAL`]
     /// before each block.
     pub exit_reason: u64,
     /// The guest PC to resume at when `exit_reason` is [`EXIT_BRANCH`], at byte
-    /// offset 824 (matching the lowerer's `NEXT_PC_OFFSET`). A branch block
+    /// offset 832 (matching the lowerer's `NEXT_PC_OFFSET`). A branch block
     /// computes its taken target (via `CSEL` for a conditional branch) and stores
     /// it here before returning to the run loop.
     pub next_pc: u64,
-    /// Host base address the guest address space is mapped at, at byte offset 832
+    /// Host base address the guest address space is mapped at, at byte offset 840
     /// (matching the lowerer's `MEM_BASE_OFFSET`). Every guest memory access is
     /// lowered to `host = mem_base + guest_va`, so a contiguous host arena that is
     /// not identity-mapped to the guest VAs is still reachable from the JIT (RFC
@@ -87,6 +91,7 @@ impl Default for CpuStateFrame {
             fs_base: 0,
             gs_base: 0,
             cf: 0,
+            rflags: 2,
             exit_reason: 0,
             next_pc: 0,
             mem_base: 0,
@@ -231,22 +236,28 @@ mod tests {
                 808
             );
             assert_eq!(
-                std::ptr::addr_of!(frame.exit_reason)
+                std::ptr::addr_of!(frame.rflags)
                     .cast::<u8>()
                     .offset_from(base),
                 816
             );
             assert_eq!(
-                std::ptr::addr_of!(frame.next_pc)
+                std::ptr::addr_of!(frame.exit_reason)
                     .cast::<u8>()
                     .offset_from(base),
                 824
             );
             assert_eq!(
-                std::ptr::addr_of!(frame.mem_base)
+                std::ptr::addr_of!(frame.next_pc)
                     .cast::<u8>()
                     .offset_from(base),
                 832
+            );
+            assert_eq!(
+                std::ptr::addr_of!(frame.mem_base)
+                    .cast::<u8>()
+                    .offset_from(base),
+                840
             );
         }
     }
