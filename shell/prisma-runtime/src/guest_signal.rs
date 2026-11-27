@@ -246,16 +246,29 @@ impl SigAction {
     }
 }
 
-/// A guest thread's signal state: the pending queue plus the blocked mask.
-///
-/// Delivery honours the mask — a blocked signal stays pending until it is
-/// unblocked, while SIGKILL/SIGSTOP (which [`Sigset`] never lets into the mask)
-/// are always deliverable. This composes the pending queue and the `sigset_t`
-/// into the model `rt_sigprocmask` and signal dispatch operate on.
+/// Signal state owned by one guest thread. Linux clone inherits the calling
+/// thread's blocked mask and starts the child with no pending signals.
 #[derive(Debug, Default, Clone)]
-pub struct SignalState {
+pub struct ThreadSignals {
     pending: GuestSignalQueue,
     blocked: Sigset,
+}
+
+impl ThreadSignals {
+    #[must_use]
+    pub const fn for_child(&self) -> Self {
+        Self {
+            pending: GuestSignalQueue::new(),
+            blocked: self.blocked,
+        }
+    }
+}
+
+/// Signal dispositions shared by the process and the currently active
+/// thread's blocked mask and pending queue.
+#[derive(Debug, Default, Clone)]
+pub struct SignalState {
+    thread: ThreadSignals,
     /// Non-default dispositions registered via `rt_sigaction`; an absent signal
     /// is `SIG_DFL`. Keyed by signal number (1..=64).
     actions: std::collections::HashMap<u32, SigAction>,
@@ -268,40 +281,46 @@ impl SignalState {
         Self::default()
     }
 
+    /// Exchange the active thread's queue and mask while keeping the shared
+    /// signal dispositions installed.
+    pub fn swap_thread(&mut self, thread: &mut ThreadSignals) {
+        std::mem::swap(&mut self.thread, thread);
+    }
+
     /// Mark `sig` pending against the guest thread.
     pub fn raise(&mut self, sig: u32) {
-        self.pending.push(sig);
+        self.thread.pending.push(sig);
     }
 
     /// Apply an `rt_sigprocmask` operation to the blocked mask.
     pub fn set_mask(&mut self, how: SigprocmaskHow, set: Sigset) {
-        self.blocked.apply(how, set);
+        self.thread.blocked.apply(how, set);
     }
 
     /// The current blocked mask (for `rt_sigprocmask`'s old-set out-argument).
     #[must_use]
     pub const fn blocked(&self) -> Sigset {
-        self.blocked
+        self.thread.blocked
     }
 
     /// Pop the next deliverable (unblocked) pending signal, if any. Blocked
     /// signals stay queued until they are unblocked.
     #[must_use]
     pub fn next_deliverable(&mut self) -> Option<u32> {
-        self.pending.pop_deliverable(&self.blocked)
+        self.thread.pending.pop_deliverable(&self.thread.blocked)
     }
 
     /// Number of pending signals, blocked or not.
     #[must_use]
     pub const fn pending_count(&self) -> usize {
-        self.pending.len()
+        self.thread.pending.len()
     }
 
     /// The set of currently-pending signals as a mask — what `rt_sigpending`
     /// reports (each raised-but-undelivered signal sets its bit).
     #[must_use]
     pub fn pending_set(&self) -> Sigset {
-        self.pending.to_sigset()
+        self.thread.pending.to_sigset()
     }
 
     /// The disposition registered for `sig` (the default `SIG_DFL` action if

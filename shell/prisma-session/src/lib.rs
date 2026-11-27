@@ -8,6 +8,16 @@
 //! translation. The dispatcher owns the guest-PC stepping (which is why
 //! `CpuStateFrame` has no `RIP`); this crate is just the wiring + ownership.
 
+mod clone_thread;
+mod thread_attributes;
+mod thread_blocking;
+mod thread_control;
+mod thread_futex;
+mod threaded;
+
+pub use thread_control::ThreadRunControl;
+pub use threaded::ThreadRunError;
+
 pub mod fs_syscalls;
 pub mod guest_io;
 pub mod info_syscalls;
@@ -417,16 +427,24 @@ impl Session {
     /// dispatcher cache, so it is a pure query of "what does this PC translate
     /// to" usable on any host.
     pub fn translate_at(&mut self, guest_pc: u64) -> Option<BlockTranslation> {
-        let bytes = fetch_window(&self.image, guest_pc)?;
-        // Use the FUSED path: it renumbers SSA refs across the block and routes
-        // relative branches through the frame's next_pc (with_branch_exits) so the
-        // run loop can chain. The per-instruction translate_block lowers each
-        // instruction independently and mis-handles a multi-instruction block that
-        // ends in a conditional branch (it produced wrong loop results on ARM64).
-        self.translator
-            .translate_fused_block(guest_pc, &bytes, MAX_INSNS)
-            .ok()
+        translate_image_block(&self.image, &mut self.translator, guest_pc)
     }
+}
+
+fn translate_image_block(
+    image: &MappedImage,
+    translator: &mut Translator,
+    guest_pc: u64,
+) -> Option<BlockTranslation> {
+    let bytes = fetch_window(image, guest_pc)?;
+    // Use the FUSED path: it renumbers SSA refs across the block and routes
+    // relative branches through the frame's next_pc (with_branch_exits) so the
+    // run loop can chain. The per-instruction translate_block lowers each
+    // instruction independently and mis-handles a multi-instruction block that
+    // ends in a conditional branch (it produced wrong loop results on ARM64).
+    translator
+        .translate_fused_block(guest_pc, &bytes, MAX_INSNS)
+        .ok()
 }
 
 impl Session {

@@ -28,7 +28,7 @@ use crate::time_syscalls::{self, TimeError};
 use crate::tty_syscalls::{self, IoctlError};
 
 /// x86-64 Linux syscall numbers we route (`arch/x86/entry/syscalls/syscall_64.tbl`).
-mod nr {
+pub(super) mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
     pub const READV: u64 = 19;
@@ -81,6 +81,8 @@ mod nr {
     pub const RT_SIGPENDING: u64 = 127;
     pub const GETTID: u64 = 186;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const CLONE: u64 = 56;
+    pub const FUTEX: u64 = 202;
     pub const EXIT: u64 = 60;
     pub const EXIT_GROUP: u64 = 231;
     pub const IOCTL: u64 = 16;
@@ -115,7 +117,8 @@ mod nr {
 }
 
 /// Negative Linux errno values returned in `rax` on failure.
-mod errno {
+pub(crate) mod errno {
+    pub const EAGAIN: i64 = -11;
     pub const ESRCH: i64 = -3;
     pub const EIO: i64 = -5;
     pub const EBADF: i64 = -9;
@@ -135,7 +138,7 @@ const GUEST_UID: i64 = 1000;
 /// The only flag `dup3` accepts (`O_CLOEXEC`, octal 02000000 on x86-64 Linux).
 /// We do not model close-on-exec yet, but accepting the flag — and rejecting any
 /// other bit — keeps the ABI faithful.
-const O_CLOEXEC: i32 = 0o2_000_000;
+pub(super) const O_CLOEXEC: i32 = 0o2_000_000;
 
 /// The CPU-affinity mask the guest sees: the low `available_parallelism` bits
 /// set, capped at 64 CPUs (a single `u64` word). Shared by `sched_getaffinity`
@@ -155,10 +158,31 @@ const ROBUST_LIST_HEAD_SIZE: u64 = 24;
 /// Linux thread identity and guest pointers registered by libc. Pointer values
 /// are guest addresses. Registration never dereferences them.
 #[derive(Debug)]
-struct LinuxThreadState {
+pub(crate) struct LinuxThreadState {
     tid: u32,
     clear_child_tid: u64,
     robust_list_head: u64,
+}
+
+impl LinuxThreadState {
+    pub(crate) fn child(tid: u32, clear_child_tid: u64) -> Self {
+        Self {
+            tid,
+            clear_child_tid,
+            robust_list_head: 0,
+        }
+    }
+
+    /// Clear a registered guest TID and return its futex address for the
+    /// caller to wake. Registration is consumed even if the guest unmapped it.
+    pub(crate) fn clear_at_exit(&mut self, mem: &mut BackedAddressSpace) -> Option<u64> {
+        let addr = std::mem::take(&mut self.clear_child_tid);
+        if addr == 0 {
+            return None;
+        }
+        mem.write(addr, &0u32.to_le_bytes()).ok()?;
+        Some(addr)
+    }
 }
 
 /// Per-thread state the syscall layer carries across calls: the fd table and the
@@ -200,16 +224,20 @@ pub struct SyscallContext {
 }
 
 impl SyscallContext {
+    pub(crate) fn swap_thread(&mut self, local: &mut LinuxThreadState) {
+        std::mem::swap(&mut self.thread, local);
+    }
+
+    pub(crate) fn thread_tid(&self) -> u32 {
+        self.thread.tid
+    }
+
     /// A fresh context: standard streams open, nothing blocked, monotonic clock
     /// anchored now, the conventional `0o022` umask.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            thread: LinuxThreadState {
-                tid: std::process::id(),
-                clear_child_tid: 0,
-                robust_list_head: 0,
-            },
+            thread: LinuxThreadState::child(std::process::id(), 0),
             fds: FdTable::new(),
             signals: SignalState::new(),
             monotonic_start: Instant::now(),
@@ -247,7 +275,7 @@ impl Default for SyscallContext {
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn arg_i32(v: u64) -> i32 {
+pub(super) fn arg_i32(v: u64) -> i32 {
     // The guest passes the value in a 64-bit register; the C ABI reads its low
     // 32 bits as the `int` argument. Truncation is the intended semantics.
     v as i32
@@ -281,7 +309,7 @@ fn io_errno(e: &IoError) -> i64 {
     }
 }
 
-const fn time_errno(e: TimeError) -> i64 {
+pub(super) const fn time_errno(e: TimeError) -> i64 {
     match e {
         TimeError::UnknownClock(_) | TimeError::InvalidValue => errno::EINVAL,
         TimeError::Fault(_) => errno::EFAULT,
@@ -894,7 +922,7 @@ pub fn dispatch(
         // the kernel does when the buffer is smaller than its cpumask). pid 0 or
         // self is the caller; any other pid is ESRCH. Returns the bytes written.
         nr::SCHED_GETAFFINITY => {
-            let me = std::process::id();
+            let me = ctx.thread_tid();
             let want = arg_i32(args[0]);
             if want != 0 && !(want > 0 && want as u32 == me) {
                 errno::ESRCH
@@ -913,7 +941,7 @@ pub fn dispatch(
         // on every available CPU regardless — so a valid request is a no-op
         // success. pid 0/self is the caller; any other pid is ESRCH.
         nr::SCHED_SETAFFINITY => {
-            let me = std::process::id();
+            let me = ctx.thread_tid();
             let want = arg_i32(args[0]);
             let size = arg_usize(args[1]);
             if want != 0 && !(want > 0 && want as u32 == me) {
@@ -1823,6 +1851,35 @@ mod tests {
             0o077
         );
         assert_eq!(ctx.umask, 0o777);
+    }
+
+    #[test]
+    fn affinity_accepts_the_calling_childs_tid() {
+        let mut ctx = SyscallContext::new();
+        let leader = u64::from(ctx.thread_tid());
+        let child = ctx.thread_tid() + 1;
+        let mut local = super::LinuxThreadState::child(child, 0);
+        ctx.swap_thread(&mut local);
+        let mut mem = region(&1u64.to_le_bytes());
+        for (sysno, success) in [(nr::SCHED_GETAFFINITY, 8), (nr::SCHED_SETAFFINITY, 0)] {
+            assert_eq!(
+                dispatch(
+                    &mut ctx,
+                    &mut mem,
+                    sysno,
+                    [u64::from(child), 8, 0x1000, 0, 0, 0]
+                ),
+                success
+            );
+            assert_eq!(
+                dispatch(&mut ctx, &mut mem, sysno, [leader, 8, 0x1000, 0, 0, 0]),
+                super::errno::ESRCH
+            );
+            assert_eq!(
+                dispatch(&mut ctx, &mut mem, sysno, [0, 8, 0x1000, 0, 0, 0]),
+                success
+            );
+        }
     }
 
     #[test]

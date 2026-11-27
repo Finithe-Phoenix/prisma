@@ -18,8 +18,30 @@ Proposes how Prisma runs a multi-threaded guest: `clone(CLONE_VM|...)` spawns a
 **shared** `BackedAddressSpace` arena (RFC 0020), with its own per-thread
 `CpuStateFrame`. `futex(WAIT/WAKE)` blocks/wakes those host threads through a
 host-side wait table keyed by guest address. This is the next blocker for real
-Linux programs (pthreads, glibc) and Wine bring-up. No code yet — this RFC fixes
-the model before the highest-blast-radius runtime change.
+Linux programs (pthreads, glibc) and Wine bring-up.
+
+## Current implementation
+
+Pass the context, memory and frame from `Session::prepare_arena` to
+`Session::run_threaded`. The leader runs on the calling host thread. Each
+successful pthread-style `clone` starts a scoped host thread with its own
+registers, stack pointer, TLS and TID. The guest supplies the stack mapping.
+Workers share the guest address space, file descriptor table and a cache of
+installed translations for the duration of the run.
+
+The scheduler gives each runnable thread one translated block per turn under
+the process mutex. A guest can wait on a futex or sleep while other threads
+continue. Untimed `FUTEX_WAIT` and `FUTEX_WAKE` support both private and
+shared operations within the guest process. Thread exit clears a registered
+child TID and wakes one waiter. If every live thread waits on a futex,
+the run returns `ThreadRunError::FutexDeadlock`.
+
+All workers share the block budget and join before the driver returns.
+Use `run_threaded_with_control` and `ThreadRunControl::cancel` to interrupt
+a run from the host, including while workers are asleep. Concurrent guest
+block execution, cancellable host file I/O and timed futex waits remain open.
+The two-thread guest in `shell/prisma-session/tests/threaded_session.rs`
+exercises clone, producer/consumer wakeup and join through the JIT on ARM64.
 
 ## Motivation
 
