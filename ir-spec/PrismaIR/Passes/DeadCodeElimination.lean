@@ -51,6 +51,8 @@ def Op.reads_ref (op : Op) (r : Ref) : Prop :=
   | .compare _ lhs rhs _    => r = lhs ∨ r = rhs
   | .extend value _ _ _     => r = value
   | .truncate value _       => r = value
+  | .storeCarry value       => r = value
+  | .storeRflags value      => r = value
   | _                       => False
 
 /-- F1-LN-011 (local): if `op` does not read `dropped_ref`, then
@@ -104,6 +106,10 @@ theorem evalPure_unaffected_by_unread_ref
   -- cases. For non-pure variants the result is `none` regardless of
   -- `e`, so the goal is `none = none`, closed by `rfl`.
   | storeReg _ _ _    => rfl
+  | loadCarry         => rfl
+  | storeCarry _      => rfl
+  | loadRflags        => rfl
+  | storeRflags _     => rfl
   | storeMem _ _ _    => rfl
   | loadMem _ _       => rfl
   | loadMemTSO _ _    => rfl

@@ -129,6 +129,12 @@ inductive Op where
   | loadReg  (reg : GPR) (size : OpSize)             : Op
   | storeReg (reg : GPR) (value : Ref) (size : OpSize) : Op
 
+  -- Persistent guest flags survive the SSA lifetime of a translated block.
+  | loadCarry                     : Op
+  | storeCarry (value : Ref)      : Op
+  | loadRflags                    : Op
+  | storeRflags (value : Ref)     : Op
+
   -- Arithmetic / logic on two SSA refs
   | binop    (op : BinOp) (lhs rhs : Ref) (size : OpSize) : Op
 

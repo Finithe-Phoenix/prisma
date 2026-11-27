@@ -722,6 +722,24 @@ const FIXTURES: &[SmokeFixture] = &[
     // non-empty assertions. `rust_words` is left None (the Rust-side behaviour is
     // pinned by the per-crate unit + ARM64 e2e tests).
     SmokeFixture {
+        name: "cmpxchg_m64_rdx",
+        guest_bytes: &[0xF0, 0x48, 0x0F, 0xB1, 0x11],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "pclmulqdq_xmm0_xmm1_high_low",
+        guest_bytes: &[0x66, 0x0F, 0x3A, 0x44, 0xC1, 0x01],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "int3_guest_trap",
+        guest_bytes: &[0xCC],
+        expected_exit: BlockExitKind::None,
+        rust_words: None,
+    },
+    SmokeFixture {
         name: "cmpxchg_rcx_rdx",
         guest_bytes: &[0x48, 0x0F, 0xB1, 0xD1],
         expected_exit: BlockExitKind::None,
