@@ -1,80 +1,58 @@
-# tools/benchmarks — Prisma benchmark harness
+# Prisma benchmark harness
 
-**Status:** first runnable slice. `prisma-bench run` can compile and run the
-self-authored Dhrystone-style corpus under local backends, emit per-run JSON,
-and aggregate `summary.json`. Backends that are unavailable are recorded as
-skipped artifacts instead of crashing.
+`prisma-bench` builds the selected corpus, runs it with the requested backend,
+and writes a versioned JSON record with the exit status, command, binary digest,
+host, kernel, Git revision, output and measurements. The summary groups samples
+by workload, backend, commit, host, target architecture and iteration count.
 
-## Purpose
+## Reproduce a baseline
 
-Run a fixed corpus of x86_64 binaries through:
+From the repository root, use Python 3.12+ and a C compiler. The CoreMark and
+nbench build scripts use Linux x86_64, GNU Make, curl, sha256sum and the
+x86_64 GNU toolchain with static libraries. The first build downloads and
+verifies the pinned sources. Later builds reuse the verified archives in the
+output directory.
 
-- **Prisma** (at a given commit) — the whole point.
-- **QEMU user-mode** — baseline comparison.
-- **Box64** — the dynarec baseline on ARM64.
-- **FEX** — the IR-based DBT baseline.
-- **Native execution** on an x86_64 box — upper bound.
-
-…and record:
-
-- Wall-clock runtime.
-- Peak memory.
-- Instruction count (if available via perf/papi).
-- Translation overhead (time spent in JIT vs time spent in guest code).
-- Per-region profiles for TSO-adaptive classification (Pilar 3) and
-  hot-path prediction (Pilar 1).
-
-## Why Python + uv
-
-- Fast iteration on result post-processing, table generation, paper
-  figures.
-- `uv` for dependency management (matches the rest of `tools/`).
-- Not on the hot path — the benchmark runner launches native binaries
-  and collects output; Python is the scheduler, not the workload.
-
-## Planned corpus
-
-- **Microbenchmarks:** Dhrystone, CoreMark, nbench.
-- **SPEC CPU2017 subset** — the ones that run without GUI / network.
-- **Per-Pillar micros:** custom binaries that stress TSO-sensitive
-  regions, NPU-friendly patterns, graphics translation edge cases.
-- **Game-representative workloads:** small kernels extracted from open-
-  source game code (Quake, Xash3D, etc.) that mimic hot inner loops.
-
-The first bundled corpus is `dhrystone`, implemented as a self-authored
-Dhrystone-style integer workload in `corpora/dhrystone/dhry_prisma.c`. It is
-not a verbatim copy of the historic Dhrystone source.
-
-## Usage
-
-```
-$ uv venv
-$ uv pip install -e '.[dev]'
-$ prisma-bench list-corpora
-$ prisma-bench run --backend native --corpus dhrystone --output results/
-$ prisma-bench run --backend qemu --corpus dhrystone --output results/
-$ prisma-bench report results/ --format json
+```sh
+python -m pip install -e 'tools/benchmarks[dev]'
+prisma-bench list-corpora
+prisma-bench run --backend native --corpus dhrystone --iterations 1000 --output smoke/
+for sample in 1 2 3; do
+  prisma-bench run --backend native --corpus coremark --sample "$sample" --timeout-s 300 --output results/
+done
+prisma-bench report results/ --format json
+prisma-bench report results/ --format markdown
+prisma-bench report results/ --format latex
 ```
 
-`--backend prisma` is wired into the same schema, but currently soft-skips for
-the Dhrystone corpus because `core/build/prisma_run` accepts raw blobs rather
-than ELF/host binaries. That skip is intentional and visible in the JSON
-artifact; it will flip to execution when the runner grows ELF support or a raw
-benchmark corpus lands.
+Supply a fresh output directory for each experiment. The sample number identifies
+the individual result file, and repeating the same number replaces that sample.
+`report` writes `summary.json`, `summary.md` or `summary.tex`. Malformed inputs
+produce a diagnostic naming the file.
 
-## Artifacts
+| Corpus | Workload and result |
+| --- | --- |
+| dhrystone | Self-authored integer workload. The 1,000-iteration smoke run checks a fixed checksum. Larger runs measure iterations per wall-clock second. |
+| coremark | Pinned CoreMark performance seeds. The upstream CRC and minimum duration checks must pass. Increase iterations on faster machines to meet CoreMark's ten-second minimum. |
+| nbench | Numeric-sort profile from BYTEmark 2.2.3. The score uses nbench's reported iterations per second. Each sample performs one full invocation of this profile. |
 
-Each `run` writes one JSON file:
+The benchmark workflow checks Dhrystone on pushes and pull requests. Use
+**Actions → benchmarks → Run workflow** for three samples of every corpus on
+native x86_64 and QEMU and for records of other backends available to the job.
+The raw-blob Prisma runner currently requires an ELF execution path before it
+can supply scores for these corpora. Missing backends appear as skipped in the
+reports. Compiler errors, failed workloads and checksum mismatches fail the run.
 
-```
-results/dhrystone-native.json
-```
+## Interpreting regressions
 
-The artifact schema is `prisma-bench-result/v1`. `report --format json` reads
-all result artifacts in the directory and writes:
+Correctness failures block the smoke job. For performance triage, compare
+like-for-like batches on the same CPU, OS, toolchain and workload. Start with
+the median throughput and median absolute deviation (MAD) in the JSON summaries.
+Treat a slowdown larger than both 5% and three times the larger batch MAD
+as a candidate regression. Repeat the pair of batches on the same machine and
+require the slowdown in both comparisons before filing a performance regression.
+CI publishes timing observations for review. Recalibrate the advisory threshold
+with recorded variation before enabling any automated timing gate.
 
-```
-results/summary.json
-```
-
-Markdown and LaTeX report generation are tracked separately under F2-BM-007.
+The standalone driver for prebuilt binaries is documented in
+[BENCH_PY_README.md](BENCH_PY_README.md).

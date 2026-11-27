@@ -8,31 +8,16 @@ Invoke as:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import cast
 
 import click
 
 from . import __version__
-from .aggregate import write_summary
+from .aggregate import write_report
 from .corpora import CORPORA, get_corpus
 from .runners import run_backend
 from .schema import BackendName
-
-
-def _not_yet(fase: str) -> NoReturn:
-    """Exit with a helpful message. Keeps the CLI honest until we fill it in."""
-    click.echo(
-        f"prisma-bench: not yet implemented (arrives in {fase}).\n"
-        "See tools/benchmarks/README.md for the schedule.",
-        err=True,
-    )
-    sys.exit(2)
-
-
-def _artifact_name(backend: str, corpus: str) -> str:
-    return f"{corpus}-{backend}.json"
 
 
 @click.group()
@@ -62,7 +47,7 @@ def main() -> None:
 )
 @click.option(
     "--iterations",
-    type=int,
+    type=click.IntRange(1, 2147483647),
     default=None,
     help="Override corpus iteration count.",
 )
@@ -73,36 +58,45 @@ def main() -> None:
     show_default=True,
     help="Backend process timeout in seconds.",
 )
+@click.option("--sample", type=click.IntRange(min=1), help="Number this sample in its filename.")
 def run_cmd(
     backend: str,
     corpus: str,
     output: str,
     iterations: int | None,
     timeout_s: float,
+    sample: int | None,
 ) -> None:
     """Execute the corpus under the given backend and collect metrics."""
     selected = get_corpus(corpus)
     if selected is None:
         raise click.ClickException(f"unknown corpus: {corpus}")
-    if iterations is not None and iterations <= 0:
-        raise click.ClickException("--iterations must be positive")
+    if corpus == "nbench" and iterations not in (None, 1):
+        raise click.ClickException("nbench uses a fixed-duration profile; use --sample to repeat")
     if timeout_s <= 0:
         raise click.ClickException("--timeout-s must be positive")
 
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
-    result = run_backend(
-        backend=cast(BackendName, backend),
-        corpus=selected,
-        output_dir=output_dir,
-        iterations=iterations or selected.default_iterations,
-        timeout_s=timeout_s,
-    )
-    artifact_path = output_dir / _artifact_name(backend, corpus)
+    try:
+        result = run_backend(
+            backend=cast(BackendName, backend),
+            corpus=selected,
+            output_dir=output_dir,
+            iterations=iterations or selected.default_iterations,
+            timeout_s=timeout_s,
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    suffix = f"-{sample}" if sample is not None else ""
+    artifact_path = output_dir / f"{corpus}-{backend}{suffix}.json"
     artifact_path.write_text(result.to_json_text())
     click.echo(str(artifact_path))
     if result.skipped:
         click.echo(f"skipped: {result.skip_reason}", err=True)
+    elif result.validation_error or result.exit_code != 0:
+        error = result.validation_error or f"backend exit code {result.exit_code}"
+        raise click.ClickException(error)
 
 
 @main.command("report")
@@ -118,9 +112,10 @@ def run_cmd(
 )
 def report_cmd(results_dir: str, fmt: str) -> None:
     """Aggregate per-run artifacts into a single report."""
-    if fmt != "json":
-        _not_yet("F2-BM-007 report generation")
-    out = write_summary(Path(results_dir))
+    try:
+        out = write_report(Path(results_dir), fmt)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(str(out))
 
 

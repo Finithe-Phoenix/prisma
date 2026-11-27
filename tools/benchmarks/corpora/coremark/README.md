@@ -1,14 +1,10 @@
-# CoreMark Benchmark
+# CoreMark
 
-CoreMark is an industry-standard benchmark that measures the performance of central processing units (CPU) used in embedded systems.
+The harness builds EEMBC CoreMark from commit
+`1f483d5b8316753a742cbf5590caf5bd0a4e4777` using the Linux port. The build
+script verifies the archive SHA-256 before extraction. See the upstream
+[CoreMark repository](https://github.com/eembc/coremark).
 
-Source: https://github.com/eembc/coremark
-
-## Building
-
-Run `./build.sh` to download and compile the benchmark.
-
-Prerequisites:
-- `x86_64-linux-gnu-gcc` (for cross-compiling to x86_64 on ARM64)
-- `git`
-- `make`
+Run `bash build.sh /tmp/prisma-coremark` on Linux x86_64 for the standalone
+binary. The harness usage and run-validation rules are in the
+[benchmark guide](../../README.md).

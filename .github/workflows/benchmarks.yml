@@ -3,6 +3,7 @@ name: benchmarks
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   benchmarks-smoke:
@@ -37,3 +38,69 @@ jobs:
           prisma-bench report /tmp/prisma-bench-smoke --format json
           test -s /tmp/prisma-bench-smoke/dhrystone-native.json
           test -s /tmp/prisma-bench-smoke/summary.json
+          python - <<'PY'
+          import json, pathlib
+          result = json.loads(pathlib.Path("/tmp/prisma-bench-smoke/dhrystone-native.json").read_text())
+          assert result["exit_code"] == 0 and not result["skipped"]
+          assert "checksum=681c847f129869e4" in result["stdout_tail"]
+          PY
+          prisma-bench report /tmp/prisma-bench-smoke --format markdown
+          prisma-bench report /tmp/prisma-bench-smoke --format latex
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dhrystone-smoke
+          path: |
+            /tmp/prisma-bench-smoke/*.json
+            /tmp/prisma-bench-smoke/*.md
+            /tmp/prisma-bench-smoke/*.tex
+          if-no-files-found: error
+
+  upstream-baselines:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: [dhrystone, coremark, nbench]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install -e tools/benchmarks
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-user
+      - name: Collect independent samples
+        env:
+          CORPUS: ${{ matrix.corpus }}
+        run: |
+          iterations=()
+          if [[ "$CORPUS" == dhrystone ]]; then iterations=(--iterations 20000000); fi
+          for backend in native qemu prisma box64 fex; do
+            for sample in 1 2 3; do
+              prisma-bench run --backend "$backend" --corpus "$CORPUS" --sample "$sample" \
+                --timeout-s 300 "${iterations[@]}" --output results/
+            done
+          done
+          for format in json markdown latex; do
+            prisma-bench report results/ --format "$format"
+          done
+          python - <<'PY'
+          import json, pathlib
+          summary = json.loads(pathlib.Path("results/summary.json").read_text())
+          for backend in ("native", "qemu"):
+              assert sum(row["successful_runs"] for row in summary["summaries"]
+                         if row["backend"] == backend) == 3, backend
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: baseline-${{ matrix.corpus }}
+          path: |
+            results/*.json
+            results/*.md
+            results/*.tex
+          if-no-files-found: error
