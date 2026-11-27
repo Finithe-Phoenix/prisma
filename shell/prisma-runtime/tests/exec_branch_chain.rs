@@ -123,3 +123,36 @@ fn i32_ne_branch_untaken_when_zero() {
         assert_eq!(next, Some(FALL_PC), "I32 Ne with rcx=0 must fall through");
     }
 }
+
+#[test]
+fn decoded_test_eax_jz_publishes_flags_and_branches() {
+    let pc = 0x1_4000_1000;
+    // test eax,eax; jz +0x4a
+    let block = prisma_translator::Translator::new()
+        .translate_fused_block(pc, &[0x85, 0xc0, 0x74, 0x4a], 64)
+        .expect("translate TEST followed by JZ");
+    for (rax, flags, next_offset) in [
+        (0, 0x44, 0x4e),
+        (1u64 << 32, 0x44, 0x4e),
+        (1, 0x00, 4),
+        (0x8000_0000, 0x84, 4),
+    ] {
+        let mut state = CpuStateFrame::default();
+        state.gpr[gpr::RAX] = rax;
+        state.rflags = 0x8c7; // Prior CF, PF, ZF, SF and OF are set.
+        let outcome = execute_block(&block.code, &mut state);
+        #[cfg(target_arch = "aarch64")]
+        {
+            outcome.expect("execute TEST/JZ on ARM64");
+            assert_eq!(state.rflags & 0x8c5, flags, "RFLAGS for RAX={rax:#x}");
+            assert_eq!(state.next_pc, pc + next_offset, "JZ for RAX={rax:#x}");
+            assert_eq!(state.exit_reason, EXIT_BRANCH);
+            assert_eq!(state.gpr[gpr::RAX], rax);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = (flags, next_offset);
+            assert!(matches!(outcome, Err(ExecError::WrongArch)));
+        }
+    }
+}

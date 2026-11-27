@@ -4095,12 +4095,11 @@ fn push_cmp_flags(stmts: &mut Vec<Stmt>, lhs: Ref, rhs: Ref, size: OpSize) -> Re
 }
 
 /// Append the implicit NZCV flag write for a flag-setting ALU op and publish
-/// the RFLAGS subset. PF/AF are computed before the NZCV writer so the final
-/// transient flags still come from `AluFlags`.
+/// the RFLAGS subset. As with CMP, read the operands before the parity
+/// calculation reuses their host registers. Its operations preserve NZCV.
 fn push_alu_flags(stmts: &mut Vec<Stmt>, kind: BinOpKind, lhs: Ref, rhs: Ref, size: OpSize) {
     if let Some(carry) = rflags_carry_mode_for_alu(kind) {
         let result = push_binop_ref(stmts, kind, lhs, rhs, size);
-        let (pf, af) = push_pf_af_for_alu(stmts, kind, lhs, rhs, result, size);
         stmts.push(Stmt::new(
             None,
             Op::AluFlags(AluFlags {
@@ -4110,6 +4109,7 @@ fn push_alu_flags(stmts: &mut Vec<Stmt>, kind: BinOpKind, lhs: Ref, rhs: Ref, si
                 size,
             }),
         ));
+        let (pf, af) = push_pf_af_for_alu(stmts, kind, lhs, rhs, result, size);
         push_store_rflags_from_nzcv(stmts, carry, pf, af);
     }
 }
