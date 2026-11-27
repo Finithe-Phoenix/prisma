@@ -23,6 +23,47 @@ Input (IR program / x86 bytes / config)
                               assert_eq!(c++, rust)
 ```
 
+## IR constructor and serializer matrix
+
+Run `python3 tools/ir-parity/check.py --output /tmp/ir-parity.tsv` from the
+checkout. The Lean workflow publishes the observed TSV as the `ir-parity`
+artifact. Each row corresponds to a top-level IR operation. The checker
+compares the C++ variant, Rust enum, Lean constructor, and numeric tags from
+both C++ writers and readers against the reviewed matrix. A changed row
+appears in the CI diff. Keep existing wire tags stable. When adding a mirror,
+inspect the observed diff and update `tools/ir-parity/operations.tsv` in
+the same PR. Include a reason for any new gap.
+
+A dash records an absent constructor or tag. The following gaps are tracked
+in [#321](https://github.com/Finithe-Phoenix/prisma/issues/321).
+
+- Rust has three additional scalar flags helpers: `AluFlagsPreserveCarry`,
+  `ReadCarryOut`, and `WriteFlagsPopcnt`. Each has its own row.
+- Rust groups variable-count RCL/RCR operands in `RotateCarry` and projects
+  either the destination or the flags from the operation. The C++ decoder
+  expands the same instructions into scalar IR operations, so neither C++
+  wire format has a dedicated tag. Lean models persistent carry loads/stores.
+  Its pure binary `rcl`/`rcr` evaluation currently rotates a 64-bit operand
+  without a carry input. The width-plus-carry ring and its flags still need
+  a corresponding semantics and proof.
+- Lean models a subset of the operations. A constructor records syntax.
+  The operational models cover narrower fragments: for example, vector gather
+  and SHA have constructors, while the current scalar step relation only
+  handles selected register, memory and flag operations. The persistent
+  carry and full-word flag operations have executable state transitions.
+- The RFC 0009 format uses CRC32C and covers the C++ variant. The separate
+  kind-tagged binary API implements a subset. Both headers currently name
+  version 2, but they use independent tag tables and envelopes. Use the
+  matching decoder and consult the tag columns before persisting an operation.
+  Rust Serde serialization is a separate representation.
+
+The C++ serialization tests pin one stream per envelope. The live C ABI
+differential corpus covers translation of trap, vector and atomic fixtures,
+including INT3, PCLMULQDQ and locked memory CMPXCHG. A specific decoder gap
+found during validation is UD2, which the Rust translator accepts and the
+C++ translator currently reports as a decode failure. Instruction execution
+and hardware results belong to the native ARM64 suites.
+
 ## Rust Migration Fixtures
 
 `shell/prisma-runtime/tests/smoke_differential.rs` pins the first Rust

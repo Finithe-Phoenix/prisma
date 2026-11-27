@@ -23,6 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify IR constructor and wire-tag parity
+        working-directory: .
+        run: |
+          python3 -m unittest discover -s tools/ir-parity
+          python3 tools/ir-parity/check.py --output "$RUNNER_TEMP/ir-parity.tsv"
+
+      - name: Preserve observed IR matrix
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ir-parity
+          path: ${{ runner.temp }}/ir-parity.tsv
+          if-no-files-found: warn
+
       - name: Read toolchain version
         id: toolchain
         run: echo "version=$(cat lean-toolchain)" >> "$GITHUB_OUTPUT"
