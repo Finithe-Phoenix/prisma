@@ -8,11 +8,12 @@
 //! `ret`); the result is an `extern "C" fn(*mut CpuStateFrame)`.
 //!
 //! Execution is gated to `aarch64` — the bytes are ARM64 machine code, so they
-//! can only run on an ARM64 host. On other hosts only [`wrap_block`] (pure byte
-//! assembly) is available and testable. This mirrors the C++ core's
+//! can only run on an ARM64 host. Other hosts can wrap and install blocks
+//! and test the executable mapping lifecycle. This mirrors the C++ core's
 //! `constexpr is_arm64` execution gate: behavioural validation runs on the
 //! `ffi-link-arm64` CI runner, not on the x86 dev host.
 
+use crate::jit_memory::ExecBuffer;
 use prisma_backend::abi;
 use prisma_backend::Arm64Assembler;
 
@@ -162,46 +163,72 @@ pub enum ExecError {
     WrongArch,
 }
 
-/// Execute a translated block body against `state`.
+/// A translated ARM64 block with its own read/execute mapping.
+/// Dropping the block releases the mapping through [`ExecBuffer`].
+#[derive(Debug)]
+pub struct InstalledBlock {
+    buffer: ExecBuffer,
+}
+
+impl InstalledBlock {
+    /// Wrap the backend's block body in the guest-call ABI and install it once.
+    ///
+    /// # Errors
+    /// Returns an [`ExecError`] if allocation, writing or protection fails.
+    pub fn install(body: &[u8]) -> Result<Self, ExecError> {
+        let code = wrap_block(body);
+        let mut buffer = ExecBuffer::alloc(code.len()).map_err(ExecError::Alloc)?;
+        if !buffer.write(&code) {
+            return Err(ExecError::Write);
+        }
+        buffer.make_executable().map_err(ExecError::Protect)?;
+        Ok(Self { buffer })
+    }
+
+    /// Execute this block against the supplied guest state.
+    ///
+    /// # Safety
+    /// On ARM64 the installed body must be trusted code conforming to the block
+    /// ABI in [`wrap_block`]. It must preserve the host calling convention and
+    /// return through the matching epilogue. Every memory access it can perform
+    /// with this frame must be valid for the access size and permissions,
+    /// including accesses based on guest register values and `mem_base`. The
+    /// caller must keep those mappings alive and synchronize conflicting accesses.
+    ///
+    /// # Errors
+    /// Returns [`ExecError::WrongArch`] on hosts other than ARM64.
+    pub unsafe fn execute(&self, state: &mut CpuStateFrame) -> Result<(), ExecError> {
+        let entry = self.buffer.as_ptr();
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: the installed backend body uses the block ABI. Its prologue
+            // sets x27 to the frame and its epilogue restores the callee-saved
+            // registers. The borrow of self keeps the RX mapping alive for the call.
+            let call: extern "C" fn(*mut CpuStateFrame) = unsafe { core::mem::transmute(entry) };
+            call(state);
+            Ok(())
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = (entry, state);
+            Err(ExecError::WrongArch)
+        }
+    }
+}
+
+/// Install a translated block body, execute it against `state` and release it.
 ///
-/// Wraps `body` with the block ABI ([`wrap_block`]) and installs it W^X-safely
-/// via [`crate::jit_memory::ExecBuffer`]. On an ARM64 host it then calls the
-/// block as `extern "C" fn(*mut CpuStateFrame)` and the frame's GPRs are updated
-/// in place; on any other host the wrap/install path runs but execution is
-/// skipped with [`ExecError::WrongArch`] (the bytes are ARM64 machine code).
-/// Real behavioural validation therefore happens on the `ffi-link-arm64` CI
-/// runner, mirroring the C++ core's `constexpr is_arm64` gate.
+/// This compatibility entry point expects trusted backend output and a frame
+/// whose referenced guest memory satisfies the [`InstalledBlock::execute`]
+/// contract. It performs no validation of machine instructions or guest addresses.
 ///
 /// # Errors
-/// [`ExecError`] if the executable buffer cannot be allocated/written/protected,
-/// or [`ExecError::WrongArch`] on a non-ARM64 host.
+/// Returns installation errors or [`ExecError::WrongArch`] on a non-ARM64 host.
 pub fn execute_block(body: &[u8], state: &mut CpuStateFrame) -> Result<(), ExecError> {
-    use crate::jit_memory::ExecBuffer;
-
-    let code = wrap_block(body);
-    let mut buf = ExecBuffer::alloc(code.len()).map_err(ExecError::Alloc)?;
-    if !buf.write(&code) {
-        return Err(ExecError::Write);
-    }
-    buf.make_executable().map_err(ExecError::Protect)?;
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: `code` is a valid AAPCS64 `extern "C" fn(*mut CpuStateFrame)` —
-        // the prologue moves the x0 argument into x27, the body addresses guest
-        // state through x27 and clobbers only caller-saved / prologue-saved
-        // registers, and the epilogue restores callee-saved registers and
-        // returns. `buf` is read+execute and is kept alive across the call.
-        let entry: extern "C" fn(*mut CpuStateFrame) =
-            unsafe { core::mem::transmute(buf.as_ptr()) };
-        entry(state);
-        Ok(())
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let _ = state;
-        Err(ExecError::WrongArch)
-    }
+    let installed = InstalledBlock::install(body)?;
+    // SAFETY: this legacy entry point relies on its callers to provide a trusted
+    // block and keep all memory it uses accessible throughout execution.
+    unsafe { installed.execute(state) }
 }
 
 #[cfg(test)]
@@ -279,10 +306,32 @@ mod tests {
         assert_eq!(&wrapped[wrapped.len() - 4..], &0xD65F_03C0u32.to_le_bytes());
     }
 
-    // On the x86 dev host the wrap + W^X install path runs but execution is
-    // skipped — exercises ExecBuffer alloc/write/make_executable end to end
-    // without running ARM64 bytes. The real execution is covered by the
-    // aarch64-gated e2e test (tests/exec_e2e.rs).
+    #[test]
+    fn installed_block_can_execute_against_separate_frames() {
+        // mov rax, rcx
+        let translated = prisma_translator::Translator::new()
+            .translate_fused_block(0x1000, &[0x48, 0x89, 0xc8], 1)
+            .expect("translate mov");
+        let installed = InstalledBlock::install(&translated.code).expect("install once");
+        for input in [17, 91] {
+            let mut state = CpuStateFrame::default();
+            state.gpr[gpr::RCX] = input;
+            // SAFETY: the backend lowered a register-only move. The block
+            // touches only GPR slots in this exclusively borrowed live frame.
+            let result = unsafe { installed.execute(&mut state) };
+            #[cfg(target_arch = "aarch64")]
+            {
+                result.expect("run the installed block");
+                assert_eq!(state.gpr[gpr::RAX], input);
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                assert!(matches!(result, Err(ExecError::WrongArch)));
+                assert_eq!(state.gpr[gpr::RAX], 0);
+            }
+        }
+    }
+
     #[cfg(not(target_arch = "aarch64"))]
     #[test]
     fn execute_block_installs_then_reports_wrong_arch_off_target() {

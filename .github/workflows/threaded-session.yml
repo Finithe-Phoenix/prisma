@@ -1,0 +1,63 @@
+name: Rust threaded session sanitizers
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threaded-session-sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  threaded-session:
+    name: threaded-session-arm64-${{ matrix.sanitizer }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [thread, address]
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-06-15
+      RUST_TARGET: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare native ARM64 toolchain
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src
+          rustc -vV
+          clang --version
+          rustc -vV | grep -Fx "host: $RUST_TARGET"
+
+      # Explicit --target keeps host build scripts and procedural macros apart
+      # from instrumented libraries. Rebuild std for the host-thread primitives.
+      # The sanitizer instruments Rust and native C dependencies. Guest JIT code
+      # executes on the ARM64 CPU and is checked by the guest test assertions.
+      - name: Test guest threading with ${{ matrix.sanitizer }} sanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }} -Cforce-frame-pointers=yes
+          CC_aarch64_unknown_linux_gnu: clang
+          CFLAGS_aarch64_unknown_linux_gnu: -fsanitize=${{ matrix.sanitizer }} -fno-omit-frame-pointer
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          set -euo pipefail
+          cargo test --locked -Zbuild-std --target "$RUST_TARGET" \
+            --manifest-path shell/Cargo.toml -p prisma-session --test threaded_session \
+            -- --test-threads=1 2>&1 | tee threaded-session.log
+
+      - name: Retain sanitizer diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: threaded-session-arm64-${{ matrix.sanitizer }}-diagnostic
+          path: threaded-session.log
+          if-no-files-found: ignore
+          retention-days: 7
