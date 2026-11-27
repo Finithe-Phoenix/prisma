@@ -151,9 +151,14 @@ pub fn decode_one_at(
             opcode_guest_pc,
             &mut stmts,
         )?,
-        tables::OneByteOpcode::Group2 => {
-            decode_group2(&prefixes, opcode, bytes, cursor, &mut stmts)?
-        }
+        tables::OneByteOpcode::Group2 => decode_group2(
+            &prefixes,
+            opcode,
+            bytes,
+            cursor,
+            opcode_guest_pc,
+            &mut stmts,
+        )?,
         tables::OneByteOpcode::SubRmR8 => decode_binop_rm_r_with_size(
             BinOpKind::Sub,
             &prefixes,
@@ -5256,16 +5261,117 @@ fn emit_rcl_rcr_reg_count(
     ));
 }
 
-fn emit_rcl_rcr_cl(stmts: &mut Vec<Stmt>, is_rcr: bool, dst_reg: Gpr, size: OpSize) {
-    let raw_count = alloc_ref(stmts);
+/// CL rotates consume the low count byte before writing the r/m operand (which may alias CL).
+fn decode_carry_rotate_cl(
+    prefixes: &PrefixSet,
+    bytes: &[u8],
+    cursor: usize,
+    modrm: ModRm,
+    size: OpSize,
+    rip_after: u64,
+    stmts: &mut Vec<Stmt>,
+) -> Result<usize, crate::DecodeError> {
+    let width = if size == OpSize::I8 && modrm.mod_ == 3 && modrm.rm >= 4 && !prefixes.rex.present {
+        OpSize::I16 // AH..BH live in the upper byte of the first four registers
+    } else {
+        size
+    };
+    let high_byte = width != size;
+    let reg = map_reg(
+        if high_byte { modrm.rm - 4 } else { modrm.rm },
+        &prefixes.rex,
+        false,
+    );
+    let (addr, used) = if modrm.mod_ == 3 {
+        (None, 1)
+    } else {
+        let (addr, used) =
+            emit_addr_with_size_at(modrm, prefixes, bytes, cursor + 1, rip_after, stmts)?;
+        (Some(addr), used)
+    };
+    let mut value = alloc_ref(stmts);
+    let load = addr.map_or(Op::LoadReg(LoadReg { reg, size: width }), |addr| {
+        Op::LoadMem(LoadMem { addr, size })
+    });
+    stmts.push(Stmt::new(Some(value), load));
+    if high_byte {
+        let shift = push_constant_ref(stmts, 8, width);
+        value = push_binop_ref(stmts, BinOpKind::Shr, value, shift, width);
+    }
+    let count = alloc_ref(stmts);
     stmts.push(Stmt::new(
-        Some(raw_count),
+        Some(count),
         Op::LoadReg(LoadReg {
             reg: Gpr::Rcx,
             size: OpSize::I8,
         }),
     ));
-    emit_rcl_rcr_reg_count(stmts, is_rcr, dst_reg, raw_count, size);
+    let carry = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(carry), Op::LoadCarry(LoadCarry)));
+    let op = RotateCarry {
+        value,
+        count,
+        carry,
+        size,
+        right: modrm.reg == 3,
+        flags: None,
+    };
+    let result = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(result), Op::RotateCarry(op.clone())));
+    let old_flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(Some(old_flags), Op::LoadRflags(LoadRflags)));
+    let flags = alloc_ref(stmts);
+    stmts.push(Stmt::new(
+        Some(flags),
+        Op::RotateCarry(RotateCarry {
+            flags: Some(old_flags),
+            ..op
+        }),
+    ));
+    if let Some(addr) = addr {
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreMem(StoreMem {
+                addr,
+                value: result,
+                size,
+            }),
+        ));
+    } else if high_byte {
+        let shift = push_constant_ref(stmts, 8, width);
+        let high = push_binop_ref(stmts, BinOpKind::Shl, result, shift, width);
+        let low = alloc_ref(stmts);
+        stmts.push(Stmt::new(
+            Some(low),
+            Op::LoadReg(LoadReg {
+                reg,
+                size: OpSize::I8,
+            }),
+        ));
+        let word = push_binop_ref(stmts, BinOpKind::Or, low, high, width);
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreReg(StoreReg {
+                reg,
+                value: word,
+                size: width,
+            }),
+        ));
+    } else {
+        stmts.push(Stmt::new(
+            None,
+            Op::StoreReg(StoreReg {
+                reg,
+                value: result,
+                size,
+            }),
+        ));
+    }
+    stmts.push(Stmt::new(
+        None,
+        Op::StoreRflags(StoreRflags { value: flags }),
+    ));
+    Ok(1 + used)
 }
 
 fn emit_rcl_rcr_imm(stmts: &mut Vec<Stmt>, is_rcr: bool, dst_reg: Gpr, imm: u8, size: OpSize) {
@@ -5285,6 +5391,7 @@ fn decode_group2(
     opcode: u8,
     bytes: &[u8],
     cursor: usize,
+    opcode_guest_pc: u64,
     stmts: &mut Vec<Stmt>,
 ) -> Result<usize, crate::DecodeError> {
     let size = if matches!(opcode, 0xC0 | 0xD0 | 0xD2) {
@@ -5311,10 +5418,9 @@ fn decode_group2(
             emit_rcl_rcr_imm(stmts, is_rcr, dst_reg, imm, size);
             return Ok(1 + modrm_bytes + 1);
         }
-        if matches!(opcode, 0xD2 | 0xD3) && modrm.mod_ == 3 {
-            let dst_reg = map_reg(modrm.rm, &prefixes.rex, false);
-            emit_rcl_rcr_cl(stmts, is_rcr, dst_reg, size);
-            return Ok(1 + modrm_bytes);
+        if matches!(opcode, 0xD2 | 0xD3) {
+            let rip_after = opcode_guest_pc.wrapping_add(1 + modrm_bytes as u64);
+            return decode_carry_rotate_cl(prefixes, bytes, cursor, modrm, size, rip_after, stmts);
         }
 
         let (addr, used) = emit_addr_with_size(modrm, prefixes, bytes, cursor + 1, stmts)?;
@@ -5341,17 +5447,6 @@ fn decode_group2(
                     Some(count),
                     Op::Constant(Constant {
                         value: 1,
-                        size: OpSize::I8,
-                    }),
-                ));
-                (count, 0)
-            }
-            0xD2 | 0xD3 => {
-                let count = alloc_ref(stmts);
-                stmts.push(Stmt::new(
-                    Some(count),
-                    Op::LoadReg(LoadReg {
-                        reg: Gpr::Rcx,
                         size: OpSize::I8,
                     }),
                 ));
@@ -7895,7 +7990,7 @@ fn bytes_for_modrm(
     cursor: usize,
 ) -> Result<usize, crate::DecodeError> {
     let mut total = 1;
-    if modrm.rm == 4 {
+    if modrm.mod_ != 3 && modrm.rm == 4 {
         total += 1;
         let sib_byte = *bytes.get(cursor + 1).ok_or(crate::DecodeError::Truncated)?;
         let base = sib_byte & 0x7;
@@ -15214,8 +15309,8 @@ mod tests {
                 "rcl/rcr by CL must read CF"
             );
             assert!(
-                d.stmts.iter().any(|s| matches!(s.op, Op::StoreCarry(_))),
-                "rcl/rcr by CL must write CF"
+                d.stmts.iter().any(|s| matches!(s.op, Op::StoreRflags(_))),
+                "rcl/rcr by CL must publish CF and OF"
             );
             assert!(d.stmts.iter().any(|s| matches!(
                 s.op,
@@ -15264,7 +15359,10 @@ mod tests {
             assert_eq!(d.bytes_consumed, prog.len(), "prog {prog:02X?}");
             assert!(d.stmts.iter().any(|s| matches!(s.op, Op::LoadMem(_))));
             assert!(d.stmts.iter().any(|s| matches!(s.op, Op::LoadCarry(_))));
-            assert!(matches!(d.stmts.last().unwrap().op, Op::StoreCarry(_)));
+            assert!(matches!(
+                d.stmts.last().unwrap().op,
+                Op::StoreCarry(_) | Op::StoreRflags(_)
+            ));
             assert!(d.stmts.iter().any(|s| matches!(s.op, Op::StoreMem(_))));
         }
     }

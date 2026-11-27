@@ -49,6 +49,7 @@ RepMovs	yes	yes	repMovs	77	-
 RepStos	yes	yes	repStos	76	-
 RetAdjusted	yes	yes	retAdjusted	21	23
 Return	yes	yes	ret	14	17
+RotateCarry	-	yes	-	-	-
 RspAdjust	yes	yes	-	35	-
 Select	yes	yes	-	7	9
 StoreCarry	yes	yes	storeCarry	97	35

@@ -26,6 +26,7 @@ fn stmt_is_pure(op: &Op) -> bool {
             | Op::LoadReg(_)
             | Op::LoadSegBase(_)
             | Op::BinOp(_)
+            | Op::RotateCarry(_)
             | Op::WideDiv(_)
             | Op::Compare(_)
             | Op::Extend(_)
@@ -40,6 +41,10 @@ fn operand_refs(op: &Op, into: &mut Vec<Ref>) {
         Op::BinOp(x) => {
             into.push(x.lhs);
             into.push(x.rhs);
+        }
+        Op::RotateCarry(x) => {
+            into.extend([x.value, x.count, x.carry]);
+            into.extend(x.flags);
         }
         Op::WideDiv(x) => {
             into.push(x.high);

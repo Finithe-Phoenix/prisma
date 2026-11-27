@@ -37,8 +37,15 @@ the same PR. Include a reason for any new gap.
 A dash records an absent constructor or tag. The following gaps are tracked
 in [#321](https://github.com/Finithe-Phoenix/prisma/issues/321).
 
-- Rust has three additional flags helpers: `AluFlagsPreserveCarry`,
+- Rust has three additional scalar flags helpers: `AluFlagsPreserveCarry`,
   `ReadCarryOut`, and `WriteFlagsPopcnt`. Each has its own row.
+- Rust groups variable-count RCL/RCR operands in `RotateCarry` and projects
+  either the destination or the flags from the operation. The C++ decoder
+  expands the same instructions into scalar IR operations, so neither C++
+  wire format has a dedicated tag. Lean models persistent carry loads/stores.
+  Its pure binary `rcl`/`rcr` evaluation currently rotates a 64-bit operand
+  without a carry input. The width-plus-carry ring and its flags still need
+  a corresponding semantics and proof.
 - Lean models a subset of the operations. A constructor records syntax.
   The operational models cover narrower fragments: for example, vector gather
   and SHA have constructors, while the current scalar step relation only

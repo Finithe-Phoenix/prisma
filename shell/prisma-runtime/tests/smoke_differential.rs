@@ -1433,6 +1433,21 @@ const FIXTURES: &[SmokeFixture] = &[
         rust_words: None,
     },
     SmokeFixture {
+        name: "rcl_ah_cl",
+        guest_bytes: &[0xD2, 0xD4],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcr_m8_cl",
+        guest_bytes: &[0xD2, 0x18],
+        rust_words: None,
+    },
+    SmokeFixture {
+        name: "rcr_m16_cl",
+        guest_bytes: &[0x66, 0xD3, 0x18],
+        rust_words: None,
+    },
+    SmokeFixture {
         name: "rcl_rax_cl",
         guest_bytes: &[0x48, 0xD3, 0xD0],
         rust_words: None,

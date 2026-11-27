@@ -55,6 +55,25 @@ runtime::CpuStateFrame run_blob(std::vector<std::uint8_t> bytes) {
 
 }  // namespace
 
+TEST_CASE("e2e: RCL AH,CL updates the selected byte, CF, OF and the following SETcc") {
+  if constexpr (!is_arm64) {
+    SUCCEED("skipped on non-ARM64 host");
+    return;
+  }
+  const auto state = run_blob({
+      0x48, 0xB8, 0x35, 0x80, 0xCD, 0xAB, 0x00, 0x00, 0x00, 0x00,  // mov rax, 0xabcd8035
+      0x48, 0xB9, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // mov rcx, 1
+      0xD2, 0xD4,                                                  // rcl ah, cl
+      0x0F, 0x90, 0xC3,                                            // seto bl
+      0x0F, 0x92, 0xC2,                                            // setb dl
+      0xC3,                                                        // ret
+  });
+  REQUIRE(state[ir::Gpr::Rax] == 0xABCD0035u);
+  REQUIRE(state[ir::Gpr::Rbx] == 1);
+  REQUIRE(state[ir::Gpr::Rdx] == 1);
+  REQUIRE((state.rflags & 0x801u) == 0x801u);
+}
+
 TEST_CASE("e2e: a single RET halts cleanly with all GPRs zero") {
   if constexpr (!is_arm64) {
     SUCCEED("skipped on non-ARM64 host");

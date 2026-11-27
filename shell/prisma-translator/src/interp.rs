@@ -795,6 +795,32 @@ pub fn interpret_block(stmts: &[Stmt], regs: &mut GuestRegs) -> BlockOutcome {
                     vals.insert(d, r);
                 }
             }
+            Op::RotateCarry(op) => {
+                let width = op.size.bit_width();
+                let old = get(&vals, op.value) & op.size.mask();
+                let carry = get(&vals, op.carry) & 1;
+                let mask = if width == 64 { 63 } else { 31 };
+                let masked = (get(&vals, op.count) & mask) as u32;
+                let count = masked % (width + 1);
+                let ring = (u128::from(carry) << width) | u128::from(old);
+                let rotated = if op.right {
+                    (ring >> count) | (ring << (width + 1 - count))
+                } else {
+                    (ring << count) | (ring >> (width + 1 - count))
+                };
+                let value = (rotated as u64) & op.size.mask();
+                let result = op.flags.map_or(value, |old_flags| {
+                    let mut flags = (get(&vals, old_flags) & !1) | ((rotated >> width) as u64 & 1);
+                    if masked == 1 {
+                        let of = ((old ^ value) >> (width - 1)) & 1;
+                        flags = (flags & !(1 << 11)) | (of << 11);
+                    }
+                    flags
+                });
+                if let Some(d) = stmt.result {
+                    vals.insert(d, result);
+                }
+            }
             Op::WideDiv(dv) => {
                 let Some(r) = eval_wide_div(
                     get(&vals, dv.high),
