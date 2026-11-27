@@ -7,19 +7,18 @@
 
 #pragma once
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 namespace prisma::runtime {
 
@@ -84,27 +83,32 @@ class FutexWaitTable {
       return FutexWaitStatus::Shutdown;
     }
 
-    ++entry->waiters;
+    // Grant wakes to specific threads already parked here. A later WAIT
+    // on the same address must never consume an earlier thread's wake.
+    std::list<Waiter>::iterator slot;
+    try {
+      slot = entry->waiters.emplace(entry->waiters.end());
+    } catch (...) {
+      entry_lock.unlock();
+      release_entry(state, guest_addr, entry);
+      throw;
+    }
     const auto ready = [&]() noexcept {
-      return state->shutting_down.load(std::memory_order_acquire) || entry->wake_credits != 0;
+      return state->shutting_down.load(std::memory_order_acquire) || slot->woken;
     };
-
     bool signaled = true;
     if (timeout.has_value()) {
-      signaled = entry->cv.wait_for(entry_lock, *timeout, ready);
+      signaled = slot->cv.wait_for(entry_lock, *timeout, ready);
     } else {
-      entry->cv.wait(entry_lock, ready);
+      slot->cv.wait(entry_lock, ready);
     }
-
     FutexWaitStatus status = FutexWaitStatus::Woken;
     if (!signaled) {
       status = FutexWaitStatus::TimedOut;
     } else if (state->shutting_down.load(std::memory_order_acquire)) {
       status = FutexWaitStatus::Shutdown;
-    } else {
-      --entry->wake_credits;
     }
-    --entry->waiters;
+    entry->waiters.erase(slot);
 
     entry_lock.unlock();
     release_entry(state, guest_addr, entry);
@@ -129,15 +133,17 @@ class FutexWaitTable {
       return 0;
     }
 
-    const std::size_t available =
-        entry->waiters > entry->wake_credits ? entry->waiters - entry->wake_credits : 0;
-    const std::size_t wake_count = std::min(max_count, available);
-    entry->wake_credits += wake_count;
-    entry_lock.unlock();
-
-    for (std::size_t index = 0; index < wake_count; ++index) {
-      entry->cv.notify_one();
+    std::size_t wake_count = 0;
+    for (Waiter& waiter : entry->waiters) {
+      if (!waiter.woken) {
+        waiter.woken = true;
+        waiter.cv.notify_one();
+        if (++wake_count == max_count) {
+          break;
+        }
+      }
     }
+    entry_lock.unlock();
     release_entry(state, guest_addr, entry);
     return wake_count;
   }
@@ -148,19 +154,19 @@ class FutexWaitTable {
       return;
     }
 
-    std::vector<std::shared_ptr<Entry>> entries;
+    decltype(state->entries) entries;
     {
       std::lock_guard table_lock(state->table_mutex);
-      entries.reserve(state->entries.size());
-      for (const auto& [address, entry] : state->entries) {
-        (void)address;
-        entries.push_back(entry);
-      }
-      state->entries.clear();
+      entries.swap(state->entries);
     }
 
-    for (const std::shared_ptr<Entry>& entry : entries) {
-      entry->cv.notify_all();
+    for (const auto& [address, entry] : entries) {
+      (void)address;
+      // Synchronize with the final predicate check before parking.
+      std::lock_guard entry_lock(entry->mutex);
+      for (Waiter& waiter : entry->waiters) {
+        waiter.cv.notify_one();
+      }
     }
   }
 
@@ -181,16 +187,19 @@ class FutexWaitTable {
     }
 
     std::lock_guard entry_lock(entry->mutex);
-    return entry->waiters;
+    return entry->waiters.size();
   }
 
  private:
+  struct Waiter {
+    std::condition_variable cv;
+    bool woken{false};
+  };
+
   struct Entry {
     std::mutex mutex;
-    std::condition_variable cv;
+    std::list<Waiter> waiters;
     std::size_t users{0};
-    std::size_t waiters{0};
-    std::size_t wake_credits{0};
   };
 
   struct State {
@@ -232,7 +241,7 @@ class FutexWaitTable {
     if (entry->users != 0) {
       --entry->users;
     }
-    if (entry->users == 0 && entry->waiters == 0 && entry->wake_credits == 0) {
+    if (entry->users == 0) {
       state->entries.erase(found);
     }
   }

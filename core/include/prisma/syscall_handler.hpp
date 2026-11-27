@@ -13,11 +13,33 @@
 
 #pragma once
 
+#include "prisma/futex_wait_table.hpp"
+
 #include <cstdint>
 
 namespace prisma::runtime {
 
 struct CpuStateFrame;
+
+// The session owns the wait table. The reader must safely read one aligned
+// little-endian guest word, including while other guest threads are running.
+struct SyscallRuntimeContext {
+  FutexWaitTable& futexes;
+  FutexWaitTable::ReadWord read_guest_word;
+};
+
+// Bind around guest execution on each host thread. Nested runs restore the
+// outer context. Both the context and its table must outlive this scope.
+class ScopedSyscallRuntimeContext {
+ public:
+  explicit ScopedSyscallRuntimeContext(SyscallRuntimeContext& context) noexcept;
+  ~ScopedSyscallRuntimeContext();
+  ScopedSyscallRuntimeContext(const ScopedSyscallRuntimeContext&) = delete;
+  ScopedSyscallRuntimeContext& operator=(const ScopedSyscallRuntimeContext&) = delete;
+
+ private:
+  const SyscallRuntimeContext* previous_;
+};
 
 // Thread-local guest bookkeeping used by the Linux startup syscall surface.
 // This is intentionally independent from CpuStateFrame: clone() will later

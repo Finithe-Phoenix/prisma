@@ -23,6 +23,23 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <new>
+#include <utility>
+
+namespace prisma::runtime {
+
+namespace {
+thread_local const SyscallRuntimeContext* syscall_context = nullptr;
+}
+
+ScopedSyscallRuntimeContext::ScopedSyscallRuntimeContext(SyscallRuntimeContext& context) noexcept
+    : previous_(std::exchange(syscall_context, &context)) {}
+
+ScopedSyscallRuntimeContext::~ScopedSyscallRuntimeContext() {
+  syscall_context = previous_;
+}
+
+}  // namespace prisma::runtime
 
 #ifndef _MSC_VER
 
@@ -59,6 +76,50 @@ thread_local GuestThreadStartupState guest_thread_startup_state{
     0,
     0,
 };
+
+// Linux x86-64 takes int op and u32 val, even for a 64-bit guest.
+std::int64_t handle_futex(std::uint64_t address, std::uint32_t op, std::uint32_t value,
+                          std::uint64_t timeout) noexcept {
+  constexpr std::uint32_t wait = 0, wake = 1, private_flag = 128;
+  const auto command = op & ~private_flag;
+  if (!syscall_context || (command != wait && command != wake) ||
+      (command == wait && timeout != 0)) {
+    return -ENOSYS;
+  }
+  const auto& [table, read_word] = *syscall_context;
+  if (!read_word || address % sizeof(std::uint32_t) != 0) {
+    return -EFAULT;
+  }
+  if (table.is_shutdown()) {
+    return -EINTR;
+  }
+  try {
+    if (command == wake) {
+      if (!read_word(address).has_value()) {
+        return -EFAULT;
+      }
+      return static_cast<std::int64_t>(table.wake(address, value));
+    }
+    switch (table.wait(address, value, read_word)) {
+      case FutexWaitStatus::Woken:
+        return 0;
+      case FutexWaitStatus::ValueMismatch:
+        return -EAGAIN;
+      case FutexWaitStatus::InvalidAddress:
+        return -EFAULT;
+      case FutexWaitStatus::Shutdown:
+        return -EINTR;
+      case FutexWaitStatus::TimedOut:
+        return -ETIMEDOUT;
+    }
+  } catch (const std::bad_alloc&) {
+    return -ENOMEM;
+  } catch (...) {
+    // A failed guest memory reader must not unwind into generated code.
+    return -EFAULT;
+  }
+  return -ENOSYS;
+}
 
 }  // namespace
 
@@ -107,6 +168,7 @@ enum X64Sysno : std::uint64_t {
   kX64Getuid = 102,
   kX64Geteuid = 107,
   kX64Gettid = 186,
+  kX64Futex = 202,
   kX64Getppid = 110,
   kX64Getgid = 104,
   kX64Getegid = 108,
@@ -214,6 +276,8 @@ static const char* syscall_name(std::uint64_t n) noexcept {
       return "geteuid";
     case kX64Gettid:
       return "gettid";
+    case kX64Futex:
+      return "futex";
     case kX64Getppid:
       return "getppid";
     case kX64Getgid:
@@ -721,6 +785,10 @@ extern "C" void prisma_syscall_handler(prisma::runtime::CpuStateFrame* state) {
     }
 
     // -- RFC 0022: thread-startup syscall state ---------------------------
+    case kX64Futex:
+      result = handle_futex(a1, static_cast<std::uint32_t>(a2), static_cast<std::uint32_t>(a3), a4);
+      break;
+
     case kX64SetTidAddress:
       // Record the guest address now; clone/thread-exit will later clear
       // this word and wake joiners. Do not dereference guest memory here.
