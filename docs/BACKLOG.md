@@ -35,6 +35,33 @@ days), `XL` (weeks).
 
 ---
 
+## Inventory review at f0089a3
+
+On 2026-11-27 the starting inventory contained 247 unclaimed rows, nine claims and eight deferred rows. The tables below assign every row in those groups by its existing ID prefix. The resulting snapshot has 331 completed, 244 unclaimed, four claimed and 11 deferred rows. Use the section name with F1-DC-001 through F1-DC-009 because those IDs occur in both Decoder and Documentation. Individual row markers record the outcome of the review. The numbered description on each row is its deliverable. A completed row cites a commit or acceptance evidence. Open estimates and percentage targets are planning assumptions.
+
+| IDs covered | Delivery owner or tracking issue | Dependency and evidence for closing each row |
+|---|---|---|
+| F0-LG, F0-CM | Project owner · #325 | Record the relevant IP, entity, domain, privacy, account, outreach or budget decision. Link a public reference or owner confirmation appropriate to its sensitivity. |
+| F0-DX | Project owner · #325, infrastructure · #323 | Owner selects accounts, services and devices. Verify a provisioned service, a registered runner executing a job, or a device benchmark according to the row. The owner decides repository visibility and organization. |
+| F0-DC | Research · #324, publication · #325 | Add notes tied to the named source and an engineering decision in [research notes](research_notes.md). Confirm public publication with the owner. |
+| F1-PS, F1-LN | Compiler and formal verification · #321 | Revisit function-level simplification when the CFG pipeline owns it. Add mathlib only for a proof requiring it. Run differential tests and Lake for the relevant changes. |
+| F1-AC, F2-BM | Performance · #322 | Use pinned workloads, versions, real ARM64 runs and raw per-engine artifacts from the [benchmark harness](../tools/benchmarks/README.md). A skipped engine is recorded separately. SPEC requires a license. |
+| F2-SY, F2-IR, F2-PS | Runtime · #334/#318/#319, ISA/parity · #320/#321 | Use guest-visible ABI and reference results. Begin with WAIT/WAKE, then clone, then image replacement. mmap2 is outside the x86-64 ABI. MMX and cross-block helper inlining have explicit deferral triggers below. |
+| F2-AC, F2-CM | Research and owner · #324/#325 | Reproduce each table against stored inputs. Supply the submission, decision, publication or community event named on each row when the corpus and owner prerequisites are met. |
+| F25-RS | Rust migration · #321, runtime · #318, Windows CI · #323 | Claims are historical until their owner confirms active work. Verify each remaining parity claim against the [differential corpus](DIFFERENTIAL_TESTING.md), ARM64 execution or Windows per-case discovery. |
+| F25-TS, F25-LN | Memory model and verification · #321/#324 | Start from [RFC 0016](rfc/0016-tso-adaptive-rewrite-soundness.md). Demonstrate conservative fallback, pass/runtime agreement and a measured safe rewrite. Check Lean with the zero sorry budget. |
+| F25-NP, F25-AV, F25-GX | Research · #324 | Record a reproducible dataset, target-device result, CPU/heuristic or stock GPU baseline as appropriate. Test AVF on a compatible device. Publish research conclusions after collecting the measurements. |
+| F25-CA | Cache research · #324, accounts/telemetry · #325 | Build on the existing hash and persistence. Verify signed transfer, reject invalid signatures and incompatible SoCs before use, and reproduce two-peer exchange. |
+| F3-WN, F3-SH | Windows and containers · #324 | Reuse [the PE load path](../shell/orchestrator/src/load_pe.rs) and directory-backed registry. Test forwarded DLL imports, ordered TLS callbacks, Wine/NT execution, prefix isolation and cleanup at the appropriate stage. Each named app needs an actual run. |
+| F3-ND, F3-XS | Android and display · #324 | Build and install on a target device. Drive the named operation across Kotlin/JNI/Rust, verify display/input on device and capture Notepad running with guest logs. |
+| F4-GX, F4-GM, F4-AC | Graphics and evaluation · #324 | After the Windows demo, exercise each graphics feature and game profile on target hardware. Report frame time p99, FPS, energy and thermals for reproducible scenes. Submit papers once measurements exist. |
+| F5-UX, F5-BT, F5-AC, F5-PR | Product and owner · #324/#325 | Check each UX row on device, obtain consent for beta feedback, and record observed user/game counts and crash rate. Date outreach and publication evidence separately. |
+| F6-OS, F6-BZ, F6-DS, F6-LG, F6-AC | Release and project owner · #325 | Confirm scope, licensing, attribution, prices, channels and account decisions with the owner. Test purchase or update flows as applicable and verify signed artifacts before distribution. |
+| FX-CI, FX-DC | Infrastructure and documentation · #322/#323 | Run the named job and retain its artifact, or link the dated publication. Existing Lean and sanitizer jobs are tracked below. |
+| FX-CM, FX-FI, FX-HC | Project owner · #325 | Confirm community milestones, budget and sustainable schedule with the owner. These recurring rows close for the stated reporting period. |
+
+The [active roadmap](ACTIVE_ROADMAP.md) tracks current issues and PRs separately from the lifetime inventory. A new issue can introduce work without a pre-existing checkbox, as happened with #334 after the portable wait table landed.
+
 ## Fase 0 — Fundación (weeks 1-8)
 
 Most of the code-level F0 work is done via accelerated velocity. What
@@ -363,7 +390,7 @@ grinding through x86_64 ISA + maturing the lowering.
 - [x] (ff57d65) F1-LN-009: Prove `maskToSize_idem` (remove sorry).
 - [x] (04c4fa0) F1-LN-010: Prove `constant_propagate` soundness (observable equivalence). (Per-op `cp_fold_op_sound` proven; whole-program `exec → Trace` lift is the F1-LN-013 follow-on.)
 - [x] (d08c090) F1-LN-011: Prove `dead_code_eliminate` soundness. (Per-op `evalPure_unaffected_by_unread_ref` proven; whole-pass composition is F1-LN-012.)
-- [x] (pending commit) F1-LN-012: Prove DCE+CP composition preserves semantics. (Per-op closure of CP and DCE under trace equivalence proven in ConstantPropagation.lean and DeadCodeElimination.lean; whole-program `exec` composition deferred to when Function-level trace interpretation lands.)
+- [?] F1-LN-012: Prove whole-program DCE and constant-propagation composition when the function-level trace semantics are available. Per-op soundness and corollaries landed in f20bdd5.
 - [x] (451c669) F1-LN-013: Define "observable trace" formally.
 - [x] F1-LN-014: Weak memory model skeleton (per-thread rfunction + shared store). (TSO.lean: TSO struct + StoreBuffer + per-core FIFO drain model.)
 - [x] F1-LN-015: TSO axioms as lemmas over the weak memory model. (TSO.lean: load_store_self, load_store_other, fence_publishes_two, sb_litmus, propagate_publishes, etc.)
@@ -418,19 +445,19 @@ translator on a reference Linux ARM64 box.
 - [x] (abbe81c) F2-SY-003: Implement stat family (stat, lstat, fstat, newfstatat).
 - [x] (abbe81c) F2-SY-004: Implement mmap / munmap / mprotect with translation-cache awareness.
 - [x] (abbe81c) F2-SY-005: Implement brk / sbrk.
-- [x] (pending commit) F2-SY-006: Implement clone (threads).
-- [x] (pending commit) F2-SY-007: Implement futex (critical for pthread).
+- [ ] F2-SY-006: Implement guest thread creation and teardown. The startup state landed in #327. Accept when the #318 producer/consumer runs on ARM64.
+- [ ] F2-SY-007: Connect guest syscall 202 to the wait table from #328. Track #334 for WAIT/WAKE and the private flag, followed by #318 for the pthread integration.
 - [x] (abbe81c,9ba0dd9) F2-SY-008: Implement gettimeofday / clock_gettime.
 - [x] (abbe81c,9ba0dd9) F2-SY-009: Implement getpid, getuid, geteuid, gettid.
 - [x] (abbe81c) F2-SY-010: Implement exit / exit_group.
-- [x] (pending commit) F2-SY-011: Implement execve (cross-ISA — stub returning -ENOSYS for x86_64 ELF, -ENOEXEC otherwise).
+- [ ] F2-SY-011: Replace a guest image, initialize its entry state and resume execution under #319. Test failed loads and repeated replacement.
 - [x] (abbe81c) F2-SY-012: Implement dup / dup2 / dup3 / pipe.
 - [x] (9ba0dd9) F2-SY-013: Implement fcntl (subset).
 - [x] (9ba0dd9) F2-SY-014: Implement ioctl (passthrough with struct translation).
 - [x] (08e672d) F2-SY-015: Implement socket / bind / listen / accept / connect.
 - [x] (08e672d) F2-SY-016: Implement read / write socket families.
-- [x] (pending commit) F2-SY-017: Implement signal delivery to guest (sigaction bridge).
-- [x] (pending commit) F2-SY-018: Implement rt_sigprocmask / rt_sigsuspend.
+- [ ] F2-SY-017: Demonstrate guest signal delivery and resumption through a guest-installed handler. Disposition registration and self-delivery primitives exist (a7b83ae, 15fde1b).
+- [ ] F2-SY-018: Complete rt_sigprocmask / rt_sigsuspend. Session implements the mask in `sig_syscalls.rs`. Verify suspend, signal delivery, interruption and restoration with a guest test.
 - [x] (abbe81c,9ba0dd9) F2-SY-019: Implement getcwd / chdir / fchdir.
 - [x] (9ba0dd9) F2-SY-020: Implement unlink / rename / mkdir / rmdir.
 - [x] (9ba0dd9) F2-SY-021: Implement lseek / pread / pwrite.
@@ -444,11 +471,11 @@ translator on a reference Linux ARM64 box.
 - [x] (6bc6dec) F2-SY-029: Implement arch_prctl (sets %fs / %gs base).
 - [x] (cf5f668) F2-SY-030: Implement set_tid_address.
 - [?] F2-SY-031: Implement mmap2 / old_mmap. **(not applicable — x86_64 uses mmap syscall 9)**
-- [x] (pending commit) F2-SY-032: Implement robust_futex structure translation (set_robust_list / get_robust_list).
+- [ ] F2-SY-032: Complete robust-futex handling. #327 records a guest list head and length. Validate get_robust_list and thread-exit cleanup after #318.
 - [x] F2-SY-033: Errno translation table — `SyscallError::to_errno` (-ENOSYS/-EFAULT/-EPERM/-EINTR) + `SyscallHandler::dispatch_raw` encoding the guest's `-errno`-in-`rax` return convention (`shell/prisma-runtime/src/syscall_handler.rs`). ARM64 Linux uses identical errno magnitudes; the work was the typed-error → ABI mapping.
 - [x] F2-SY-034: iovec struct translation — `Iovec` marshalling (`shell/prisma-runtime/src/guest_structs.rs`, 16-byte LE round-trip, short-buffer-safe).
 - [x] F2-SY-035: timespec / timeval / sigset_t struct translation. timespec + timeval in `guest_structs.rs` (signed `time_t`, round-trip + bounds); sigset_t = `guest_signal::Sigset` (kernel 8-byte mask, set ops + rt_sigprocmask semantics, SIGKILL/SIGSTOP unblockable).
-- [x] (pending commit) F2-SY-036: termios / winsize for isatty / ioctl(TIOCGWINSZ). Winsize 80x24 default + TCGETS returns -ENOTTY for non-terminal fds.
+- [x] (779fc3f) F2-SY-036: Rust Session tty ioctl handles winsize, TCGETS and TCSETS. Tests cover terminal and non-terminal descriptors.
 - [x] F2-SY-037: Syscall fuzz harness (proptest over syscall numbers + args; `shell/prisma-runtime/tests/fuzz_syscall.rs` — deny-by-default-never-leaks + classify totality + never-panics).
 - [x] (4001bd4) F2-SY-038: Syscall strace-like logger (`PRISMA_STRACE=1`).
 
@@ -462,7 +489,7 @@ translator on a reference Linux ARM64 box.
 - [x] (d98bdbb) F2-IR-006: FMA (VFMADD, VFMSUB, etc.). (First batch — packed PS/PD xmm: VFMADD/SUB/NMADD/NMSUB × 132/213/231. Single VecFpFma IR op with neg_addend/neg_mul flags; ARM64 FMLA/FMLS lowering. ymm, scalar SS/SD, MADDSUB/MSUBADD deferred.)
 - [x] (d9f12b5) F2-IR-007: x87 ops minimal set (FLD, FST, FADD, FMUL, FDIV, FXCH). (Reduced-precision F64 bridge; see RFC 0013. Decoder coverage includes FLD/FSTP/FXCH/FADD/FMUL/FDIV.)
 - [x] (d9f12b5) F2-IR-008: x87 stack depth tracking (inspired by FEX's x87 pass). (Runtime TOS byte, logical ST(i) access, and conservative intra-block x87 stack forwarding landed.)
-- [x] (pending commit) F2-IR-009: MMX ops (rare in modern binaries; decoder stub emitting InlineAsm for unprefixed 0F 6E/6F).
+- [?] F2-IR-009: MMX execution. The decoder recognizes selected forms as stubs (`e65fd55`). Revisit when the Linux or Wine corpus requires MMX, then demonstrate guest execution.
 
 ### F2-BK — Backend for full ISA
 
@@ -483,18 +510,18 @@ translator on a reference Linux ARM64 box.
 - [x] (cac89f7) F2-PS-002: Flag elimination (remove unused flag writes — Decoder already hints). (Extended DCE to mark WriteFlags / ReadFlag / WriteFlagsFp / WriteFlagsPtest as pure, and added missing operand-collect entries for WriteFlags / ReadFlag / CondJumpFlags / StoreVecRegHi / VecFpFma so the live-set is correct. F1's flag_write_elimination [F1-PS-012] handles the CmpFlags pattern; this commit covers the SSA WriteFlags family.)
 - [x] (ff41e83) F2-PS-003: Loop-invariant code motion (LICM).
 - [x] (0396c19) F2-PS-004: Global CSE via dominator-based analysis.
-- [x] (pending commit) F2-PS-005: Inlining of short helpers (stub pass scanning for CallRel candidates; actual cross-block inlining deferred).
+- [?] F2-PS-005: Inline short helpers. The candidate scan landed in `e65fd55`. Revisit cross-block inlining when caller/callee semantics and a measurable workload are available.
 
 ### F2-BM — Benchmarks
 
 - [x] (533fc70) F2-BM-001: Dhrystone harness (Python driver + C source bundled).
-- [x] (pending commit) F2-BM-002: CoreMark harness.
-- [x] (pending commit) F2-BM-003: nbench harness.
+- [ ] F2-BM-002: CoreMark build script exists. Register a pinned corpus with prisma-bench and verify a real run under #322.
+- [ ] F2-BM-003: nbench build script exists. Register a pinned corpus with prisma-bench and verify a real run under #322.
 - [?] F2-BM-004: SPEC CPU2017 subset (the ones that run without GUI / net). **(Blocked: requires SPEC license from Danny)**
 - [?] F2-BM-005: Per-baseline runners: Prisma, QEMU, Box64, FEX, native. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [x] (533fc70) F2-BM-006: Result schema (JSON) + aggregation.
-- [x] (pending commit) F2-BM-007: Markdown / LaTeX report generation.
-- [?] F2-BM-008: `prisma-bench run --backend prisma --corpus dhrystone` fully wired. **(Blocked: requires Danny's ARM64 hardware to execute)**
+- [ ] F2-BM-007: Expose Markdown and LaTeX via prisma-bench report. The standalone report.py offers both formats. The packaged CLI implements JSON at this revision.
+- [?] F2-BM-008: Collect a Prisma Dhrystone run. The backend in `tools/benchmarks/src/prisma_bench/runners.py` skips ELF inputs because prisma_run takes raw blobs. Provide a guest executable entry path and ARM64 timing hardware (#322).
 - [?] F2-BM-009: First public results table on prisma-emu.dev/benchmarks. **(Blocked: requires Danny's ARM64 hardware to execute)**
 - [?] F2-BM-010: Performance target: 30-45% of native at end of Fase 2. **(Blocked: requires Danny's ARM64 hardware to execute)**
 
@@ -544,7 +571,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F25-TS-001: Annotate IR with thread-affinity hints (static analysis).
 - [ ] F25-TS-002: Runtime profiling hook (per-region observe).
 - [ ] F25-TS-003: Classifier runs (offline) + signed classifications distributed.
-- [ ] F25-TS-004: Rewrite pass: TSO→plain where proven safe.
+- [ ] F25-TS-004: Integrate the proven TSO rewrite with the runtime classifier. The Lean model and rewrite examples already build in ir-spec/PrismaIR.
 - [ ] F25-TS-005: Conservative-fallback policy on unknown classification.
 - [ ] F25-TS-006: Per-region runtime assertion (debug) that classification holds.
 - [ ] F25-TS-007: Measure % of ops safely downgraded on reference workloads.
@@ -561,17 +588,17 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 - [~|claude-ir-core] F25-RS-001: Stabilize `shell/prisma-ir` public IR surface against C++ `ir.hpp` and Lean `Syntax.lean`.
 - [~|codex-decoder] F25-RS-002: Expand `shell/prisma-decoder` opcode coverage with unit tests and differential fixtures.
-- [~|codex-cache] F25-RS-003: Restore real translation-cache implementation with SHA-256 envelope and persistence tests.
-- [~|claude-passes] F25-RS-004: Implement `Pass` + `PassPipeline` and migrate const-prop/DCE/CSE skeletons.
+- [x] (66f76a2) F25-RS-003: Translation-cache implementation, SHA-256 envelope, persistence and round-trip tests in shell/prisma-cache.
+- [x] (5d270aa) F25-RS-004: Pass + PassPipeline, const-prop, DCE and CSE in shell/prisma-passes.
 - [~|claude-runtime] F25-RS-005: Build dispatcher/JIT/signal/SMC runtime API in Rust aligned to current C API.
-- [~|codex-backend] F25-RS-006: Build ARM64 assembler/lowerer smoke path and backend ABI shim.
-- [~|codex-integracion] F25-RS-007: Add CI-visible pure-Rust and C++/Rust boundary validation harness; Windows workspace tests and clippy pass locally via `scripts/validate-rust-workspace.ps1`, and `ffi-bridge.yml` now has a Windows/MSVC job for the same gate.
-- [~|codex-integracion] F25-RS-008: Unblock Windows C++ test runner loading (`0xC000007B` Debug loader) before enabling C++/Rust differential CI.
+- [x] (85143ce) F25-RS-006: ARM64 assembler, lowering smoke path and ABI shim in shell/prisma-backend. New instruction families use #320/#321.
+- [x] (3673c8d) F25-RS-007: Pure Rust and C++/Rust boundary validation in shell-stub.yml and ffi-bridge.yml, including Windows/MSVC.
+- [x] (3673c8d) F25-RS-008: Windows C++ test loading verified by the three ASCII smoke cases recorded in HANDOFF/HANDOFF-codex-current.md. Granular discovery remains F25-RS-009.
 - [~|codex-integracion] F25-RS-009: Fix Windows CTest/Catch2 Unicode discovery; Windows now uses ASCII smoke tests for CI-visible validation, while full per-case discovery remains mojibake and should be revisited before granular Windows reporting.
 
 ### F25-CA — Distributed translation cache (Pillar 4)
 
-- [ ] F25-CA-001: SHA-256 content hash.
+- [x] (0d4d17a) F25-CA-001: SHA-256 content digest in the C++ cache, mirrored by shell/prisma-cache in 66f76a2.
 - [ ] F25-CA-002: Cloudflare R2 bucket + object path scheme.
 - [ ] F25-CA-003: Rust cache service (Axum): POST /cache, GET /cache/{hash}.
 - [ ] F25-CA-004: Cache entry signature (Ed25519 signing key).
@@ -616,9 +643,9 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F3-WN-006: `pBTCpuGetContext` / `pBTCpuSetContext`.
 - [ ] F3-WN-007: `pBTCpuNotifyMapViewOfSection`.
 - [ ] F3-WN-008: `pBTCpuFlushInstructionCache2`.
-- [ ] F3-WN-009: Loader PE parser (fallback if Wine's isn't reused).
-- [ ] F3-WN-010: Relocations handling for guest DLLs.
-- [ ] F3-WN-011: Import table translation.
+- [x] (1e144f6) F3-WN-009: PE/COFF parser used by load_pe and loader integration tests.
+- [x] (90b6425) F3-WN-010: PE base relocations are applied to a mapped image, with rebasing tests. Wine/DLL execution remains in the Wine integration tasks.
+- [x] (5669cdd) F3-WN-011: The loader resolves named and ordinal imports against the module table and patches IAT slots. Track DLL forwarding and callbacks in the Wine workstream.
 - [ ] F3-WN-012: TLS callback handling.
 - [ ] F3-WN-013: Integration test: run Notepad.exe (Windows XP).
 - [ ] F3-WN-014: Integration test: run Calc.exe.
@@ -628,25 +655,25 @@ Five pillar prototypes, no product. This is the épico-defining block.
 
 ### F3-SH — Shell / orchestrator (Rust)
 
-- [ ] F3-SH-001: Cargo workspace setup under `shell/`.
+- [x] (5e4a937) F3-SH-001: Cargo workspace setup under shell/.
 - [ ] F3-SH-002: JNI bridge crate to call from Kotlin.
-- [ ] F3-SH-003: Container lifecycle: create, list, delete.
+- [x] (ab51f3f) F3-SH-003: ContainerRegistry creates, lists and removes prefixes, with directory-backed tests. Wine process start/stop remains in the product milestone.
 - [ ] F3-SH-004: Wine prefix management (per-container).
 - [ ] F3-SH-005: Overlay filesystem (FUSE or layered).
 - [ ] F3-SH-006: Component downloader (Wine bundle, DXVK bundle, VKD3D bundle).
-- [ ] F3-SH-007: SHA-256 verification of downloads.
-- [ ] F3-SH-008: Config TOML parsing + validation.
+- [ ] F3-SH-007: Connect the existing byte/file SHA-256 checks (aaeb776) to downloaded components. Verify corruption is rejected before installation.
+- [ ] F3-SH-008: Complete per-container config validation. TOML parsing and atomic round-trip persistence landed in 1295531. Test unsupported versions and option combinations alongside the Wine backend.
 - [ ] F3-SH-009: Crash reporter integration (Sentry via reqwest).
 - [ ] F3-SH-010: P2P cache client (libp2p).
-- [ ] F3-SH-011: Translation cache persistence to disk.
-- [ ] F3-SH-012: Unit tests + integration tests.
+- [x] (66f76a2) F3-SH-011: Translation cache saves to disk and reloads via shell/prisma-cache.
+- [x] (7aa43e4) F3-SH-012: Orchestrator unit tests and cross-module loader integration tests run via cargo test. Extend coverage with each future product feature.
 
 ### F3-ND — Android app
 
-- [ ] F3-ND-001: Gradle project under `android/app`.
-- [ ] F3-ND-002: Min SDK 29, target SDK latest.
-- [ ] F3-ND-003: Compose UI skeleton.
-- [ ] F3-ND-004: Container list screen.
+- [x] (fe9c6ce) F3-ND-001: Gradle project under android/app.
+- [ ] F3-ND-002: Gradle sets minSdk 29 and targetSdk 35. Validate the supported target SDK on the release toolchain and test on the oldest supported device.
+- [x] (fe9c6ce) F3-ND-003: Compose launcher skeleton in MainActivity.kt.
+- [ ] F3-ND-004: Connect the Compose list to the real container registry via JNI. MainActivity currently supplies placeholder data.
 - [ ] F3-ND-005: Import .exe flow (SAF integration).
 - [ ] F3-ND-006: Run container screen with log view.
 - [ ] F3-ND-007: Settings screen.
@@ -751,7 +778,7 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] F6-OS-003: Write `OSS-LICENSE` + attribution files.
 - [ ] F6-OS-004: Publish `prisma-emu/prisma-core` (MIT).
 - [ ] F6-OS-005: Keep `prisma-emu/prisma-app` (freemium).
-- [ ] F6-OS-006: Public contributing guide.
+- [ ] F6-OS-006: Publish the external contribution process after the governance decision. The current docs/CONTRIBUTING.md describes an internal workflow.
 - [ ] F6-OS-007: Governance model (one BDFL initially, grow later).
 - [ ] F6-OS-008: Accept first external PR.
 
@@ -790,17 +817,17 @@ Five pillar prototypes, no product. This is the épico-defining block.
 ### FX-CI — CI / DevEx
 
 - [ ] FX-CI-001: Self-hosted ARM64 runner online.
-- [ ] FX-CI-002: Matrix: Linux x86_64 + Linux ARM64 + macOS ARM64.
-- [ ] FX-CI-003: Sanitizers job (ASan, UBSan, TSan).
+- [ ] FX-CI-002: Extend the Linux x86_64 and ARM64 CI matrix to macOS ARM64 and retain results per host.
+- [x] (90a2796) FX-CI-003: ASan/UBSan and TSan jobs exist in core-sanitizers.yml. Reliability follow-ups belong to #323.
 - [ ] FX-CI-004: Coverage job publishing to prisma-emu.dev/coverage.
-- [ ] FX-CI-005: Lean proof-check job.
+- [x] (fc0186b) FX-CI-005: The ir-spec workflow builds the Lean project and enforces the sorry budget.
 - [ ] FX-CI-006: Nightly benchmark runs with regression gate.
 - [ ] FX-CI-007: Nightly fuzz runs (time-budgeted).
 
 ### FX-DC — Documentation
 
 - [ ] FX-DC-001: Blog post every 2-3 months.
-- [x] (pending commit) FX-DC-002: `docs/GLOSSARY.md` of project-specific terms.
+- [x] (e65fd55) FX-DC-002: Project terminology in docs/GLOSSARY.md.
 - [ ] FX-DC-003: Quarterly progress report public post.
 - [ ] FX-DC-004: Video explainer series (3-5 min each) on YouTube.
 - [ ] FX-DC-005: Architecture diagrams (excalidraw) regenerated per phase.
@@ -826,19 +853,3 @@ Five pillar prototypes, no product. This is the épico-defining block.
 - [ ] FX-HC-004: Therapy appointment buffer (risk mitigation).
 
 ---
-
-## Totals (approx, lifetime plan)
-
-- Fase 0: 80 items (most done).
-- Fase 1: 160 items.
-- Fase 2: 90 items.
-- Fase 2.5: 50 items.
-- Fase 3: 55 items.
-- Fase 4: 20 items.
-- Fase 5: 25 items.
-- Fase 6: 25 items.
-- Cross-cutting: 25 items.
-
-**Rough total: ~530 items across the 48-54 month plan.**
-
-This is the map. The unit of progress is a commit that closes a line.

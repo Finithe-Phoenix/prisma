@@ -1,102 +1,34 @@
-# Prisma Active Roadmap
+# Prisma active roadmap
 
-> Execution guide for the current engineering program. The canonical multi-year inventory remains [`BACKLOG.md`](BACKLOG.md); this document is the prioritized, dependency-aware operating view.
+The next deliverable is a guest futex call that synchronizes two threads through the existing wait table. This operating view uses the integration state of `main` at `f0089a3` on 2026-11-27. The tracking epic is [#326](https://github.com/Finithe-Phoenix/prisma/issues/326). Each inventory row has an implementation or owner decision in the [canonical backlog](BACKLOG.md#inventory-review-at-f0089a3).
 
-## Command center
+## Integrated baseline
 
-- Tracking epic: [#326](https://github.com/Finithe-Phoenix/prisma/issues/326)
-- Current integration batch: [PR #312](https://github.com/Finithe-Phoenix/prisma/pull/312)
-- Threading architecture: [RFC 0022](rfc/0022-guest-threading-model.md)
-- Detailed session queue: [`WORK_QUEUE.md`](WORK_QUEUE.md)
-
-## Priority model
-
-| Priority | Meaning | Merge policy |
+| Issue or change | Landing commit | Evidence to reuse |
 |---|---|---|
-| P0 | Blocks the next executable milestone | Work before unrelated feature expansion |
-| P1 | Correctness or architecture follow-up | Start after overlapping P0 work lands |
-| P2 | Quality, performance, infrastructure, or research | Run in parallel when ownership does not conflict |
-| Governance | Owner-controlled external prerequisite | Track explicitly; never pretend engineering can close it alone |
+| #315 · [PR #312](https://github.com/Finithe-Phoenix/prisma/pull/312) | `aa52753` | W1/W2 ISA and persistent RFLAGS |
+| #316 · [PR #327](https://github.com/Finithe-Phoenix/prisma/pull/327) | `b9653d5` | Per-thread startup syscall state |
+| [PR #333](https://github.com/Finithe-Phoenix/prisma/pull/333) | `2396063` | Fused translation respects the available guest bytes |
+| #317 · [PR #328](https://github.com/Finithe-Phoenix/prisma/pull/328) | `f0089a3` | Portable wait table, value recheck, bounded wakes and shutdown |
 
-## Phase A — stabilize the baseline
+## Runtime milestones
 
-### [#315 — Stabilize and merge W1/W2 coding-wave batch](https://github.com/Finithe-Phoenix/prisma/issues/315)
+| Order | Deliverable | Acceptance |
+|---|---|---|
+| 1 · [#334](https://github.com/Finithe-Phoenix/prisma/issues/334) | Wire guest syscall 202 to the shared wait table through a thread-local context and explicit guest-word reader | Direct WAIT/WAKE and private variants pass two-host-thread tests, including bounded wake counts, mismatch, invalid address and shutdown. Unsupported commands, flags and timeouts return the specified errors. |
+| 2 · [#318](https://github.com/Finithe-Phoenix/prisma/issues/318) | Implement guest thread creation and Session ownership under [RFC 0022](rfc/0022-guest-threading-model.md) | A real ARM64 guest producer/consumer synchronizes through clone/futex. Verify independent registers, TLS and stack, shared arena/cache, cleanup and TSan. |
+| 3 · [#319](https://github.com/Finithe-Phoenix/prisma/issues/319) | Replace the running image on execve and return to translation | A second guest executable starts with its own entry state. Failed loads preserve the first image. Repeated replacements release mappings, threads, stacks and waiters. |
+| 4 · Linux compatibility | Run the x86-64 coreutils corpus on ARM64, classify failures by subsystem and fix reproducible regressions | Record corpus version, pass count and denominator. Target at least 85% passing. |
 
-**Outcome:** PR #312 lands with benchmarks, C++20, sanitizers, FFI, CodeQL, Rust, Lean, formatting, and docs checks green.
+## Work alongside the runtime
 
-This is the prerequisite for work that depends on persistent RFLAGS, real atomic CAS, WideDiv, PCMPxSTRx, PCLMULQDQ, BMI1, or F16C.
+- **Instruction semantics and parity.** [#320](https://github.com/Finithe-Phoenix/prisma/issues/320) covers RCL/RCR by CL. Both decoders already handle CL forms. Compare the implemented paths against reference results and flags at count boundaries, then fix observed discrepancies. [#321](https://github.com/Finithe-Phoenix/prisma/issues/321) tracks C++/Rust fixtures, serializer agreement and Lean coverage. Keep the Lean sorry budget at zero.
+- **Performance and CI.** [#322](https://github.com/Finithe-Phoenix/prisma/issues/322) owns reproducible corpora, the packaged report command, per-backend results and baselines on comparable hardware. [#323](https://github.com/Finithe-Phoenix/prisma/issues/323) owns actionable logs, sanitizer and ARM64 reliability. Use the [CI runbook](CI_RUNBOOK.md) to distinguish code and runner failures.
+- **Product and research.** [#324](https://github.com/Finithe-Phoenix/prisma/issues/324) tracks PE/Wine, Android, graphics, AVF, NPU and signed distributed caching. Reuse PE mapping, relocations and import binding. Finish Wine, container start/stop, overlay, JNI, display and input until Notepad runs on an Android device. Measure graphics and research prototypes against documented baselines before beta and release.
+- **Owner decisions.** [#325](https://github.com/Finithe-Phoenix/prisma/issues/325) tracks IP and licensing, repository ownership/visibility, domain, devices, privacy and external outreach. Record decisions, dates and dependencies. Use the [multi-year roadmap](ROADMAP.md) for beta, publication and distribution milestones.
 
-## Phase B — unlock pthreads and glibc
+## Integration and maintenance
 
-Dependency chain:
+Review [PR #335](https://github.com/Finithe-Phoenix/prisma/pull/335) by subsystem. Against this revision the changed files are the C API header, dispatcher and syscall-handler headers and implementations, and the backlog. Check the wider claims about MMX, Lean, terminal handling and benchmarks against the integrated tree. Attach each useful change to its issue with a focused test and record its landing SHA after integration.
 
-```text
-#315 ──┬──> #316 thread-startup syscalls ──┐
-       └──> #317 futex WAIT/WAKE ──────────┼──> #318 multi-thread Session + clone ──> #319 execve
-                                         ┘
-```
-
-### [#316 — glibc thread-startup syscall surface](https://github.com/Finithe-Phoenix/prisma/issues/316)
-
-Implement `gettid`, `set_tid_address`, `set_robust_list`, and an explicit `rseq` stub without changing single-thread execution semantics.
-
-### [#317 — FUTEX_WAIT/FUTEX_WAKE host wait table](https://github.com/Finithe-Phoenix/prisma/issues/317)
-
-Add the portable wait-table foundation required by pthread mutexes and condition variables, with value re-checking, bounded wakeups, cleanup, and TSan coverage.
-
-### [#318 — multi-thread Session and clone](https://github.com/Finithe-Phoenix/prisma/issues/318)
-
-Run one host thread per guest thread over a shared arena and cache, with one `CpuStateFrame` per guest thread and a real ARM64 producer/consumer e2e.
-
-### [#319 — execve image replacement](https://github.com/Finithe-Phoenix/prisma/issues/319)
-
-Replace the current guest process image safely, rebuild the initial process state, and re-enter the translator without leaking mappings, threads, stacks, or waiters.
-
-## Phase C — close correctness gaps
-
-### [#320 — variable-count RCL/RCR](https://github.com/Finithe-Phoenix/prisma/issues/320)
-
-Complete the remaining CL-count rotate-through-carry forms after PR #312 to minimize decoder/backend conflicts.
-
-### [#321 — Rust/C++/Lean parity and differential corpus](https://github.com/Finithe-Phoenix/prisma/issues/321)
-
-Automate IR/serializer parity, widen cross-language fixtures, and make missing visitors or semantic mirrors fail loudly in CI.
-
-## Phase D — performance and delivery confidence
-
-### [#322 — benchmark harness and baselines](https://github.com/Finithe-Phoenix/prisma/issues/322)
-
-Harden pytest/Ruff/mypy gates, test report generation, make corpora reproducible, upload artifacts, and define a non-flaky regression policy.
-
-### [#323 — ARM64 CI and sanitizer infrastructure](https://github.com/Finithe-Phoenix/prisma/issues/323)
-
-Distinguish code failures from runner failures, retain useful artifacts, document recovery, and evaluate a self-hosted ARM64 runner when justified.
-
-## Phase E — product and program enablers
-
-### [#324 — Wine, graphics, Android, and NPU research](https://github.com/Finithe-Phoenix/prisma/issues/324)
-
-Turn the research backlog into architecture notes, decision records, and explicit go/no-go criteria without destabilizing the core runtime.
-
-### [#325 — legal, organization, domain, and community prerequisites](https://github.com/Finithe-Phoenix/prisma/issues/325)
-
-Track owner-controlled IP, visibility, organization, domain, telemetry, and outreach decisions separately from engineering completion.
-
-## Working agreement
-
-1. Use one bounded branch and PR per independently reviewable slice.
-2. Define acceptance criteria and tests before implementation.
-3. Do not merge unexplained red CI.
-4. Record the landing SHA in the relevant issue.
-5. Keep `BACKLOG.md` complete and this document focused on active execution.
-6. Prefer small vertical slices that end in an executable or observable result.
-7. Avoid parallel edits to the same decoder/backend files unless ownership is explicit.
-
-## Immediate attack order
-
-1. Finish #315 and merge PR #312.
-2. Implement #316 as the lowest-blast-radius threading prerequisite.
-3. Build #317 in parallel only where file ownership is separate.
-4. Land #318 after the foundations are green under TSan.
-5. Take #320 after PR #312 to avoid conflict with the persistent flags batch.
-6. Continuously improve #321–#323 as supporting quality streams.
+Review dependency updates independently under CI. [#311](https://github.com/Finithe-Phoenix/prisma/pull/311) updates cache, [#314](https://github.com/Finithe-Phoenix/prisma/pull/314) sets up Python, [#336](https://github.com/Finithe-Phoenix/prisma/pull/336) uploads artifacts, [#337](https://github.com/Finithe-Phoenix/prisma/pull/337) checks Markdown and [#338](https://github.com/Finithe-Phoenix/prisma/pull/338) runs CodeQL. Keep one reviewable change per PR, capture relevant CI and architecture results, and link its issue and merge SHA in the backlog.

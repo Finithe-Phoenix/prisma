@@ -1,102 +1,34 @@
 # Hoja de ruta activa de Prisma
 
-> Guía de ejecución para el programa de ingeniería actual. El inventario canónico de largo plazo permanece en [`BACKLOG.md`](BACKLOG.md); este documento es la vista priorizada y ordenada por dependencias.
+La próxima entrega es una llamada futex del invitado capaz de sincronizar dos hilos mediante la tabla de espera existente. El corte de integración corresponde a `main` en `f0089a3`, revisado el 27 de noviembre de 2026. La épica de seguimiento es [#326](https://github.com/Finithe-Phoenix/prisma/issues/326). El [inventario canónico](BACKLOG.md#inventory-review-at-f0089a3) asigna las actividades a entregas de ingeniería o decisiones del titular.
 
-## Centro de control
+## Base integrada
 
-- Épica principal: [#326](https://github.com/Finithe-Phoenix/prisma/issues/326)
-- Lote de integración actual: [PR #312](https://github.com/Finithe-Phoenix/prisma/pull/312)
-- Arquitectura de hilos: [RFC 0022](rfc/0022-guest-threading-model.md)
-- Cola detallada de trabajo: [`WORK_QUEUE.md`](WORK_QUEUE.md)
-
-## Modelo de prioridad
-
-| Prioridad | Significado | Política de integración |
+| Issue o cambio | Commit de integración | Resultado disponible |
 |---|---|---|
-| P0 | Bloquea el siguiente hito ejecutable | Debe atenderse antes de ampliar funciones no relacionadas |
-| P1 | Seguimiento de corrección o arquitectura | Iniciar después de que aterrice el P0 que toque los mismos archivos |
-| P2 | Calidad, rendimiento, infraestructura o investigación | Puede avanzar en paralelo cuando no exista conflicto de propiedad |
-| Gobierno | Prerrequisito externo controlado por el propietario | Debe registrarse explícitamente; ingeniería no puede cerrarlo por sí sola |
+| #315 · [PR #312](https://github.com/Finithe-Phoenix/prisma/pull/312) | `aa52753` | Instrucciones W1/W2 y RFLAGS persistente |
+| #316 · [PR #327](https://github.com/Finithe-Phoenix/prisma/pull/327) | `b9653d5` | Estado de las llamadas de arranque por hilo |
+| [PR #333](https://github.com/Finithe-Phoenix/prisma/pull/333) | `2396063` | La traducción de bloques fusionados respeta los bytes disponibles del invitado |
+| #317 · [PR #328](https://github.com/Finithe-Phoenix/prisma/pull/328) | `f0089a3` | Tabla de espera portable, relectura del valor, límite de despertares y cierre |
 
-## Fase A — estabilizar la línea base
+## Hitos del runtime
 
-### [#315 — Estabilizar e integrar el lote W1/W2](https://github.com/Finithe-Phoenix/prisma/issues/315)
+| Orden | Entrega | Criterio de aceptación |
+|---|---|---|
+| 1 · [#334](https://github.com/Finithe-Phoenix/prisma/issues/334) | Conectar la syscall 202 a la tabla compartida mediante un contexto por hilo y una función explícita de lectura de memoria guest | Probar WAIT/WAKE y sus variantes privadas con dos hilos host, límite de despertares, discrepancia de valor, dirección inválida y cierre. Comandos, banderas y tiempos de espera sin soporte devuelven los errores especificados. |
+| 2 · [#318](https://github.com/Finithe-Phoenix/prisma/issues/318) | Implementar clone y la gestión de hilos en Session según el [RFC 0022](rfc/0022-guest-threading-model.md) | Un productor y un consumidor guest se sincronizan mediante clone/futex en ARM64 real. Verificar registros, TLS y pila por hilo, arena y caché compartidas, liberación de recursos y TSan. |
+| 3 · [#319](https://github.com/Finithe-Phoenix/prisma/issues/319) | Sustituir la imagen activa con execve y reingresar al traductor | Un segundo ejecutable arranca con su propio estado inicial. Una carga fallida conserva la primera imagen. Repetir la operación libera mappings, hilos, pilas y waiters. |
+| 4 · Compatibilidad Linux | Ejecutar el corpus coreutils x86-64 en ARM64, clasificar los fallos por subsistema y corregir las regresiones reproducibles | Registrar versión del corpus, pruebas aprobadas y total. La meta es alcanzar al menos el 85 %. |
 
-**Resultado:** el PR #312 se integra con benchmarks, C++20, sanitizers, FFI, CodeQL, Rust, Lean, formato y documentación en verde.
+## Actividades paralelas
 
-Este paso es requisito para cualquier trabajo que dependa de RFLAGS persistente, CAS atómico real, WideDiv, PCMPxSTRx, PCLMULQDQ, BMI1 o F16C.
+- **Semántica y paridad.** [#320](https://github.com/Finithe-Phoenix/prisma/issues/320) cubre RCL/RCR con contador CL. Ambos decodificadores ya procesan formas CL. Comparar sus resultados y flags con la referencia en los límites del contador y corregir discrepancias observadas. [#321](https://github.com/Finithe-Phoenix/prisma/issues/321) cubre los casos diferenciales C++/Rust, los serializadores y las definiciones Lean. Mantener en cero el presupuesto de `sorry`.
+- **Rendimiento y CI.** [#322](https://github.com/Finithe-Phoenix/prisma/issues/322) cubre corpora reproducibles, el comando de reportes y resultados por motor sobre hardware comparable. [#323](https://github.com/Finithe-Phoenix/prisma/issues/323) cubre diagnósticos, sanitizers y fiabilidad en ARM64. Clasificar los fallos con el [manual de CI](CI_RUNBOOK.md).
+- **Producto e investigación.** [#324](https://github.com/Finithe-Phoenix/prisma/issues/324) agrupa PE/Wine, Android, gráficos, AVF, NPU y caché distribuida firmada. Reutilizar el mapeo de PE, las reubicaciones y el enlace de importaciones. Completar Wine, arranque y parada de contenedores, overlay, JNI, pantalla y entrada hasta ejecutar Notepad en Android real. Evaluar gráficos y prototipos frente a referencias documentadas antes de beta y lanzamiento.
+- **Decisiones del titular.** [#325](https://github.com/Finithe-Phoenix/prisma/issues/325) agrupa propiedad intelectual, licencias, organización y visibilidad del repositorio, dominio, dispositivos, privacidad y comunicación externa. Registrar decisión, fecha y dependencias. La [hoja plurianual](ROADMAP.md) contiene los hitos de beta, publicación y distribución.
 
-## Fase B — habilitar pthreads y glibc
+## Integración y mantenimiento
 
-Cadena de dependencias:
+Revisar el [PR #335](https://github.com/Finithe-Phoenix/prisma/pull/335) por subsistema. Frente a esta revisión, el cambio afecta a la cabecera de la API C, las cabeceras e implementaciones del dispatcher y del manejador de syscalls, y el backlog. Contrastar las afirmaciones sobre MMX, Lean, terminal y benchmarks con el árbol integrado. Vincular cada cambio aprovechable a su issue con una prueba específica y registrar el SHA al integrarlo.
 
-```text
-#315 ──┬──> #316 syscalls de arranque ────┐
-       └──> #317 futex WAIT/WAKE ─────────┼──> #318 Session multihilo + clone ──> #319 execve
-                                        ┘
-```
-
-### [#316 — Syscalls de arranque de hilos para glibc](https://github.com/Finithe-Phoenix/prisma/issues/316)
-
-Implementar `gettid`, `set_tid_address`, `set_robust_list` y un stub explícito de `rseq` sin modificar el comportamiento de ejecución monohilo.
-
-### [#317 — Tabla de espera FUTEX_WAIT/FUTEX_WAKE](https://github.com/Finithe-Phoenix/prisma/issues/317)
-
-Agregar la base portable requerida por mutexes y variables de condición de pthread, con revalidación del valor, límites de wakeup, limpieza y cobertura TSan.
-
-### [#318 — Session multihilo y clone](https://github.com/Finithe-Phoenix/prisma/issues/318)
-
-Ejecutar un hilo host por hilo guest sobre arena y caché compartidas, con un `CpuStateFrame` por hilo guest y una prueba productor/consumidor real en ARM64.
-
-### [#319 — Sustitución de imagen mediante execve](https://github.com/Finithe-Phoenix/prisma/issues/319)
-
-Reemplazar de forma segura el proceso guest actual, reconstruir el estado inicial y reingresar al traductor sin fugas de mappings, hilos, stacks o waiters.
-
-## Fase C — cerrar brechas de corrección
-
-### [#320 — RCL/RCR con conteo variable](https://github.com/Finithe-Phoenix/prisma/issues/320)
-
-Completar las variantes controladas por `CL` después del PR #312 para minimizar conflictos en decoder y backend.
-
-### [#321 — Paridad Rust/C++/Lean y corpus diferencial](https://github.com/Finithe-Phoenix/prisma/issues/321)
-
-Automatizar la paridad del IR y serializadores, ampliar fixtures entre lenguajes y hacer que cualquier visitor o espejo semántico faltante falle claramente en CI.
-
-## Fase D — confianza en rendimiento y entrega
-
-### [#322 — Harness de benchmarks y líneas base](https://github.com/Finithe-Phoenix/prisma/issues/322)
-
-Fortalecer pytest/Ruff/mypy, probar reportes, volver reproducibles los corpora, publicar artefactos y definir una política de regresiones que no sea inestable.
-
-### [#323 — CI ARM64 e infraestructura de sanitizers](https://github.com/Finithe-Phoenix/prisma/issues/323)
-
-Separar fallos de código y fallos de runner, conservar artefactos útiles, documentar recuperación y evaluar un runner ARM64 propio cuando exista justificación.
-
-## Fase E — habilitadores de producto y programa
-
-### [#324 — Investigación de Wine, gráficos, Android y NPU](https://github.com/Finithe-Phoenix/prisma/issues/324)
-
-Convertir la investigación en notas de arquitectura, registros de decisión y criterios explícitos de avance sin desestabilizar el runtime principal.
-
-### [#325 — Prerrequisitos legales, organización, dominio y comunidad](https://github.com/Finithe-Phoenix/prisma/issues/325)
-
-Gestionar por separado decisiones de propiedad intelectual, visibilidad, organización, dominio, telemetría y colaboración externa.
-
-## Acuerdo de trabajo
-
-1. Usar una rama y un PR acotados por cada entrega revisable de forma independiente.
-2. Definir criterios de aceptación y pruebas antes de implementar.
-3. No integrar CI rojo sin una explicación formal.
-4. Registrar el SHA de aterrizaje en el issue correspondiente.
-5. Mantener `BACKLOG.md` completo y este documento enfocado en la ejecución activa.
-6. Preferir cortes verticales pequeños que terminen en un resultado ejecutable u observable.
-7. Evitar ediciones paralelas en los mismos archivos de decoder/backend salvo que exista propiedad explícita.
-
-## Orden de ataque inmediato
-
-1. Finalizar #315 e integrar el PR #312.
-2. Implementar #316 como prerrequisito multihilo de menor impacto.
-3. Construir #317 en paralelo únicamente donde no se crucen archivos.
-4. Integrar #318 después de que ambas bases estén verdes bajo TSan.
-5. Atender #320 después del PR #312 para evitar conflicto con el lote de flags persistentes.
-6. Mejorar continuamente #321–#323 como líneas de calidad de apoyo.
+Revisar cada actualización de dependencias con CI. [#311](https://github.com/Finithe-Phoenix/prisma/pull/311) actualiza la caché, [#314](https://github.com/Finithe-Phoenix/prisma/pull/314) prepara Python, [#336](https://github.com/Finithe-Phoenix/prisma/pull/336) sube artefactos, [#337](https://github.com/Finithe-Phoenix/prisma/pull/337) valida Markdown y [#338](https://github.com/Finithe-Phoenix/prisma/pull/338) ejecuta CodeQL. Abrir un PR por cambio revisable, adjuntar los resultados de CI y arquitectura pertinentes y registrar en el inventario su issue y SHA de integración.
