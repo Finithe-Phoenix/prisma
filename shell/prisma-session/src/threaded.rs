@@ -7,7 +7,7 @@ use std::sync::{mpsc, Mutex};
 use std::thread::{self, Scope};
 use std::time::{Duration, Instant};
 
-use prisma_orchestrator::pe_loader::MappedImage;
+use super::ProgramImage;
 use prisma_runtime::executor::InstalledBlock;
 use prisma_translator::Translator;
 
@@ -48,7 +48,7 @@ struct CachedBlock {
 }
 
 struct Process<'a> {
-    image: &'a MappedImage,
+    image: &'a ProgramImage,
     context: &'a mut SyscallContext,
     memory: &'a mut BackedAddressSpace,
     blocks: HashMap<u64, CachedBlock>,

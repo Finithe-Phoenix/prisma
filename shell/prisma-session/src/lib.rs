@@ -1,8 +1,8 @@
 //! Prisma execution session — the composition root (RFC 0017).
 //!
 //! The one place `orchestrator` (load), `prisma-translator` (translate), and
-//! `prisma-runtime` (dispatch/execute) meet. A [`Session`] loads a PE into guest
-//! memory, then drives the dispatcher's `run_with_callbacks` seam with two
+//! `prisma-runtime` (dispatch/execute) meet. A [`Session`] loads a PE or
+//! freestanding ELF64 executable into guest memory, then drives the dispatcher's `run_with_callbacks` seam with two
 //! adapters — a fetch over the mapped image and a translate over the
 //! `Translator` — so a guest block goes from bytes to an installed ARM64
 //! translation. The dispatcher owns the guest-PC stepping (which is why
@@ -27,6 +27,7 @@ pub mod process_syscalls;
 pub mod resource_syscalls;
 pub mod sched_syscalls;
 pub mod sig_syscalls;
+pub mod static_elf;
 pub mod syscall_dispatch;
 pub mod time_syscalls;
 pub mod tty_syscalls;
@@ -37,7 +38,7 @@ use prisma_cache::TranslationCache;
 use prisma_orchestrator::address_space::AddressSpaceError;
 use prisma_orchestrator::backed_address_space::BackedAddressSpace;
 use prisma_orchestrator::guest_layout::{
-    backed_layout_sections, layout_sections, populate_backed, BackedGuestLayout, GuestLayout,
+    layout_sections, populate_backed, BackedGuestLayout, GuestLayout,
 };
 use prisma_orchestrator::guest_stack::DEFAULT_STACK_SIZE;
 use prisma_orchestrator::init_stack::{build_initial_stack, ProcessStackParams, StackBuildError};
@@ -70,12 +71,66 @@ const MAX_INSNS: usize = 1024;
 /// cache and translator) drops; the guest [`MappedImage`] frees its bytes on
 /// drop. Dropping a `Session` releases all of it — nothing survives a restart.
 pub struct Session {
-    pe_image: PeImage,
-    image: MappedImage,
+    image: ProgramImage,
     translator: Translator,
     cache: TranslationCache,
     guard: SmcGuard,
     dispatcher: Dispatcher,
+}
+
+enum ProgramImage {
+    Pe(PeImage, MappedImage),
+    Elf(static_elf::StaticElf),
+}
+
+impl ProgramImage {
+    fn base(&self) -> u64 {
+        match self {
+            Self::Pe(_, mapped) => mapped.base,
+            Self::Elf(elf) => elf.base(),
+        }
+    }
+
+    fn entry(&self) -> u64 {
+        match self {
+            Self::Pe(_, mapped) => mapped.entry_pc,
+            Self::Elf(elf) => elf.entry,
+        }
+    }
+
+    fn fetch(&self, pc: u64) -> Option<Vec<u8>> {
+        match self {
+            Self::Pe(_, mapped) => fetch_window(mapped, pc),
+            Self::Elf(elf) => elf.fetch(pc),
+        }
+    }
+
+    fn auxv(&self) -> Vec<(u64, u64)> {
+        match self {
+            Self::Pe(..) => vec![(6, 4096)], // AT_PAGESZ
+            Self::Elf(elf) => elf.auxv(),
+        }
+    }
+
+    fn syscall_context(&self) -> SyscallContext {
+        let mut ctx = SyscallContext::new();
+        if let Self::Elf(elf) = self {
+            ctx.heap_base = elf.heap_base;
+            ctx.brk = elf.heap_base;
+        }
+        ctx
+    }
+
+    fn populate(
+        &self,
+        mem: &mut BackedAddressSpace,
+        stack_base: u64,
+    ) -> Result<(), AddressSpaceError> {
+        match self {
+            Self::Pe(pe, mapped) => populate_backed(mem, pe, mapped, stack_base),
+            Self::Elf(elf) => elf.populate(mem, stack_base),
+        }
+    }
 }
 
 /// Why [`Session::prepare`] could not build a runnable initial state.
@@ -188,22 +243,36 @@ impl Session {
     /// image's entry point.
     pub fn load(file: &[u8], modules: &ModuleTable) -> Result<Self, LoadError> {
         let (pe_image, image) = load_pe_with_image(file, modules)?;
-        Ok(Self {
-            pe_image,
+        Ok(Self::from_image(ProgramImage::Pe(pe_image, image)))
+    }
+
+    /// Load a freestanding, static x86-64 Linux ELF64 executable. PT_LOAD
+    /// permissions apply to the guest layout and instruction fetch. Parsing
+    /// accepts fixed-address ET_EXEC with readable, W^X segments.
+    pub fn load_static_elf(file: &[u8]) -> Result<Self, static_elf::ElfLoadError> {
+        let elf = static_elf::StaticElf::parse(file)?;
+        Ok(Self::from_image(ProgramImage::Elf(elf)))
+    }
+
+    fn from_image(image: ProgramImage) -> Self {
+        Self {
             image,
             translator: Translator::new(),
             cache: TranslationCache::new(),
             guard: SmcGuard::new(),
             dispatcher: Dispatcher::new(),
-        })
+        }
     }
 
-    /// Build the guest W^X address space — each PE section mapped at its own
+    /// Build the guest address space with each PE section or ELF segment at its own
     /// protection (`.text` RX, `.data` RW, ...) plus an initial-thread stack
     /// based at `stack_base`. This is the memory model execution runs against:
     /// code pages not writable, data pages not executable.
     pub fn layout(&self, stack_base: u64) -> Result<GuestLayout, AddressSpaceError> {
-        layout_sections(&self.pe_image, &self.image, stack_base)
+        match &self.image {
+            ProgramImage::Pe(pe, mapped) => layout_sections(pe, mapped, stack_base),
+            ProgramImage::Elf(elf) => elf.layout(stack_base),
+        }
     }
 
     /// Build the *byte-backed* guest address space — each section's content
@@ -214,7 +283,13 @@ impl Session {
     /// # Errors
     /// [`AddressSpaceError`] if a section base overflows or any mapping overlaps.
     pub fn backed_layout(&self, stack_base: u64) -> Result<BackedGuestLayout, AddressSpaceError> {
-        backed_layout_sections(&self.pe_image, &self.image, stack_base)
+        let mut space = BackedAddressSpace::new();
+        self.image.populate(&mut space, stack_base)?;
+        Ok(BackedGuestLayout {
+            space,
+            image_base: self.image.base(),
+            stack_top: stack_base + DEFAULT_STACK_SIZE,
+        })
     }
 
     /// Build a runnable initial state: lay out byte-backed guest memory at
@@ -222,8 +297,8 @@ impl Session {
     /// a minimal auxv), and seed `RSP` at its top — everything [`Session::run`]
     /// needs, composed in one call.
     ///
-    /// The auxv carries only `AT_PAGESZ` here; thread-local / loader-specific
-    /// entries (`AT_RANDOM`, `AT_PHDR`, ...) come with their own follow-on work
+    /// The auxv carries `AT_PAGESZ`, plus ELF entry and mapped program-header
+    /// metadata. Additional entries such as `AT_RANDOM` come with follow-on work
     /// (RFC 0019 scopes TLS out), so this targets a freestanding program that
     /// reads its own `argc`/`argv`/`envp` rather than a full dynamically-linked
     /// glibc start-up.
@@ -239,8 +314,7 @@ impl Session {
     ) -> Result<PreparedRun, PrepareError> {
         let layout = self.backed_layout(stack_base)?;
         let mut mem = layout.space;
-        const AT_PAGESZ: u64 = 6;
-        let auxv = [(AT_PAGESZ, 4096)];
+        let auxv = self.image.auxv();
         let params = ProcessStackParams {
             argv,
             envp,
@@ -252,7 +326,7 @@ impl Session {
         Ok(PreparedRun {
             mem,
             state,
-            ctx: SyscallContext::new(),
+            ctx: self.image.syscall_context(),
         })
     }
 
@@ -278,18 +352,24 @@ impl Session {
         argv: &[&[u8]],
         envp: &[&[u8]],
     ) -> Result<PreparedRun, PrepareError> {
-        let image_base = self.image.base;
-        let stack_top = stack_base.saturating_add(DEFAULT_STACK_SIZE);
+        let image_base = self.image.base();
+        let stack_top = stack_base
+            .checked_add(DEFAULT_STACK_SIZE)
+            .ok_or(AddressSpaceError::Overflow(stack_base, DEFAULT_STACK_SIZE))?;
         // One page below the image through the stack top, page-rounded — the whole
         // guest lives in this single contiguous host window.
         let window_base = image_base & !0xFFF;
         let window_size = usize::try_from(stack_top.saturating_sub(window_base)).map_err(|_| {
             PrepareError::Layout(AddressSpaceError::Overflow(window_base, stack_top))
         })?;
+        // Keep platform page rounding and slice lengths representable even
+        // when the caller supplies a stack near the top of the address space.
+        if window_size > isize::MAX as usize {
+            return Err(AddressSpaceError::Overflow(window_base, stack_top).into());
+        }
         let mut mem = BackedAddressSpace::with_arena(window_base, window_size)?;
-        populate_backed(&mut mem, &self.pe_image, &self.image, stack_base)?;
-        const AT_PAGESZ: u64 = 6;
-        let auxv = [(AT_PAGESZ, 4096)];
+        self.image.populate(&mut mem, stack_base)?;
+        let auxv = self.image.auxv();
         let params = ProcessStackParams {
             argv,
             envp,
@@ -303,7 +383,7 @@ impl Session {
         Ok(PreparedRun {
             mem,
             state,
-            ctx: SyscallContext::new(),
+            ctx: self.image.syscall_context(),
         })
     }
 
@@ -383,14 +463,14 @@ impl Session {
     /// Guest virtual address execution begins at.
     #[must_use]
     pub fn entry_pc(&self) -> u64 {
-        self.image.entry_pc
+        self.image.entry()
     }
 
     /// The guest bytes at `guest_pc` (up to a page), or `None` if `guest_pc` is
     /// not inside the mapped image. This is the dispatcher's fetch source.
     #[must_use]
     pub fn fetch(&self, guest_pc: u64) -> Option<Vec<u8>> {
-        fetch_window(&self.image, guest_pc)
+        self.image.fetch(guest_pc)
     }
 
     /// Drive one dispatcher step from the entry point: fetch the entry block,
@@ -399,7 +479,7 @@ impl Session {
     /// executor's `is_arm64` gate); on other hosts the fetch + translate run and
     /// the install is the no-op path, so this stays safe to call anywhere.
     pub fn step_entry(&mut self) -> DispatchRunOutcome {
-        let entry = self.image.entry_pc;
+        let entry = self.image.entry();
         // Disjoint field borrows so the fetch (over the image) and translate
         // (over the translator) closures can coexist with the dispatcher call.
         let image = &self.image;
@@ -408,7 +488,7 @@ impl Session {
         let guard = &mut self.guard;
         let dispatcher = &mut self.dispatcher;
 
-        let fetch = |pc: u64| fetch_window(image, pc);
+        let fetch = |pc: u64| image.fetch(pc);
         let translate = |pc: u64, bytes: &[u8]| {
             translator
                 .translate_block(pc, bytes, MAX_INSNS)
@@ -432,11 +512,11 @@ impl Session {
 }
 
 fn translate_image_block(
-    image: &MappedImage,
+    image: &ProgramImage,
     translator: &mut Translator,
     guest_pc: u64,
 ) -> Option<BlockTranslation> {
-    let bytes = fetch_window(image, guest_pc)?;
+    let bytes = image.fetch(guest_pc)?;
     // Use the FUSED path: it renumbers SSA refs across the block and routes
     // relative branches through the frame's next_pc (with_branch_exits) so the
     // run loop can chain. The per-instruction translate_block lowers each
@@ -459,7 +539,7 @@ impl Session {
     /// pure (no ARM64 needed), so this runs on any host.
     pub fn translate_reachable(&mut self, max_blocks: usize) -> Vec<u64> {
         let mut seen: HashSet<u64> = HashSet::new();
-        let mut queue: Vec<u64> = vec![self.image.entry_pc];
+        let mut queue: Vec<u64> = vec![self.image.entry()];
         let mut translated: Vec<u64> = Vec::new();
 
         while let Some(pc) = queue.pop() {
@@ -469,7 +549,7 @@ impl Session {
             if !seen.insert(pc) {
                 continue;
             }
-            let Some(bytes) = fetch_window(&self.image, pc) else {
+            let Some(bytes) = self.image.fetch(pc) else {
                 continue; // PC outside the mapped image
             };
             let Ok(block) = self.translator.translate_block(pc, &bytes, MAX_INSNS) else {
@@ -497,7 +577,7 @@ impl Session {
     /// self- or back-edge terminates.
     pub fn reachable_blocks(&self, max_blocks: usize) -> Vec<u64> {
         let mut seen: HashSet<u64> = HashSet::new();
-        let mut queue: Vec<u64> = vec![self.image.entry_pc];
+        let mut queue: Vec<u64> = vec![self.image.entry()];
         let mut reached: Vec<u64> = Vec::new();
 
         while let Some(pc) = queue.pop() {
@@ -507,7 +587,7 @@ impl Session {
             if !seen.insert(pc) {
                 continue;
             }
-            let Some(bytes) = fetch_window(&self.image, pc) else {
+            let Some(bytes) = self.image.fetch(pc) else {
                 continue; // PC outside the mapped image
             };
             reached.push(pc);

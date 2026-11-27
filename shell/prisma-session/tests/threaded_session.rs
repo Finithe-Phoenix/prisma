@@ -2,6 +2,9 @@
 //! No host scheduling order is assumed: the producer retries WAKE until one
 //! waiter consumes it, then joins on the guest child's clear_child_tid word.
 
+#[path = "support/static_elf.rs"]
+mod static_elf;
+
 use prisma_orchestrator::module_table::ModuleTable;
 use prisma_runtime::executor::{gpr, ExecError};
 use prisma_session::{PreparedRun, RunOutcome, Session, ThreadRunControl, ThreadRunError};
@@ -204,7 +207,18 @@ fn read_qword(run: &PreparedRun, offset: u64) -> u64 {
 
 #[test]
 fn producer_wakes_consumer_and_joins_via_clear_child_tid() {
-    let mut session = Session::load(&pe_with_code(PRODUCER_CONSUMER), &ModuleTable::new()).unwrap();
+    let session = Session::load(&pe_with_code(PRODUCER_CONSUMER), &ModuleTable::new()).unwrap();
+    check_producer_consumer(session);
+}
+
+#[test]
+fn static_elf_producer_wakes_consumer_and_joins_via_clear_child_tid() {
+    let elf = static_elf::image(STACK - 0x2_0000, PRODUCER_CONSUMER);
+    let session = Session::load_static_elf(&elf).unwrap();
+    check_producer_consumer(session);
+}
+
+fn check_producer_consumer(mut session: Session) {
     // Prepare again after shutdown to catch stale shared state and wait queues.
     for _ in 0..2 {
         let mut run = prepare(&session);
