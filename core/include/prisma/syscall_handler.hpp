@@ -24,10 +24,10 @@ struct CpuStateFrame;
 // own one instance per guest thread without changing the JIT-visible frame
 // layout or offsets.
 struct GuestThreadStartupState {
-    std::uint64_t tid{0};
-    std::uint64_t clear_child_tid{0};
-    std::uint64_t robust_list_head{0};
-    std::uint64_t robust_list_len{0};
+  std::uint64_t tid{0};
+  std::uint64_t clear_child_tid{0};
+  std::uint64_t robust_list_head{0};
+  std::uint64_t robust_list_len{0};
 };
 
 [[nodiscard]] GuestThreadStartupState current_guest_thread_startup_state() noexcept;
