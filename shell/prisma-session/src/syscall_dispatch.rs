@@ -89,6 +89,7 @@ mod nr {
     pub const MUNMAP: u64 = 11;
     pub const MPROTECT: u64 = 10;
     pub const SET_ROBUST_LIST: u64 = 273;
+    pub const GET_ROBUST_LIST: u64 = 274;
     pub const MEMBARRIER: u64 = 324;
     pub const PRCTL: u64 = 157;
     pub const STATFS: u64 = 137;
@@ -148,11 +149,24 @@ fn online_cpu_mask() -> u64 {
     }
 }
 
+/// Linux x86-64 `robust_list_head` contains three 64-bit fields.
+const ROBUST_LIST_HEAD_SIZE: u64 = 24;
+
+/// Linux thread identity and guest pointers registered by libc. Pointer values
+/// are guest addresses. Registration never dereferences them.
+#[derive(Debug)]
+struct LinuxThreadState {
+    tid: u32,
+    clear_child_tid: u64,
+    robust_list_head: u64,
+}
+
 /// Per-thread state the syscall layer carries across calls: the fd table and the
 /// signal mask, plus the monotonic-clock reference. The guest memory region is
 /// passed per call (it is borrowed from the live address space).
 #[derive(Debug)]
 pub struct SyscallContext {
+    thread: LinuxThreadState,
     /// Open file descriptors.
     pub fds: FdTable,
     /// Blocked-signal mask + pending queue.
@@ -191,6 +205,11 @@ impl SyscallContext {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            thread: LinuxThreadState {
+                tid: std::process::id(),
+                clear_child_tid: 0,
+                robust_list_head: 0,
+            },
             fds: FdTable::new(),
             signals: SignalState::new(),
             monotonic_start: Instant::now(),
@@ -615,16 +634,13 @@ pub fn dispatch(
             Err(e) => sig_errno(e),
         },
         // tkill(tid, sig) / tgkill(tgid, tid, sig): send a signal to a thread.
-        // The guest is single-threaded, so the only valid target is itself
-        // (tid == pid, and for tgkill tgid == pid too); a non-positive id is
-        // EINVAL and any other id is ESRCH. The signal itself is validated and
-        // raised by send_signal.
+        // Signal delivery can target the calling thread. Sibling delivery
+        // requires a process-wide thread registry.
         nr::TKILL => {
             let tid = arg_i32(args[0]);
-            let me = std::process::id();
             if tid <= 0 {
                 errno::EINVAL
-            } else if tid as u32 != me {
+            } else if tid as u32 != ctx.thread.tid {
                 errno::ESRCH
             } else {
                 match sig_syscalls::send_signal(&mut ctx.signals, arg_u32(args[1])) {
@@ -639,7 +655,7 @@ pub fn dispatch(
             let me = std::process::id();
             if tgid <= 0 || tid <= 0 {
                 errno::EINVAL
-            } else if tgid as u32 != me || tid as u32 != me {
+            } else if tgid as u32 != me || tid as u32 != ctx.thread.tid {
                 errno::ESRCH
             } else {
                 match sig_syscalls::send_signal(&mut ctx.signals, arg_u32(args[2])) {
@@ -681,14 +697,12 @@ pub fn dispatch(
                 Err(e) => sig_errno(e),
             }
         }
-        // getpid / gettid: the guest runs inside the host process, so the host
-        // pid is the correct answer; a single-threaded guest has tid == pid.
-        nr::GETPID | nr::GETTID => i64::from(std::process::id()),
-        // set_tid_address(tidptr): the kernel records `tidptr` as the thread's
-        // clear_child_tid (cleared + futex-woken on thread exit) and returns the
-        // caller's tid. With no thread teardown yet, honouring clear_child_tid is
-        // a no-op; the contract that matters to glibc startup is the tid return.
-        nr::SET_TID_ADDRESS => i64::from(std::process::id()),
+        nr::GETPID => i64::from(std::process::id()),
+        nr::GETTID => i64::from(ctx.thread.tid),
+        nr::SET_TID_ADDRESS => {
+            ctx.thread.clear_child_tid = args[0];
+            i64::from(ctx.thread.tid)
+        }
         // exit(status) / exit_group(status): the guest is terminating. Record the
         // status in the context so the run loop can stop after this dispatch;
         // the return value is never observed by the (now dead) guest. exit_group
@@ -721,17 +735,33 @@ pub fn dispatch(
             Ok(()) => 0,
             Err(e) => mem_errno(&e),
         },
-        // set_robust_list(head, len): the kernel records the per-thread robust
-        // futex list head for cleanup at thread exit. glibc calls this at startup
-        // even single-threaded; with no thread teardown the list is never walked,
-        // so honouring it is a no-op that must still succeed. `len` must be the
-        // size of a `robust_list_head` (24 bytes on x86-64) or it is EINVAL.
         nr::SET_ROBUST_LIST => {
-            if args[1] == 24 {
-                0
-            } else {
-                errno::EINVAL
+            if args[1] != ROBUST_LIST_HEAD_SIZE {
+                return errno::EINVAL;
             }
+            ctx.thread.robust_list_head = args[0];
+            0
+        }
+        nr::GET_ROBUST_LIST => {
+            let tid = arg_i32(args[0]);
+            if tid != 0 && tid as u32 != ctx.thread.tid {
+                return errno::ESRCH;
+            }
+            let [_, head_out, len_out, ..] = args;
+            if mem.ensure_writable(head_out, 8).is_err() || mem.ensure_writable(len_out, 8).is_err()
+            {
+                return errno::EFAULT;
+            }
+            if mem
+                .write(len_out, &ROBUST_LIST_HEAD_SIZE.to_le_bytes())
+                .is_err()
+                || mem
+                    .write(head_out, &ctx.thread.robust_list_head.to_le_bytes())
+                    .is_err()
+            {
+                return errno::EFAULT;
+            }
+            0
         }
         // membarrier(cmd, flags): MEMBARRIER_CMD_QUERY (0) reports the supported
         // command set as a bitmask. The single-thread model has no cross-thread
@@ -922,7 +952,7 @@ pub fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, SyscallContext};
+    use super::{dispatch, nr, SyscallContext};
     use prisma_orchestrator::address_space::Protection;
     use prisma_orchestrator::backed_address_space::BackedAddressSpace;
     use prisma_runtime::guest_signal::Sigset;
@@ -1138,7 +1168,7 @@ mod tests {
         let mut mem = region(&buf);
         let pid = i64::from(std::process::id());
         // Returns the caller's tid (== pid here); the tidptr arg is recorded as
-        // clear_child_tid (a no-op until thread teardown) and never faults.
+        // clear_child_tid without being dereferenced.
         assert_eq!(
             dispatch(
                 &mut ctx,
@@ -1158,6 +1188,69 @@ mod tests {
             ),
             pid
         );
+    }
+
+    #[test]
+    fn thread_registrations_are_private_and_outputs_are_validated_before_writing() {
+        let mut leader = SyscallContext::new();
+        let mut sibling = SyscallContext::new();
+        sibling.thread.tid = leader.thread.tid + 1;
+        let child_tid = u64::from(sibling.thread.tid);
+        let mut mem = region(&[0x55; 16]);
+        assert_eq!(
+            dispatch(&mut sibling, &mut mem, nr::GETTID, [0; 6]),
+            i64::from(sibling.thread.tid)
+        );
+        assert_eq!(
+            dispatch(
+                &mut sibling,
+                &mut mem,
+                nr::SET_TID_ADDRESS,
+                [0x1010, 0, 0, 0, 0, 0]
+            ),
+            i64::from(sibling.thread.tid)
+        );
+        assert_eq!(sibling.thread.clear_child_tid, 0x1010);
+        assert_eq!(leader.thread.clear_child_tid, 0);
+        assert_eq!(
+            dispatch(
+                &mut sibling,
+                &mut mem,
+                nr::SET_ROBUST_LIST,
+                [0x9000, 24, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            dispatch(
+                &mut sibling,
+                &mut mem,
+                nr::SET_ROBUST_LIST,
+                [0x8000, 25, 0, 0, 0, 0]
+            ),
+            -22
+        );
+        assert_eq!(
+            dispatch(
+                &mut sibling,
+                &mut mem,
+                nr::GET_ROBUST_LIST,
+                [0, 0x1000, 0x1009, 0, 0, 0]
+            ),
+            -14
+        );
+        assert_eq!(mem.read(0x1000, 16).unwrap(), &[0x55; 16]);
+        let get = [child_tid, 0x1000, 0x1008, 0, 0, 0];
+        assert_eq!(
+            dispatch(&mut leader, &mut mem, nr::GET_ROBUST_LIST, get),
+            -3
+        );
+        assert_eq!(
+            dispatch(&mut sibling, &mut mem, nr::GET_ROBUST_LIST, get),
+            0
+        );
+        assert_eq!(mem.read(0x1000, 8).unwrap(), &0x9000u64.to_le_bytes());
+        assert_eq!(mem.read(0x1008, 8).unwrap(), &24u64.to_le_bytes());
     }
 
     #[test]
@@ -1538,7 +1631,7 @@ mod tests {
         let mut ctx = SyscallContext::new();
         let buf = [0u8; 8];
         let mut mem = region(&buf);
-        // set_robust_list(head, len=24) -> 0 (accepted no-op).
+        // The x86-64 robust list head uses the 24-byte layout.
         assert_eq!(
             dispatch(
                 &mut ctx,
