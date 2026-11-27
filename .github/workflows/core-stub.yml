@@ -11,10 +11,8 @@ on:
     paths:
       - "core/**"
       - ".github/workflows/core-stub.yml"
+  # Branch protection requires core-build on every PR, including docs and CI changes.
   pull_request:
-    paths:
-      - "core/**"
-      - ".github/workflows/core-stub.yml"
 
 concurrency:
   group: core-${{ github.ref }}
