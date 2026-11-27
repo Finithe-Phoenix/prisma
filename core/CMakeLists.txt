@@ -207,6 +207,8 @@ target_link_libraries(prisma_decoder
 # Runtime library (JIT memory, signal handlers — growing incrementally)
 # ---------------------------------------------------------------------------
 
+find_package(Threads REQUIRED)
+
 add_library(prisma_runtime STATIC
     src/runtime/jit_memory.cpp
     src/runtime/jit_buffer_pool.cpp
@@ -225,6 +227,7 @@ target_include_directories(prisma_runtime
 
 target_link_libraries(prisma_runtime
     PUBLIC
+        Threads::Threads
         prisma_ir
         prisma_translator
     PRIVATE
@@ -495,6 +498,9 @@ if(PRISMA_BUILD_TESTS)
         tests/test_capi.cpp
         tests/test_syscall_handler.cpp
     )
+    if(NOT MSVC)
+        target_sources(prisma_core_tests PRIVATE tests/test_futex_syscall.cpp)
+    endif()
     target_link_libraries(prisma_core_tests
         PRIVATE
             prisma_ir
