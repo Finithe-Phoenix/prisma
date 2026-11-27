@@ -13,9 +13,9 @@
 #include <string.h>
 
 typedef struct Record {
-  int32_t discriminator;
-  int32_t enum_value;
-  int32_t int_value;
+  uint32_t discriminator;
+  uint32_t enum_value;
+  uint32_t int_value;
   char string_value[32];
   struct Record* next;
 } Record;
@@ -29,7 +29,7 @@ static uint64_t mix_u64(uint64_t x) {
   return x;
 }
 
-static int proc_1(Record* rec, Record* other, int iter) {
+static uint32_t proc_1(Record* rec, Record* other, uint32_t iter) {
   rec->discriminator = (rec->discriminator + iter + other->enum_value) & 7;
   rec->int_value = (rec->int_value * 3 + other->int_value + iter) & 0x7fffffff;
   rec->enum_value ^= (rec->int_value >> (iter & 7)) & 15;
@@ -37,16 +37,16 @@ static int proc_1(Record* rec, Record* other, int iter) {
   return rec->int_value ^ rec->enum_value ^ rec->discriminator;
 }
 
-static int proc_2(int value, const char* text) {
-  int acc = value;
+static uint32_t proc_2(uint32_t value, const char* text) {
+  uint32_t acc = value;
   for (size_t i = 0; text[i] != '\0'; ++i) {
-    acc += (int)((unsigned char)text[i] * (i + 3));
-    acc ^= (acc << 5) | ((int)((uint32_t)acc) >> 27);
+    acc += (uint32_t)(unsigned char)text[i] * ((uint32_t)i + 3u);
+    acc ^= (acc << 5) | (acc >> 27);
   }
   return acc;
 }
 
-static int func_1(int lhs, int rhs) {
+static uint32_t func_1(uint32_t lhs, uint32_t rhs) {
   if ((lhs & 3) == (rhs & 3)) {
     return lhs + rhs + 17;
   }
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
   a.next = &b;
 
   uint64_t checksum = 0x123456789abcdef0ULL;
-  int acc = 0;
+  uint32_t acc = 0;
 
   for (int i = 0; i < iterations; ++i) {
     Record* first = (i & 1) ? &a : &b;
@@ -81,14 +81,14 @@ int main(int argc, char** argv) {
     acc += func_1(first->enum_value, second->discriminator);
     checksum ^= mix_u64((uint64_t)(uint32_t)acc + (uint64_t)i);
     if ((i & 15) == 0) {
-      char tmp[32];
+      char tmp[32] = {0};
       snprintf(tmp, sizeof(tmp), "ITER-%08x", (unsigned)i);
       memcpy(first->string_value, tmp, sizeof(tmp));
       first->string_value[sizeof(first->string_value) - 1] = '\0';
     }
   }
 
-  printf("prisma_dhrystone iterations=%d checksum=%016llx acc=%d\n",
+  printf("prisma_dhrystone iterations=%d checksum=%016llx acc=%u\n",
          iterations,
          (unsigned long long)checksum,
          acc);

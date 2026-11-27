@@ -7,9 +7,11 @@ accidentally remove commands users may script against.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from click.testing import CliRunner
+from pytest import MonkeyPatch
 
 from prisma_bench.cli import main
 
@@ -77,8 +79,17 @@ def test_report_json_writes_summary(tmp_path: Path) -> None:
     assert raw["records"] == 1
 
 
-def test_report_latex_remains_future_work(tmp_path: Path) -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["report", str(tmp_path), "--format", "latex"])
-    assert result.exit_code == 2
-    assert "not yet implemented" in result.output
+def test_failed_workload_still_writes_raw_result(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    import prisma_bench.runners as runners
+
+    monkeypatch.setattr(runners, "build_corpus", lambda corpus, output: runners.BuildArtifact(
+        Path(sys.executable), "x86_64", [], False,
+    ))
+    result = CliRunner().invoke(main, [
+        "run", "--backend", "native", "--corpus", "coremark", "--sample", "3",
+        "--output", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    record = json.loads((tmp_path / "coremark-native-3.json").read_text())
+    assert record["exit_code"] != 0
+    assert record["skipped"] is False

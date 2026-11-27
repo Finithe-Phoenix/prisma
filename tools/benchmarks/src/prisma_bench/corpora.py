@@ -36,6 +36,22 @@ CORPORA: dict[str, Corpus] = {
             "harness validation."
         ),
     ),
+    "coremark": Corpus(
+        name="coremark",
+        display_name="EEMBC CoreMark (performance seeds)",
+        source_path=corpus_root() / "coremark" / "build.sh",
+        binary_stem="coremark.x86_64",
+        default_iterations=500000,
+        description="Run the pinned upstream CoreMark workload.",
+    ),
+    "nbench": Corpus(
+        name="nbench",
+        display_name="BYTEmark 2.2.3 numeric sort smoke profile",
+        source_path=corpus_root() / "nbench" / "build.sh",
+        binary_stem="nbench.x86_64",
+        default_iterations=1,
+        description="One invocation runs the fixed-duration numeric sort profile.",
+    ),
 }
 
 

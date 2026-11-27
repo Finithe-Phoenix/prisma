@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -41,7 +43,13 @@ def _host_arch() -> str:
 
 def host_label() -> str:
     processor = platform.processor() or "unknown"
-    return f"{platform.system()} {_host_arch()} / {processor}"
+    if platform.system() == "Linux" and Path("/proc/cpuinfo").is_file():
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == "model name":
+                processor = value.strip()
+                break
+    return f"{platform.system()} {platform.release()} {_host_arch()} / {processor}"
 
 
 def git_sha(root: Path | None = None) -> str:
@@ -69,7 +77,7 @@ def build_corpus(corpus: Corpus, output_dir: Path) -> BuildArtifact:
             reason="no C compiler found on PATH",
         )
 
-    build_dir = output_dir / "build" / corpus.name
+    build_dir = output_dir.resolve() / "build" / corpus.name
     build_dir.mkdir(parents=True, exist_ok=True)
     suffix = ".exe" if platform.system() == "Windows" else ""
     binary = build_dir / f"{corpus.binary_stem}{suffix}"
@@ -81,19 +89,17 @@ def build_corpus(corpus: Corpus, output_dir: Path) -> BuildArtifact:
         "-o",
         str(binary),
     ]
+    if corpus.name in {"coremark", "nbench"}:
+        if platform.system() != "Linux" or _host_arch() != "x86_64":
+            return BuildArtifact(None, None, [], True, "upstream corpus build needs Linux x86_64")
+        command = ["bash", str(corpus.source_path), str(build_dir)]
     try:
         subprocess.run(command, capture_output=True, text=True, check=True)
     except (OSError, subprocess.CalledProcessError) as exc:
         reason = str(exc)
         if isinstance(exc, subprocess.CalledProcessError):
             reason = (exc.stderr or exc.stdout or str(exc)).strip()
-        return BuildArtifact(
-            binary=None,
-            target_arch=None,
-            command=command,
-            skipped=True,
-            reason=reason[:300],
-        )
+        raise ValueError(f"{corpus.name} build failed: {reason[-600:]}") from exc
 
     return BuildArtifact(
         binary=binary,
@@ -118,7 +124,10 @@ def _run_command(
 ) -> RunResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, capture_output=True, timeout=timeout_s)
+        proc = subprocess.run(
+            command, capture_output=True, timeout=timeout_s,
+            cwd=artifact.binary.parent if artifact.binary else None,
+        )
         wall_s = time.monotonic() - started
     except subprocess.TimeoutExpired as exc:
         return RunResult(
@@ -139,8 +148,25 @@ def _run_command(
         )
 
     metrics: dict[str, float] = {}
-    if proc.returncode == 0 and wall_s > 0:
-        metrics["iterations_per_second"] = iterations / wall_s
+    output = proc.stdout.decode(errors="replace")
+    validation_error = None
+    if proc.returncode == 0:
+        if corpus.name == "coremark" and "Correct operation validated." not in output:
+            validation_error = "CoreMark CRC or minimum runtime check failed"
+        elif corpus.name == "nbench":
+            score = re.search(r"^NUMERIC SORT\s*:\s*([0-9.eE+-]+)", output, re.MULTILINE)
+            if score:
+                metrics["iterations_per_second"] = float(score.group(1))
+            else:
+                validation_error = "missing numeric sort result"
+        elif (
+            corpus.name == "dhrystone"
+            and iterations == 1000
+            and "checksum=681c847f129869e4 acc=273530402" not in output
+        ):
+            validation_error = "Dhrystone smoke checksum mismatch"
+        if validation_error is None and corpus.name != "nbench" and wall_s > 0:
+            metrics["iterations_per_second"] = iterations / wall_s
 
     return RunResult(
         benchmark=corpus.name,
@@ -154,6 +180,11 @@ def _run_command(
         iterations=iterations,
         skipped=False,
         exit_code=proc.returncode,
+        validation_error=validation_error,
+        build_command=artifact.command,
+        binary_sha256=(
+            hashlib.sha256(artifact.binary.read_bytes()).hexdigest() if artifact.binary else None
+        ),
         wall_s=wall_s,
         stdout_tail=_tail(proc.stdout),
         stderr_tail=_tail(proc.stderr),
@@ -207,7 +238,7 @@ def run_backend(
             iterations=iterations,
             reason=(
                 "prisma_run currently accepts raw blobs only; "
-                "dhrystone builds an ELF/host binary"
+                f"{corpus.name} builds an ELF/host binary"
             ),
         )
 
@@ -229,8 +260,13 @@ def run_backend(
             artifact=artifact,
         )
 
+    args = [str(iterations)]
+    if corpus.name == "coremark":
+        args = ["0", "0", "0x66", str(iterations)]
+    elif corpus.name == "nbench":
+        args = ["-cSMOKE.CFG"]
     if backend == "native":
-        command = [str(artifact.binary), str(iterations)]
+        command = [str(artifact.binary), *args]
         return _run_command(
             backend=backend,
             command=command,
@@ -268,7 +304,7 @@ def run_backend(
 
     return _run_command(
         backend=backend,
-        command=[emulator, str(artifact.binary), str(iterations)],
+        command=[emulator, str(artifact.binary), *args],
         corpus=corpus,
         artifact=artifact,
         iterations=iterations,

@@ -19,6 +19,9 @@ class RunResult(BaseModel):
     git_sha: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     command: list[str] = Field(default_factory=list)
+    build_command: list[str] = Field(default_factory=list)
+    binary_sha256: str | None = None
+    validation_error: str | None = None
     source: str
     binary: str | None = None
     target_arch: str | None = None
@@ -46,11 +49,18 @@ class RunResult(BaseModel):
 class BackendSummary(BaseModel):
     benchmark: str
     backend: BackendName
+    host: str = ""
+    git_sha: str = ""
+    iterations: int | None = None
+    target_arch: str | None = None
     runs: int
     successful_runs: int
     skipped_runs: int
     best_wall_s: float | None = None
     median_wall_s: float | None = None
+    failed_runs: int = 0
+    median_iterations_per_second: float | None = None
+    mad_iterations_per_second: float | None = None
     best_iterations_per_second: float | None = None
 
 
